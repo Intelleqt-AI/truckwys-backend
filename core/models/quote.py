@@ -1,0 +1,41 @@
+from django.db import models
+from django.conf import settings
+from .customer import Customer
+
+class Quote(models.Model):
+    STATUS_CHOICES = [
+        ('DRAFT', 'Draft'),
+        ('SENT', 'Sent'),
+        ('ACCEPTED', 'Accepted'),
+        ('REJECTED', 'Rejected'),
+        ('EXPIRED', 'Expired'),
+    ]
+    
+    quote_number = models.CharField(max_length=100, unique=True)
+    customer = models.ForeignKey(Customer, on_delete=models.PROTECT, related_name='quotes')
+    
+    pickup_location = models.CharField(max_length=500)
+    delivery_location = models.CharField(max_length=500)
+    cargo_description = models.TextField()
+    weight = models.DecimalField(max_digits=10, decimal_places=2)
+    distance = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    
+    base_rate = models.DecimalField(max_digits=10, decimal_places=2)
+    fuel_surcharge = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    additional_charges = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    total_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    
+    valid_until = models.DateField()
+    status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='DRAFT')
+    notes = models.TextField(blank=True)
+    
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name='quotes_created')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'quotes'
+        ordering = ['-created_at']
+    
+    def __str__(self):
+        return f"Quote {self.quote_number} - {self.customer.name}"
