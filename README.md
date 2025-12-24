@@ -98,9 +98,73 @@ http://localhost:8000/api/
 ```
 
 ### Authentication
-All endpoints require authentication. Include the token in the Authorization header:
+
+All endpoints require authentication except for registration and login.
+
+#### Register
+```bash
+POST /api/auth/register/
+Content-Type: application/json
+
+{
+  "username": "john_doe",
+  "email": "john@example.com",
+  "password": "securepassword",
+  "first_name": "John",
+  "last_name": "Doe",
+  "role": "DISPATCHER"
+}
 ```
-Authorization: Bearer <your-token>
+
+Response:
+```json
+{
+  "token": "abc123xyz...",
+  "user": {
+    "id": 1,
+    "username": "john_doe",
+    "email": "john@example.com",
+    ...
+  }
+}
+```
+
+#### Login
+```bash
+POST /api/auth/login/
+Content-Type: application/json
+
+{
+  "username": "john_doe",
+  "password": "securepassword"
+}
+```
+
+Response:
+```json
+{
+  "token": "abc123xyz...",
+  "user": {
+    "id": 1,
+    "username": "john_doe",
+    ...
+  }
+}
+```
+
+#### Logout
+```bash
+POST /api/auth/logout/
+Authorization: Token abc123xyz...
+```
+
+#### Using the Token
+
+Include the token in the Authorization header for all authenticated requests:
+
+```bash
+GET /api/vehicles/
+Authorization: Token abc123xyz...
 ```
 
 ### API Endpoints
