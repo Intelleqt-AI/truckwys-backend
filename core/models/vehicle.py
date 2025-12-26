@@ -16,6 +16,16 @@ class Vehicle(models.Model):
     next_maintenance_due = models.DateField(null=True, blank=True)
     insurance_expiry = models.DateField(null=True, blank=True)
     registration_expiry = models.DateField(null=True, blank=True)
+    
+    # AI Health Score fields
+    ai_health_score = models.IntegerField(default=0)
+    fuel_efficiency_score = models.IntegerField(default=0)
+    uptime_score = models.IntegerField(default=0)
+    maintenance_score = models.IntegerField(default=0)
+    uptime_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    cost_per_km = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    margin_per_trip = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     

@@ -6,7 +6,8 @@ from .views import (
     VehicleViewSet, VehicleLogViewSet, LoadViewSet,
     QuoteViewSet, InvoiceViewSet, PaymentViewSet,
     ExpenseViewSet, SettlementViewSet, NotificationViewSet,
-    RegisterView, LoginView, LogoutView
+    RegisterView, LoginView, LogoutView,
+    FleetOverviewView, VehicleInsightsView, VehicleIntelligenceFeedView, VehicleActionView
 )
 
 router = DefaultRouter()
@@ -24,8 +25,17 @@ router.register(r'settlements', SettlementViewSet, basename='settlement')
 router.register(r'notifications', NotificationViewSet, basename='notification')
 
 urlpatterns = [
-    path('', include(router.urls)),
+    # Authentication endpoints (must come before router)
     path('auth/register/', RegisterView.as_view(), name='register'),
     path('auth/login/', LoginView.as_view(), name='login'),
     path('auth/logout/', LogoutView.as_view(), name='logout'),
+    
+    # Fleet/Vehicle specific endpoints (must come before router to avoid conflicts)
+    path('fleet/overview/', FleetOverviewView.as_view(), name='fleet-overview'),
+    path('fleet/insights/', VehicleInsightsView.as_view(), name='vehicle-insights'),
+    path('fleet/intelligence/', VehicleIntelligenceFeedView.as_view(), name='vehicle-intelligence'),
+    path('fleet/action/', VehicleActionView.as_view(), name='vehicle-action'),
+    
+    # Router URLs (comes last)
+    path('', include(router.urls)),
 ]
