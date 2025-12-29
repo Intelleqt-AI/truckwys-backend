@@ -14,6 +14,11 @@ class Driver(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     
+    # Performance tracking fields (optional)
+    # total_trips = models.IntegerField(default=0)
+    # on_time_trips = models.IntegerField(default=0)
+    # safety_incidents = models.IntegerField(default=0)
+    
     class Meta:
         db_table = 'drivers'
         ordering = ['-created_at']
