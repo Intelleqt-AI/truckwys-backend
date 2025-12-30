@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from django.db.models import Avg  # ADD THIS IMPORT
 from .models import (
     User, Customer, Driver, Vehicle, VehicleLog, Load,
     Quote, Invoice, Payment, Expense, Settlement, Notification
@@ -133,6 +134,33 @@ class NotificationSerializer(serializers.ModelSerializer):
         model = Notification
         fields = '__all__'
         read_only_fields = ['id', 'created_at']
+
+
+# Quote Pipeline Serializer (NEW)
+class QuotePipelineSerializer(serializers.ModelSerializer):
+    customer_name = serializers.CharField(source='customer.name', read_only=True)
+    price = serializers.DecimalField(source='total_amount', max_digits=10, decimal_places=2, read_only=True)
+    margin_pct = serializers.DecimalField(source='margin_percentage', max_digits=5, decimal_places=2, read_only=True)
+    updated_at_iso = serializers.DateTimeField(source='updated_at', format='%Y-%m-%dT%H:%M:%SZ', read_only=True)
+    confidence = serializers.SerializerMethodField()  # ADD THIS
+    status = serializers.SerializerMethodField()  # ADD THIS
+    
+    class Meta:
+        model = Quote
+        fields = [
+            'id', 'quote_number', 'customer', 'customer_name', 
+            'origin', 'destination', 'sla_hours', 'price', 
+            'margin_pct', 'confidence', 'status', 'updated_at', 'updated_at_iso'
+        ]
+        read_only_fields = ['id', 'updated_at']
+    
+    def get_confidence(self, obj):
+        # Convert "HIGH" → "High", "MEDIUM" → "Medium"
+        return obj.confidence.capitalize()
+    
+    def get_status(self, obj):
+        # Convert "DRAFT" → "Draft", "SENT" → "Sent"
+        return obj.status.capitalize()
 
 
 # Driver Performance Serializer (NEW)

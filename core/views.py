@@ -715,6 +715,193 @@ class DriverPerformanceLeaderboardView(APIView):
         })
 
 
+# ============= QUOTES/BOOKINGS PIPELINE VIEWS =============
+
+class QuotesPipelineOverviewView(APIView):
+    """
+    Quotes Pipeline Overview - Kanban-style pipeline with stats
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        from django.db.models import Sum, Count, Q
+        
+        # Get filter parameters
+        customer_filter = request.query_params.get('customer', 'all')
+        lane_filter = request.query_params.get('lane', 'all')
+        
+        # Base queryset
+        quotes = Quote.objects.all()
+        
+        # Apply filters
+        if customer_filter and customer_filter != 'all':
+            quotes = quotes.filter(customer__name__icontains=customer_filter)
+        
+        if lane_filter and lane_filter != 'all':
+            quotes = quotes.filter(
+                Q(origin__icontains=lane_filter) | Q(destination__icontains=lane_filter)
+            )
+        
+        # Calculate pipeline stats by status
+        pipeline_stats = {}
+        statuses = ['DRAFT', 'SENT', 'ACCEPTED', 'IN_TRANSIT', 'COMPLETED', 'EXPIRED']  # ADD EXPIRED
+        status_labels = {
+            'DRAFT': 'Drafts',
+            'SENT': 'Quoted',
+            'ACCEPTED': 'Accepted',
+            'IN_TRANSIT': 'In-Transit',
+            'COMPLETED': 'Completed',
+            'EXPIRED': 'Expired'  # ADD THIS
+        }
+        
+        for status_key in statuses:
+            # Map SENT to Quoted, ACCEPTED to Accepted loads
+            if status_key == 'SENT':
+                status_quotes = quotes.filter(status='SENT')
+            elif status_key == 'ACCEPTED':
+                status_quotes = Load.objects.filter(status='ASSIGNED')
+            elif status_key == 'IN_TRANSIT':
+                status_quotes = Load.objects.filter(status='IN_TRANSIT')
+            elif status_key == 'COMPLETED':
+                status_quotes = Load.objects.filter(status='DELIVERED')
+            elif status_key == 'EXPIRED':  # ADD THIS
+                status_quotes = quotes.filter(status='EXPIRED')
+            else:
+                status_quotes = quotes.filter(status=status_key)
+            
+            count = status_quotes.count()
+            
+            # Calculate total revenue for this stage
+            if status_key in ['DRAFT', 'SENT']:
+                total_value = status_quotes.aggregate(total=Sum('total_amount'))['total'] or 0
+            else:
+                total_value = status_quotes.aggregate(total=Sum('total_amount'))['total'] or 0
+            
+            pipeline_stats[status_key.lower()] = {
+                'label': status_labels[status_key],
+                'count': count,
+                'total_value': float(total_value),
+                'formatted_value': f"~R {float(total_value):,.0f}"
+            }
+        
+        # Get quotes for each column
+        drafts = self._format_quotes(quotes.filter(status='DRAFT'))
+        quoted = self._format_quotes(quotes.filter(status='SENT'))
+        expired = self._format_quotes(quotes.filter(status='EXPIRED'))  # ADD THIS
+        
+        # Get loads for accepted/in-transit/completed
+        accepted_loads = Load.objects.filter(status='ASSIGNED')
+        in_transit_loads = Load.objects.filter(status='IN_TRANSIT')
+        completed_loads = Load.objects.filter(status='DELIVERED')
+        
+        accepted = self._format_loads(accepted_loads)
+        in_transit = self._format_loads(in_transit_loads)
+        completed = self._format_loads(completed_loads)
+        
+        return Response({
+            'title': 'Bookings',
+            'subtitle': 'Pipeline',
+            'filters': {
+                'customer': {
+                    'current': customer_filter,
+                    'options': ['all', 'Makana Foods', 'Tiger Brands', 'Pick n Pay']
+                },
+                'lane': {
+                    'current': lane_filter,
+                    'options': ['all', 'JHB', 'CPT', 'DUR', 'PE']
+                }
+            },
+            'view_options': {
+                'current': 'list',
+                'available': ['list', 'board']
+            },
+            'pipeline': {
+                'drafts': {
+                    **pipeline_stats['draft'],
+                    'items': drafts
+                },
+                'quoted': {
+                    **pipeline_stats['sent'],
+                    'items': quoted
+                },
+                'accepted': {
+                    **pipeline_stats['accepted'],
+                    'items': accepted
+                },
+                'in_transit': {
+                    **pipeline_stats['in_transit'],
+                    'items': in_transit
+                },
+                'completed': {
+                    **pipeline_stats['completed'],
+                    'items': completed
+                },
+                'expired': {  # ADD THIS
+                    **pipeline_stats['expired'],
+                    'items': expired
+                }
+            }
+        })
+    
+    def _format_quotes(self, queryset):
+        """Format quotes for pipeline display"""
+        from core.serializers import QuotePipelineSerializer  # This import should work
+        serializer = QuotePipelineSerializer(queryset, many=True)
+        
+        formatted = []
+        for quote in serializer.data:
+            formatted.append({
+                'id': quote['quote_number'],
+                'customer': quote['customer_name'],
+                'origin': quote['origin'] or 'N/A',
+                'destination': quote['destination'] or 'N/A',
+                'sla_hours': quote['sla_hours'],
+                'price': float(quote['price']),
+                'margin_pct': float(quote['margin_pct']),
+                'confidence': quote['confidence'],
+                'status': quote['status'],
+                'updated_at': quote['updated_at_iso']
+            })
+        
+        return formatted
+    
+    def _format_loads(self, queryset):
+        """Format loads for pipeline display"""
+        formatted = []
+        
+        for load in queryset:
+            # Calculate margin percentage
+            if load.total_amount > 0:
+                margin_pct = ((load.total_amount - load.rate) / load.total_amount * 100)
+            else:
+                margin_pct = 0
+            
+            # Extract city codes
+            origin = load.pickup_city[:3].upper() if load.pickup_city else 'N/A'
+            destination = load.delivery_city[:3].upper() if load.delivery_city else 'N/A'
+            
+            # Calculate SLA hours (difference between pickup and delivery)
+            sla_hours = 48  # Default
+            if load.pickup_date and load.delivery_date:
+                delta = load.delivery_date - load.pickup_date
+                sla_hours = int(delta.total_seconds() / 3600)
+            
+            formatted.append({
+                'id': load.load_number,
+                'customer': load.customer.name,
+                'origin': origin,
+                'destination': destination,
+                'sla_hours': sla_hours,
+                'price': float(load.total_amount),
+                'margin_pct': round(margin_pct, 1),
+                'confidence': 'High',  # Default for loads
+                'status': load.status,
+                'updated_at': load.updated_at.strftime('%Y-%m-%dT%H:%M:%SZ')
+            })
+        
+        return formatted
+
+
 class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.all()
     serializer_class = UserSerializer

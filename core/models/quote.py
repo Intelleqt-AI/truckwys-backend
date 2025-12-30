@@ -11,19 +11,35 @@ class Quote(models.Model):
         ('EXPIRED', 'Expired'),
     ]
     
+    CONFIDENCE_CHOICES = [
+        ('HIGH', 'High'),
+        ('MEDIUM', 'Medium'),
+        ('LOW', 'Low'),
+    ]
+    
     quote_number = models.CharField(max_length=100, unique=True)
     customer = models.ForeignKey(Customer, on_delete=models.PROTECT, related_name='quotes')
     
     pickup_location = models.CharField(max_length=500)
     delivery_location = models.CharField(max_length=500)
+    
+    origin = models.CharField(max_length=50, blank=True)  # e.g., "JHB", "CPT"
+    destination = models.CharField(max_length=50, blank=True)  # e.g., "DUR", "PE"
+    
     cargo_description = models.TextField()
     weight = models.DecimalField(max_digits=10, decimal_places=2)
     distance = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    
+    sla_hours = models.IntegerField(default=48, help_text="Service Level Agreement in hours")
     
     base_rate = models.DecimalField(max_digits=10, decimal_places=2)
     fuel_surcharge = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     additional_charges = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     total_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    
+    margin_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=0, help_text="Profit margin %")
+    
+    confidence = models.CharField(max_length=20, choices=CONFIDENCE_CHOICES, default='MEDIUM')
     
     valid_until = models.DateField()
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='DRAFT')

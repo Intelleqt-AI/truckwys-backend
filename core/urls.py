@@ -8,7 +8,8 @@ from .views import (
     ExpenseViewSet, SettlementViewSet, NotificationViewSet,
     RegisterView, LoginView, LogoutView,
     FleetOverviewView, VehicleInsightsView, VehicleIntelligenceFeedView, VehicleActionView,
-    DriverOverviewView, DriverPerformanceLeaderboardView
+    DriverOverviewView, DriverPerformanceLeaderboardView,
+    QuotesPipelineOverviewView
 )
 
 router = DefaultRouter()
@@ -37,9 +38,12 @@ urlpatterns = [
     path('fleet/intelligence/', VehicleIntelligenceFeedView.as_view(), name='vehicle-intelligence'),
     path('fleet/action/', VehicleActionView.as_view(), name='vehicle-action'),
     
-    # Driver Intelligence endpoints (NEW)
+    # Driver Intelligence endpoints
     path('drivers/overview/', DriverOverviewView.as_view(), name='driver-overview'),
     path('drivers/leaderboard/', DriverPerformanceLeaderboardView.as_view(), name='driver-leaderboard'),
+    
+    # Quotes/Bookings Pipeline endpoints (NEW)
+    path('bookings/pipeline/', QuotesPipelineOverviewView.as_view(), name='quotes-pipeline'),
     
     # Router URLs (comes last)
     path('', include(router.urls)),
