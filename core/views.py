@@ -744,38 +744,19 @@ class QuotesPipelineOverviewView(APIView):
         
         # Calculate pipeline stats by status
         pipeline_stats = {}
-        statuses = ['DRAFT', 'SENT', 'ACCEPTED', 'IN_TRANSIT', 'COMPLETED', 'EXPIRED']  # ADD EXPIRED
+        statuses = ['DRAFT', 'SENT', 'ACCEPTED', 'IT', 'COMPLETED']
         status_labels = {
             'DRAFT': 'Drafts',
             'SENT': 'Quoted',
             'ACCEPTED': 'Accepted',
-            'IN_TRANSIT': 'In-Transit',
-            'COMPLETED': 'Completed',
-            'EXPIRED': 'Expired'  # ADD THIS
+            'IT': 'In-Transit',
+            'COMPLETED': 'Completed'
         }
         
         for status_key in statuses:
-            # Map SENT to Quoted, ACCEPTED to Accepted loads
-            if status_key == 'SENT':
-                status_quotes = quotes.filter(status='SENT')
-            elif status_key == 'ACCEPTED':
-                status_quotes = Load.objects.filter(status='ASSIGNED')
-            elif status_key == 'IN_TRANSIT':
-                status_quotes = Load.objects.filter(status='IN_TRANSIT')
-            elif status_key == 'COMPLETED':
-                status_quotes = Load.objects.filter(status='DELIVERED')
-            elif status_key == 'EXPIRED':  # ADD THIS
-                status_quotes = quotes.filter(status='EXPIRED')
-            else:
-                status_quotes = quotes.filter(status=status_key)
-            
+            status_quotes = quotes.filter(status=status_key)
             count = status_quotes.count()
-            
-            # Calculate total revenue for this stage
-            if status_key in ['DRAFT', 'SENT']:
-                total_value = status_quotes.aggregate(total=Sum('total_amount'))['total'] or 0
-            else:
-                total_value = status_quotes.aggregate(total=Sum('total_amount'))['total'] or 0
+            total_value = status_quotes.aggregate(total=Sum('total_amount'))['total'] or 0
             
             pipeline_stats[status_key.lower()] = {
                 'label': status_labels[status_key],
@@ -787,16 +768,9 @@ class QuotesPipelineOverviewView(APIView):
         # Get quotes for each column
         drafts = self._format_quotes(quotes.filter(status='DRAFT'))
         quoted = self._format_quotes(quotes.filter(status='SENT'))
-        expired = self._format_quotes(quotes.filter(status='EXPIRED'))  # ADD THIS
-        
-        # Get loads for accepted/in-transit/completed
-        accepted_loads = Load.objects.filter(status='ASSIGNED')
-        in_transit_loads = Load.objects.filter(status='IN_TRANSIT')
-        completed_loads = Load.objects.filter(status='DELIVERED')
-        
-        accepted = self._format_loads(accepted_loads)
-        in_transit = self._format_loads(in_transit_loads)
-        completed = self._format_loads(completed_loads)
+        accepted = self._format_quotes(quotes.filter(status='ACCEPTED'))
+        in_transit = self._format_quotes(quotes.filter(status='IT'))
+        completed = self._format_quotes(quotes.filter(status='COMPLETED'))
         
         return Response({
             'title': 'Bookings',
@@ -829,16 +803,12 @@ class QuotesPipelineOverviewView(APIView):
                     'items': accepted
                 },
                 'in_transit': {
-                    **pipeline_stats['in_transit'],
+                    **pipeline_stats['it'],
                     'items': in_transit
                 },
                 'completed': {
                     **pipeline_stats['completed'],
                     'items': completed
-                },
-                'expired': {  # ADD THIS
-                    **pipeline_stats['expired'],
-                    'items': expired
                 }
             }
         })

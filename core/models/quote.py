@@ -7,8 +7,8 @@ class Quote(models.Model):
         ('DRAFT', 'Draft'),
         ('SENT', 'Sent'),
         ('ACCEPTED', 'Accepted'),
-        ('REJECTED', 'Rejected'),
-        ('EXPIRED', 'Expired'),
+        ('IT', 'In-Transit'),
+        ('COMPLETED', 'Completed'),
     ]
     
     CONFIDENCE_CHOICES = [
