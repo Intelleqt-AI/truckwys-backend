@@ -1,10 +1,12 @@
 from django.db import models
 from django.conf import settings
 
+
 class Vehicle(models.Model):
     vin = models.CharField(max_length=100, unique=True)
     make = models.CharField(max_length=100)
     model = models.CharField(max_length=100)
+    driver = models.ForeignKey('core.Driver', on_delete=models.SET_NULL, null=True, blank=True, related_name='vehicles')
     year = models.IntegerField()
     plate = models.CharField(max_length=50)
     type = models.CharField(max_length=50)
