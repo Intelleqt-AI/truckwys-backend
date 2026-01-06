@@ -3,13 +3,14 @@ from rest_framework.routers import DefaultRouter
 from rest_framework.authtoken.views import obtain_auth_token
 from .views import (
     UserViewSet, CustomerViewSet, DriverViewSet,
-    VehicleViewSet, VehicleLogViewSet, LoadViewSet,
+    VehicleViewSet, VehicleTypeViewSet, VehicleLogViewSet, LoadViewSet,
     QuoteViewSet, InvoiceViewSet, PaymentViewSet,
     ExpenseViewSet, SettlementViewSet, NotificationViewSet,
-    RegisterView, LoginView, LogoutView,
+    RegisterView, LoginView, LogoutView, UserProfileView,
     FleetOverviewView, VehicleInsightsView, VehicleIntelligenceFeedView, VehicleActionView,
     DriverOverviewView, DriverPerformanceLeaderboardView,
-    QuotesPipelineOverviewView
+    QuotesPipelineOverviewView, NotificationSettingsView,
+    CompanyProfileView, CompanyLogoUploadView
 )
 
 router = DefaultRouter()
@@ -17,6 +18,7 @@ router.register(r'users', UserViewSet, basename='user')
 router.register(r'customers', CustomerViewSet, basename='customer')
 router.register(r'drivers', DriverViewSet, basename='driver')
 router.register(r'vehicles', VehicleViewSet, basename='vehicle')
+router.register(r'vehicle-types', VehicleTypeViewSet, basename='vehicletype')
 router.register(r'vehicle-logs', VehicleLogViewSet, basename='vehiclelog')
 router.register(r'loads', LoadViewSet, basename='load')
 router.register(r'quotes', QuoteViewSet, basename='quote')
@@ -31,6 +33,7 @@ urlpatterns = [
     path('auth/register/', RegisterView.as_view(), name='register'),
     path('auth/login/', LoginView.as_view(), name='login'),
     path('auth/logout/', LogoutView.as_view(), name='logout'),
+    path('auth/me/', UserProfileView.as_view(), name='user-profile'),
     
     # Fleet/Vehicle specific endpoints (must come before router to avoid conflicts)
     path('fleet/overview/', FleetOverviewView.as_view(), name='fleet-overview'),
@@ -44,6 +47,13 @@ urlpatterns = [
     
     # Quotes/Bookings Pipeline endpoints (NEW)
     path('bookings/pipeline/', QuotesPipelineOverviewView.as_view(), name='quotes-pipeline'),
+    
+    # Notification Settings endpoint
+    path('notifications/settings/', NotificationSettingsView.as_view(), name='notification-settings'),
+    
+    # Company Settings endpoints
+    path('company/profile/', CompanyProfileView.as_view(), name='company-profile'),
+    path('company/logo/', CompanyLogoUploadView.as_view(), name='company-logo-upload'),
     
     # Router URLs (comes last)
     path('', include(router.urls)),

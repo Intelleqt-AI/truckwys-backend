@@ -1,7 +1,7 @@
 from django.contrib import admin
 from .models import (
-    User, Vehicle, VehicleLog, Load, Quote, Driver,
-    Customer, Invoice, Payment, Expense, Notification, Settlement
+    User, Vehicle, VehicleType, VehicleLog, Load, Quote, Driver,
+    Customer, Invoice, Payment, Expense, Notification, Settlement, Company
 )
 
 @admin.register(User)
@@ -24,9 +24,16 @@ class DriverAdmin(admin.ModelAdmin):
 
 @admin.register(Vehicle)
 class VehicleAdmin(admin.ModelAdmin):
-    list_display = ['make', 'model', 'year', 'plate', 'status']
-    list_filter = ['status', 'type']
+    list_display = ['make', 'model', 'vehicle_type', 'year', 'plate', 'status']
+    list_filter = ['status', 'vehicle_type', 'type']
     search_fields = ['vin', 'plate', 'make', 'model']
+
+
+@admin.register(VehicleType)
+class VehicleTypeAdmin(admin.ModelAdmin):
+    list_display = ['name', 'capacity', 'max_distance', 'base_rate', 'active']
+    list_filter = ['active']
+    search_fields = ['name', 'description']
 
 @admin.register(VehicleLog)
 class VehicleLogAdmin(admin.ModelAdmin):
@@ -74,3 +81,8 @@ class NotificationAdmin(admin.ModelAdmin):
     list_display = ['user', 'title', 'type', 'is_read', 'created_at']
     list_filter = ['type', 'is_read']
     search_fields = ['title', 'user__username']
+
+@admin.register(Company)
+class CompanyAdmin(admin.ModelAdmin):
+    list_display = ['company_name', 'registration_number', 'vat_number', 'updated_at']
+    search_fields = ['company_name', 'registration_number']

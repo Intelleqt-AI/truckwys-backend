@@ -1,16 +1,17 @@
 from rest_framework import serializers
 from django.db.models import Avg  # ADD THIS IMPORT
 from .models import (
-    User, Customer, Driver, Vehicle, VehicleLog, Load,
-    Quote, Invoice, Payment, Expense, Settlement, Notification
+    User, Customer, Driver, Vehicle, VehicleLog, VehicleType, Load,
+    Quote, Invoice, Payment, Expense, Settlement, Notification, Company
 )
 
 # User Serializer
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'first_name', 'last_name', 
-                  'role', 'phone', 'address', 'is_active', 'created_at', 'updated_at']
+        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'job_title',
+                  'role', 'phone', 'address', 'timezone', 'language', 'date_format',
+                  'notification_settings', 'is_active', 'created_at', 'updated_at']
         read_only_fields = ['id', 'created_at', 'updated_at']
         extra_kwargs = {'password': {'write_only': True}}
 
@@ -39,8 +40,19 @@ class DriverSerializer(serializers.ModelSerializer):
 
 # Vehicle Serializer
 class VehicleSerializer(serializers.ModelSerializer):
+    driver_name = serializers.CharField(source='driver.user.username', read_only=True)
+    vehicle_type_name = serializers.CharField(source='vehicle_type.name', read_only=True)
+    
     class Meta:
         model = Vehicle
+        fields = '__all__'
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+
+# VehicleType Serializer
+class VehicleTypeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = VehicleType
         fields = '__all__'
         read_only_fields = ['id', 'created_at', 'updated_at']
 
@@ -130,10 +142,37 @@ class SettlementSerializer(serializers.ModelSerializer):
 
 # Notification Serializer
 class NotificationSerializer(serializers.ModelSerializer):
+    description = serializers.CharField(source='message')
+    unread = serializers.BooleanField(source='is_read', read_only=True)
+    
     class Meta:
         model = Notification
-        fields = '__all__'
+        fields = ['id', 'title', 'description', 'type', 'unread', 'created_at']
         read_only_fields = ['id', 'created_at']
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data['unread'] = not instance.is_read
+        data['type'] = instance.type.lower()
+        return data
+
+
+# Company Serializer
+class CompanySerializer(serializers.ModelSerializer):
+    logo_url = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Company
+        fields = [
+            'company_name', 'registration_number', 'vat_number', 
+            'industry', 'website', 'description', 'logo_url', 
+            'address', 'contact'
+        ]
+    
+    def get_logo_url(self, obj):
+        if obj.logo:
+            return obj.logo.url
+        return "/brand/logo.svg" # Default as requested
 
 
 # Quote Pipeline Serializer (NEW)

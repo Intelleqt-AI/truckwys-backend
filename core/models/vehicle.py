@@ -2,11 +2,30 @@ from django.db import models
 from django.conf import settings
 
 
+class VehicleType(models.Model):
+    name = models.CharField(max_length=100)
+    description = models.TextField(blank=True)
+    capacity = models.DecimalField(max_digits=10, decimal_places=2)
+    max_distance = models.DecimalField(max_digits=10, decimal_places=2)
+    base_rate = models.DecimalField(max_digits=10, decimal_places=2)
+    active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'vehicle_types'
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+
 class Vehicle(models.Model):
     vin = models.CharField(max_length=100, unique=True)
     make = models.CharField(max_length=100)
     model = models.CharField(max_length=100)
     driver = models.ForeignKey('core.Driver', on_delete=models.SET_NULL, null=True, blank=True, related_name='vehicles')
+    vehicle_type = models.ForeignKey(VehicleType, on_delete=models.SET_NULL, null=True, blank=True, related_name='vehicles')
     year = models.IntegerField()
     plate = models.CharField(max_length=50)
     type = models.CharField(max_length=50)
@@ -55,3 +74,5 @@ class VehicleLog(models.Model):
     
     def __str__(self):
         return f"{self.vehicle} - {self.log_type} - {self.date}"
+
+

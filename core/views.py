@@ -13,14 +13,15 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 
 from .models import (
-    User, Customer, Driver, Vehicle, VehicleLog, Load,
-    Quote, Invoice, Payment, Expense, Settlement, Notification
+    User, Customer, Driver, Vehicle, VehicleLog, VehicleType, Load,
+    Quote, Invoice, Payment, Expense, Settlement, Notification, Company
 )
 from .serializers import (
     UserSerializer, CustomerSerializer, DriverSerializer,
-    VehicleSerializer, VehicleLogSerializer, LoadSerializer,
+    VehicleSerializer, VehicleTypeSerializer, VehicleLogSerializer, LoadSerializer,
     QuoteSerializer, InvoiceSerializer, PaymentSerializer,
-    ExpenseSerializer, SettlementSerializer, NotificationSerializer
+    ExpenseSerializer, SettlementSerializer, NotificationSerializer,
+    CompanySerializer
 )
 
 
@@ -67,6 +68,116 @@ class LogoutView(APIView):
     def post(self, request):
         request.user.auth_token.delete()
         return Response({'message': 'Successfully logged out'})
+
+
+class UserProfileView(APIView):
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        serializer = UserSerializer(request.user)
+        return Response(serializer.data)
+    
+    def patch(self, request):
+        serializer = UserSerializer(request.user, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class NotificationSettingsView(APIView):
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        # Default settings if none exist
+        default_settings = {
+            "email": { "quotes": True, "bookings": True, "invoices": False, "alerts": True, "marketing": False },
+            "push": { "quotes": True, "bookings": True, "alerts": True, "messages": False },
+            "sms": { "alerts": True, "confirmations": False }
+        }
+        settings = request.user.notification_settings
+        if not settings:
+            settings = default_settings
+        return Response(settings)
+    
+    def patch(self, request):
+        user = request.user
+        settings = user.notification_settings or {
+            "email": { "quotes": True, "bookings": True, "invoices": False, "alerts": True, "marketing": False },
+            "push": { "quotes": True, "bookings": True, "alerts": True, "messages": False },
+            "sms": { "alerts": True, "confirmations": False }
+        }
+        
+        for key, value in request.data.items():
+            if isinstance(value, dict) and key in settings:
+                settings[key].update(value)
+            else:
+                settings[key] = value
+        
+        user.notification_settings = settings
+        user.save()
+        return Response(user.notification_settings)
+
+
+class IsAdmin(IsAuthenticated):
+    def has_permission(self, request, view):
+        return super().has_permission(request, view) and request.user.role == 'ADMIN'
+
+
+class CompanyProfileView(APIView):
+    permission_classes = [IsAdmin]
+    
+    def get_object(self):
+        obj, created = Company.objects.get_or_create(id=1, defaults={
+            "company_name": "My Company",
+            "address": {},
+            "contact": {}
+        })
+        return obj
+
+    def get(self, request):
+        company = self.get_object()
+        serializer = CompanySerializer(company)
+        return Response(serializer.data)
+    
+    def patch(self, request):
+        company = self.get_object()
+        data = request.data.copy()
+        
+        # Handle nested updates for address and contact
+        if 'address' in data and isinstance(data['address'], dict):
+            current_address = company.address or {}
+            current_address.update(data['address'])
+            data['address'] = current_address
+            
+        if 'contact' in data and isinstance(data['contact'], dict):
+            current_contact = company.contact or {}
+            current_contact.update(data['contact'])
+            data['contact'] = current_contact
+            
+        serializer = CompanySerializer(company, data=data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class CompanyLogoUploadView(APIView):
+    permission_classes = [IsAdmin]
+    
+    def post(self, request):
+        company = Company.objects.get_or_create(id=1)[0]
+        if 'logo' not in request.FILES:
+            return Response({'error': 'No logo file provided'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        logo_file = request.FILES['logo']
+        if logo_file.size > 2 * 1024 * 1024:
+            return Response({'error': 'Logo file size exceeds 2MB limit'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        company.logo = logo_file
+        company.save()
+        
+        return Response({'logo_url': company.logo.url})
 
 
 class FleetOverviewView(APIView):
@@ -960,6 +1071,16 @@ class VehicleViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
 
 
+class VehicleTypeViewSet(viewsets.ModelViewSet):
+    queryset = VehicleType.objects.all()
+    serializer_class = VehicleTypeSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = ['active']
+    search_fields = ['name', 'description']
+    ordering_fields = ['name', 'capacity', 'base_rate']
+
+
 class VehicleLogViewSet(viewsets.ModelViewSet):
     queryset = VehicleLog.objects.all()
     serializer_class = VehicleLogSerializer
@@ -1132,7 +1253,37 @@ class NotificationViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         """Return notifications for the current user"""
-        return Notification.objects.filter(user=self.request.user)
+        queryset = Notification.objects.filter(user=self.request.user)
+        
+        unread_only = self.request.query_params.get('unread')
+        if unread_only == 'true':
+            queryset = queryset.filter(is_read=False)
+            
+        limit = self.request.query_params.get('limit')
+        if limit:
+            try:
+                queryset = queryset[:int(limit)]
+            except ValueError:
+                pass
+                
+        return queryset
+
+    @action(detail=False, methods=['post'], url_path='mark-read')
+    def mark_read_bulk(self, request):
+        """Mark one or all notifications as read"""
+        ids = request.data.get('ids')
+        mark_all = request.data.get('all')
+        
+        queryset = self.get_queryset()
+        
+        if mark_all:
+            queryset.update(is_read=True, read_at=timezone.now())
+        elif ids:
+            queryset.filter(id__in=ids).update(is_read=True, read_at=timezone.now())
+        else:
+            return Response({'error': 'Either ids or all must be provided'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        return Response({'message': 'Notifications marked as read'})
 
     @action(detail=True, methods=['patch'])
     def mark_read(self, request, pk=None):
