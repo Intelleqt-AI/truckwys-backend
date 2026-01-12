@@ -9,7 +9,14 @@ class User(AbstractUser):
         ('CUSTOMER', 'Customer'),
     ]
     
+    STATUS_CHOICES = [
+        ('ACTIVE', 'Active'),
+        ('INACTIVE', 'Inactive'),
+        ('PENDING', 'Pending'),
+    ]
+    
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='ADMIN')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='ACTIVE')
     phone = models.CharField(max_length=20, blank=True)
     address = models.TextField(blank=True)
     job_title = models.CharField(max_length=100, blank=True)
@@ -17,6 +24,7 @@ class User(AbstractUser):
     language = models.CharField(max_length=10, default='en')
     date_format = models.CharField(max_length=20, default='DD/MM/YYYY')
     notification_settings = models.JSONField(default=dict)
+    avatar = models.ImageField(upload_to='avatars/', null=True, blank=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

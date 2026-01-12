@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; }
+        .container { max-width: 600px; margin: 20px auto; padding: 20px; border: 1px solid #eee; border-radius: 12px; }
+        .header { text-align: center; padding-bottom: 20px; }
+        .logo { max-width: 150px; height: auto; }
+        .hero { background-color: #f8fafc; padding: 30px; border-radius: 8px; text-align: center; margin-bottom: 25px; }
+        .hero h1 { margin: 0; color: #1e293b; font-size: 24px; }
+        .hero p { color: #64748b; margin-top: 10px; }
+        .credentials-box { background-color: #ffffff; border: 2px dashed #e2e8f0; padding: 20px; border-radius: 8px; margin-bottom: 25px; }
+        .credential-item { margin-bottom: 10px; }
+        .label { font-weight: 600; color: #475569; display: block; font-size: 14px; }
+        .value { font-family: 'Courier New', Courier, monospace; font-size: 18px; color: #0f172a; font-weight: bold; }
+        .cta-container { text-align: center; margin-bottom: 30px; }
+        .cta-button { background-color: #2563eb; color: #ffffff !important; padding: 14px 28px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block; }
+        .footer { font-size: 12px; color: #94a3b8; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
+        .security-notice { font-style: italic; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <!-- Replace with actual logo URL in production -->
+            <img src="https://truckwys.com/brand/logo.png" alt="Truckwys Logo" class="logo">
+        </div>
+        
+        <div class="hero">
+            <h1>Welcome to Truckwys!</h1>
+            <p>You've been invited by <strong>{{ inviter_name }}</strong> to join <strong>{{ company_name }}</strong> as a <strong>{{ role }}</strong>.</p>
+        </div>
+        
+        <div class="credentials-box">
+            <div class="credential-item">
+                <span class="label">Email Address</span>
+                <span class="value">{{ user_email }}</span>
+            </div>
+            <div class="credential-item">
+                <span class="label">Temporary Password</span>
+                <span class="value">{{ temp_password }}</span>
+            </div>
+        </div>
+        
+        <div class="cta-container">
+            <a href="{{ login_url }}" class="cta-button">Login to Get Started</a>
+        </div>
+        
+        <div class="footer">
+            <p>This invitation was sent to {{ user_email }}.</p>
+            <p class="security-notice">For security reasons, please change your password immediately after your first login.</p>
+            <p>&copy; 2026 Truckwys Logistics. All rights reserved.</p>
+        </div>
+    </div>
+</body>
+</html>

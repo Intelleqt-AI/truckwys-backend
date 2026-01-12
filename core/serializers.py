@@ -7,12 +7,15 @@ from .models import (
 
 # User Serializer
 class UserSerializer(serializers.ModelSerializer):
+    name = serializers.CharField(source='get_full_name', read_only=True)
+    last_active = serializers.DateTimeField(source='last_login', read_only=True)
+    
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'job_title',
-                  'role', 'phone', 'address', 'timezone', 'language', 'date_format',
-                  'notification_settings', 'is_active', 'created_at', 'updated_at']
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'name', 'job_title',
+                  'role', 'status', 'phone', 'address', 'timezone', 'language', 'date_format',
+                  'notification_settings', 'avatar', 'last_active', 'is_active', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at', 'last_active']
         extra_kwargs = {'password': {'write_only': True}}
 
     def create(self, validated_data):

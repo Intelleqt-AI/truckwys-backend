@@ -11,6 +11,11 @@ from django.db.models import Sum, Count, Q, Avg, F, ExpressionWrapper, DecimalFi
 from django.db.models.functions import TruncMonth
 from datetime import datetime, timedelta
 from decimal import Decimal
+from django.utils.crypto import get_random_string
+from django.core.mail import send_mail, EmailMultiAlternatives
+from django.template.loader import render_to_string
+from django.utils.html import strip_tags
+import threading
 
 from .models import (
     User, Customer, Driver, Vehicle, VehicleLog, VehicleType, Load,
@@ -986,11 +991,79 @@ class QuotesPipelineOverviewView(APIView):
 class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.all()
     serializer_class = UserSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdmin]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = ['role', 'is_active']
+    filterset_fields = ['role', 'status', 'is_active']
     search_fields = ['username', 'email', 'first_name', 'last_name']
-    ordering_fields = ['created_at', 'username']
+    ordering_fields = ['created_at', 'username', 'last_login']
+
+    @action(detail=False, methods=['post'])
+    def invite(self, request):
+        """Invite a new user to the organization"""
+        email = request.data.get('email')
+        role = request.data.get('role', 'DISPATCHER')
+        
+        if not email:
+            return Response({'error': 'Email is required'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        if User.objects.filter(email=email).exists():
+            return Response({'error': 'User with this email already exists'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        # Generate temporary password
+        temp_password = get_random_string(length=12)
+        
+        # Create user with pending status
+        user = User.objects.create_user(
+            username=email,
+            email=email,
+            password=temp_password,
+            role=role,
+            status='PENDING'
+        )
+        
+        # Get company name (default if not set)
+        company = Company.objects.first()
+        company_name = company.company_name if company else "Truckwys Logistics"
+        
+        # Prepare email context
+        context = {
+            'user_email': email,
+            'temp_password': temp_password,
+            'inviter_name': request.user.get_full_name() or request.user.username,
+            'company_name': company_name,
+            'role': role,
+            'login_url': 'http://localhost:3000/login' # Should be configurable in settings
+        }
+        
+        # Render HTML and plain text versions
+        html_content = render_to_string('emails/invitation_email.html', context)
+        text_content = strip_tags(html_content)
+        
+        # Define email sending function for background thread
+        def send_invitation_email():
+            subject = f"Invitation to join {company_name} on Truckwys"
+            from_email = 'Truckwys <noreply@truckwys.com>'
+            
+            msg = EmailMultiAlternatives(subject, text_content, from_email, [email])
+            msg.attach_alternative(html_content, "text/html")
+            
+            try:
+                sent = msg.send(fail_silently=False)
+                print(f"DEBUG: Email sent to {email}. Status: {sent}")
+            except Exception as e:
+                print(f"ERROR: Failed to send invitation email to {email}: {str(e)}")
+
+        # Start background thread for email dispatch
+        print(f"DEBUG: Starting email thread for {email}")
+        email_thread = threading.Thread(target=send_invitation_email)
+        email_thread.start()
+            
+        serializer = self.get_serializer(user)
+        return Response({
+            'message': 'Invitation sent successfully',
+            'user': serializer.data,
+            'temp_password': temp_password  # Returning for dev convenience
+        }, status=status.HTTP_201_CREATED)
 
 
 class CustomerViewSet(viewsets.ModelViewSet):
