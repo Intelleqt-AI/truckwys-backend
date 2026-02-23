@@ -23,6 +23,11 @@ from .views_capital import (
 from .views_partner import (
     PartnerAdvanceViewSet, PartnerOperatorViewSet, PartnerRiskScoreViewSet
 )
+from .views_integrations import (
+    XeroConnectView, XeroCallbackView, XeroDisconnectView, XeroStatusView,
+    XeroSyncInvoicesView, XeroSyncPaymentsView, FleetImportTripsView,
+    CreditLookupView, DashboardInsightsView, CashFlowForecastView
+)
 
 router = DefaultRouter()
 router.register(r'users', UserViewSet, basename='user')
@@ -81,6 +86,24 @@ urlpatterns = [
     # Finance Dashboard endpoints (NEW - Phase 2)
     path('dashboard/finance/', FinanceDashboardView.as_view(), name='finance-dashboard'),
     path('trips/<int:trip_id>/costs/', TripCostView.as_view(), name='trip-costs'),
+
+    # Intelligence & Cash Flow endpoints (NEW - Phase 4)
+    path('dashboard/insights/', DashboardInsightsView.as_view(), name='dashboard-insights'),
+    path('dashboard/cashflow/', CashFlowForecastView.as_view(), name='cashflow-forecast'),
+
+    # Xero Integration endpoints (NEW - Phase 4)
+    path('integrations/xero/connect/', XeroConnectView.as_view(), name='xero-connect'),
+    path('integrations/xero/callback/', XeroCallbackView.as_view(), name='xero-callback'),
+    path('integrations/xero/disconnect/', XeroDisconnectView.as_view(), name='xero-disconnect'),
+    path('integrations/xero/status/', XeroStatusView.as_view(), name='xero-status'),
+    path('integrations/xero/sync-invoices/', XeroSyncInvoicesView.as_view(), name='xero-sync-invoices'),
+    path('integrations/xero/sync-payments/', XeroSyncPaymentsView.as_view(), name='xero-sync-payments'),
+
+    # Fleet Integration endpoints (NEW - Phase 4)
+    path('integrations/fleet/import-trips/', FleetImportTripsView.as_view(), name='fleet-import-trips'),
+
+    # Credit Bureau endpoints (NEW - Phase 4)
+    path('integrations/credit/lookup/', CreditLookupView.as_view(), name='credit-lookup'),
 
     # Router URLs (comes last)
     path('', include(router.urls)),

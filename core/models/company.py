@@ -21,6 +21,34 @@ class Company(models.Model):
         help_text='Current fuel price per litre in ZAR (default: R23.50)'
     )
 
+    # NEW: Xero integration fields (Phase 4)
+    xero_access_token = models.TextField(
+        blank=True,
+        null=True,
+        help_text='Xero OAuth access token (encrypted in production)'
+    )
+    xero_refresh_token = models.TextField(
+        blank=True,
+        null=True,
+        help_text='Xero OAuth refresh token (encrypted in production)'
+    )
+    xero_tenant_id = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+        help_text='Xero tenant/organization ID'
+    )
+    xero_connected_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text='When Xero was connected'
+    )
+    xero_token_expires_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text='When the current Xero access token expires'
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
