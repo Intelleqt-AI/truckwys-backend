@@ -625,7 +625,7 @@ class Command(BaseCommand):
         # Create DISBURSED advance from first risk score
         score1 = risk_scores[0]
         invoice1 = score1.invoice
-        advance_amount = invoice1.total_amount * Decimal('0.85')  # 85% of invoice
+        advance_amount = (invoice1.total_amount * Decimal('0.85')).quantize(Decimal('0.01'))  # 85% of invoice
 
         advance1 = AdvanceRequest.objects.create(
             invoice=invoice1,
@@ -634,7 +634,7 @@ class Command(BaseCommand):
             amount=advance_amount,
             fee_amount=score1.fee_amount,
             fee_percent=score1.fee_percent,
-            net_amount=advance_amount - score1.fee_amount,
+            net_amount=(advance_amount - score1.fee_amount).quantize(Decimal('0.01')),
             status='DISBURSED',
             requested_at=timezone.now() - timedelta(days=10),
             approved_at=timezone.now() - timedelta(days=9),
@@ -651,7 +651,7 @@ class Command(BaseCommand):
         # Create SETTLED advance from second risk score
         score2 = risk_scores[1]
         invoice2 = score2.invoice
-        advance_amount2 = invoice2.total_amount * Decimal('0.80')
+        advance_amount2 = (invoice2.total_amount * Decimal('0.80')).quantize(Decimal('0.01'))
 
         advance2 = AdvanceRequest.objects.create(
             invoice=invoice2,
@@ -660,7 +660,7 @@ class Command(BaseCommand):
             amount=advance_amount2,
             fee_amount=score2.fee_amount,
             fee_percent=score2.fee_percent,
-            net_amount=advance_amount2 - score2.fee_amount,
+            net_amount=(advance_amount2 - score2.fee_amount).quantize(Decimal('0.01')),
             status='SETTLED',
             requested_at=timezone.now() - timedelta(days=45),
             approved_at=timezone.now() - timedelta(days=44),
