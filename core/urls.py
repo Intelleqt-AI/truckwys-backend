@@ -12,6 +12,10 @@ from .views import (
     QuotesPipelineOverviewView, NotificationSettingsView,
     CompanyProfileView, CompanyLogoUploadView
 )
+from .views_finance import (
+    InvoiceFinanceViewSet, PaymentFinanceViewSet, ExpenseFinanceViewSet,
+    TripCostView, FinanceDashboardView
+)
 
 router = DefaultRouter()
 router.register(r'users', UserViewSet, basename='user')
@@ -22,9 +26,10 @@ router.register(r'vehicle-types', VehicleTypeViewSet, basename='vehicletype')
 router.register(r'vehicle-logs', VehicleLogViewSet, basename='vehiclelog')
 router.register(r'loads', LoadViewSet, basename='load')
 router.register(r'quotes', QuoteViewSet, basename='quote')
-router.register(r'invoices', InvoiceViewSet, basename='invoice')
-router.register(r'payments', PaymentViewSet, basename='payment')
-router.register(r'expenses', ExpenseViewSet, basename='expense')
+# Finance ViewSets (enhanced with invoice generation, PDF, email, etc.)
+router.register(r'invoices', InvoiceFinanceViewSet, basename='invoice')
+router.register(r'payments', PaymentFinanceViewSet, basename='payment')
+router.register(r'expenses', ExpenseFinanceViewSet, basename='expense')
 router.register(r'settlements', SettlementViewSet, basename='settlement')
 router.register(r'notifications', NotificationViewSet, basename='notification')
 
@@ -54,7 +59,11 @@ urlpatterns = [
     # Company Settings endpoints
     path('company/profile/', CompanyProfileView.as_view(), name='company-profile'),
     path('company/logo/', CompanyLogoUploadView.as_view(), name='company-logo-upload'),
-    
+
+    # Finance Dashboard endpoints (NEW - Phase 2)
+    path('dashboard/finance/', FinanceDashboardView.as_view(), name='finance-dashboard'),
+    path('trips/<int:trip_id>/costs/', TripCostView.as_view(), name='trip-costs'),
+
     # Router URLs (comes last)
     path('', include(router.urls)),
 ]

@@ -12,7 +12,15 @@ class Company(models.Model):
     # Using JSONField for flexible nested structures as requested in the prompt
     address = models.JSONField(default=dict)
     contact = models.JSONField(default=dict)
-    
+
+    # NEW: Fuel price for expense calculations
+    fuel_price_per_litre = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        default=23.50,
+        help_text='Current fuel price per litre in ZAR (default: R23.50)'
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

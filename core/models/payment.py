@@ -9,6 +9,7 @@ class Payment(models.Model):
         ('CASH', 'Cash'),
         ('CHEQUE', 'Cheque'),
         ('EARLY_PAY', 'Early Payment Advance'),
+        ('EFT', 'Electronic Funds Transfer'),
         ('CREDIT_CARD', 'Credit Card'),
         ('ACH', 'ACH'),
     ]

@@ -10,10 +10,16 @@ class Expense(models.Model):
         ('FUEL', 'Fuel'),
         ('TOLLS', 'Tolls'),
         ('MAINTENANCE', 'Maintenance'),
-        ('DRIVER', 'Driver Expenses'),
+        ('DRIVER_COST', 'Driver Cost'),
         ('INSURANCE', 'Insurance'),
         ('OVERHEAD', 'Overhead'),
         ('OTHER', 'Other'),
+    ]
+
+    STATUS_CHOICES = [
+        ('PENDING', 'Pending'),
+        ('APPROVED', 'Approved'),
+        ('REJECTED', 'Rejected'),
     ]
 
     expense_number = models.CharField(max_length=100, unique=True, db_index=True)
@@ -47,10 +53,17 @@ class Expense(models.Model):
     )
 
     # NEW: Approval workflow
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='PENDING',
+        db_index=True,
+        help_text='Approval status of this expense'
+    )
     approved = models.BooleanField(
         default=False,
         db_index=True,
-        help_text='Whether this expense has been approved'
+        help_text='Whether this expense has been approved (deprecated, use status)'
     )
     approved_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -86,8 +99,17 @@ class Expense(models.Model):
 
     def approve(self, user):
         """Approve this expense."""
-        if not self.approved:
+        if self.status == 'PENDING':
+            self.status = 'APPROVED'
             self.approved = True
+            self.approved_by = user
+            self.approved_at = timezone.now()
+            self.save()
+
+    def reject(self, user):
+        """Reject this expense."""
+        if self.status == 'PENDING':
+            self.status = 'REJECTED'
             self.approved_by = user
             self.approved_at = timezone.now()
             self.save()

@@ -46,7 +46,15 @@ class Vehicle(models.Model):
     uptime_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=0)
     cost_per_km = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     margin_per_trip = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    
+
+    # NEW: Fuel consumption for expense calculation
+    fuel_consumption_per_km = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        default=0.35,
+        help_text='Fuel consumption in litres per km (default: 0.35 L/km for trucks)'
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     

@@ -57,13 +57,17 @@ class InvoiceGenerator:
         if hasattr(self.trip, 'invoices') and self.trip.invoices.exists():
             raise ValueError(f"Trip already has an invoice")
 
-        # Calculate line items
-        subtotal = self._calculate_subtotal(
+        # Build line items
+        line_items = self._build_line_items(
             base_rate=base_rate,
             fuel_surcharge_rate=fuel_surcharge_rate,
             include_tolls=include_tolls,
             include_driver_premium=include_driver_premium,
         )
+
+        # Calculate subtotal from line items
+        subtotal = sum(Decimal(str(item['amount'])) for item in line_items)
+        subtotal = subtotal.quantize(Decimal('0.01'))
 
         # Calculate VAT
         vat_amount = (subtotal * self.VAT_RATE).quantize(Decimal('0.01'))
@@ -77,6 +81,9 @@ class InvoiceGenerator:
 
         # Generate invoice number
         invoice_number = self._generate_invoice_number()
+
+        # Check early pay eligibility
+        early_pay_eligible = self._check_early_pay_eligibility(total_amount)
 
         # Create invoice
         invoice = Invoice(
@@ -94,10 +101,88 @@ class InvoiceGenerator:
             total_amount=total_amount,
             balance=total_amount,
             status='DRAFT',
-            early_pay_eligible=self._check_early_pay_eligibility(),
+            early_pay_eligible=early_pay_eligible,
+            line_items=line_items,
         )
 
         return invoice
+
+    def _build_line_items(
+        self,
+        base_rate: Optional[Decimal] = None,
+        fuel_surcharge_rate: Optional[Decimal] = None,
+        include_tolls: bool = True,
+        include_driver_premium: bool = False,
+    ) -> list:
+        """
+        Build line items array for invoice.
+
+        Returns:
+            list: Array of line item dictionaries
+        """
+        line_items = []
+
+        # 1. Base freight charge
+        if base_rate is None:
+            base_rate = self.trip.load.rate
+
+        line_items.append({
+            'description': f'Freight Charge - {self.trip.origin} to {self.trip.destination}',
+            'quantity': 1,
+            'unit_price': float(base_rate),
+            'amount': float(base_rate),
+        })
+
+        # 2. Distance-based charges (if distance > estimated)
+        if self.trip.distance_km and self.trip.estimated_distance_km:
+            extra_km = max(0, self.trip.distance_km - self.trip.estimated_distance_km)
+            if extra_km > 0:
+                rate_per_km = Decimal('10.00')
+                extra_distance_charge = extra_km * rate_per_km
+                line_items.append({
+                    'description': f'Extra Distance ({extra_km} km)',
+                    'quantity': float(extra_km),
+                    'unit_price': float(rate_per_km),
+                    'amount': float(extra_distance_charge),
+                })
+
+        # 3. Fuel surcharge
+        if fuel_surcharge_rate and self.trip.distance_km:
+            fuel_surcharge = (self.trip.distance_km * fuel_surcharge_rate).quantize(Decimal('0.01'))
+            line_items.append({
+                'description': f'Fuel Surcharge ({self.trip.distance_km} km)',
+                'quantity': float(self.trip.distance_km),
+                'unit_price': float(fuel_surcharge_rate),
+                'amount': float(fuel_surcharge),
+            })
+        elif self.trip.load.fuel_surcharge:
+            line_items.append({
+                'description': 'Fuel Surcharge',
+                'quantity': 1,
+                'unit_price': float(self.trip.load.fuel_surcharge),
+                'amount': float(self.trip.load.fuel_surcharge),
+            })
+
+        # 4. Toll costs (actual)
+        if include_tolls and self.trip.actual_toll_cost:
+            line_items.append({
+                'description': 'Toll Charges',
+                'quantity': 1,
+                'unit_price': float(self.trip.actual_toll_cost),
+                'amount': float(self.trip.actual_toll_cost),
+            })
+
+        # 5. Driver premium
+        if include_driver_premium:
+            driver_premium = (base_rate * Decimal('0.10')).quantize(Decimal('0.01'))
+            line_items.append({
+                'description': 'Driver Premium (Special Handling)',
+                'quantity': 1,
+                'unit_price': float(driver_premium),
+                'amount': float(driver_premium),
+            })
+
+        return line_items
 
     def _calculate_subtotal(
         self,
@@ -202,30 +287,36 @@ class InvoiceGenerator:
 
         return f"{prefix}-{sequence}"
 
-    def _check_early_pay_eligibility(self) -> bool:
+    def _check_early_pay_eligibility(self, total_amount: Decimal) -> bool:
         """
         Check if invoice is eligible for early payment.
 
         Criteria:
-        - Trip has valid POD
-        - Customer is active
-        - Invoice amount > minimum threshold
+        - Amount >= ZAR 5000
+        - Customer credit score >= 3
+        - No overdue invoices from customer
+
+        Args:
+            total_amount: Invoice total amount
 
         Returns:
             bool: Whether eligible for early payment
         """
-        # Check POD
-        if not self.trip.has_pod:
+        # Check minimum amount
+        MIN_AMOUNT = Decimal('5000.00')
+        if total_amount < MIN_AMOUNT:
             return False
 
-        # Check customer is active
-        if not self.customer.is_active:
+        # Check customer credit score
+        if not hasattr(self.customer, 'credit_score') or self.customer.credit_score < 3:
             return False
 
-        # Check minimum amount (e.g., R1000)
-        MIN_AMOUNT = Decimal('1000.00')
-        subtotal = self.trip.load.total_amount or Decimal('0.00')
-        if subtotal < MIN_AMOUNT:
+        # Check for overdue invoices
+        has_overdue = Invoice.objects.filter(
+            customer=self.customer,
+            status='OVERDUE'
+        ).exists()
+        if has_overdue:
             return False
 
         return True

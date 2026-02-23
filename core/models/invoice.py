@@ -92,6 +92,13 @@ class Invoice(models.Model):
         help_text='Generated invoice PDF'
     )
 
+    # NEW: Line items JSON storage
+    line_items = models.JSONField(
+        default=list,
+        blank=True,
+        help_text='Invoice line items with descriptions, quantities, and amounts'
+    )
+
     # Notes
     notes = models.TextField(blank=True)
 

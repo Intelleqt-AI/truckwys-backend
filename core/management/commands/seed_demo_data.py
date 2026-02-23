@@ -1,0 +1,516 @@
+"""
+Management command to seed demo data for TruckWys Phase 2.
+
+Creates demo customers, vehicles, drivers, trips, invoices, expenses, and payments
+with realistic South African data.
+"""
+
+from django.core.management.base import BaseCommand
+from django.utils import timezone
+from django.contrib.auth import get_user_model
+from datetime import date, timedelta
+from decimal import Decimal
+import random
+
+from core.models import (
+    Customer, Vehicle, VehicleType, Driver, Trip, Load, Invoice, Expense, Payment, Company
+)
+from core.services.invoice_generator import InvoiceGenerator
+
+User = get_user_model()
+
+
+class Command(BaseCommand):
+    help = 'Seed demo data for TruckWys finance module'
+
+    def add_arguments(self, parser):
+        parser.add_argument(
+            '--clear',
+            action='store_true',
+            help='Clear existing demo data before seeding',
+        )
+
+    def handle(self, *args, **options):
+        if options['clear']:
+            self.stdout.write('Clearing existing demo data...')
+            self._clear_data()
+
+        self.stdout.write('Seeding demo data...')
+
+        # Create or get admin user
+        admin_user = self._create_admin_user()
+
+        # Create company if not exists
+        company = self._create_company()
+
+        # Create customers
+        customers = self._create_customers()
+
+        # Create vehicle types
+        vehicle_types = self._create_vehicle_types()
+
+        # Create vehicles
+        vehicles = self._create_vehicles(vehicle_types)
+
+        # Create drivers
+        drivers = self._create_drivers()
+
+        # Create trips and loads
+        trips = self._create_trips(customers, vehicles, drivers, admin_user)
+
+        # Create invoices
+        invoices = self._create_invoices(trips)
+
+        # Create expenses
+        expenses = self._create_expenses(trips, vehicles, drivers, admin_user)
+
+        # Create payments
+        payments = self._create_payments(invoices)
+
+        self.stdout.write(self.style.SUCCESS(
+            f'\nDemo data seeded successfully!\n'
+            f'- {len(customers)} customers\n'
+            f'- {len(vehicles)} vehicles\n'
+            f'- {len(drivers)} drivers\n'
+            f'- {len(trips)} trips\n'
+            f'- {len(invoices)} invoices\n'
+            f'- {len(expenses)} expenses\n'
+            f'- {len(payments)} payments'
+        ))
+
+    def _clear_data(self):
+        """Clear existing demo data."""
+        Payment.objects.all().delete()
+        Expense.objects.all().delete()
+        Invoice.objects.all().delete()
+        Trip.objects.all().delete()
+        Load.objects.all().delete()
+        self.stdout.write(self.style.SUCCESS('Demo data cleared'))
+
+    def _create_admin_user(self):
+        """Create or get admin user."""
+        user, created = User.objects.get_or_create(
+            username='admin',
+            defaults={
+                'email': 'admin@truckwys.co.za',
+                'first_name': 'Admin',
+                'last_name': 'User',
+                'is_staff': True,
+                'is_superuser': True,
+            }
+        )
+        if created:
+            user.set_password('admin123')
+            user.save()
+            self.stdout.write(f'Created admin user')
+        return user
+
+    def _create_company(self):
+        """Create or update company."""
+        company, created = Company.objects.get_or_create(
+            company_name='TruckWys (Pty) Ltd',
+            defaults={
+                'registration_number': '2020/123456/07',
+                'vat_number': '4123456789',
+                'industry': 'logistics',
+                'website': 'https://truckwys.co.za',
+                'description': 'Premier freight and logistics solutions in South Africa',
+                'address': {
+                    'street': '123 Freight Road, Sandton',
+                    'city': 'Johannesburg',
+                    'postal_code': '2196',
+                    'country': 'South Africa'
+                },
+                'contact': {
+                    'phone': '+27 11 123 4567',
+                    'email': 'info@truckwys.co.za'
+                },
+                'fuel_price_per_litre': Decimal('23.50'),
+            }
+        )
+        if created:
+            self.stdout.write('Created company profile')
+        return company
+
+    def _create_customers(self):
+        """Create demo customers with SA company names."""
+        customer_data = [
+            {'name': 'Shoprite Holdings', 'credit': 85, 'terms': 'NET60'},
+            {'name': 'Sasol Logistics', 'credit': 75, 'terms': 'NET30'},
+            {'name': 'Pick n Pay Distribution', 'credit': 90, 'terms': 'NET60'},
+            {'name': 'Woolworths Supply Chain', 'credit': 88, 'terms': 'NET60'},
+            {'name': 'Bidvest Freight', 'credit': 65, 'terms': 'NET30'},
+        ]
+
+        customers = []
+        for data in customer_data:
+            customer, created = Customer.objects.get_or_create(
+                name=data['name'],
+                defaults={
+                    'company': data['name'],
+                    'email': f"accounts@{data['name'].lower().replace(' ', '')}.co.za",
+                    'phone': f"+27 11 {random.randint(100, 999)} {random.randint(1000, 9999)}",
+                    'address': f"{random.randint(1, 999)} Business Park",
+                    'city': 'Johannesburg',
+                    'state': 'Gauteng',
+                    'zip_code': '2000',
+                    'billing_address': f"{random.randint(1, 999)} Business Park, Johannesburg, 2000",
+                    'payment_terms_default': data['terms'],
+                    'credit_limit': Decimal(str(random.randint(500000, 2000000))),
+                    'credit_score': data['credit'],
+                    'is_active': True,
+                }
+            )
+            if created:
+                self.stdout.write(f'Created customer: {customer.name}')
+            customers.append(customer)
+
+        return customers
+
+    def _create_vehicle_types(self):
+        """Create vehicle types."""
+        types_data = [
+            {'name': 'Semi-Trailer Truck', 'capacity': 28000, 'max_distance': 5000, 'base_rate': 18000},
+            {'name': 'Rigid Truck', 'capacity': 8000, 'max_distance': 2000, 'base_rate': 8000},
+            {'name': 'Flatbed Truck', 'capacity': 20000, 'max_distance': 3500, 'base_rate': 14000},
+        ]
+
+        vehicle_types = []
+        for data in types_data:
+            vtype, created = VehicleType.objects.get_or_create(
+                name=data['name'],
+                defaults={
+                    'capacity': data['capacity'],
+                    'max_distance': data['max_distance'],
+                    'base_rate': data['base_rate'],
+                    'active': True,
+                }
+            )
+            vehicle_types.append(vtype)
+
+        return vehicle_types
+
+    def _create_vehicles(self, vehicle_types):
+        """Create vehicles with SA registration plates."""
+        sa_plates = [
+            'CA 123 ABC', 'GP 456 DEF', 'KZN 789 GHI', 'WC 234 JKL',
+            'MP 567 MNO', 'FS 890 PQR', 'NC 345 STU', 'LP 678 VWX',
+            'EC 901 YZA', 'NW 123 BCD'
+        ]
+
+        makes_models = [
+            ('Mercedes-Benz', 'Actros'),
+            ('Scania', 'R500'),
+            ('Volvo', 'FH16'),
+            ('MAN', 'TGX'),
+            ('DAF', 'XF'),
+            ('Iveco', 'Stralis'),
+            ('Freightliner', 'Cascadia'),
+            ('Kenworth', 'T680'),
+            ('Hino', '700 Series'),
+            ('Isuzu', 'F-Series'),
+        ]
+
+        vehicles = []
+        for i, plate in enumerate(sa_plates):
+            make, model = makes_models[i % len(makes_models)]
+            vehicle, created = Vehicle.objects.get_or_create(
+                plate=plate,
+                defaults={
+                    'vin': f'ZA{random.randint(10000000, 99999999)}',
+                    'make': make,
+                    'model': model,
+                    'year': random.randint(2018, 2024),
+                    'type': 'TRUCK',
+                    'capacity': Decimal(str(random.randint(20000, 30000))),
+                    'status': random.choice(['AVAILABLE', 'IN_USE', 'MAINTENANCE']),
+                    'fuel_type': 'DIESEL',
+                    'mileage': Decimal(str(random.randint(50000, 500000))),
+                    'fuel_consumption_per_km': Decimal('0.35'),  # 0.35 L/km
+                    'vehicle_type': vehicle_types[i % len(vehicle_types)],
+                }
+            )
+            if created:
+                self.stdout.write(f'Created vehicle: {vehicle.plate}')
+            vehicles.append(vehicle)
+
+        return vehicles
+
+    def _create_drivers(self):
+        """Create drivers with SA names."""
+        driver_names = [
+            ('Thabo', 'Mthembu'),
+            ('Sarah', 'van der Merwe'),
+            ('Sipho', 'Khumalo'),
+            ('Johan', 'Botha'),
+            ('Nomsa', 'Dlamini'),
+            ('Pieter', 'Steyn'),
+            ('Zanele', 'Nkosi'),
+            ('Francois', 'du Plessis'),
+        ]
+
+        drivers = []
+        for first_name, last_name in driver_names:
+            # Create user for driver
+            username = f"{first_name.lower()}.{last_name.lower()}"
+            user, user_created = User.objects.get_or_create(
+                username=username,
+                defaults={
+                    'email': f"{username}@truckwys.co.za",
+                    'first_name': first_name,
+                    'last_name': last_name,
+                }
+            )
+            if user_created:
+                user.set_password('driver123')
+                user.save()
+
+            # Create driver
+            driver, created = Driver.objects.get_or_create(
+                user=user,
+                defaults={
+                    'license_number': f'SA{random.randint(1000000, 9999999)}',
+                    'license_expiry': date.today() + timedelta(days=random.randint(180, 730)),
+                    'license_state': random.choice(['Gauteng', 'Western Cape', 'KwaZulu-Natal']),
+                    'hire_date': date.today() - timedelta(days=random.randint(365, 2555)),
+                    'status': random.choice(['ACTIVE', 'ACTIVE', 'ACTIVE', 'INACTIVE']),
+                }
+            )
+            if created:
+                self.stdout.write(f'Created driver: {first_name} {last_name}')
+            drivers.append(driver)
+
+        return drivers
+
+    def _create_trips(self, customers, vehicles, drivers, admin_user):
+        """Create trips with SA routes."""
+        routes = [
+            ('Johannesburg', 'Cape Town', Decimal('1400')),
+            ('Johannesburg', 'Durban', Decimal('570')),
+            ('Cape Town', 'Port Elizabeth', Decimal('770')),
+            ('Johannesburg', 'Bloemfontein', Decimal('430')),
+            ('Durban', 'Cape Town', Decimal('1650')),
+            ('Johannesburg', 'Pretoria', Decimal('55')),
+            ('Cape Town', 'Stellenbosch', Decimal('50')),
+            ('Durban', 'Richards Bay', Decimal('180')),
+            ('Bloemfontein', 'Cape Town', Decimal('1000')),
+            ('Port Elizabeth', 'East London', Decimal('300')),
+        ]
+
+        trips = []
+        for i in range(20):
+            origin, destination, distance = random.choice(routes)
+            customer = random.choice(customers)
+            vehicle = random.choice(vehicles)
+            driver = random.choice(drivers)
+
+            # Create load first
+            load_number = f'LOAD-{date.today().strftime("%Y%m%d")}-{1000 + i}'
+            rate = Decimal(str(random.randint(8000, 25000)))
+
+            load, created = Load.objects.get_or_create(
+                load_number=load_number,
+                defaults={
+                    'customer': customer,
+                    'vehicle': vehicle,
+                    'driver': driver,
+                    'pickup_location': f'{origin} Depot',
+                    'pickup_city': origin,
+                    'pickup_state': 'Gauteng',
+                    'pickup_zip': '2000',
+                    'delivery_location': f'{destination} Warehouse',
+                    'delivery_city': destination,
+                    'delivery_state': 'Western Cape',
+                    'delivery_zip': '8000',
+                    'pickup_date': timezone.make_aware(timezone.datetime.combine(
+                        date.today() - timedelta(days=random.randint(5, 60)),
+                        timezone.datetime.min.time()
+                    )),
+                    'delivery_date': timezone.make_aware(timezone.datetime.combine(
+                        date.today() - timedelta(days=random.randint(1, 50)),
+                        timezone.datetime.min.time()
+                    )),
+                    'status': random.choice(['DELIVERED', 'DELIVERED', 'DELIVERED', 'IN_TRANSIT']),
+                    'rate': rate,
+                    'total_amount': rate,
+                    'distance': distance,
+                    'weight': Decimal(str(random.randint(15000, 28000))),
+                    'cargo_description': random.choice(['General Freight', 'Perishable Goods', 'Hazardous Materials', 'Fragile Items']),
+                    'created_by': admin_user,
+                }
+            )
+
+            # Create trip
+            if load.status == 'DELIVERED':
+                status = 'COMPLETED'
+                start_time = timezone.make_aware(timezone.datetime.combine(
+                    load.pickup_date,
+                    timezone.datetime.min.time()
+                ))
+                end_time = timezone.make_aware(timezone.datetime.combine(
+                    load.delivery_date,
+                    timezone.datetime.min.time()
+                ))
+            else:
+                status = 'IN_PROGRESS'
+                start_time = timezone.make_aware(timezone.datetime.combine(
+                    load.pickup_date,
+                    timezone.datetime.min.time()
+                ))
+                end_time = None
+
+            trip, created = Trip.objects.get_or_create(
+                load=load,
+                defaults={
+                    'vehicle': vehicle,
+                    'driver': driver,
+                    'origin': origin,
+                    'destination': destination,
+                    'distance_km': distance,
+                    'estimated_distance_km': distance,
+                    'start_time': start_time,
+                    'end_time': end_time,
+                    'estimated_duration_hours': Decimal(str(float(distance) / 80)),  # 80 km/h average
+                    'status': status,
+                    'pod_uploaded': status == 'COMPLETED',
+                    'pod_type': 'E_SIGNATURE' if status == 'COMPLETED' else 'PENDING',
+                    'pod_verified': status == 'COMPLETED',
+                    'actual_toll_cost': Decimal(str(random.randint(200, 800))) if status == 'COMPLETED' else None,
+                }
+            )
+            if created:
+                self.stdout.write(f'Created trip: {origin} → {destination}')
+            trips.append(trip)
+
+        return trips
+
+    def _create_invoices(self, trips):
+        """Create invoices from completed trips."""
+        invoices = []
+
+        # Get completed trips
+        completed_trips = [t for t in trips if t.status == 'COMPLETED']
+
+        # Generate invoices for 75% of completed trips
+        invoice_trips = random.sample(completed_trips, k=int(len(completed_trips) * 0.75))
+
+        for trip in invoice_trips:
+            try:
+                # Generate invoice
+                invoice = InvoiceGenerator.generate_from_trip(trip)
+
+                # Randomize status
+                status_choice = random.choices(
+                    ['DRAFT', 'SENT', 'PAID', 'OVERDUE', 'PARTIALLY_PAID'],
+                    weights=[0.1, 0.3, 0.4, 0.1, 0.1]
+                )[0]
+
+                invoice.status = status_choice
+
+                if status_choice in ['PAID', 'PARTIALLY_PAID']:
+                    invoice.paid_at = timezone.now() - timedelta(days=random.randint(1, 30))
+                    if status_choice == 'PAID':
+                        invoice.paid_amount = invoice.total_amount
+                        invoice.balance = Decimal('0.00')
+                    else:
+                        invoice.paid_amount = invoice.total_amount * Decimal('0.5')
+                        invoice.balance = invoice.total_amount - invoice.paid_amount
+
+                if status_choice in ['SENT', 'VIEWED', 'OVERDUE']:
+                    invoice.sent_at = timezone.now() - timedelta(days=random.randint(1, 45))
+
+                if status_choice == 'OVERDUE':
+                    # Make due date in the past
+                    invoice.due_date = date.today() - timedelta(days=random.randint(1, 60))
+
+                invoice.save()
+                invoices.append(invoice)
+                self.stdout.write(f'Created invoice: {invoice.invoice_number} ({status_choice})')
+
+            except Exception as e:
+                self.stdout.write(self.style.WARNING(f'Failed to create invoice for trip {trip.id}: {str(e)}'))
+
+        return invoices
+
+    def _create_expenses(self, trips, vehicles, drivers, admin_user):
+        """Create expenses for completed trips."""
+        expenses = []
+
+        completed_trips = [t for t in trips if t.status == 'COMPLETED']
+
+        for trip in completed_trips:
+            # Fuel expense
+            fuel_litres = trip.distance_km * trip.vehicle.fuel_consumption_per_km
+            fuel_price = Decimal('23.50')
+            fuel_cost = fuel_litres * fuel_price
+
+            expense_num = f'EXP-{date.today().strftime("%Y%m%d")}-{random.randint(1000, 9999)}'
+            expense, created = Expense.objects.get_or_create(
+                expense_number=expense_num,
+                defaults={
+                    'category': 'FUEL',
+                    'description': f'Fuel for trip {trip.id} - {trip.origin} to {trip.destination}',
+                    'amount': fuel_cost.quantize(Decimal('0.01')),
+                    'vehicle': trip.vehicle,
+                    'driver': trip.driver,
+                    'trip': trip,
+                    'expense_date': trip.end_time.date() if trip.end_time else date.today(),
+                    'vendor': random.choice(['Engen', 'Shell', 'BP', 'Caltex', 'Sasol']),
+                    'status': random.choice(['APPROVED', 'APPROVED', 'PENDING']),
+                    'approved': random.choice([True, True, False]),
+                    'created_by': admin_user,
+                }
+            )
+            if created:
+                expenses.append(expense)
+
+            # Toll expense
+            if trip.actual_toll_cost:
+                expense_num = f'EXP-{date.today().strftime("%Y%m%d")}-{random.randint(1000, 9999)}'
+                expense, created = Expense.objects.get_or_create(
+                    expense_number=expense_num,
+                    defaults={
+                        'category': 'TOLLS',
+                        'description': f'Toll charges for trip {trip.id}',
+                        'amount': trip.actual_toll_cost,
+                        'vehicle': trip.vehicle,
+                        'driver': trip.driver,
+                        'trip': trip,
+                        'expense_date': trip.end_time.date() if trip.end_time else date.today(),
+                        'vendor': 'SANRAL',
+                        'status': 'APPROVED',
+                        'approved': True,
+                        'created_by': admin_user,
+                    }
+                )
+                if created:
+                    expenses.append(expense)
+
+        self.stdout.write(f'Created {len(expenses)} expenses')
+        return expenses
+
+    def _create_payments(self, invoices):
+        """Create payments for paid invoices."""
+        payments = []
+
+        paid_invoices = [inv for inv in invoices if inv.status in ['PAID', 'PARTIALLY_PAID']]
+
+        for invoice in paid_invoices:
+            payment_num = f'PAY-{date.today().strftime("%Y%m%d")}-{random.randint(1000, 9999)}'
+            payment, created = Payment.objects.get_or_create(
+                payment_number=payment_num,
+                defaults={
+                    'invoice': invoice,
+                    'customer': invoice.customer,
+                    'amount': invoice.paid_amount,
+                    'payment_date': invoice.paid_at.date() if invoice.paid_at else date.today(),
+                    'payment_method': random.choice(['BANK_TRANSFER', 'EFT', 'CASH']),
+                    'reference_number': f'REF-{random.randint(100000, 999999)}',
+                    'notes': f'Payment for {invoice.invoice_number}',
+                }
+            )
+            if created:
+                payments.append(payment)
+
+        self.stdout.write(f'Created {len(payments)} payments')
+        return payments

@@ -1,0 +1,333 @@
+"""
+Email Service for sending invoice emails with PDF attachments.
+
+Sends professional HTML emails to customers with invoice PDFs attached.
+"""
+
+from typing import Optional
+from django.core.mail import EmailMultiAlternatives
+from django.template.loader import render_to_string
+from django.utils.html import strip_tags
+from django.conf import settings
+from django.utils import timezone
+import os
+
+from core.models import Invoice, Company
+
+
+class InvoiceEmailService:
+    """Service for sending invoice emails."""
+
+    def __init__(self, invoice: Invoice):
+        """
+        Initialize email service.
+
+        Args:
+            invoice: Invoice to send email for
+        """
+        self.invoice = invoice
+
+    def send_invoice_email(
+        self,
+        pdf_path: Optional[str] = None,
+        additional_recipients: Optional[list] = None
+    ) -> bool:
+        """
+        Send invoice email to customer.
+
+        Args:
+            pdf_path: Path to the PDF file to attach
+            additional_recipients: Additional email addresses to send to
+
+        Returns:
+            bool: True if email sent successfully, False otherwise
+        """
+        # Get recipient email
+        to_email = self.invoice.customer.email
+        if not to_email:
+            raise ValueError(f"Customer {self.invoice.customer.name} has no email address")
+
+        # Build recipient list
+        recipients = [to_email]
+        if additional_recipients:
+            recipients.extend(additional_recipients)
+
+        # Get company details for from address
+        try:
+            company = Company.objects.first()
+            from_email = company.contact.get('email', settings.DEFAULT_FROM_EMAIL) if company and company.contact else settings.DEFAULT_FROM_EMAIL
+            company_name = company.company_name if company else "TruckWys"
+        except (Company.DoesNotExist, AttributeError):
+            from_email = settings.DEFAULT_FROM_EMAIL
+            company_name = "TruckWys"
+
+        # Build subject
+        subject = f"Invoice {self.invoice.invoice_number} from {company_name}"
+
+        # Build HTML content
+        html_content = self._build_html_content()
+        text_content = strip_tags(html_content)
+
+        # Create email
+        email = EmailMultiAlternatives(
+            subject=subject,
+            body=text_content,
+            from_email=from_email,
+            to=recipients,
+        )
+        email.attach_alternative(html_content, "text/html")
+
+        # Attach PDF if provided
+        if pdf_path:
+            pdf_full_path = os.path.join(settings.MEDIA_ROOT, pdf_path)
+            if os.path.exists(pdf_full_path):
+                with open(pdf_full_path, 'rb') as f:
+                    email.attach(
+                        f"Invoice_{self.invoice.invoice_number}.pdf",
+                        f.read(),
+                        'application/pdf'
+                    )
+
+        # Send email
+        try:
+            email.send(fail_silently=False)
+
+            # Update invoice sent timestamp
+            if self.invoice.status == 'DRAFT':
+                self.invoice.status = 'SENT'
+            self.invoice.sent_at = timezone.now()
+            self.invoice.save()
+
+            return True
+        except Exception as e:
+            # Log error (in production, use proper logging)
+            print(f"Error sending invoice email: {str(e)}")
+            return False
+
+    def _build_html_content(self) -> str:
+        """
+        Build HTML email content.
+
+        Returns:
+            str: HTML content for email
+        """
+        # Get company details
+        try:
+            company = Company.objects.first()
+        except Company.DoesNotExist:
+            company = None
+
+        # Build portal link (placeholder for now)
+        portal_link = f"{settings.FRONTEND_URL if hasattr(settings, 'FRONTEND_URL') else 'https://app.truckwys.co.za'}/invoices/{self.invoice.invoice_number}"
+
+        # Calculate days until due
+        days_until_due = self.invoice.days_until_due
+
+        html = f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Invoice {self.invoice.invoice_number}</title>
+    <style>
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }}
+        .email-container {{
+            background-color: white;
+            border-radius: 8px;
+            padding: 30px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }}
+        .header {{
+            text-align: center;
+            border-bottom: 3px solid #1e3a8a;
+            padding-bottom: 20px;
+            margin-bottom: 30px;
+        }}
+        .header h1 {{
+            color: #1e3a8a;
+            margin: 0;
+            font-size: 24px;
+        }}
+        .invoice-details {{
+            background-color: #f8fafc;
+            border-left: 4px solid #1e3a8a;
+            padding: 15px 20px;
+            margin: 20px 0;
+        }}
+        .invoice-details h2 {{
+            margin: 0 0 10px 0;
+            font-size: 18px;
+            color: #1e3a8a;
+        }}
+        .detail-row {{
+            display: flex;
+            justify-content: space-between;
+            margin: 8px 0;
+        }}
+        .detail-label {{
+            font-weight: 600;
+            color: #64748b;
+        }}
+        .detail-value {{
+            color: #333;
+        }}
+        .amount {{
+            font-size: 28px;
+            font-weight: bold;
+            color: #1e3a8a;
+            text-align: center;
+            margin: 20px 0;
+        }}
+        .button {{
+            display: inline-block;
+            background-color: #1e3a8a;
+            color: white !important;
+            text-decoration: none;
+            padding: 12px 30px;
+            border-radius: 6px;
+            font-weight: 600;
+            text-align: center;
+            margin: 20px 0;
+        }}
+        .button:hover {{
+            background-color: #1e40af;
+        }}
+        .button-container {{
+            text-align: center;
+        }}
+        .banking-details {{
+            background-color: #f1f5f9;
+            padding: 15px;
+            border-radius: 6px;
+            margin: 20px 0;
+        }}
+        .banking-details h3 {{
+            margin: 0 0 10px 0;
+            font-size: 14px;
+            color: #64748b;
+            text-transform: uppercase;
+        }}
+        .banking-details p {{
+            margin: 5px 0;
+            font-size: 14px;
+        }}
+        .footer {{
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #e2e8f0;
+            text-align: center;
+            font-size: 12px;
+            color: #64748b;
+        }}
+        .warning {{
+            background-color: #fef3c7;
+            border-left: 4px solid #f59e0b;
+            padding: 12px 15px;
+            margin: 20px 0;
+            font-size: 14px;
+        }}
+    </style>
+</head>
+<body>
+    <div class="email-container">
+        <div class="header">
+            <h1>{company.company_name if company else 'TruckWys'}</h1>
+            <p style="margin: 5px 0; color: #64748b;">Invoice Statement</p>
+        </div>
+
+        <p>Dear {self.invoice.customer.name},</p>
+
+        <p>Thank you for your business! Please find attached your invoice for the recent freight services we provided.</p>
+
+        <div class="invoice-details">
+            <h2>Invoice Details</h2>
+            <div class="detail-row">
+                <span class="detail-label">Invoice Number:</span>
+                <span class="detail-value">{self.invoice.invoice_number}</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Issue Date:</span>
+                <span class="detail-value">{self.invoice.issue_date.strftime('%d %B %Y')}</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Due Date:</span>
+                <span class="detail-value">{self.invoice.due_date.strftime('%d %B %Y')}</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Payment Terms:</span>
+                <span class="detail-value">{self.invoice.get_payment_terms_display()}</span>
+            </div>
+        </div>
+
+        <div class="amount">
+            R {self.invoice.total_amount:,.2f}
+        </div>
+
+        {f'<div class="warning"><strong>Due in {days_until_due} days</strong> - Payment is due by {self.invoice.due_date.strftime("%d %B %Y")}</div>' if days_until_due <= 7 else ''}
+
+        <div class="button-container">
+            <a href="{portal_link}" class="button">View Invoice Online</a>
+        </div>
+
+        <div class="banking-details">
+            <h3>Banking Details for Payment</h3>
+            <p><strong>Bank:</strong> First National Bank (FNB)</p>
+            <p><strong>Account Name:</strong> TruckWys (Pty) Ltd</p>
+            <p><strong>Account Number:</strong> 62 XXXX XXXX</p>
+            <p><strong>Branch Code:</strong> 250 655</p>
+            <p><strong>Reference:</strong> {self.invoice.invoice_number}</p>
+        </div>
+
+        <p style="font-size: 14px; color: #64748b;">
+            <strong>Important:</strong> Please use the invoice number <strong>{self.invoice.invoice_number}</strong> as your payment reference to ensure proper allocation.
+        </p>
+
+        <p>If you have any questions regarding this invoice, please don't hesitate to contact us.</p>
+
+        <p>Best regards,<br>
+        <strong>{company.company_name if company else 'TruckWys'} Team</strong></p>
+
+        <div class="footer">
+            <p>{company.company_name if company else 'TruckWys'}</p>
+            {f"<p>{company.contact.get('phone', '')} | {company.contact.get('email', '')}</p>" if company and company.contact else ''}
+            <p style="margin-top: 10px; font-size: 11px;">This is an automated email. Please do not reply directly to this message.</p>
+        </div>
+    </div>
+</body>
+</html>
+        """
+
+        return html
+
+    @classmethod
+    def send_invoice(
+        cls,
+        invoice: Invoice,
+        pdf_path: Optional[str] = None,
+        additional_recipients: Optional[list] = None
+    ) -> bool:
+        """
+        Convenience method to send invoice email.
+
+        Args:
+            invoice: Invoice to send
+            pdf_path: Path to PDF file
+            additional_recipients: Additional email addresses
+
+        Returns:
+            bool: True if sent successfully
+        """
+        service = cls(invoice)
+        return service.send_invoice_email(
+            pdf_path=pdf_path,
+            additional_recipients=additional_recipients
+        )
