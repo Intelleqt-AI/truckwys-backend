@@ -10,6 +10,11 @@ from .expense import Expense
 from .notification import Notification
 from .settlement import Settlement
 from .company import Company
+from .trip import Trip
+from .facility import Facility
+from .risk_score import RiskScore
+from .advance_request import AdvanceRequest
+from .audit_log import AuditLog
 
 __all__ = [
     'User',
@@ -26,4 +31,9 @@ __all__ = [
     'Notification',
     'Settlement',
     'Company',
+    'Trip',
+    'Facility',
+    'RiskScore',
+    'AdvanceRequest',
+    'AuditLog',
 ]
