@@ -13,7 +13,8 @@ from decimal import Decimal
 import random
 
 from core.models import (
-    Customer, Vehicle, VehicleType, Driver, Trip, Load, Invoice, Expense, Payment, Company
+    Customer, Vehicle, VehicleType, Driver, Trip, Load, Invoice, Expense, Payment, Company,
+    Facility, RiskScore, AdvanceRequest
 )
 from core.services.invoice_generator import InvoiceGenerator
 
@@ -43,6 +44,9 @@ class Command(BaseCommand):
         # Create company if not exists
         company = self._create_company()
 
+        # Create facility for company
+        facility = self._create_facility(company)
+
         # Create customers
         customers = self._create_customers()
 
@@ -67,6 +71,12 @@ class Command(BaseCommand):
         # Create payments
         payments = self._create_payments(invoices)
 
+        # Create risk scores
+        risk_scores = self._create_risk_scores(invoices, customers, company)
+
+        # Create advance requests
+        advances = self._create_advance_requests(invoices, facility, risk_scores)
+
         self.stdout.write(self.style.SUCCESS(
             f'\nDemo data seeded successfully!\n'
             f'- {len(customers)} customers\n'
@@ -75,7 +85,9 @@ class Command(BaseCommand):
             f'- {len(trips)} trips\n'
             f'- {len(invoices)} invoices\n'
             f'- {len(expenses)} expenses\n'
-            f'- {len(payments)} payments'
+            f'- {len(payments)} payments\n'
+            f'- {len(risk_scores)} risk scores\n'
+            f'- {len(advances)} advance requests'
         ))
 
     def _clear_data(self):
@@ -514,3 +526,149 @@ class Command(BaseCommand):
 
         self.stdout.write(f'Created {len(payments)} payments')
         return payments
+
+    def _create_facility(self, company):
+        """Create a facility for the demo company."""
+        facility, created = Facility.objects.get_or_create(
+            company=company,
+            defaults={
+                'limit': Decimal('500000.00'),  # R500,000 limit
+                'outstanding': Decimal('0.00'),
+                'status': 'ACTIVE',
+            }
+        )
+        if created:
+            self.stdout.write('Created facility with R500,000 limit')
+        return facility
+
+    def _create_risk_scores(self, invoices, customers, company):
+        """Create risk scores for some invoices (one per tier)."""
+        risk_scores = []
+
+        # Select 3 invoices for risk scoring
+        eligible_invoices = [inv for inv in invoices if inv.status in ['SENT', 'OVERDUE']]
+        if len(eligible_invoices) < 3:
+            return risk_scores
+
+        # Excellent tier
+        invoice1 = eligible_invoices[0]
+        score1 = RiskScore.objects.create(
+            invoice=invoice1,
+            customer=invoice1.customer,
+            company=company,
+            total_score=90,
+            tier='EXCELLENT',
+            fee_percent=Decimal('2.00'),
+            fee_amount=(invoice1.total_amount * Decimal('0.02')).quantize(Decimal('0.01')),
+            is_eligible=True,
+            factor_payment_history=35,
+            factor_invoice_age=18,
+            factor_pod_quality=15,
+            factor_credit_score=14,
+            factor_relationship_length=8,
+            factor_facility_ratio=0,
+        )
+        risk_scores.append(score1)
+        self.stdout.write(f'Created EXCELLENT risk score for {invoice1.invoice_number}')
+
+        # Good tier
+        invoice2 = eligible_invoices[1]
+        score2 = RiskScore.objects.create(
+            invoice=invoice2,
+            customer=invoice2.customer,
+            company=company,
+            total_score=75,
+            tier='GOOD',
+            fee_percent=Decimal('2.75'),
+            fee_amount=(invoice2.total_amount * Decimal('0.0275')).quantize(Decimal('0.01')),
+            is_eligible=True,
+            factor_payment_history=28,
+            factor_invoice_age=15,
+            factor_pod_quality=15,
+            factor_credit_score=12,
+            factor_relationship_length=5,
+            factor_facility_ratio=0,
+        )
+        risk_scores.append(score2)
+        self.stdout.write(f'Created GOOD risk score for {invoice2.invoice_number}')
+
+        # Fair tier
+        invoice3 = eligible_invoices[2]
+        score3 = RiskScore.objects.create(
+            invoice=invoice3,
+            customer=invoice3.customer,
+            company=company,
+            total_score=60,
+            tier='FAIR',
+            fee_percent=Decimal('3.25'),
+            fee_amount=(invoice3.total_amount * Decimal('0.0325')).quantize(Decimal('0.01')),
+            is_eligible=True,
+            factor_payment_history=22,
+            factor_invoice_age=12,
+            factor_pod_quality=12,
+            factor_credit_score=10,
+            factor_relationship_length=4,
+            factor_facility_ratio=0,
+        )
+        risk_scores.append(score3)
+        self.stdout.write(f'Created FAIR risk score for {invoice3.invoice_number}')
+
+        return risk_scores
+
+    def _create_advance_requests(self, invoices, facility, risk_scores):
+        """Create advance requests (one DISBURSED, one SETTLED)."""
+        advances = []
+
+        if len(risk_scores) < 2:
+            return advances
+
+        # Create DISBURSED advance from first risk score
+        score1 = risk_scores[0]
+        invoice1 = score1.invoice
+        advance_amount = invoice1.total_amount * Decimal('0.85')  # 85% of invoice
+
+        advance1 = AdvanceRequest.objects.create(
+            invoice=invoice1,
+            facility=facility,
+            risk_score=score1,
+            amount=advance_amount,
+            fee_amount=score1.fee_amount,
+            fee_percent=score1.fee_percent,
+            net_amount=advance_amount - score1.fee_amount,
+            status='DISBURSED',
+            requested_at=timezone.now() - timedelta(days=10),
+            approved_at=timezone.now() - timedelta(days=9),
+            disbursed_at=timezone.now() - timedelta(days=8),
+        )
+        advances.append(advance1)
+
+        # Update facility outstanding
+        facility.outstanding += advance1.amount
+        facility.save()
+
+        self.stdout.write(f'Created DISBURSED advance for {invoice1.invoice_number}')
+
+        # Create SETTLED advance from second risk score
+        score2 = risk_scores[1]
+        invoice2 = score2.invoice
+        advance_amount2 = invoice2.total_amount * Decimal('0.80')
+
+        advance2 = AdvanceRequest.objects.create(
+            invoice=invoice2,
+            facility=facility,
+            risk_score=score2,
+            amount=advance_amount2,
+            fee_amount=score2.fee_amount,
+            fee_percent=score2.fee_percent,
+            net_amount=advance_amount2 - score2.fee_amount,
+            status='SETTLED',
+            requested_at=timezone.now() - timedelta(days=45),
+            approved_at=timezone.now() - timedelta(days=44),
+            disbursed_at=timezone.now() - timedelta(days=43),
+            settled_at=timezone.now() - timedelta(days=15),
+        )
+        advances.append(advance2)
+
+        self.stdout.write(f'Created SETTLED advance for {invoice2.invoice_number}')
+
+        return advances
