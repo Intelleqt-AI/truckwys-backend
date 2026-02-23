@@ -16,6 +16,13 @@ from .views_finance import (
     InvoiceFinanceViewSet, PaymentFinanceViewSet, ExpenseFinanceViewSet,
     TripCostView, FinanceDashboardView
 )
+from .views_capital import (
+    FacilityViewSet, RiskScoreViewSet, AdvanceRequestViewSet,
+    CapitalDashboardViewSet
+)
+from .views_partner import (
+    PartnerAdvanceViewSet, PartnerOperatorViewSet, PartnerRiskScoreViewSet
+)
 
 router = DefaultRouter()
 router.register(r'users', UserViewSet, basename='user')
@@ -32,6 +39,17 @@ router.register(r'payments', PaymentFinanceViewSet, basename='payment')
 router.register(r'expenses', ExpenseFinanceViewSet, basename='expense')
 router.register(r'settlements', SettlementViewSet, basename='settlement')
 router.register(r'notifications', NotificationViewSet, basename='notification')
+
+# Capital module ViewSets (Phase 3)
+router.register(r'facilities', FacilityViewSet, basename='facility')
+router.register(r'risk/score', RiskScoreViewSet, basename='riskscore')
+router.register(r'advances', AdvanceRequestViewSet, basename='advancerequest')
+router.register(r'dashboard', CapitalDashboardViewSet, basename='dashboard')
+
+# Partner API ViewSets
+router.register(r'partner/advances', PartnerAdvanceViewSet, basename='partner-advance')
+router.register(r'partner/operators', PartnerOperatorViewSet, basename='partner-operator')
+router.register(r'partner/risk', PartnerRiskScoreViewSet, basename='partner-risk')
 
 urlpatterns = [
     # Authentication endpoints (must come before router)

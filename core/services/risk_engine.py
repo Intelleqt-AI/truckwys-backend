@@ -28,6 +28,7 @@ class RiskScoreResult:
     # Fee calculation
     fee_percent: Decimal = Decimal('0.00')
     fee_amount: Decimal = Decimal('0.00')
+    net_amount: Decimal = Decimal('0.00')
 
     # Factor scores
     factor_payment_history: int = 0
@@ -120,6 +121,7 @@ class RiskEngine:
         # Calculate fee
         fee_percent = self._calculate_fee(tier, total_score)
         fee_amount = (self.invoice.total_amount * fee_percent / Decimal('100')).quantize(Decimal('0.01'))
+        net_amount = (self.invoice.total_amount - fee_amount).quantize(Decimal('0.01'))
 
         # Build comprehensive breakdown
         breakdown = {
@@ -133,6 +135,7 @@ class RiskEngine:
             'tier': tier,
             'fee_percent': float(fee_percent),
             'fee_amount': float(fee_amount),
+            'net_amount': float(net_amount),
         }
 
         return RiskScoreResult(
@@ -142,6 +145,7 @@ class RiskEngine:
             ineligibility_reason="" if is_eligible else "Score below minimum threshold",
             fee_percent=fee_percent,
             fee_amount=fee_amount,
+            net_amount=net_amount,
             factor_payment_history=f1_score,
             factor_invoice_age=f2_score,
             factor_pod_quality=f3_score,
@@ -481,7 +485,15 @@ class RiskEngine:
         Base fee by tier, then adjusted for:
         - Invoice age
         - First-time customer
+        - Recent dispute
         - Facility utilization
+
+        Fee adjustments:
+        - Invoice age <=7d: -0.25%, 31-45d: +0.25%, 46-60d: +0.50%, 61-91d: +0.75%
+        - First-time customer: +0.25%
+        - Recent dispute (90d): +0.50%
+        - Low facility utilization (<20%): -0.25%, High (>75%): +0.25%, Very high (>90%): +0.50%
+        - Fee floor: 0.75%, Fee cap: 5.0%
 
         Args:
             tier: Risk tier
@@ -507,27 +519,44 @@ class RiskEngine:
         # Start with midpoint of range
         fee = (min_fee + max_fee) / 2
 
-        # Adjust for invoice age (older = higher fee within tier)
+        # Adjust for invoice age
         age_days = self.invoice.age_days
-        if age_days > 60:
-            fee += Decimal('0.3')
-        elif age_days > 30:
-            fee += Decimal('0.2')
-        elif age_days > 14:
-            fee += Decimal('0.1')
+        if age_days <= 7:
+            fee -= Decimal('0.25')
+        elif 31 <= age_days <= 45:
+            fee += Decimal('0.25')
+        elif 46 <= age_days <= 60:
+            fee += Decimal('0.50')
+        elif 61 <= age_days <= 91:
+            fee += Decimal('0.75')
 
         # Adjust for first-time customer
         if self.customer.relationship_months < 3:
-            fee += Decimal('0.2')
+            fee += Decimal('0.25')
 
-        # Adjust for high facility utilization
-        if self.facility.utilization_percent > 80:
-            fee += Decimal('0.2')
-        elif self.facility.utilization_percent > 60:
-            fee += Decimal('0.1')
+        # Adjust for recent dispute (within 90 days)
+        from django.utils import timezone
+        ninety_days_ago = timezone.now() - timedelta(days=90)
+        recent_disputes = Invoice.objects.filter(
+            customer=self.customer,
+            status='DISPUTED',
+            updated_at__gte=ninety_days_ago
+        ).exists()
+        if recent_disputes:
+            fee += Decimal('0.50')
 
-        # Ensure fee stays within tier bounds
-        fee = min(max_fee, max(min_fee, fee))
+        # Adjust for facility utilization
+        utilization = self.facility.utilization_percent
+        if utilization < 20:
+            fee -= Decimal('0.25')
+        elif utilization > 90:
+            fee += Decimal('0.50')
+        elif utilization > 75:
+            fee += Decimal('0.25')
+
+        # Apply fee floor and cap
+        fee = max(Decimal('0.75'), fee)
+        fee = min(Decimal('5.00'), fee)
 
         return fee.quantize(Decimal('0.01'))
 
