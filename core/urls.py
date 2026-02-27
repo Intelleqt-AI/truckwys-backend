@@ -28,6 +28,7 @@ from .views_integrations import (
     XeroSyncInvoicesView, XeroSyncPaymentsView, FleetImportTripsView,
     CreditLookupView, DashboardInsightsView, CashFlowForecastView
 )
+from .views.route_calculator import RouteCalculatorView
 
 router = DefaultRouter()
 router.register(r'users', UserViewSet, basename='user')
@@ -104,6 +105,9 @@ urlpatterns = [
 
     # Credit Bureau endpoints (NEW - Phase 4)
     path('integrations/credit/lookup/', CreditLookupView.as_view(), name='credit-lookup'),
+
+    # Route Calculator endpoint (NEW - Phase 4)
+    path('route/calculate/', RouteCalculatorView.as_view(), name='route-calculate'),
 
     # Router URLs (comes last)
     path('', include(router.urls)),
