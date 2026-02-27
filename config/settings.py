@@ -53,8 +53,24 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'config.wsgi.application'
 
-# Find the DATABASES section and replace it with:
+import pymysql
+pymysql.version_info = (2, 2, 1, 'final', 0)
+pymysql.install_as_MySQLdb()
 
+# ── AWS RDS MySQL (swap in once security group allows 146.70.237.145) ──
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.mysql',
+#         'NAME': 'truckwys',
+#         'USER': 'admin',
+#         'PASSWORD': 'truckwys@2026!',
+#         'HOST': '3.8.208.109',
+#         'PORT': '3306',
+#         'OPTIONS': {'charset': 'utf8mb4', 'connect_timeout': 10},
+#     }
+# }
+
+# ── SQLite (local dev until RDS is accessible) ──
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
