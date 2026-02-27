@@ -92,6 +92,8 @@ class Command(BaseCommand):
 
     def _clear_data(self):
         """Clear existing demo data."""
+        AdvanceRequest.objects.all().delete()
+        RiskScore.objects.all().delete()
         Payment.objects.all().delete()
         Expense.objects.all().delete()
         Invoice.objects.all().delete()
