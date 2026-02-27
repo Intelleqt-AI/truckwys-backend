@@ -1478,3 +1478,42 @@ class RouteCalculatorView(APIView):
         dlon = math.radians(lon2 - lon1)
         a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
         return R * 2 * math.asin(math.sqrt(a))
+
+class DashboardOverviewView(APIView):
+    """Overview dashboard KPIs in one call"""
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        now = timezone.now()
+        start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        
+        # Revenue MTD from PAID invoices
+        revenue_mtd = Invoice.objects.filter(
+            created_at__gte=start_of_month,
+            status='PAID'
+        ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0')
+        
+        # Outstanding invoices (SENT + OVERDUE)
+        outstanding = Invoice.objects.filter(status__in=['SENT', 'OVERDUE'])
+        outstanding_total = outstanding.aggregate(total=Sum('total_amount'))['total'] or Decimal('0')
+        outstanding_count = outstanding.count()
+        
+        # Active loads (IN_TRANSIT + LOADING)
+        active_loads = Load.objects.filter(status__in=['IN_TRANSIT', 'LOADING']).count()
+        
+        # Fast pay available (SENT invoices)
+        fast_pay = Invoice.objects.filter(status='SENT').aggregate(
+            total=Sum('total_amount'))['total'] or Decimal('0')
+        
+        # Quote pipeline value (DRAFT + SENT)
+        pipeline = Quote.objects.filter(status__in=['DRAFT', 'SENT']).aggregate(
+            total=Sum('total_amount'))['total'] or Decimal('0')
+        
+        return Response({
+            'revenue_mtd': float(revenue_mtd),
+            'outstanding_invoices_total': float(outstanding_total),
+            'outstanding_invoices_count': outstanding_count,
+            'active_loads': active_loads,
+            'fast_pay_available': float(fast_pay),
+            'quote_pipeline_value': float(pipeline),
+        })

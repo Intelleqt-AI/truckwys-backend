@@ -10,7 +10,7 @@ from .views import (
     FleetOverviewView, VehicleInsightsView, VehicleIntelligenceFeedView, VehicleActionView,
     DriverOverviewView, DriverPerformanceLeaderboardView,
     QuotesPipelineOverviewView, NotificationSettingsView,
-    CompanyProfileView, CompanyLogoUploadView
+    CompanyProfileView, CompanyLogoUploadView, DashboardOverviewView
 )
 from .views_finance import (
     InvoiceFinanceViewSet, PaymentFinanceViewSet, ExpenseFinanceViewSet,
@@ -86,6 +86,7 @@ urlpatterns = [
 
     # Finance Dashboard endpoints (NEW - Phase 2)
     path('dashboard/finance/', FinanceDashboardView.as_view(), name='finance-dashboard'),
+    path('dashboard/overview/', DashboardOverviewView.as_view(), name='dashboard-overview'),
     path('trips/<int:trip_id>/costs/', TripCostView.as_view(), name='trip-costs'),
 
     # Intelligence & Cash Flow endpoints (NEW - Phase 4)
