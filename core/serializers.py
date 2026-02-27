@@ -92,6 +92,7 @@ class LoadSerializer(serializers.ModelSerializer):
 class QuoteSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source='customer.name', read_only=True)
     created_by_name = serializers.CharField(source='created_by.username', read_only=True)
+    quote_number = serializers.CharField(required=False, allow_blank=True)
     
     class Meta:
         model = Quote

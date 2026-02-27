@@ -1227,7 +1227,19 @@ class QuoteViewSet(viewsets.ModelViewSet):
     ordering_fields = ['created_at', 'valid_until']
 
     def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
+        from django.utils import timezone
+        import random
+        # Auto-generate quote_number if not provided
+        quote_number = self.request.data.get('quote_number')
+        if not quote_number:
+            ts = timezone.now().strftime('%Y%m%d')
+            rand = random.randint(1000, 9999)
+            quote_number = f'QT-{ts}-{rand}'
+            # Ensure uniqueness
+            while Quote.objects.filter(quote_number=quote_number).exists():
+                rand = random.randint(1000, 9999)
+                quote_number = f'QT-{ts}-{rand}'
+        serializer.save(created_by=self.request.user, quote_number=quote_number)
 
     @action(detail=True, methods=['patch'])
     def update_status(self, request, pk=None):
