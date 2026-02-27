@@ -27,7 +27,7 @@ from .views_integrations import (
     XeroConnectView, XeroCallbackView, XeroDisconnectView, XeroStatusView,
     XeroSyncInvoicesView, XeroSyncPaymentsView, FleetImportTripsView,
     CreditLookupView, DashboardInsightsView, CashFlowForecastView,
-    FleetTripSyncView, FleetTripBulkSyncView
+    FleetTripSyncView, FleetTripBulkSyncView, TripSyncView
 )
 from .views import RouteCalculatorView, DashboardSignalsView, PasswordResetRequestView, PasswordResetConfirmView, IntegrationAPIKeyViewSet
 from .views_lender import (
@@ -120,6 +120,7 @@ urlpatterns = [
     path('integrations/fleet/import-trips/', FleetImportTripsView.as_view(), name='fleet-import-trips'),
     path('integrations/fleet/sync/', FleetTripSyncView.as_view(), name='fleet-trip-sync'),
     path('integrations/fleet/sync/bulk/', FleetTripBulkSyncView.as_view(), name='fleet-trip-bulk-sync'),
+    path('integrations/trips/sync/', TripSyncView.as_view(), name='trip-sync'),
 
     # Credit Bureau endpoints (NEW - Phase 4)
     path('integrations/credit/lookup/', CreditLookupView.as_view(), name='credit-lookup'),

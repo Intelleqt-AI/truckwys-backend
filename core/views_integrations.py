@@ -745,3 +745,61 @@ class FleetTripBulkSyncView(APIView):
                 })
 
         return Response(results, status=status.HTTP_200_OK)
+
+
+class TripSyncView(APIView):
+    """
+    Inbound trip sync endpoint for external TMS systems.
+
+    POST /api/v1/integrations/trips/sync/
+    Headers: X-API-Key: <api_key>
+    Body: [
+        {
+            "external_id": "TMS-12345",
+            "origin": "Johannesburg",
+            "destination": "Cape Town",
+            "cargo_description": "Palletized goods",
+            "weight": 15000,
+            "distance": 1400
+        }
+    ]
+    """
+    authentication_classes = []
+    permission_classes = []
+
+    def post(self, request):
+        # Validate API key
+        api_key = request.headers.get('X-API-Key', '')
+        if not IntegrationAPIKey.objects.filter(key=api_key, is_active=True).exists():
+            return Response({'error': 'Invalid or missing API key'}, status=401)
+
+        records = request.data if isinstance(request.data, list) else request.data.get('trips', [])
+        if len(records) > 500:
+            return Response({'error': 'Max 500 records per request'}, status=400)
+
+        created, skipped, errors = 0, 0, []
+        for i, rec in enumerate(records):
+            try:
+                ext_id = rec.get('external_id')
+                required = ['origin', 'destination']
+                missing = [f for f in required if not rec.get(f)]
+                if missing:
+                    errors.append({'index': i, 'error': f'Missing fields: {missing}'})
+                    continue
+                if ext_id and Load.objects.filter(notes__icontains=f'ext_id:{ext_id}').exists():
+                    skipped += 1
+                    continue
+                Load.objects.create(
+                    origin=rec['origin'],
+                    destination=rec['destination'],
+                    cargo_description=rec.get('cargo_description', ''),
+                    weight=rec.get('weight', 0),
+                    distance=rec.get('distance', 0),
+                    status='SCHEDULED',
+                    notes=f'ext_id:{ext_id}' if ext_id else 'imported via API',
+                )
+                created += 1
+            except Exception as e:
+                errors.append({'index': i, 'error': str(e)})
+
+        return Response({'created': created, 'skipped': skipped, 'errors': errors, 'total': len(records)})
