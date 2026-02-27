@@ -1843,3 +1843,71 @@ class DashboardSignalsView(APIView):
             })
 
         return Response({'signals': signals, 'count': len(signals)})
+
+
+# ---------------------------------------------------------------------------
+# Password Reset (Sprint 5)
+# ---------------------------------------------------------------------------
+class PasswordResetRequestView(APIView):
+    """Request a password reset code."""
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        email = request.data.get('email', '').strip().lower()
+        if not email:
+            return Response({'email': ['Email is required.']}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Always return 200 to prevent email enumeration
+        try:
+            user = User.objects.filter(email__iexact=email).first()
+            if user:
+                import random
+                code = str(random.randint(100000, 999999))
+                # Store in cache/session — use Django cache
+                from django.core.cache import cache
+                cache.set(f'pwd_reset_{email}', code, timeout=3600)  # 1hr
+                # Log to console for demo (in prod: send email via SMTP/Sendgrid)
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.info(f'Password reset code for {email}: {code}')
+                print(f'[PASSWORD RESET] Code for {email}: {code}')  # visible in server logs
+        except Exception as e:
+            pass
+
+        return Response({'detail': 'If an account exists, a reset code has been sent.'})
+
+
+class PasswordResetConfirmView(APIView):
+    """Confirm a password reset with code."""
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        from django.core.cache import cache
+
+        email = request.data.get('email', '').strip().lower()
+        code = request.data.get('code', '').strip()
+        new_password = request.data.get('new_password', '')
+
+        if not all([email, code, new_password]):
+            return Response({'detail': 'email, code, and new_password are required.'}, status=400)
+
+        if len(new_password) < 8:
+            return Response({'detail': 'Password must be at least 8 characters.'}, status=400)
+
+        stored_code = cache.get(f'pwd_reset_{email}')
+        if not stored_code or stored_code != code:
+            return Response({'code': ['Invalid or expired reset code.']}, status=400)
+
+        user = User.objects.filter(email__iexact=email).first()
+        if not user:
+            return Response({'detail': 'Invalid or expired reset code.'}, status=400)
+
+        user.set_password(new_password)
+        user.save()
+        cache.delete(f'pwd_reset_{email}')
+
+        return Response({'detail': 'Password has been reset. You can now log in.'})
