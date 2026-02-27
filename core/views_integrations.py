@@ -10,7 +10,8 @@ from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed
 from django.shortcuts import redirect
 from django.conf import settings
-from core.models import Company, Invoice, Load, Driver, Vehicle
+from core.models import Company, Invoice, Load, Driver, Vehicle, Customer
+from core.models.integration_api_key import IntegrationAPIKey
 from core.integrations.xero import XeroClient
 from core.integrations.credit_bureau import CreditBureauService
 from core.integrations.fleet import ManualFleetIntegration
@@ -20,7 +21,8 @@ import csv
 import io
 import uuid
 from decimal import Decimal
-from datetime import datetime
+from datetime import datetime, date
+from django.utils import timezone
 
 
 class XeroConnectView(APIView):

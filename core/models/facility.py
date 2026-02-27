@@ -66,7 +66,7 @@ class Facility(models.Model):
         ]
 
     def __str__(self) -> str:
-        return f"Facility {self.id} - {self.company.name} (ZAR {self.limit:,.2f})"
+        return f"Facility {self.id} - {self.company.company_name} (ZAR {self.limit:,.2f})"
 
     @property
     def available(self) -> Decimal:
