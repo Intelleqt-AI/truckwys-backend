@@ -5,7 +5,7 @@ from .views import (
     UserViewSet, CustomerViewSet, DriverViewSet,
     VehicleViewSet, VehicleTypeViewSet, VehicleLogViewSet, LoadViewSet,
     QuoteViewSet, InvoiceViewSet, PaymentViewSet,
-    ExpenseViewSet, SettlementViewSet, NotificationViewSet,
+    ExpenseViewSet, SettlementViewSet, NotificationViewSet, WebhookViewSet,
     RegisterView, LoginView, LogoutView, UserProfileView,
     FleetOverviewView, VehicleInsightsView, VehicleIntelligenceFeedView, VehicleActionView,
     DriverOverviewView, DriverPerformanceLeaderboardView,
@@ -18,7 +18,7 @@ from .views_finance import (
 )
 from .views_capital import (
     FacilityViewSet, RiskScoreViewSet, AdvanceRequestViewSet,
-    CapitalDashboardViewSet
+    CapitalDashboardViewSet, CapitalEligibleInvoicesView
 )
 from .views_partner import (
     PartnerAdvanceViewSet, PartnerOperatorViewSet, PartnerRiskScoreViewSet
@@ -60,6 +60,9 @@ router.register(r'dashboard', CapitalDashboardViewSet, basename='dashboard')
 router.register(r'partner/advances', PartnerAdvanceViewSet, basename='partner-advance')
 router.register(r'partner/operators', PartnerOperatorViewSet, basename='partner-operator')
 router.register(r'partner/risk', PartnerRiskScoreViewSet, basename='partner-risk')
+
+# Webhook ViewSet (Sprint B)
+router.register(r'webhooks', WebhookViewSet, basename='webhook')
 
 urlpatterns = [
     # Authentication endpoints (must come before router)
@@ -125,6 +128,9 @@ urlpatterns = [
     path('lender/eligible-invoices/', LenderEligibleInvoicesView.as_view(), name='lender-eligible-invoices'),
     path('lender/advance-request/', LenderAdvanceRequestView.as_view(), name='lender-advance-request'),
     path('lender/portfolio/', LenderPortfolioView.as_view(), name='lender-portfolio'),
+
+    # Capital eligible invoices for operators (Sprint A4)
+    path('capital/eligible/', CapitalEligibleInvoicesView.as_view(), name='capital-eligible'),
 
     # Router URLs (comes last)
     path('', include(router.urls)),

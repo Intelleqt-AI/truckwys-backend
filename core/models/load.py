@@ -10,6 +10,7 @@ class Load(models.Model):
         ('ASSIGNED', 'Assigned'),
         ('IN_TRANSIT', 'In Transit'),
         ('DELIVERED', 'Delivered'),
+        ('INVOICED', 'Invoiced'),
         ('CANCELLED', 'Cancelled'),
     ]
     
@@ -44,6 +45,7 @@ class Load(models.Model):
     
     pod_signature = models.TextField(blank=True)  # Proof of delivery signature
     pod_received_by = models.CharField(max_length=200, blank=True)
+    pod_document = models.FileField(upload_to='pod/', blank=True, null=True)
     
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name='loads_created')
     created_at = models.DateTimeField(auto_now_add=True)

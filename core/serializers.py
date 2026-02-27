@@ -297,3 +297,20 @@ class DriverPerformanceSerializer(serializers.ModelSerializer):
             elif recent_load.status == 'ASSIGNED':
                 return 'Active'
         return 'Active'
+
+
+class WebhookSerializer(serializers.ModelSerializer):
+    """Serializer for Webhook model."""
+
+    class Meta:
+        model = None  # Will be set dynamically
+        fields = [
+            'id', 'url', 'secret', 'events', 'active',
+            'failure_count', 'last_fired_at', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'secret', 'failure_count', 'last_fired_at', 'created_at', 'updated_at']
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        from core.models import Webhook
+        self.Meta.model = Webhook

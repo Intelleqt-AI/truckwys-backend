@@ -15,6 +15,7 @@ from .facility import Facility
 from .risk_score import RiskScore
 from .advance_request import AdvanceRequest
 from .audit_log import AuditLog
+from .webhook import Webhook
 
 __all__ = [
     'User',
@@ -36,4 +37,5 @@ __all__ = [
     'RiskScore',
     'AdvanceRequest',
     'AuditLog',
+    'Webhook',
 ]

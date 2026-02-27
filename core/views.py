@@ -3,6 +3,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.views import APIView
+from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.authtoken.models import Token
 from django.contrib.auth import authenticate
 from django_filters.rest_framework import DjangoFilterBackend
@@ -1264,7 +1265,7 @@ class LoadViewSet(viewsets.ModelViewSet):
             early_pay_eligible=True,
         )
 
-        load.status = 'DELIVERED'
+        load.status = 'INVOICED'
         load.save()
 
         return Response({
@@ -1275,19 +1276,25 @@ class LoadViewSet(viewsets.ModelViewSet):
             'due_date': invoice.due_date.isoformat(),
         }, status=status.HTTP_201_CREATED)
 
-    @action(detail=True, methods=['post'])
+    @action(detail=True, methods=['post'], parser_classes=[MultiPartParser, FormParser])
     def upload_pod(self, request, pk=None):
         """Upload Proof of Delivery."""
         load = self.get_object()
-        if 'file' not in request.FILES:
+        file = request.FILES.get('pod_document') or request.FILES.get('file')
+        if not file:
             return Response({'error': 'No file provided'}, status=400)
-        f = request.FILES['file']
-        load.pod_received_by = f.name
-        load.pod_signature = f'POD: {f.name} ({f.size} bytes)'
+        load.pod_document = file
+        load.pod_received_by = request.data.get('received_by', file.name)
+        load.pod_signature = f'POD: {file.name} ({file.size} bytes)'
         if load.status == 'IN_TRANSIT':
             load.status = 'DELIVERED'
         load.save()
-        return Response({'message': 'POD uploaded', 'filename': f.name, 'load_id': load.id})
+        return Response({
+            'message': 'POD uploaded successfully',
+            'filename': file.name,
+            'load_id': load.id,
+            'pod_url': request.build_absolute_uri(load.pod_document.url) if load.pod_document else None
+        })
 
 
 class QuoteViewSet(viewsets.ModelViewSet):
@@ -1911,3 +1918,42 @@ class PasswordResetConfirmView(APIView):
         cache.delete(f'pwd_reset_{email}')
 
         return Response({'detail': 'Password has been reset. You can now log in.'})
+
+
+class WebhookViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for Webhook CRUD and testing.
+    
+    list: Get all webhooks for current user
+    create: Create new webhook
+    retrieve: Get webhook detail
+    update/partial_update: Update webhook
+    destroy: Delete webhook
+    test: POST /api/v1/webhooks/{id}/test/ - Send test ping
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        from core.models import Webhook
+        return Webhook.objects.filter(operator=self.request.user)
+    
+    def get_serializer_class(self):
+        from core.serializers import WebhookSerializer
+        return WebhookSerializer
+    
+    def perform_create(self, serializer):
+        serializer.save(operator=self.request.user)
+    
+    @action(detail=True, methods=['post'], url_path='test')
+    def test_webhook(self, request, pk=None):
+        """Fire a test ping to this webhook."""
+        webhook = self.get_object()
+        
+        from core.services.webhook_dispatcher import dispatch_webhook
+        dispatch_webhook('webhook.test', {
+            'message': 'Test ping from Truckwys',
+            'webhook_id': webhook.id,
+            'timestamp': timezone.now().isoformat(),
+        })
+        
+        return Response({'message': 'Test ping sent successfully'})

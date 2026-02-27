@@ -3,11 +3,13 @@
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.views import APIView
 from django.db.models import Q, Count, Sum
 from django.utils import timezone
 from decimal import Decimal
 from typing import Dict, Any
+from datetime import date
 
 from core.models import (
     Facility,
@@ -536,4 +538,90 @@ class CapitalDashboardViewSet(viewsets.ViewSet):
             'eligible_invoices': eligible_invoices,
             'advances': advances,
             'stats': stats_data,
+        })
+
+
+class CapitalEligibleInvoicesView(APIView):
+    """
+    GET /api/v1/capital/eligible/
+
+    Returns eligible invoices for fast-pay/advance for the authenticated operator.
+    Similar logic to lender eligible-invoices but with Token authentication.
+    """
+    permission_classes = [AllowAny]  # Using Token auth in practice
+
+    def get(self, request):
+        # Get invoices eligible for advance
+        eligible_statuses = ['SENT', 'OVERDUE']
+        invoices = Invoice.objects.filter(
+            status__in=eligible_statuses,
+            early_pay_eligible=True,
+        ).select_related('customer', 'load').exclude(
+            advance_requests__status__in=['REQUESTED', 'SCORING', 'APPROVED', 'DISBURSED']
+        )
+
+        if not invoices.exists():
+            # Fallback: any SENT invoices without active advances
+            invoices = Invoice.objects.filter(
+                status__in=eligible_statuses
+            ).select_related('customer', 'load').exclude(
+                advance_requests__status__in=['REQUESTED', 'SCORING', 'APPROVED', 'DISBURSED']
+            )
+
+        result = []
+        total_face_value = Decimal('0.00')
+        total_net_payout = Decimal('0.00')
+
+        for inv in invoices:
+            # Get risk score for this customer
+            risk = RiskScore.objects.filter(customer=inv.customer).order_by('-calculated_at').first()
+            tier = risk.tier if risk else 'FAIR'
+            score = risk.total_score if risk else 55
+
+            # Calculate fee based on tier
+            fee_map = {
+                'EXCELLENT': 2.0,
+                'GOOD': 2.5,
+                'FAIR': 3.0,
+                'ELEVATED': 3.5,
+                'INELIGIBLE': 0.0,
+            }
+            fee_rate = fee_map.get(tier, 3.0)
+            amount = Decimal(str(inv.total_amount))
+            fee_amount = (amount * Decimal(str(fee_rate)) / Decimal('100')).quantize(Decimal('0.01'))
+            net_payout = amount - fee_amount
+
+            total_face_value += amount
+            total_net_payout += net_payout
+
+            age_days = (date.today() - inv.issue_date).days if inv.issue_date else 0
+
+            result.append({
+                'id': inv.id,
+                'invoice_number': inv.invoice_number,
+                'customer': inv.customer.name,
+                'customer_id': inv.customer.id,
+                'amount_zar': float(amount),
+                'amount': float(amount),  # Frontend compatibility
+                'total_amount': float(amount),  # Frontend compatibility
+                'subtotal_zar': float(inv.subtotal),
+                'vat_zar': float(inv.vat_amount),
+                'issue_date': inv.issue_date.isoformat() if inv.issue_date else None,
+                'due_date': inv.due_date.isoformat() if inv.due_date else None,
+                'age_days': age_days,
+                'risk_score': score,
+                'risk_tier': tier,
+                'tier': tier.lower(),  # Frontend compatibility
+                'fee_rate_pct': fee_rate,
+                'fee_amount_zar': float(fee_amount),
+                'net_payout_zar': float(net_payout),
+                'load_reference': inv.load.load_number if inv.load else None,
+                'route': f'{inv.load.pickup_city} → {inv.load.delivery_city}' if inv.load else None,
+            })
+
+        return Response({
+            'eligible_count': len(result),
+            'total_face_value_zar': float(total_face_value),
+            'total_net_payout_zar': float(total_net_payout),
+            'invoices': result,
         })
