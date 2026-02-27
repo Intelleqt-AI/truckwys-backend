@@ -434,7 +434,7 @@ class Command(BaseCommand):
                         date.today() - timedelta(days=random.randint(1, 50)),
                         timezone.datetime.min.time()
                     )),
-                    'status': random.choice(['DELIVERED', 'DELIVERED', 'DELIVERED', 'IN_TRANSIT']),
+                    'status': random.choice(['DELIVERED', 'DELIVERED', 'IN_TRANSIT', 'IN_TRANSIT', 'SCHEDULED', 'LOADING']),
                     'rate': rate,
                     'total_amount': rate,
                     'distance': distance,
