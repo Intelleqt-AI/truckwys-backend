@@ -329,6 +329,8 @@ class Command(BaseCommand):
             'Automotive Parts',
         ]
 
+        vehicle_types_list = ['Flatbed', 'Tautliner', 'Refrigerated', 'Box Truck', 'Tanker', 'Danger Load']
+
         quotes = []
         statuses = ['DRAFT', 'DRAFT', 'SENT', 'SENT', 'SENT', 'ACCEPTED', 'ACCEPTED', 'IT', 'IT', 'COMPLETED']
         confidences = ['HIGH', 'HIGH', 'HIGH', 'MEDIUM', 'MEDIUM', 'MEDIUM', 'LOW', 'HIGH', 'MEDIUM', 'HIGH']
@@ -343,8 +345,10 @@ class Command(BaseCommand):
             # Calculate pricing
             base_rate = Decimal(str(random.randint(8000, 25000)))
             fuel_surcharge = (distance * Decimal('2.50')).quantize(Decimal('0.01'))  # R2.50 per km
+            toll_charges = (distance * Decimal('0.95')).quantize(Decimal('0.01'))  # R0.95 per km for tolls
+            driver_allowance = Decimal(str(random.choice([0, 500, 800, 1000])))
             additional_charges = Decimal(str(random.randint(500, 2000)))
-            total_amount = (base_rate + fuel_surcharge + additional_charges).quantize(Decimal('0.01'))
+            total_amount = (base_rate + fuel_surcharge + toll_charges + driver_allowance + additional_charges).quantize(Decimal('0.01'))
             margin_percentage = Decimal(str(random.randint(15, 35)))
 
             # Calculate valid_until based on status
@@ -367,9 +371,12 @@ class Command(BaseCommand):
                     'cargo_description': cargo_types[i],
                     'weight': weight,
                     'distance': distance,
+                    'vehicle_type': random.choice(vehicle_types_list),
                     'sla_hours': random.choice([24, 48, 72]),
                     'base_rate': base_rate,
                     'fuel_surcharge': fuel_surcharge,
+                    'toll_charges': toll_charges,
+                    'driver_allowance': driver_allowance,
                     'additional_charges': additional_charges,
                     'total_amount': total_amount,
                     'margin_percentage': margin_percentage,

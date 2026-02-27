@@ -29,11 +29,14 @@ class Quote(models.Model):
     cargo_description = models.TextField()
     weight = models.DecimalField(max_digits=10, decimal_places=2)
     distance = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    vehicle_type = models.CharField(max_length=50, blank=True, default='')
     
     sla_hours = models.IntegerField(default=48, help_text="Service Level Agreement in hours")
     
     base_rate = models.DecimalField(max_digits=10, decimal_places=2)
     fuel_surcharge = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    toll_charges = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    driver_allowance = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     additional_charges = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     total_amount = models.DecimalField(max_digits=10, decimal_places=2)
     
