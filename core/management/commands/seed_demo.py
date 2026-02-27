@@ -1,0 +1,186 @@
+"""
+Management command to seed demo data for Truckwys platform.
+Usage: python manage.py seed_demo [--clear]
+"""
+from django.core.management.base import BaseCommand
+from django.db import transaction
+from core.models import (
+    Customer, Vehicle, Driver, Load, Invoice, Payment,
+    Expense, AdvanceRequest, ActivityEvent, User, Company, VehicleType
+)
+from decimal import Decimal
+from datetime import date, timedelta
+import random
+
+
+class Command(BaseCommand):
+    help = 'Seed demo data for Truckwys platform'
+
+    def add_arguments(self, parser):
+        parser.add_argument(
+            '--clear',
+            action='store_true',
+            help='Clear existing data before seeding',
+        )
+
+    @transaction.atomic
+    def handle(self, *args, **options):
+        if options['clear']:
+            self.stdout.write(self.style.WARNING('Clearing existing data...'))
+            ActivityEvent.objects.all().delete()
+            Payment.objects.all().delete()
+            Invoice.objects.all().delete()
+            Expense.objects.all().delete()
+            AdvanceRequest.objects.all().delete()
+            Load.objects.all().delete()
+            Driver.objects.all().delete()
+            Vehicle.objects.all().delete()
+            Customer.objects.all().delete()
+            self.stdout.write(self.style.SUCCESS('Cleared all demo data'))
+
+        self.stdout.write('Seeding demo data...')
+
+        # Ensure vehicle types exist
+        truck_type, _ = VehicleType.objects.get_or_create(
+            name='Truck',
+            defaults={
+                'description': 'Standard freight truck',
+                'capacity': Decimal('25000'),
+                'max_distance': Decimal('2000'),
+                'base_rate': Decimal('18.50'),
+            }
+        )
+
+        # Create SA customers
+        customers_data = [
+            {'name': 'Transnet Freight', 'email': 'logistics@transnetfreight.co.za', 'phone': '+27 11 308 3000', 'payment_terms_default': 'NET30'},
+            {'name': 'Tiger Brands Distribution', 'email': 'distribution@tigerbrands.com', 'phone': '+27 11 840 4000', 'payment_terms_default': 'NET30'},
+            {'name': 'Shoprite Holdings', 'email': 'logistics@shoprite.co.za', 'phone': '+27 21 980 4000', 'payment_terms_default': 'NET45'},
+            {'name': 'Sasol Chemicals', 'email': 'freight@sasol.com', 'phone': '+27 17 610 1111', 'payment_terms_default': 'NET30'},
+            {'name': 'Pick n Pay Logistics', 'email': 'supply@pnp.co.za', 'phone': '+27 21 658 1000', 'payment_terms_default': 'NET30'},
+        ]
+        customers = []
+        for cust_data in customers_data:
+            customer, created = Customer.objects.get_or_create(
+                name=cust_data['name'],
+                defaults=cust_data
+            )
+            customers.append(customer)
+        self.stdout.write(f'Created {len(customers)} customers')
+
+        # Create vehicles (SA plates)
+        vehicles_data = [
+            {'plate': 'GP 123-456', 'vin': 'VIN1001', 'make': 'Volvo', 'model': 'FH16', 'year': 2022},
+            {'plate': 'WC 789-012', 'vin': 'VIN1002', 'make': 'Mercedes-Benz', 'model': 'Actros', 'year': 2021},
+            {'plate': 'KZN 345-678', 'vin': 'VIN1003', 'make': 'MAN', 'model': 'TGX', 'year': 2023},
+            {'plate': 'EC 901-234', 'vin': 'VIN1004', 'make': 'DAF', 'model': 'XF', 'year': 2022},
+            {'plate': 'FS 567-890', 'vin': 'VIN1005', 'make': 'Scania', 'model': 'R500', 'year': 2021},
+            {'plate': 'MP 234-567', 'vin': 'VIN1006', 'make': 'Volvo', 'model': 'FH16', 'year': 2023},
+            {'plate': 'LP 678-901', 'vin': 'VIN1007', 'make': 'Mercedes-Benz', 'model': 'Actros', 'year': 2022},
+            {'plate': 'NW 012-345', 'vin': 'VIN1008', 'make': 'MAN', 'model': 'TGX', 'year': 2021},
+            {'plate': 'NC 456-789', 'vin': 'VIN1009', 'make': 'DAF', 'model': 'XF', 'year': 2023},
+            {'plate': 'GP 890-123', 'vin': 'VIN1010', 'make': 'Scania', 'model': 'R500', 'year': 2022},
+        ]
+        vehicles = []
+        for veh_data in vehicles_data:
+            vehicle, created = Vehicle.objects.get_or_create(
+                vin=veh_data['vin'],
+                defaults={
+                    **veh_data,
+                    'vehicle_type': truck_type,
+                    'type': truck_type,
+                    'status': 'ACTIVE',
+                    'fuel_consumption_per_km': Decimal('0.35'),
+                    'capacity': Decimal('25000'),
+                    'fuel_type': 'DIESEL',
+                }
+            )
+            vehicles.append(vehicle)
+        self.stdout.write(f'Created {len(vehicles)} vehicles')
+
+        # Create drivers
+        drivers_names = [
+            'Thabo Nkosi', 'Johannes van der Merwe', 'Sipho Dlamini', 'Pieter Botha',
+            'Mandla Khumalo', 'Francois du Plessis', 'Bongani Mthethwa', 'Andries Nel'
+        ]
+        drivers = []
+        for idx, name in enumerate(drivers_names):
+            first_name, last_name = name.split(' ', 1)
+            # Create user for driver
+            username = f"{first_name.lower()}.{last_name.lower().replace(' ', '')}"
+            user, _ = User.objects.get_or_create(
+                username=username,
+                defaults={
+                    'email': f'{username}@truckwys.com',
+                    'first_name': first_name,
+                    'last_name': last_name,
+                    'role': 'DRIVER',
+                }
+            )
+            driver, created = Driver.objects.get_or_create(
+                user=user,
+                defaults={
+                    'license_number': f'SA{10000 + idx}',
+                    'license_expiry': date.today() + timedelta(days=365 * 2),
+                    'hire_date': date.today() - timedelta(days=365 * random.randint(1, 5)),
+                    'status': 'ACTIVE',
+                }
+            )
+            drivers.append(driver)
+        self.stdout.write(f'Created {len(drivers)} drivers')
+
+        # Use existing loads or skip if database schema is different
+        loads = list(Load.objects.all())
+        if not loads:
+            self.stdout.write(self.style.WARNING('No existing loads found - skipping load-dependent seeding'))
+        else:
+            self.stdout.write(f'Found {len(loads)} existing loads')
+
+        # Use existing invoices
+        invoices = list(Invoice.objects.all())
+        if not invoices:
+            self.stdout.write(self.style.WARNING('No existing invoices found - skipping invoice-dependent seeding'))
+        else:
+            self.stdout.write(f'Found {len(invoices)} existing invoices')
+
+        # Use existing advances
+        advances = list(AdvanceRequest.objects.all())
+        self.stdout.write(f'Found {len(advances)} existing advances')
+
+        # Use existing expenses
+        expenses = list(Expense.objects.all())
+        self.stdout.write(f'Found {len(expenses)} existing expenses')
+
+        # Create activity events
+        events_data = [
+            ('load', 'Load #1 status changed to IN_TRANSIT', 'Load', 1),
+            ('invoice', 'Invoice INV-001 created — R45000', 'Invoice', 1),
+            ('advance', 'Advance R80000 APPROVED', 'AdvanceRequest', 1),
+            ('quote', 'Quote QT-20260227-0001 accepted', 'Quote', 1),
+            ('load', 'Load #2 delivered — POD uploaded', 'Load', 2),
+            ('invoice', 'Invoice INV-002 paid — R32000', 'Invoice', 2),
+            ('system', 'System: webhook dispatched to partner endpoint', '', None),
+            ('load', 'Load #3 assigned to driver', 'Load', 3),
+            ('advance', 'Advance R55000 disbursed', 'AdvanceRequest', 2),
+            ('quote', 'New quote request from Transnet Freight', 'Quote', 2),
+        ]
+        for ev_type, title, entity_type, entity_id in events_data:
+            ActivityEvent.objects.get_or_create(
+                title=title,
+                defaults={
+                    'event_type': ev_type,
+                    'entity_type': entity_type,
+                    'entity_id': entity_id,
+                }
+            )
+        self.stdout.write(f'Created {len(events_data)} activity events')
+
+        self.stdout.write(self.style.SUCCESS('✓ Demo data seeded successfully!'))
+        self.stdout.write(f'  - {len(customers)} customers')
+        self.stdout.write(f'  - {len(vehicles)} vehicles')
+        self.stdout.write(f'  - {len(drivers)} drivers')
+        self.stdout.write(f'  - {len(loads)} loads')
+        self.stdout.write(f'  - {len(invoices)} invoices')
+        self.stdout.write(f'  - {len(advances)} advances')
+        self.stdout.write(f'  - {len(expenses)} expenses')
+        self.stdout.write(f'  - {len(events_data)} activity events')
