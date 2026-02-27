@@ -14,7 +14,7 @@ from .views import (
 )
 from .views_finance import (
     InvoiceFinanceViewSet, PaymentFinanceViewSet, ExpenseFinanceViewSet,
-    TripCostView, FinanceDashboardView
+    TripCostView, FinanceDashboardView, RouteAnalyticsView
 )
 from .views_capital import (
     FacilityViewSet, RiskScoreViewSet, AdvanceRequestViewSet,
@@ -101,6 +101,7 @@ urlpatterns = [
     # Finance Dashboard endpoints (NEW - Phase 2)
     path('dashboard/finance/', FinanceDashboardView.as_view(), name='finance-dashboard'),
     path('dashboard/overview/', DashboardOverviewView.as_view(), name='dashboard-overview'),
+    path('dashboard/routes/', RouteAnalyticsView.as_view(), name='route-analytics'),
     path('trips/<int:trip_id>/costs/', TripCostView.as_view(), name='trip-costs'),
 
     # Intelligence & Cash Flow endpoints (NEW - Phase 4)

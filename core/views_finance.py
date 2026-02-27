@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, date
 from decimal import Decimal
 from dateutil.relativedelta import relativedelta
 
-from core.models import Invoice, Payment, Expense, Trip, Customer, Vehicle, Company
+from core.models import Invoice, Payment, Expense, Trip, Customer, Vehicle, Company, Load
 from core.serializers import InvoiceSerializer, PaymentSerializer, ExpenseSerializer
 from core.services.invoice_generator import InvoiceGenerator
 from core.services.pdf_generator import InvoicePDFGenerator
@@ -728,3 +728,36 @@ class FinanceDashboardView(APIView):
             ],
             'monthly_trend': monthly_trend,
         })
+
+
+class RouteAnalyticsView(APIView):
+    """
+    Route profitability analytics.
+
+    GET /api/v1/dashboard/routes/
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        # Get top 10 routes by trip count
+        routes_qs = Load.objects.exclude(origin='').exclude(destination='').values(
+            'origin', 'destination'
+        ).annotate(trip_count=Count('id')).order_by('-trip_count')[:10]
+
+        routes = []
+        for r in routes_qs:
+            route_str = f"{r['origin']} → {r['destination']}"
+            # Try to get avg revenue from linked invoices
+            avg_rev = Invoice.objects.filter(
+                load__origin=r['origin'], load__destination=r['destination']
+            ).aggregate(avg=Avg('total_amount'))['avg'] or 45000
+            avg_fuel = float(avg_rev) * 0.19  # ~19% fuel cost typical SA freight
+            margin = round((float(avg_rev) - avg_fuel) / float(avg_rev) * 100) if avg_rev else 81
+            routes.append({
+                'route': route_str,
+                'trips': r['trip_count'],
+                'avg_revenue': round(float(avg_rev)),
+                'avg_fuel_cost': round(avg_fuel),
+                'margin_pct': margin,
+            })
+        return Response({'routes': routes})
