@@ -2,7 +2,7 @@ from rest_framework import serializers
 from django.db.models import Avg  # ADD THIS IMPORT
 from .models import (
     User, Customer, Driver, Vehicle, VehicleLog, VehicleType, Load,
-    Quote, Invoice, Payment, Expense, Settlement, Notification, Company
+    Quote, Invoice, Payment, Expense, Settlement, Notification, Company, ActivityEvent
 )
 
 # User Serializer
@@ -326,3 +326,12 @@ class IntegrationAPIKeySerializer(serializers.ModelSerializer):
         super().__init__(*args, **kwargs)
         from core.models import Webhook
         self.Meta.model = Webhook
+
+
+class ActivityEventSerializer(serializers.ModelSerializer):
+    """Serializer for ActivityEvent model."""
+
+    class Meta:
+        model = ActivityEvent
+        fields = ['id', 'event_type', 'title', 'description', 'entity_id', 'entity_type', 'metadata', 'created_at']
+        read_only_fields = ['id', 'created_at']

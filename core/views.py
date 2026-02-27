@@ -20,14 +20,14 @@ import threading
 
 from .models import (
     User, Customer, Driver, Vehicle, VehicleLog, VehicleType, Load,
-    Quote, Invoice, Payment, Expense, Settlement, Notification, Company
+    Quote, Invoice, Payment, Expense, Settlement, Notification, Company, ActivityEvent
 )
 from .serializers import (
     UserSerializer, CustomerSerializer, DriverSerializer,
     VehicleSerializer, VehicleTypeSerializer, VehicleLogSerializer, LoadSerializer,
     QuoteSerializer, InvoiceSerializer, PaymentSerializer,
     ExpenseSerializer, SettlementSerializer, NotificationSerializer,
-    CompanySerializer
+    CompanySerializer, ActivityEventSerializer
 )
 
 
@@ -1981,3 +1981,17 @@ class IntegrationAPIKeyViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(operator=self.request.user)
+
+
+class ActivityEventViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    ViewSet for viewing activity events.
+
+    list: Get last 50 activity events
+    retrieve: Get specific activity event
+    """
+    permission_classes = [IsAuthenticated]
+    serializer_class = ActivityEventSerializer
+
+    def get_queryset(self):
+        return ActivityEvent.objects.all()[:50]

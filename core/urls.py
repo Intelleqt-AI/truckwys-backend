@@ -10,7 +10,7 @@ from .views import (
     FleetOverviewView, VehicleInsightsView, VehicleIntelligenceFeedView, VehicleActionView,
     DriverOverviewView, DriverPerformanceLeaderboardView,
     QuotesPipelineOverviewView, NotificationSettingsView,
-    CompanyProfileView, CompanyLogoUploadView, DashboardOverviewView
+    CompanyProfileView, CompanyLogoUploadView, DashboardOverviewView, ActivityEventViewSet
 )
 from .views_finance import (
     InvoiceFinanceViewSet, PaymentFinanceViewSet, ExpenseFinanceViewSet,
@@ -65,6 +65,9 @@ router.register(r'partner/risk', PartnerRiskScoreViewSet, basename='partner-risk
 # Webhook ViewSet (Sprint B)
 router.register(r'webhooks', WebhookViewSet, basename='webhook')
 router.register(r'integrations/api-keys', IntegrationAPIKeyViewSet, basename='integration-api-key')
+
+# Activity Events ViewSet (Sprint 1)
+router.register(r'activity', ActivityEventViewSet, basename='activity')
 
 urlpatterns = [
     # Authentication endpoints (must come before router)

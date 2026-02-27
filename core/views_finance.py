@@ -334,13 +334,19 @@ class InvoiceFinanceViewSet(viewsets.ModelViewSet):
             else:
                 collection_rate = 0.0
 
+            # Count by status
+            by_status = {}
+            for status_choice in ['DRAFT', 'SENT', 'PAID', 'OVERDUE', 'PARTIALLY_PAID']:
+                by_status[status_choice] = Invoice.objects.filter(status=status_choice).count()
+
             return Response({
                 'total_invoiced_mtd': float(total_invoiced_mtd),
                 'total_collected_mtd': float(total_collected_mtd),
                 'overdue_count': overdue_count,
                 'overdue_amount': float(overdue_amount),
                 'avg_days_to_pay': round(avg_days, 1),
-                'collection_rate': round(collection_rate, 2)
+                'collection_rate': round(collection_rate, 2),
+                'by_status': by_status
             })
 
         except Exception as e:

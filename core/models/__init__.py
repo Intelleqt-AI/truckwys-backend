@@ -17,6 +17,7 @@ from .advance_request import AdvanceRequest
 from .audit_log import AuditLog
 from .webhook import Webhook
 from .integration_api_key import IntegrationAPIKey
+from .activity_event import ActivityEvent
 
 __all__ = [
     'User',
@@ -40,4 +41,5 @@ __all__ = [
     'AuditLog',
     'Webhook',
     'IntegrationAPIKey',
+    'ActivityEvent',
 ]
