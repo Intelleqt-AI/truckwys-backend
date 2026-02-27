@@ -264,6 +264,91 @@ class InvoiceFinanceViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
+    @action(detail=False, methods=['get'])
+    def stats(self, request):
+        """
+        Get invoice summary statistics.
+
+        GET /api/v1/invoices/stats/
+
+        Returns:
+        {
+            "total_invoiced_mtd": 450000,
+            "total_collected_mtd": 320000,
+            "overdue_count": 8,
+            "overdue_amount": 95000,
+            "avg_days_to_pay": 32,
+            "collection_rate": 0.71
+        }
+        """
+        try:
+            # Get current month invoices
+            now = timezone.now()
+            month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+            invoices_mtd = Invoice.objects.filter(issue_date__gte=month_start.date())
+
+            # Total invoiced this month
+            total_invoiced_mtd = invoices_mtd.aggregate(
+                total=Sum('total_amount')
+            )['total'] or Decimal('0')
+
+            # Total collected this month (paid invoices)
+            total_collected_mtd = invoices_mtd.filter(
+                status='PAID'
+            ).aggregate(
+                total=Sum('paid_amount')
+            )['total'] or Decimal('0')
+
+            # Overdue invoices (due_date < today and not paid)
+            today = date.today()
+            overdue = Invoice.objects.filter(
+                due_date__lt=today,
+                status__in=['SENT', 'OVERDUE', 'PARTIALLY_PAID', 'DRAFT']
+            )
+            overdue_count = overdue.count()
+            overdue_amount = overdue.aggregate(
+                total=Sum(F('total_amount') - F('paid_amount'))
+            )['total'] or Decimal('0')
+
+            # Average days to pay (for paid invoices)
+            paid_invoices = Invoice.objects.filter(
+                status='PAID',
+                paid_at__isnull=False
+            ).annotate(
+                days_to_pay=F('paid_at') - F('issue_date')
+            )
+
+            if paid_invoices.exists():
+                avg_days = sum(
+                    (inv.paid_at.date() - inv.issue_date).days
+                    for inv in paid_invoices
+                    if inv.paid_at
+                ) / paid_invoices.count()
+            else:
+                avg_days = 0
+
+            # Collection rate (collected / invoiced)
+            if total_invoiced_mtd > 0:
+                collection_rate = float(total_collected_mtd / total_invoiced_mtd)
+            else:
+                collection_rate = 0.0
+
+            return Response({
+                'total_invoiced_mtd': float(total_invoiced_mtd),
+                'total_collected_mtd': float(total_collected_mtd),
+                'overdue_count': overdue_count,
+                'overdue_amount': float(overdue_amount),
+                'avg_days_to_pay': round(avg_days, 1),
+                'collection_rate': round(collection_rate, 2)
+            })
+
+        except Exception as e:
+            return Response(
+                {'error': f'Failed to generate stats: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
 
 class PaymentFinanceViewSet(viewsets.ModelViewSet):
     """
