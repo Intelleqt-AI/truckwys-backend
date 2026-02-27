@@ -6,9 +6,11 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import AllowAny
+from rest_framework.authentication import BaseAuthentication
+from rest_framework.exceptions import AuthenticationFailed
 from django.shortcuts import redirect
 from django.conf import settings
-from core.models import Company, Invoice
+from core.models import Company, Invoice, Load, Driver, Vehicle
 from core.integrations.xero import XeroClient
 from core.integrations.credit_bureau import CreditBureauService
 from core.integrations.fleet import ManualFleetIntegration
@@ -16,6 +18,7 @@ from core.services.intelligence import IntelligenceService
 from core.services.cashflow import CashFlowForecastService
 import csv
 import io
+import uuid
 from decimal import Decimal
 from datetime import datetime
 
@@ -422,3 +425,321 @@ class CashFlowForecastView(APIView):
             'summary': summary,
             'period_days': days,
         }, status=status.HTTP_200_OK)
+
+
+# ---------------------------------------------------------------------------
+# Fleet TMS Integration - Inbound Trip Sync
+# ---------------------------------------------------------------------------
+
+# Temporary demo keys (will be replaced with IntegrationAPIKey model in Sprint C3)
+FLEET_DEMO_API_KEYS = {
+    'fleet_demo_key_123': 'Demo Fleet TMS',
+    'tms_integration_test': 'Test Fleet System',
+}
+
+
+class FleetAPIKeyAuthentication(BaseAuthentication):
+    """Authenticate fleet TMS systems via X-API-Key header."""
+
+    def authenticate(self, request):
+        key = request.META.get('HTTP_X_API_KEY') or request.GET.get('api_key')
+        if not key:
+            return None  # Not an API key request — try other auth
+
+        # TODO Sprint C3: Replace with IntegrationAPIKey.objects.filter(key=key, key_type='FLEET_TMS', active=True)
+        fleet_name = FLEET_DEMO_API_KEYS.get(key)
+        if not fleet_name:
+            raise AuthenticationFailed('Invalid API key.')
+
+        # Return a pseudo-user tuple
+        return ({'api_key': key, 'fleet_name': fleet_name}, key)
+
+    def authenticate_header(self, request):
+        return 'X-API-Key'
+
+
+class FleetTripSyncView(APIView):
+    """
+    POST /api/v1/integrations/fleet/sync/
+
+    Receive trip updates from external Fleet/TMS systems.
+
+    Body:
+    {
+      "action": "status_update" | "create" | "complete",
+      "load_number": "LD-20260227-0196",
+      "status": "IN_TRANSIT",
+      "driver_id": 3,
+      "vehicle_plate": "NW 123 BCD",
+      "notes": "Departed depot 08:45",
+      "pickup_location": "Johannesburg",
+      "delivery_location": "Cape Town"
+    }
+    """
+    authentication_classes = [FleetAPIKeyAuthentication]
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        # Require API key
+        if not request.auth or not isinstance(request.user, dict):
+            return Response(
+                {'error': 'API key required. Pass X-API-Key header.'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        data = request.data
+        action = data.get('action', 'status_update')
+        load_number = data.get('load_number')
+
+        if not load_number:
+            return Response(
+                {'error': 'load_number is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Try to find existing load
+        try:
+            load = Load.objects.get(load_number=load_number)
+        except Load.DoesNotExist:
+            if action == 'create':
+                # Create new load from external data
+                try:
+                    # Get or create customer (simplified — use first customer for demo)
+                    from core.models import Customer
+                    customer = Customer.objects.first()
+                    if not customer:
+                        return Response(
+                            {'error': 'No customers found. Please create at least one customer first.'},
+                            status=status.HTTP_400_BAD_REQUEST
+                        )
+
+                    load = Load.objects.create(
+                        load_number=load_number or f"EXT-{uuid.uuid4().hex[:8].upper()}",
+                        customer=customer,
+                        pickup_location=data.get('pickup_location', ''),
+                        pickup_city=data.get('pickup_city', data.get('pickup_location', '')[:100]),
+                        pickup_state=data.get('pickup_state', ''),
+                        pickup_zip=data.get('pickup_zip', ''),
+                        pickup_date=datetime.now(),
+                        delivery_location=data.get('delivery_location', ''),
+                        delivery_city=data.get('delivery_city', data.get('delivery_location', '')[:100]),
+                        delivery_state=data.get('delivery_state', ''),
+                        delivery_zip=data.get('delivery_zip', ''),
+                        delivery_date=datetime.now(),
+                        cargo_description=data.get('cargo_description', 'Freight'),
+                        weight=Decimal(data.get('weight', 0)),
+                        distance=Decimal(data.get('distance', 0)),
+                        rate=Decimal(data.get('rate', 0)),
+                        total_amount=Decimal(data.get('total_amount', 0)),
+                        status='PENDING',
+                        notes=data.get('notes', ''),
+                    )
+                except Exception as e:
+                    return Response(
+                        {'error': f'Failed to create load: {str(e)}'},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                    )
+            else:
+                return Response(
+                    {'error': f'Load {load_number} not found'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+        # Update load based on action
+        if action in ['status_update', 'create']:
+            # Update status if provided
+            if data.get('status'):
+                load.status = data.get('status')
+
+            # Update driver if provided
+            if data.get('driver_id'):
+                try:
+                    driver = Driver.objects.get(id=data['driver_id'])
+                    load.driver = driver
+                except Driver.DoesNotExist:
+                    pass
+
+            # Update vehicle if plate provided
+            if data.get('vehicle_plate'):
+                try:
+                    vehicle = Vehicle.objects.get(registration_number=data['vehicle_plate'])
+                    load.vehicle = vehicle
+                except Vehicle.DoesNotExist:
+                    pass
+
+            # Update notes
+            if data.get('notes'):
+                load.notes = data.get('notes', load.notes)
+
+        elif action == 'complete':
+            load.status = 'DELIVERED'
+            if data.get('notes'):
+                load.notes = data.get('notes', load.notes)
+
+        # Save changes
+        load.save()
+
+        # Return updated load (serialize)
+        from core.serializers import LoadSerializer
+        serializer = LoadSerializer(load)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class FleetTripBulkSyncView(APIView):
+    """
+    POST /api/v1/integrations/fleet/sync/bulk/
+
+    Bulk trip sync for external Fleet/TMS systems.
+
+    Body:
+    {
+      "trips": [
+        {
+          "action": "status_update",
+          "load_number": "LD-001",
+          "status": "IN_TRANSIT",
+          ...
+        },
+        {
+          "action": "create",
+          "load_number": "LD-002",
+          ...
+        }
+      ]
+    }
+
+    Returns:
+    {
+      "processed": 10,
+      "created": 2,
+      "updated": 8,
+      "errors": []
+    }
+    """
+    authentication_classes = [FleetAPIKeyAuthentication]
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        # Require API key
+        if not request.auth or not isinstance(request.user, dict):
+            return Response(
+                {'error': 'API key required. Pass X-API-Key header.'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        trips = request.data.get('trips', [])
+
+        if not trips or not isinstance(trips, list):
+            return Response(
+                {'error': 'trips array is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        results = {
+            'processed': 0,
+            'created': 0,
+            'updated': 0,
+            'errors': [],
+        }
+
+        for idx, trip_data in enumerate(trips):
+            results['processed'] += 1
+
+            try:
+                # Use FleetTripSyncView logic
+                load_number = trip_data.get('load_number')
+                action = trip_data.get('action', 'status_update')
+
+                if not load_number:
+                    results['errors'].append({
+                        'index': idx,
+                        'load_number': load_number,
+                        'error': 'load_number is required',
+                    })
+                    continue
+
+                # Try to find existing load
+                try:
+                    load = Load.objects.get(load_number=load_number)
+                    created = False
+                except Load.DoesNotExist:
+                    if action == 'create':
+                        # Create new load
+                        from core.models import Customer
+                        customer = Customer.objects.first()
+                        if not customer:
+                            results['errors'].append({
+                                'index': idx,
+                                'load_number': load_number,
+                                'error': 'No customers found',
+                            })
+                            continue
+
+                        load = Load.objects.create(
+                            load_number=load_number or f"EXT-{uuid.uuid4().hex[:8].upper()}",
+                            customer=customer,
+                            pickup_location=trip_data.get('pickup_location', ''),
+                            pickup_city=trip_data.get('pickup_city', trip_data.get('pickup_location', '')[:100]),
+                            pickup_state=trip_data.get('pickup_state', ''),
+                            pickup_zip=trip_data.get('pickup_zip', ''),
+                            pickup_date=datetime.now(),
+                            delivery_location=trip_data.get('delivery_location', ''),
+                            delivery_city=trip_data.get('delivery_city', trip_data.get('delivery_location', '')[:100]),
+                            delivery_state=trip_data.get('delivery_state', ''),
+                            delivery_zip=trip_data.get('delivery_zip', ''),
+                            delivery_date=datetime.now(),
+                            cargo_description=trip_data.get('cargo_description', 'Freight'),
+                            weight=Decimal(trip_data.get('weight', 0)),
+                            distance=Decimal(trip_data.get('distance', 0)),
+                            rate=Decimal(trip_data.get('rate', 0)),
+                            total_amount=Decimal(trip_data.get('total_amount', 0)),
+                            status='PENDING',
+                            notes=trip_data.get('notes', ''),
+                        )
+                        created = True
+                    else:
+                        results['errors'].append({
+                            'index': idx,
+                            'load_number': load_number,
+                            'error': f'Load {load_number} not found',
+                        })
+                        continue
+
+                # Update load
+                if action in ['status_update', 'create']:
+                    if trip_data.get('status'):
+                        load.status = trip_data.get('status')
+                    if trip_data.get('driver_id'):
+                        try:
+                            driver = Driver.objects.get(id=trip_data['driver_id'])
+                            load.driver = driver
+                        except Driver.DoesNotExist:
+                            pass
+                    if trip_data.get('vehicle_plate'):
+                        try:
+                            vehicle = Vehicle.objects.get(registration_number=trip_data['vehicle_plate'])
+                            load.vehicle = vehicle
+                        except Vehicle.DoesNotExist:
+                            pass
+                    if trip_data.get('notes'):
+                        load.notes = trip_data.get('notes', load.notes)
+                elif action == 'complete':
+                    load.status = 'DELIVERED'
+                    if trip_data.get('notes'):
+                        load.notes = trip_data.get('notes', load.notes)
+
+                load.save()
+
+                if created:
+                    results['created'] += 1
+                else:
+                    results['updated'] += 1
+
+            except Exception as e:
+                results['errors'].append({
+                    'index': idx,
+                    'load_number': trip_data.get('load_number'),
+                    'error': str(e),
+                })
+
+        return Response(results, status=status.HTTP_200_OK)

@@ -16,6 +16,7 @@ from .risk_score import RiskScore
 from .advance_request import AdvanceRequest
 from .audit_log import AuditLog
 from .webhook import Webhook
+from .integration_api_key import IntegrationAPIKey
 
 __all__ = [
     'User',
@@ -38,4 +39,5 @@ __all__ = [
     'AdvanceRequest',
     'AuditLog',
     'Webhook',
+    'IntegrationAPIKey',
 ]

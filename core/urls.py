@@ -26,7 +26,8 @@ from .views_partner import (
 from .views_integrations import (
     XeroConnectView, XeroCallbackView, XeroDisconnectView, XeroStatusView,
     XeroSyncInvoicesView, XeroSyncPaymentsView, FleetImportTripsView,
-    CreditLookupView, DashboardInsightsView, CashFlowForecastView
+    CreditLookupView, DashboardInsightsView, CashFlowForecastView,
+    FleetTripSyncView, FleetTripBulkSyncView
 )
 from .views import RouteCalculatorView, DashboardSignalsView, PasswordResetRequestView, PasswordResetConfirmView
 from .views_lender import (
@@ -63,6 +64,7 @@ router.register(r'partner/risk', PartnerRiskScoreViewSet, basename='partner-risk
 
 # Webhook ViewSet (Sprint B)
 router.register(r'webhooks', WebhookViewSet, basename='webhook')
+router.register(r'integrations/api-keys', IntegrationAPIKeyViewSet, basename='integration-api-key')
 
 urlpatterns = [
     # Authentication endpoints (must come before router)
@@ -112,6 +114,8 @@ urlpatterns = [
 
     # Fleet Integration endpoints (NEW - Phase 4)
     path('integrations/fleet/import-trips/', FleetImportTripsView.as_view(), name='fleet-import-trips'),
+    path('integrations/fleet/sync/', FleetTripSyncView.as_view(), name='fleet-trip-sync'),
+    path('integrations/fleet/sync/bulk/', FleetTripBulkSyncView.as_view(), name='fleet-trip-bulk-sync'),
 
     # Credit Bureau endpoints (NEW - Phase 4)
     path('integrations/credit/lookup/', CreditLookupView.as_view(), name='credit-lookup'),

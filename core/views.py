@@ -1957,3 +1957,27 @@ class WebhookViewSet(viewsets.ModelViewSet):
         })
         
         return Response({'message': 'Test ping sent successfully'})
+
+
+class IntegrationAPIKeyViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for IntegrationAPIKey CRUD.
+
+    list: Get all API keys for current user
+    create: Create new API key
+    retrieve: Get API key detail
+    update/partial_update: Update API key (name, active status)
+    destroy: Delete/revoke API key
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        from core.models import IntegrationAPIKey
+        return IntegrationAPIKey.objects.filter(operator=self.request.user)
+
+    def get_serializer_class(self):
+        from core.serializers import IntegrationAPIKeySerializer
+        return IntegrationAPIKeySerializer
+
+    def perform_create(self, serializer):
+        serializer.save(operator=self.request.user)
