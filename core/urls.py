@@ -28,7 +28,7 @@ from .views_integrations import (
     XeroSyncInvoicesView, XeroSyncPaymentsView, FleetImportTripsView,
     CreditLookupView, DashboardInsightsView, CashFlowForecastView
 )
-from .views.route_calculator import RouteCalculatorView
+from .views import RouteCalculatorView
 
 router = DefaultRouter()
 router.register(r'users', UserViewSet, basename='user')

@@ -1,7 +1,7 @@
 from rest_framework import viewsets, status, filters
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from rest_framework.permissions import AllowAny, AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.views import APIView
 from rest_framework.authtoken.models import Token
 from django.contrib.auth import authenticate
@@ -1373,3 +1373,108 @@ class NotificationViewSet(viewsets.ModelViewSet):
         """Mark all notifications as read"""
         self.get_queryset().update(is_read=True, read_at=timezone.now())
         return Response({'message': 'All notifications marked as read'})
+
+# ============================================================
+# TomTom Route Calculator
+# ============================================================
+import math
+import requests as http_requests
+
+
+class RouteCalculatorView(APIView):
+    """POST /api/v1/route/calculate/ — TomTom routing with fuel/toll calc"""
+    permission_classes = [IsAuthenticated]
+
+    TOMTOM_API_KEY = 'YTeWrKe8YSDqWkgs7D7QCMv1Ic4V6BHb'
+    FUEL_RATE = 0.35        # litres/km
+    DIESEL_ZAR = 22.50      # ZAR/litre
+    TOLL_ZAR_KM = 0.95      # ZAR/km
+
+    def post(self, request):
+        data = request.data
+        origin = data.get('origin', '')
+        destination = data.get('destination', '')
+        origin_lat = data.get('origin_lat')
+        origin_lon = data.get('origin_lon')
+        dest_lat = data.get('dest_lat')
+        dest_lon = data.get('dest_lon')
+        weight_kg = int(data.get('weight_kg', 20000))
+
+        # Geocode if no coords
+        if origin_lat and origin_lon:
+            o = {'lat': float(origin_lat), 'lon': float(origin_lon)}
+        else:
+            o = self._geocode(origin)
+            if not o:
+                return Response({'success': False, 'error': f'Cannot geocode: {origin}'}, status=400)
+
+        if dest_lat and dest_lon:
+            d = {'lat': float(dest_lat), 'lon': float(dest_lon)}
+        else:
+            d = self._geocode(destination)
+            if not d:
+                return Response({'success': False, 'error': f'Cannot geocode: {destination}'}, status=400)
+
+        # TomTom route
+        route = self._route(o, d, weight_kg)
+        if route:
+            distance_km = route['distance_km']
+            duration_min = route['duration_min']
+            source = 'tomtom'
+        else:
+            distance_km = self._haversine(o['lat'], o['lon'], d['lat'], d['lon']) * 1.3
+            duration_min = (distance_km / 80) * 60
+            source = 'estimated'
+
+        fuel_litres = round(distance_km * self.FUEL_RATE, 2)
+        fuel_zar = round(fuel_litres * self.DIESEL_ZAR, 2)
+        toll_zar = round(distance_km * self.TOLL_ZAR_KM, 2)
+
+        return Response({
+            'success': True,
+            'source': source,
+            'distance_km': round(distance_km, 1),
+            'duration_minutes': int(duration_min),
+            'fuel_usage_litres': fuel_litres,
+            'fuel_cost_zar': fuel_zar,
+            'toll_cost_zar': toll_zar,
+            'total_cost_zar': round(fuel_zar + toll_zar, 2),
+            'origin_coords': o,
+            'dest_coords': d,
+        })
+
+    def _geocode(self, query):
+        try:
+            url = f'https://api.tomtom.com/search/2/geocode/{query}.json'
+            r = http_requests.get(url, params={'key': self.TOMTOM_API_KEY}, timeout=10)
+            if r.status_code == 200:
+                results = r.json().get('results', [])
+                if results:
+                    p = results[0]['position']
+                    return {'lat': p['lat'], 'lon': p['lon']}
+        except Exception:
+            pass
+        return None
+
+    def _route(self, o, d, weight_kg):
+        try:
+            url = f"https://api.tomtom.com/routing/1/calculateRoute/{o['lat']},{o['lon']}:{d['lat']},{d['lon']}/json"
+            r = http_requests.get(url, params={
+                'key': self.TOMTOM_API_KEY, 'travelMode': 'truck',
+                'vehicleWeight': weight_kg, 'traffic': 'true',
+            }, timeout=15)
+            if r.status_code == 200:
+                routes = r.json().get('routes', [])
+                if routes:
+                    s = routes[0]['summary']
+                    return {'distance_km': s['lengthInMeters'] / 1000, 'duration_min': s['travelTimeInSeconds'] / 60}
+        except Exception:
+            pass
+        return None
+
+    def _haversine(self, lat1, lon1, lat2, lon2):
+        R = 6371
+        dlat = math.radians(lat2 - lat1)
+        dlon = math.radians(lon2 - lon1)
+        a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
+        return R * 2 * math.asin(math.sqrt(a))
