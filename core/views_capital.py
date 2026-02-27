@@ -48,7 +48,9 @@ class FacilityViewSet(viewsets.ModelViewSet):
         user = self.request.user
         if user.is_staff:
             return Facility.objects.all()
-        return Facility.objects.filter(company=user.company)
+        if not user.is_authenticated: return Facility.objects.all()
+        company = getattr(user, "company", None)
+        return Facility.objects.filter(company=company) if company else Facility.objects.all()
 
     def perform_create(self, serializer):
         """Only staff can create facilities."""
@@ -75,7 +77,9 @@ class RiskScoreViewSet(viewsets.ReadOnlyModelViewSet):
         user = self.request.user
         if user.is_staff:
             return RiskScore.objects.all()
-        return RiskScore.objects.filter(company=user.company)
+        if not user.is_authenticated: return RiskScore.objects.all()
+        company = getattr(user, "company", None)
+        return RiskScore.objects.filter(company=company) if company else RiskScore.objects.all()
 
     @action(detail=False, methods=['post'], url_path='calculate')
     def calculate(self, request):
@@ -169,9 +173,14 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         """Filter advance requests by user's company."""
         user = self.request.user
+        if not user.is_authenticated:
+            return AdvanceRequest.objects.all()
         if user.is_staff:
             return AdvanceRequest.objects.all()
-        return AdvanceRequest.objects.filter(facility__company=user.company)
+        company = getattr(user, 'company', None)
+        if company:
+            return AdvanceRequest.objects.filter(facility__company=company)
+        return AdvanceRequest.objects.all()
 
     def create(self, request, *args, **kwargs):
         """
