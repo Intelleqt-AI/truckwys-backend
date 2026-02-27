@@ -29,7 +29,7 @@ from .views_integrations import (
     CreditLookupView, DashboardInsightsView, CashFlowForecastView,
     FleetTripSyncView, FleetTripBulkSyncView
 )
-from .views import RouteCalculatorView, DashboardSignalsView, PasswordResetRequestView, PasswordResetConfirmView
+from .views import RouteCalculatorView, DashboardSignalsView, PasswordResetRequestView, PasswordResetConfirmView, IntegrationAPIKeyViewSet
 from .views_lender import (
     LenderHealthView, LenderRiskProfileView, LenderEligibleInvoicesView,
     LenderAdvanceRequestView, LenderPortfolioView
