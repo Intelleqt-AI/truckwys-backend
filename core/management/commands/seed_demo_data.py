@@ -14,7 +14,7 @@ import random
 
 from core.models import (
     Customer, Vehicle, VehicleType, Driver, Trip, Load, Invoice, Expense, Payment, Company,
-    Facility, RiskScore, AdvanceRequest
+    Facility, RiskScore, AdvanceRequest, Quote
 )
 from core.services.invoice_generator import InvoiceGenerator
 
@@ -59,6 +59,9 @@ class Command(BaseCommand):
         # Create drivers
         drivers = self._create_drivers()
 
+        # Create quotes
+        quotes = self._create_quotes(customers, admin_user)
+
         # Create trips and loads
         trips = self._create_trips(customers, vehicles, drivers, admin_user)
 
@@ -82,6 +85,7 @@ class Command(BaseCommand):
             f'- {len(customers)} customers\n'
             f'- {len(vehicles)} vehicles\n'
             f'- {len(drivers)} drivers\n'
+            f'- {len(quotes)} quotes\n'
             f'- {len(trips)} trips\n'
             f'- {len(invoices)} invoices\n'
             f'- {len(expenses)} expenses\n'
@@ -99,6 +103,7 @@ class Command(BaseCommand):
         Invoice.objects.all().delete()
         Trip.objects.all().delete()
         Load.objects.all().delete()
+        Quote.objects.all().delete()
         self.stdout.write(self.style.SUCCESS('Demo data cleared'))
 
     def _create_admin_user(self):
@@ -295,6 +300,91 @@ class Command(BaseCommand):
             drivers.append(driver)
 
         return drivers
+
+    def _create_quotes(self, customers, admin_user):
+        """Create quotes with various statuses."""
+        routes = [
+            ('Johannesburg Depot', 'Cape Town Warehouse', 'JHB', 'CPT', Decimal('1400')),
+            ('Johannesburg Distribution Center', 'Durban Port', 'JHB', 'DUR', Decimal('570')),
+            ('Cape Town Harbor', 'Port Elizabeth Facility', 'CPT', 'PE', Decimal('770')),
+            ('Johannesburg Warehouse', 'Bloemfontein DC', 'JHB', 'BFN', Decimal('430')),
+            ('Durban Terminal', 'Cape Town Depot', 'DUR', 'CPT', Decimal('1650')),
+            ('Johannesburg Factory', 'Pretoria Warehouse', 'JHB', 'PTA', Decimal('55')),
+            ('Cape Town Plant', 'Stellenbosch Facility', 'CPT', 'STB', Decimal('50')),
+            ('Durban Depot', 'Richards Bay Terminal', 'DUR', 'RBY', Decimal('180')),
+            ('Bloemfontein Warehouse', 'Cape Town Distribution', 'BFN', 'CPT', Decimal('1000')),
+            ('Port Elizabeth Terminal', 'East London Harbor', 'PE', 'ELS', Decimal('300')),
+        ]
+
+        cargo_types = [
+            'General Freight - Palletized Goods',
+            'Perishable Goods - Refrigerated',
+            'Hazardous Materials - Class 3',
+            'Fragile Items - Electronics',
+            'Construction Materials',
+            'Agricultural Products',
+            'Industrial Equipment',
+            'Consumer Goods - FMCG',
+            'Medical Supplies',
+            'Automotive Parts',
+        ]
+
+        quotes = []
+        statuses = ['DRAFT', 'DRAFT', 'SENT', 'SENT', 'SENT', 'ACCEPTED', 'ACCEPTED', 'IT', 'IT', 'COMPLETED']
+        confidences = ['HIGH', 'HIGH', 'HIGH', 'MEDIUM', 'MEDIUM', 'MEDIUM', 'LOW', 'HIGH', 'MEDIUM', 'HIGH']
+
+        for i in range(10):
+            pickup, delivery, origin, destination, distance = routes[i]
+            customer = random.choice(customers)
+
+            quote_number = f'QT-{date.today().strftime("%Y%m%d")}-{1000 + i}'
+            weight = Decimal(str(random.randint(15000, 28000)))
+
+            # Calculate pricing
+            base_rate = Decimal(str(random.randint(8000, 25000)))
+            fuel_surcharge = (distance * Decimal('2.50')).quantize(Decimal('0.01'))  # R2.50 per km
+            additional_charges = Decimal(str(random.randint(500, 2000)))
+            total_amount = (base_rate + fuel_surcharge + additional_charges).quantize(Decimal('0.01'))
+            margin_percentage = Decimal(str(random.randint(15, 35)))
+
+            # Calculate valid_until based on status
+            status = statuses[i]
+            if status in ['DRAFT', 'SENT']:
+                valid_until = date.today() + timedelta(days=random.randint(7, 30))
+            elif status == 'ACCEPTED':
+                valid_until = date.today() + timedelta(days=random.randint(1, 7))
+            else:  # IT or COMPLETED
+                valid_until = date.today() - timedelta(days=random.randint(1, 30))
+
+            quote, created = Quote.objects.get_or_create(
+                quote_number=quote_number,
+                defaults={
+                    'customer': customer,
+                    'pickup_location': pickup,
+                    'delivery_location': delivery,
+                    'origin': origin,
+                    'destination': destination,
+                    'cargo_description': cargo_types[i],
+                    'weight': weight,
+                    'distance': distance,
+                    'sla_hours': random.choice([24, 48, 72]),
+                    'base_rate': base_rate,
+                    'fuel_surcharge': fuel_surcharge,
+                    'additional_charges': additional_charges,
+                    'total_amount': total_amount,
+                    'margin_percentage': margin_percentage,
+                    'confidence': confidences[i],
+                    'valid_until': valid_until,
+                    'status': status,
+                    'notes': f'Quote for {cargo_types[i]} from {origin} to {destination}',
+                    'created_by': admin_user,
+                }
+            )
+            if created:
+                self.stdout.write(f'Created quote: {quote_number} ({status})')
+            quotes.append(quote)
+
+        return quotes
 
     def _create_trips(self, customers, vehicles, drivers, admin_user):
         """Create trips with SA routes."""
