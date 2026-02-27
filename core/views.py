@@ -1217,6 +1217,79 @@ class LoadViewSet(viewsets.ModelViewSet):
             )
 
 
+    @action(detail=True, methods=['post'])
+    def convert_to_invoice(self, request, pk=None):
+        """Convert a delivered load to an invoice (one-click)."""
+        from core.models.invoice import Invoice
+        from datetime import date, timedelta
+        from decimal import Decimal
+        import random
+
+        load = self.get_object()
+
+        if Invoice.objects.filter(load=load).exists():
+            existing = Invoice.objects.filter(load=load).first()
+            return Response({
+                'error': 'Invoice already exists for this load',
+                'invoice_id': existing.id,
+                'invoice_number': existing.invoice_number,
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        today = date.today()
+        rand = random.randint(10000, 99999)
+        inv_number = f'INV-{today.strftime("%Y%m%d")}-{rand:05d}'
+        while Invoice.objects.filter(invoice_number=inv_number).exists():
+            rand = random.randint(10000, 99999)
+            inv_number = f'INV-{today.strftime("%Y%m%d")}-{rand:05d}'
+
+        subtotal = load.total_amount
+        vat = (subtotal * Decimal('0.15')).quantize(Decimal('0.01'))
+        total = subtotal + vat
+
+        invoice = Invoice.objects.create(
+            invoice_number=inv_number,
+            customer=load.customer,
+            load=load,
+            issue_date=today,
+            due_date=today + timedelta(days=30),
+            subtotal=subtotal,
+            vat_amount=vat,
+            tax_amount=vat,
+            total_amount=total,
+            paid_amount=Decimal('0'),
+            balance=total,
+            status='DRAFT',
+            payment_terms='NET30',
+            notes=f'Auto-generated from Load {load.load_number}',
+            early_pay_eligible=True,
+        )
+
+        load.status = 'DELIVERED'
+        load.save()
+
+        return Response({
+            'message': 'Invoice created successfully',
+            'invoice_id': invoice.id,
+            'invoice_number': invoice.invoice_number,
+            'total_amount': float(invoice.total_amount),
+            'due_date': invoice.due_date.isoformat(),
+        }, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'])
+    def upload_pod(self, request, pk=None):
+        """Upload Proof of Delivery."""
+        load = self.get_object()
+        if 'file' not in request.FILES:
+            return Response({'error': 'No file provided'}, status=400)
+        f = request.FILES['file']
+        load.pod_received_by = f.name
+        load.pod_signature = f'POD: {f.name} ({f.size} bytes)'
+        if load.status == 'IN_TRANSIT':
+            load.status = 'DELIVERED'
+        load.save()
+        return Response({'message': 'POD uploaded', 'filename': f.name, 'load_id': load.id})
+
+
 class QuoteViewSet(viewsets.ModelViewSet):
     queryset = Quote.objects.all()
     serializer_class = QuoteSerializer
@@ -1257,6 +1330,142 @@ class QuoteViewSet(viewsets.ModelViewSet):
         quote.save()
         serializer = self.get_serializer(quote)
         return Response(serializer.data)
+
+
+    @action(detail=True, methods=['get'])
+    def generate_pdf(self, request, pk=None):
+        """Generate a PDF quote document."""
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib import colors
+        from reportlab.lib.units import mm
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.enums import TA_RIGHT, TA_CENTER
+        import io
+        from django.http import HttpResponse
+
+        quote = self.get_object()
+        buf = io.BytesIO()
+        doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=20*mm, leftMargin=20*mm, topMargin=20*mm, bottomMargin=20*mm)
+
+        styles = getSampleStyleSheet()
+        accent = colors.HexColor('#2563EB')
+        dark = colors.HexColor('#0F172A')
+        mid = colors.HexColor('#64748B')
+
+        title_style = ParagraphStyle('title', fontSize=24, textColor=dark, spaceAfter=4, fontName='Helvetica-Bold')
+        sub_style = ParagraphStyle('sub', fontSize=10, textColor=mid, spaceAfter=2)
+        label_style = ParagraphStyle('label', fontSize=9, textColor=mid, fontName='Helvetica')
+        value_style = ParagraphStyle('value', fontSize=10, textColor=dark, fontName='Helvetica-Bold')
+        normal = styles['Normal']
+
+        story = []
+
+        # Header
+        story.append(Paragraph('TRUCKWYS', title_style))
+        story.append(Paragraph('Road Freight Intelligence Platform', sub_style))
+        story.append(Spacer(1, 8*mm))
+
+        # Quote title
+        story.append(Paragraph(f'FREIGHT QUOTE', ParagraphStyle('qt', fontSize=16, textColor=accent, fontName='Helvetica-Bold', spaceAfter=2)))
+        story.append(Paragraph(f'{quote.quote_number}', ParagraphStyle('qn', fontSize=12, textColor=mid, spaceAfter=6)))
+        story.append(Spacer(1, 4*mm))
+
+        # Quote meta table
+        cname = quote.customer.name if quote.customer else 'Direct Customer'
+        meta = [
+            ['Customer', cname, 'Status', quote.status],
+            ['Valid Until', str(quote.valid_until) if quote.valid_until else 'N/A', 'Created', str(quote.created_at.date())],
+            ['Confidence', f'{quote.confidence or 0}%', 'Vehicle Type', quote.vehicle_type or 'Standard'],
+        ]
+        meta_table = Table(meta, colWidths=[35*mm, 65*mm, 35*mm, 35*mm])
+        meta_table.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (0,-1), colors.HexColor('#F1F5F9')),
+            ('BACKGROUND', (2,0), (2,-1), colors.HexColor('#F1F5F9')),
+            ('FONTNAME', (0,0), (-1,-1), 'Helvetica'),
+            ('FONTSIZE', (0,0), (-1,-1), 9),
+            ('TEXTCOLOR', (0,0), (0,-1), mid),
+            ('TEXTCOLOR', (2,0), (2,-1), mid),
+            ('FONTNAME', (1,0), (1,-1), 'Helvetica-Bold'),
+            ('FONTNAME', (3,0), (3,-1), 'Helvetica-Bold'),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#E2E8F0')),
+            ('PADDING', (0,0), (-1,-1), 6),
+        ]))
+        story.append(meta_table)
+        story.append(Spacer(1, 6*mm))
+
+        # Route
+        story.append(Paragraph('ROUTE', ParagraphStyle('section', fontSize=10, textColor=mid, fontName='Helvetica-Bold', spaceAfter=3)))
+        route_data = [
+            ['Pickup', quote.pickup_location or quote.origin or '—', 'Distance', f'{quote.distance or 0} km'],
+            ['Delivery', quote.delivery_location or quote.destination or '—', 'SLA', f'{quote.sla_hours or 48}h'],
+            ['Cargo', quote.cargo_description or '—', 'Weight', f'{quote.weight or 0} kg'],
+        ]
+        route_table = Table(route_data, colWidths=[30*mm, 80*mm, 30*mm, 30*mm])
+        route_table.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (0,-1), colors.HexColor('#F1F5F9')),
+            ('BACKGROUND', (2,0), (2,-1), colors.HexColor('#F1F5F9')),
+            ('FONTNAME', (0,0), (-1,-1), 'Helvetica'),
+            ('FONTSIZE', (0,0), (-1,-1), 9),
+            ('TEXTCOLOR', (0,0), (0,-1), mid),
+            ('TEXTCOLOR', (2,0), (2,-1), mid),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#E2E8F0')),
+            ('PADDING', (0,0), (-1,-1), 6),
+        ]))
+        story.append(route_table)
+        story.append(Spacer(1, 6*mm))
+
+        # Cost breakdown
+        story.append(Paragraph('COST BREAKDOWN', ParagraphStyle('section', fontSize=10, textColor=mid, fontName='Helvetica-Bold', spaceAfter=3)))
+        def zar(v):
+            try: return f'R {float(v):,.2f}'
+            except: return 'R 0.00'
+
+        cost_data = [
+            ['Description', 'Amount'],
+            ['Base Rate', zar(quote.base_rate)],
+            ['Fuel Surcharge', zar(quote.fuel_surcharge)],
+            ['Toll Charges', zar(quote.toll_charges or 0)],
+            ['Driver Allowance', zar(quote.driver_allowance or 0)],
+            ['Additional Charges', zar(quote.additional_charges or 0)],
+            ['TOTAL (excl. VAT)', zar(quote.total_amount)],
+        ]
+        cost_table = Table(cost_data, colWidths=[120*mm, 50*mm])
+        cost_table.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), accent),
+            ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+            ('FONTNAME', (0,1), (-1,-2), 'Helvetica'),
+            ('FONTNAME', (0,-1), (-1,-1), 'Helvetica-Bold'),
+            ('BACKGROUND', (0,-1), (-1,-1), colors.HexColor('#F1F5F9')),
+            ('FONTSIZE', (0,0), (-1,-1), 10),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#E2E8F0')),
+            ('ALIGN', (1,0), (1,-1), 'RIGHT'),
+            ('PADDING', (0,0), (-1,-1), 7),
+        ]))
+        story.append(cost_table)
+        story.append(Spacer(1, 6*mm))
+
+        # Notes
+        if quote.notes:
+            story.append(Paragraph('NOTES', ParagraphStyle('section', fontSize=10, textColor=mid, fontName='Helvetica-Bold', spaceAfter=3)))
+            story.append(Paragraph(quote.notes, ParagraphStyle('notes', fontSize=9, textColor=dark, spaceAfter=4)))
+
+        # T&C
+        story.append(Spacer(1, 4*mm))
+        story.append(Paragraph('Terms & Conditions', ParagraphStyle('tc', fontSize=9, textColor=mid, fontName='Helvetica-Bold', spaceAfter=2)))
+        story.append(Paragraph(
+            'This quote is valid for the period indicated. Prices subject to fuel surcharge adjustments. '
+            'Payment terms: 30 days from invoice date. All rates in South African Rand (ZAR) excl. VAT.',
+            ParagraphStyle('tcbody', fontSize=8, textColor=mid)
+        ))
+
+        doc.build(story)
+        buf.seek(0)
+
+        response = HttpResponse(buf.read(), content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="Quote-{quote.quote_number}.pdf"'
+        return response
 
 
 class InvoiceViewSet(viewsets.ModelViewSet):
@@ -1529,3 +1738,108 @@ class DashboardOverviewView(APIView):
             'fast_pay_available': float(fast_pay),
             'quote_pipeline_value': float(pipeline),
         })
+
+
+# ---------------------------------------------------------------------------
+# Real-time signals endpoint (Sprint 5)
+# ---------------------------------------------------------------------------
+class DashboardSignalsView(APIView):
+    """Generate real AI signals from live data."""
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        signals = []
+
+        # INVOICE_CHASE — overdue invoices
+        overdue = Invoice.objects.filter(status='OVERDUE').select_related('customer')
+        for inv in overdue[:3]:
+            signals.append({
+                'type': 'CRITICAL',
+                'category': 'Cash Alerts',
+                'title': f'Invoice Overdue — {inv.invoice_number}',
+                'body': f'{inv.customer.name} owes R {inv.total_amount:,.2f}. Due {inv.due_date}. Chase now.',
+                'action': 'CHASE',
+                'action_url': f'/finance/invoices/{inv.id}',
+                'severity': 'high',
+                'created_at': timezone.now().isoformat(),
+            })
+
+        # IDLE_FLEET — available vehicles not on a load
+        from core.models.vehicle import Vehicle
+        idle_vehicles = Vehicle.objects.filter(status='AVAILABLE')
+        if idle_vehicles.count() >= 2:
+            names = ', '.join([v.plate or v.make for v in idle_vehicles[:3]])
+            signals.append({
+                'type': 'WARNING',
+                'category': 'Fleet Performance',
+                'title': f'{idle_vehicles.count()} Vehicles Idle',
+                'body': f'{names} available with no assigned load. Estimated revenue loss: R {idle_vehicles.count() * 8000:,}/day.',
+                'action': 'ASSIGN',
+                'action_url': '/fleet',
+                'severity': 'medium',
+                'created_at': timezone.now().isoformat(),
+            })
+
+        # FAST_PAY — eligible invoices
+        eligible = Invoice.objects.filter(status='SENT', early_pay_eligible=True)
+        if eligible.exists():
+            total = eligible.aggregate(t=Sum('total_amount'))['t'] or 0
+            signals.append({
+                'type': 'OPPORTUNITY',
+                'category': 'Cash Alerts',
+                'title': f'Fast Pay — {eligible.count()} Invoices Ready',
+                'body': f'R {float(total):,.0f} in eligible invoices. Advance at 2–3% fee. Cash in 4 hours.',
+                'action': 'FAST PAY',
+                'action_url': '/capital',
+                'severity': 'low',
+                'created_at': timezone.now().isoformat(),
+            })
+        else:
+            # Show all sent invoices as potential fast pay
+            sent = Invoice.objects.filter(status='SENT')
+            if sent.exists():
+                total = sent.aggregate(t=Sum('total_amount'))['t'] or 0
+                signals.append({
+                    'type': 'OPPORTUNITY',
+                    'category': 'Cash Alerts',
+                    'title': f'Fast Pay — {sent.count()} Invoices Sent',
+                    'body': f'R {float(total):,.0f} awaiting payment. Eligible for fast pay at 2.5% fee.',
+                    'action': 'FAST PAY',
+                    'action_url': '/capital',
+                    'severity': 'low',
+                    'created_at': timezone.now().isoformat(),
+                })
+
+        # MARGIN — check recent loads for low margin
+        recent_loads = Load.objects.filter(
+            status='DELIVERED',
+            created_at__gte=timezone.now() - timezone.timedelta(days=30)
+        ).select_related('customer')
+        low_margin = [l for l in recent_loads if float(l.fuel_surcharge or 0) > float(l.total_amount or 1) * 0.15]
+        if low_margin:
+            signals.append({
+                'type': 'CRITICAL',
+                'category': 'Route Intelligence',
+                'title': f'Margin Leak — {len(low_margin)} Routes',
+                'body': f'Fuel costs above 15% of revenue on {len(low_margin)} recent loads. Review pricing.',
+                'action': 'REVIEW',
+                'action_url': '/finance/reports',
+                'severity': 'high',
+                'created_at': timezone.now().isoformat(),
+            })
+
+        # Active loads update
+        active = Load.objects.filter(status='IN_TRANSIT').count()
+        if active > 0:
+            signals.append({
+                'type': 'INFO',
+                'category': 'Fleet Performance',
+                'title': f'{active} Loads In Transit',
+                'body': f'{active} active deliveries on the road. All tracking normally.',
+                'action': 'VIEW',
+                'action_url': '/bookings',
+                'severity': 'low',
+                'created_at': timezone.now().isoformat(),
+            })
+
+        return Response({'signals': signals, 'count': len(signals)})

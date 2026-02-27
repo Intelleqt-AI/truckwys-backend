@@ -28,7 +28,11 @@ from .views_integrations import (
     XeroSyncInvoicesView, XeroSyncPaymentsView, FleetImportTripsView,
     CreditLookupView, DashboardInsightsView, CashFlowForecastView
 )
-from .views import RouteCalculatorView
+from .views import RouteCalculatorView, DashboardSignalsView
+from .views_lender import (
+    LenderHealthView, LenderRiskProfileView, LenderEligibleInvoicesView,
+    LenderAdvanceRequestView, LenderPortfolioView
+)
 
 router = DefaultRouter()
 router.register(r'users', UserViewSet, basename='user')
@@ -109,6 +113,16 @@ urlpatterns = [
 
     # Route Calculator endpoint (NEW - Phase 4)
     path('route/calculate/', RouteCalculatorView.as_view(), name='route-calculate'),
+
+    # Real signals endpoint (Sprint 5)
+    path('dashboard/signals/', DashboardSignalsView.as_view(), name='dashboard-signals'),
+
+    # Lender Fast Pay API (Sprint 5)
+    path('lender/health/', LenderHealthView.as_view(), name='lender-health'),
+    path('lender/risk-profile/', LenderRiskProfileView.as_view(), name='lender-risk-profile'),
+    path('lender/eligible-invoices/', LenderEligibleInvoicesView.as_view(), name='lender-eligible-invoices'),
+    path('lender/advance-request/', LenderAdvanceRequestView.as_view(), name='lender-advance-request'),
+    path('lender/portfolio/', LenderPortfolioView.as_view(), name='lender-portfolio'),
 
     # Router URLs (comes last)
     path('', include(router.urls)),
