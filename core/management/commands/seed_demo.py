@@ -6,7 +6,7 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 from core.models import (
     Customer, Vehicle, Driver, Load, Invoice, Payment,
-    Expense, AdvanceRequest, ActivityEvent, User, Company, VehicleType
+    Expense, AdvanceRequest, ActivityEvent, User, Company, VehicleType, Trip, Quote
 )
 from decimal import Decimal
 from datetime import date, timedelta
@@ -32,7 +32,9 @@ class Command(BaseCommand):
             AdvanceRequest.objects.all().delete()
             Expense.objects.all().delete()
             Invoice.objects.all().delete()
+            Trip.objects.all().delete()  # Delete trips before loads (protected FK)
             Load.objects.all().delete()
+            Quote.objects.all().delete()  # Delete quotes before customers (protected FK)
             Driver.objects.all().delete()
             Vehicle.objects.all().delete()
             Customer.objects.all().delete()
