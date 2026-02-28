@@ -268,12 +268,10 @@ class Command(BaseCommand):
         from core.models import Facility
         # Create or get a company first
         company, _ = Company.objects.get_or_create(
-            name='Demo Transport Co',
+            company_name='Demo Transport Co',
             defaults={
                 'registration_number': 'REG123456',
                 'vat_number': 'VAT7890',
-                'contact_email': 'admin@demotransport.co.za',
-                'contact_phone': '+27 11 123 4567',
             }
         )
         facility, _ = Facility.objects.get_or_create(
