@@ -266,14 +266,22 @@ class Command(BaseCommand):
 
         # Create a facility for advances
         from core.models import Facility
-        facility, _ = Facility.objects.get_or_create(
-            name='Truckwys Capital Facility',
+        # Create or get a company first
+        company, _ = Company.objects.get_or_create(
+            name='Demo Transport Co',
             defaults={
-                'facility_type': 'RECEIVABLES',
-                'limit_amount': Decimal('5000000'),
-                'available_amount': Decimal('5000000'),
-                'interest_rate': Decimal('8.5'),
-                'is_active': True,
+                'registration_number': 'REG123456',
+                'vat_number': 'VAT7890',
+                'contact_email': 'admin@demotransport.co.za',
+                'contact_phone': '+27 11 123 4567',
+            }
+        )
+        facility, _ = Facility.objects.get_or_create(
+            company=company,
+            defaults={
+                'limit': Decimal('5000000'),
+                'outstanding': Decimal('0.00'),
+                'status': 'ACTIVE',
             }
         )
 
