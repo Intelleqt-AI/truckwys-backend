@@ -542,8 +542,13 @@ class Command(BaseCommand):
 
                 # Set invoice dates based on status
                 if status == 'PAID':
-                    # Paid invoices - already settled
-                    invoice.due_date = date.today() - timedelta(days=random.randint(30, 90))
+                    # Paid invoices — mix of recent (this month) and older
+                    # 50% paid this month to drive revenue_mtd, 50% last 2 months
+                    if random.random() < 0.5:
+                        # Paid this month (1-28 days ago, within February)
+                        invoice.due_date = date.today() - timedelta(days=random.randint(1, 28))
+                    else:
+                        invoice.due_date = date.today() - timedelta(days=random.randint(29, 90))
                     invoice.issue_date = invoice.due_date - timedelta(days=30)
                     # Paid on or before due date
                     payment_days_early = random.randint(0, 5)
