@@ -134,8 +134,8 @@ class InvoiceGenerator:
         })
 
         # 2. Distance-based charges (if distance > estimated)
-        if self.trip.distance_km and self.trip.estimated_distance_km:
-            extra_km = max(0, self.trip.distance_km - self.trip.estimated_distance_km)
+        if self.trip.distance_km is not None and self.trip.estimated_distance_km is not None:
+            extra_km = max(Decimal('0'), self.trip.distance_km - self.trip.estimated_distance_km)
             if extra_km > 0:
                 rate_per_km = Decimal('10.00')
                 extra_distance_charge = extra_km * rate_per_km
@@ -219,8 +219,8 @@ class InvoiceGenerator:
         subtotal += base_rate
 
         # 2. Distance-based charges (if distance > estimated)
-        if self.trip.distance_km and self.trip.estimated_distance_km:
-            extra_km = max(0, self.trip.distance_km - self.trip.estimated_distance_km)
+        if self.trip.distance_km is not None and self.trip.estimated_distance_km is not None:
+            extra_km = max(Decimal('0'), self.trip.distance_km - self.trip.estimated_distance_km)
             if extra_km > 0:
                 # Charge R10/km for extra distance (configurable)
                 extra_distance_charge = extra_km * Decimal('10.00')
