@@ -133,16 +133,16 @@ class Command(BaseCommand):
 
         # Create 50 loads with realistic SA freight data
         sa_routes = [
-            ('Johannesburg', 'Cape Town', Decimal('1450'), Decimal('45000')),
-            ('Durban', 'Johannesburg', Decimal('600'), Decimal('22000')),
-            ('Cape Town', 'Port Elizabeth', Decimal('770'), Decimal('28000')),
-            ('Pretoria', 'Durban', Decimal('630'), Decimal('24000')),
-            ('Bloemfontein', 'Johannesburg', Decimal('400'), Decimal('18000')),
-            ('Polokwane', 'Cape Town', Decimal('1600'), Decimal('52000')),
-            ('East London', 'Johannesburg', Decimal('1050'), Decimal('35000')),
-            ('Kimberley', 'Durban', Decimal('750'), Decimal('27000')),
-            ('Nelspruit', 'Cape Town', Decimal('1700'), Decimal('55000')),
-            ('George', 'Johannesburg', Decimal('1300'), Decimal('42000')),
+            ('Johannesburg, GP', 'Cape Town, WC', 'Johannesburg', 'Cape Town', 'GP', 'WC', Decimal('1450'), Decimal('45000')),
+            ('Durban, KZN', 'Johannesburg, GP', 'Durban', 'Johannesburg', 'KZN', 'GP', Decimal('600'), Decimal('22000')),
+            ('Cape Town, WC', 'Port Elizabeth, EC', 'Cape Town', 'Port Elizabeth', 'WC', 'EC', Decimal('770'), Decimal('28000')),
+            ('Pretoria, GP', 'Durban, KZN', 'Pretoria', 'Durban', 'GP', 'KZN', Decimal('630'), Decimal('24000')),
+            ('Bloemfontein, FS', 'Johannesburg, GP', 'Bloemfontein', 'Johannesburg', 'FS', 'GP', Decimal('400'), Decimal('18000')),
+            ('Polokwane, LP', 'Cape Town, WC', 'Polokwane', 'Cape Town', 'LP', 'WC', Decimal('1600'), Decimal('52000')),
+            ('East London, EC', 'Johannesburg, GP', 'East London', 'Johannesburg', 'EC', 'GP', Decimal('1050'), Decimal('35000')),
+            ('Kimberley, NC', 'Durban, KZN', 'Kimberley', 'Durban', 'NC', 'KZN', Decimal('750'), Decimal('27000')),
+            ('Nelspruit, MP', 'Cape Town, WC', 'Nelspruit', 'Cape Town', 'MP', 'WC', Decimal('1700'), Decimal('55000')),
+            ('George, WC', 'Johannesburg, GP', 'George', 'Johannesburg', 'WC', 'GP', Decimal('1300'), Decimal('42000')),
         ]
 
         load_statuses = ['PENDING', 'IN_TRANSIT', 'DELIVERED']
@@ -150,32 +150,47 @@ class Command(BaseCommand):
 
         for i in range(50):
             route = random.choice(sa_routes)
-            origin, destination, distance, amount = route
+            pickup_loc, delivery_loc, pickup_city, delivery_city, pickup_state, delivery_state, distance, rate = route
             status = random.choice(load_statuses)
 
             # Date logic: past loads delivered, recent loads in transit, future loads pending
+            from datetime import datetime
             if status == 'DELIVERED':
-                pickup_date = date.today() - timedelta(days=random.randint(5, 30))
-                delivery_date = pickup_date + timedelta(days=random.randint(1, 3))
+                pickup_date = datetime.combine(date.today() - timedelta(days=random.randint(5, 30)), datetime.min.time())
+                delivery_date = datetime.combine(pickup_date.date() + timedelta(days=random.randint(1, 3)), datetime.min.time())
             elif status == 'IN_TRANSIT':
-                pickup_date = date.today() - timedelta(days=random.randint(0, 3))
-                delivery_date = pickup_date + timedelta(days=random.randint(1, 2))
+                pickup_date = datetime.combine(date.today() - timedelta(days=random.randint(0, 3)), datetime.min.time())
+                delivery_date = datetime.combine(pickup_date.date() + timedelta(days=random.randint(1, 2)), datetime.min.time())
             else:  # PENDING
-                pickup_date = date.today() + timedelta(days=random.randint(1, 10))
-                delivery_date = pickup_date + timedelta(days=random.randint(1, 3))
+                pickup_date = datetime.combine(date.today() + timedelta(days=random.randint(1, 10)), datetime.min.time())
+                delivery_date = datetime.combine(pickup_date.date() + timedelta(days=random.randint(1, 3)), datetime.min.time())
+
+            weight = Decimal(str(random.randint(15000, 25000)))
+            fuel_surcharge = rate * Decimal('0.05')
+            total_amount = rate + fuel_surcharge
 
             load = Load.objects.create(
+                load_number=f'LD-{2026}{i+1:04d}',
                 customer=random.choice(customers),
-                origin=origin,
-                destination=destination,
+                pickup_location=pickup_loc,
+                pickup_city=pickup_city,
+                pickup_state=pickup_state,
+                pickup_zip='0000',
                 pickup_date=pickup_date,
+                delivery_location=delivery_loc,
+                delivery_city=delivery_city,
+                delivery_state=delivery_state,
+                delivery_zip='0000',
                 delivery_date=delivery_date,
+                cargo_description=f'General freight — {weight}kg',
                 status=status,
                 distance=distance,
-                amount=amount,
+                rate=rate,
+                fuel_surcharge=fuel_surcharge,
+                total_amount=total_amount,
                 vehicle=random.choice(vehicles) if status != 'PENDING' else None,
                 driver=random.choice(drivers) if status != 'PENDING' else None,
-                weight=Decimal(str(random.randint(15000, 25000))),
+                weight=weight,
             )
             loads.append(load)
 
@@ -190,8 +205,12 @@ class Command(BaseCommand):
             load = delivered_loads[i]
             status = random.choice(invoice_statuses)
 
-            issue_date = load.delivery_date + timedelta(days=random.randint(0, 2))
+            issue_date = load.delivery_date.date() + timedelta(days=random.randint(0, 2))
             due_date = issue_date + timedelta(days=30)  # NET30
+
+            subtotal = load.total_amount
+            vat_amount = subtotal * Decimal('0.15')  # 15% VAT
+            total = subtotal + vat_amount
 
             invoice = Invoice.objects.create(
                 load=load,
@@ -200,9 +219,11 @@ class Command(BaseCommand):
                 issue_date=issue_date,
                 due_date=due_date,
                 status=status,
-                subtotal=load.amount,
-                tax=load.amount * Decimal('0.15'),  # 15% VAT
-                total=load.amount * Decimal('1.15'),
+                subtotal=subtotal,
+                vat_amount=vat_amount,
+                total_amount=total,
+                balance=total if status != 'PAID' else Decimal('0.00'),
+                paid_amount=total if status == 'PAID' else Decimal('0.00'),
             )
             invoices.append(invoice)
 
@@ -212,16 +233,16 @@ class Command(BaseCommand):
         expense_categories = [
             ('FUEL', 'Diesel refill — Engen N1', Decimal('8500')),
             ('FUEL', 'Diesel refill — Shell M1', Decimal('12000')),
-            ('TOLL', 'N1 toll fees JHB-CPT', Decimal('850')),
-            ('TOLL', 'N3 toll fees DBN-JHB', Decimal('620')),
+            ('TOLLS', 'N1 toll fees JHB-CPT', Decimal('850')),
+            ('TOLLS', 'N3 toll fees DBN-JHB', Decimal('620')),
             ('MAINTENANCE', 'Tyre replacement', Decimal('18000')),
             ('MAINTENANCE', 'Oil change and service', Decimal('4500')),
             ('MAINTENANCE', 'Brake pad replacement', Decimal('7200')),
             ('FUEL', 'Diesel refill — BP Midrand', Decimal('9800')),
-            ('TOLL', 'N4 toll fees Pretoria-Rustenburg', Decimal('340')),
+            ('TOLLS', 'N4 toll fees Pretoria-Rustenburg', Decimal('340')),
             ('MAINTENANCE', 'Windscreen replacement', Decimal('3200')),
             ('FUEL', 'Diesel refill — Caltex Gateway', Decimal('11500')),
-            ('TOLL', 'N2 toll fees CPT-PE', Decimal('720')),
+            ('TOLLS', 'N2 toll fees CPT-PE', Decimal('720')),
             ('MAINTENANCE', 'Engine diagnostics', Decimal('2800')),
             ('FUEL', 'Diesel refill — Total Polokwane', Decimal('10200')),
             ('MAINTENANCE', 'Suspension repair', Decimal('15000')),
@@ -230,33 +251,67 @@ class Command(BaseCommand):
         expenses = []
         for i, (category, description, amount) in enumerate(expense_categories):
             expense = Expense.objects.create(
+                expense_number=f'EXP-{2026}{i+1:04d}',
                 category=category,
                 description=description,
                 amount=amount,
                 expense_date=date.today() - timedelta(days=random.randint(1, 60)),
                 vehicle=random.choice(vehicles),
+                driver=random.choice(drivers),
                 status='APPROVED',
             )
             expenses.append(expense)
 
         self.stdout.write(f'Created {len(expenses)} expenses')
 
-        # Create 5 advance requests
-        advance_statuses = ['PENDING', 'APPROVED', 'DISBURSED']
-        advance_amounts = [Decimal('50000'), Decimal('75000'), Decimal('100000'), Decimal('120000'), Decimal('80000')]
+        # Create a facility for advances
+        from .facility import Facility
+        facility, _ = Facility.objects.get_or_create(
+            name='Truckwys Capital Facility',
+            defaults={
+                'facility_type': 'RECEIVABLES',
+                'limit_amount': Decimal('5000000'),
+                'available_amount': Decimal('5000000'),
+                'interest_rate': Decimal('8.5'),
+                'is_active': True,
+            }
+        )
+
+        # Create 5 advance requests linked to SENT/OVERDUE invoices
+        eligible_invoices = [inv for inv in invoices if inv.status in ['SENT', 'OVERDUE']]
+        advance_statuses = ['REQUESTED', 'APPROVED', 'DISBURSED']
         advances = []
 
-        for i, amount in enumerate(advance_amounts):
+        for i in range(min(5, len(eligible_invoices))):
+            invoice = eligible_invoices[i]
             status = random.choice(advance_statuses)
-            request_date = date.today() - timedelta(days=random.randint(1, 20))
+
+            # Request 80% of invoice total
+            amount = (invoice.total_amount * Decimal('0.8')).quantize(Decimal('0.01'))
+            fee_percent = Decimal('3.5')
+            fee_amount = (amount * fee_percent / Decimal('100')).quantize(Decimal('0.01'))
+            net_amount = amount - fee_amount
 
             advance = AdvanceRequest.objects.create(
+                invoice=invoice,
+                facility=facility,
                 amount=amount,
+                fee_percent=fee_percent,
+                fee_amount=fee_amount,
+                net_amount=net_amount,
                 status=status,
-                requested_date=request_date,
-                purpose=f'Working capital for {random.choice(["fuel", "maintenance", "expansion", "payroll", "equipment"])}',
-                repayment_terms=random.choice(['30_DAYS', '60_DAYS', '90_DAYS']),
             )
+
+            # Set timestamps based on status
+            if status in ['REQUESTED', 'APPROVED', 'DISBURSED']:
+                from django.utils import timezone
+                advance.requested_at = timezone.now() - timedelta(days=random.randint(1, 10))
+            if status in ['APPROVED', 'DISBURSED']:
+                advance.approved_at = timezone.now() - timedelta(days=random.randint(0, 5))
+            if status == 'DISBURSED':
+                advance.disbursed_at = timezone.now() - timedelta(days=random.randint(0, 3))
+
+            advance.save()
             advances.append(advance)
 
         self.stdout.write(f'Created {len(advances)} advance requests')
