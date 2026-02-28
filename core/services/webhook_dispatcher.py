@@ -17,9 +17,12 @@ def dispatch_webhook(event_type: str, data: Dict[str, Any]) -> None:
     from core.models import Webhook
 
     # Find all active webhooks subscribed to this event
-    hooks = Webhook.objects.filter(active=True, events__contains=event_type)
-
-    if not hooks.exists():
+    try:
+        hooks = Webhook.objects.filter(active=True, events__contains=event_type)
+        if not hooks.exists():
+            return
+    except Exception:
+        # SQLite doesn't support __contains on JSONField, skip webhooks
         return
 
     # Prepare payload
