@@ -617,15 +617,47 @@ class FinanceDashboardView(APIView):
             status='PAID'
         ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
 
+        # All-time total revenue for Overview card
+        total_revenue = Invoice.objects.filter(
+            status='PAID'
+        ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
+
         # Expenses MTD (approved)
         expenses_mtd = Expense.objects.filter(
             expense_date__gte=mtd_start,
             status='APPROVED'
         ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
 
+        # All-time total expenses
+        total_expenses = Expense.objects.filter(
+            status='APPROVED'
+        ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+
+        # Fuel expenses MTD
+        fuel_expenses_mtd = Expense.objects.filter(
+            expense_date__gte=mtd_start,
+            status='APPROVED',
+            category='FUEL'
+        ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+
         # Net margin MTD
         net_margin_mtd = revenue_mtd - expenses_mtd
         net_margin_percent = float((net_margin_mtd / revenue_mtd * 100) if revenue_mtd > 0 else 0)
+
+        # Fuel cost ratio (fuel / revenue)
+        fuel_cost_ratio = float((fuel_expenses_mtd / revenue_mtd * 100) if revenue_mtd > 0 else 0)
+
+        # Idle vehicles count (vehicles with no recent loads)
+        thirty_days_ago = today - timedelta(days=30)
+        active_vehicle_ids = Load.objects.filter(
+            created_at__gte=thirty_days_ago
+        ).values_list('vehicle_id', flat=True).distinct()
+
+        idle_vehicles = Vehicle.objects.exclude(
+            id__in=active_vehicle_ids
+        ).filter(
+            status='ACTIVE'
+        ).count()
 
         # Outstanding invoices
         outstanding_total = Invoice.objects.filter(
@@ -703,12 +735,39 @@ class FinanceDashboardView(APIView):
                 'margin': float(month_margin),
             })
 
+        # Weekly series for last 8 weeks (for Overview chart)
+        revenue_by_week = []
+        fuel_by_week = []
+        for i in range(7, -1, -1):
+            week_start = today - timedelta(days=today.weekday()) - timedelta(weeks=i)
+            week_end = week_start + timedelta(days=6)
+
+            week_revenue = Invoice.objects.filter(
+                paid_at__gte=week_start,
+                paid_at__lte=week_end,
+                status='PAID'
+            ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
+
+            week_fuel = Expense.objects.filter(
+                expense_date__gte=week_start,
+                expense_date__lte=week_end,
+                status='APPROVED',
+                category='FUEL'
+            ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+
+            revenue_by_week.append(float(week_revenue))
+            fuel_by_week.append(float(week_fuel))
+
         return Response({
             'revenue_mtd': float(revenue_mtd),
             'revenue_ytd': float(revenue_ytd),
+            'total_revenue': float(total_revenue),
+            'total_expenses': float(total_expenses),
             'total_expenses_mtd': float(expenses_mtd),
             'net_margin_mtd': float(net_margin_mtd),
             'net_margin_percent': net_margin_percent,
+            'fuel_cost_ratio': fuel_cost_ratio,
+            'idle_vehicles': idle_vehicles,
             'outstanding_invoices_total': float(outstanding_total),
             'overdue_invoices_total': float(overdue_total),
             'dso': dso,
@@ -727,6 +786,8 @@ class FinanceDashboardView(APIView):
                 for item in top_customers
             ],
             'monthly_trend': monthly_trend,
+            'revenue_by_week': revenue_by_week,
+            'fuel_by_week': fuel_by_week,
         })
 
 
