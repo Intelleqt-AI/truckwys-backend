@@ -849,3 +849,109 @@ class RouteAnalyticsView(APIView):
                 'has_expense_data': has_expense_data,  # Flag to indicate if using real data
             })
         return Response({'routes': routes})
+
+
+class DashboardKPIView(APIView):
+    """
+    Aggregated KPI metrics dashboard endpoint.
+
+    GET /api/v1/dashboard/kpi/
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        from core.models import AdvanceRequest
+
+        today = date.today()
+
+        # Current month
+        current_month_start = today.replace(day=1)
+        current_month_end = (current_month_start + relativedelta(months=1)) - timedelta(days=1)
+
+        # Previous month
+        prev_month_start = (current_month_start - relativedelta(months=1))
+        prev_month_end = current_month_start - timedelta(days=1)
+
+        # Revenue MTD (current month paid invoices)
+        revenue_mtd = Invoice.objects.filter(
+            paid_at__gte=current_month_start,
+            paid_at__lte=current_month_end,
+            status='PAID'
+        ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
+
+        # Revenue previous month
+        revenue_prev_month = Invoice.objects.filter(
+            paid_at__gte=prev_month_start,
+            paid_at__lte=prev_month_end,
+            status='PAID'
+        ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
+
+        # Revenue change %
+        revenue_change_pct = 0.0
+        if revenue_prev_month > 0:
+            revenue_change_pct = float((revenue_mtd - revenue_prev_month) / revenue_prev_month * 100)
+
+        # Expenses MTD
+        expenses_mtd = Expense.objects.filter(
+            expense_date__gte=current_month_start,
+            expense_date__lte=current_month_end,
+            status='APPROVED'
+        ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+
+        # Net margin % MTD
+        net_margin_pct = 0.0
+        if revenue_mtd > 0:
+            net_margin_pct = float((revenue_mtd - expenses_mtd) / revenue_mtd * 100)
+
+        # Outstanding invoices
+        outstanding_invoices = Invoice.objects.filter(
+            balance__gt=0,
+            status__in=['SENT', 'VIEWED', 'PARTIALLY_PAID', 'OVERDUE']
+        ).aggregate(total=Sum('balance'))['total'] or Decimal('0.00')
+
+        # Overdue invoices
+        overdue_invoices = Invoice.objects.filter(
+            due_date__lt=today,
+            balance__gt=0,
+            status__in=['SENT', 'VIEWED', 'PARTIALLY_PAID', 'OVERDUE']
+        ).aggregate(total=Sum('balance'))['total'] or Decimal('0.00')
+
+        # DSO
+        from core.services.aging_service import AgingAnalysisService
+        aging_service = AgingAnalysisService()
+        dso = aging_service.calculate_dso()
+
+        # Fleet metrics
+        total_vehicles = Vehicle.objects.count()
+        active_vehicles = Vehicle.objects.filter(
+            status__in=['AVAILABLE', 'IN_USE', 'ACTIVE']
+        ).count()
+
+        fleet_utilization_pct = 0.0
+        if total_vehicles > 0:
+            fleet_utilization_pct = float(active_vehicles / total_vehicles * 100)
+
+        # Advances this month
+        advances_this_month = AdvanceRequest.objects.filter(
+            requested_at__gte=current_month_start,
+            requested_at__lte=current_month_end
+        ).count()
+
+        total_advance_amount = AdvanceRequest.objects.filter(
+            requested_at__gte=current_month_start,
+            requested_at__lte=current_month_end
+        ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+
+        return Response({
+            'revenue_mtd': float(revenue_mtd),
+            'revenue_prev_month': float(revenue_prev_month),
+            'revenue_change_pct': round(revenue_change_pct, 2),
+            'net_margin_pct': round(net_margin_pct, 2),
+            'outstanding_invoices': float(outstanding_invoices),
+            'overdue_invoices': float(overdue_invoices),
+            'dso': dso,
+            'active_vehicles': active_vehicles,
+            'fleet_utilization_pct': round(fleet_utilization_pct, 2),
+            'advances_this_month': advances_this_month,
+            'total_advance_amount': float(total_advance_amount),
+        })
