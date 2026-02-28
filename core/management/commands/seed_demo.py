@@ -131,27 +131,135 @@ class Command(BaseCommand):
             drivers.append(driver)
         self.stdout.write(f'Created {len(drivers)} drivers')
 
-        # Use existing loads or skip if database schema is different
-        loads = list(Load.objects.all())
-        if not loads:
-            self.stdout.write(self.style.WARNING('No existing loads found - skipping load-dependent seeding'))
-        else:
-            self.stdout.write(f'Found {len(loads)} existing loads')
+        # Create 50 loads with realistic SA freight data
+        sa_routes = [
+            ('Johannesburg', 'Cape Town', Decimal('1450'), Decimal('45000')),
+            ('Durban', 'Johannesburg', Decimal('600'), Decimal('22000')),
+            ('Cape Town', 'Port Elizabeth', Decimal('770'), Decimal('28000')),
+            ('Pretoria', 'Durban', Decimal('630'), Decimal('24000')),
+            ('Bloemfontein', 'Johannesburg', Decimal('400'), Decimal('18000')),
+            ('Polokwane', 'Cape Town', Decimal('1600'), Decimal('52000')),
+            ('East London', 'Johannesburg', Decimal('1050'), Decimal('35000')),
+            ('Kimberley', 'Durban', Decimal('750'), Decimal('27000')),
+            ('Nelspruit', 'Cape Town', Decimal('1700'), Decimal('55000')),
+            ('George', 'Johannesburg', Decimal('1300'), Decimal('42000')),
+        ]
 
-        # Use existing invoices
-        invoices = list(Invoice.objects.all())
-        if not invoices:
-            self.stdout.write(self.style.WARNING('No existing invoices found - skipping invoice-dependent seeding'))
-        else:
-            self.stdout.write(f'Found {len(invoices)} existing invoices')
+        load_statuses = ['PENDING', 'IN_TRANSIT', 'DELIVERED']
+        loads = []
 
-        # Use existing advances
-        advances = list(AdvanceRequest.objects.all())
-        self.stdout.write(f'Found {len(advances)} existing advances')
+        for i in range(50):
+            route = random.choice(sa_routes)
+            origin, destination, distance, amount = route
+            status = random.choice(load_statuses)
 
-        # Use existing expenses
-        expenses = list(Expense.objects.all())
-        self.stdout.write(f'Found {len(expenses)} existing expenses')
+            # Date logic: past loads delivered, recent loads in transit, future loads pending
+            if status == 'DELIVERED':
+                pickup_date = date.today() - timedelta(days=random.randint(5, 30))
+                delivery_date = pickup_date + timedelta(days=random.randint(1, 3))
+            elif status == 'IN_TRANSIT':
+                pickup_date = date.today() - timedelta(days=random.randint(0, 3))
+                delivery_date = pickup_date + timedelta(days=random.randint(1, 2))
+            else:  # PENDING
+                pickup_date = date.today() + timedelta(days=random.randint(1, 10))
+                delivery_date = pickup_date + timedelta(days=random.randint(1, 3))
+
+            load = Load.objects.create(
+                customer=random.choice(customers),
+                origin=origin,
+                destination=destination,
+                pickup_date=pickup_date,
+                delivery_date=delivery_date,
+                status=status,
+                distance=distance,
+                amount=amount,
+                vehicle=random.choice(vehicles) if status != 'PENDING' else None,
+                driver=random.choice(drivers) if status != 'PENDING' else None,
+                weight=Decimal(str(random.randint(15000, 25000))),
+            )
+            loads.append(load)
+
+        self.stdout.write(f'Created {len(loads)} loads')
+
+        # Create 30 invoices linked to delivered loads
+        delivered_loads = [l for l in loads if l.status == 'DELIVERED']
+        invoice_statuses = ['DRAFT', 'SENT', 'PAID', 'OVERDUE']
+        invoices = []
+
+        for i in range(min(30, len(delivered_loads))):
+            load = delivered_loads[i]
+            status = random.choice(invoice_statuses)
+
+            issue_date = load.delivery_date + timedelta(days=random.randint(0, 2))
+            due_date = issue_date + timedelta(days=30)  # NET30
+
+            invoice = Invoice.objects.create(
+                load=load,
+                customer=load.customer,
+                invoice_number=f'INV-{2026}{i+1:04d}',
+                issue_date=issue_date,
+                due_date=due_date,
+                status=status,
+                subtotal=load.amount,
+                tax=load.amount * Decimal('0.15'),  # 15% VAT
+                total=load.amount * Decimal('1.15'),
+            )
+            invoices.append(invoice)
+
+        self.stdout.write(f'Created {len(invoices)} invoices')
+
+        # Create 15 expense records
+        expense_categories = [
+            ('FUEL', 'Diesel refill — Engen N1', Decimal('8500')),
+            ('FUEL', 'Diesel refill — Shell M1', Decimal('12000')),
+            ('TOLL', 'N1 toll fees JHB-CPT', Decimal('850')),
+            ('TOLL', 'N3 toll fees DBN-JHB', Decimal('620')),
+            ('MAINTENANCE', 'Tyre replacement', Decimal('18000')),
+            ('MAINTENANCE', 'Oil change and service', Decimal('4500')),
+            ('MAINTENANCE', 'Brake pad replacement', Decimal('7200')),
+            ('FUEL', 'Diesel refill — BP Midrand', Decimal('9800')),
+            ('TOLL', 'N4 toll fees Pretoria-Rustenburg', Decimal('340')),
+            ('MAINTENANCE', 'Windscreen replacement', Decimal('3200')),
+            ('FUEL', 'Diesel refill — Caltex Gateway', Decimal('11500')),
+            ('TOLL', 'N2 toll fees CPT-PE', Decimal('720')),
+            ('MAINTENANCE', 'Engine diagnostics', Decimal('2800')),
+            ('FUEL', 'Diesel refill — Total Polokwane', Decimal('10200')),
+            ('MAINTENANCE', 'Suspension repair', Decimal('15000')),
+        ]
+
+        expenses = []
+        for i, (category, description, amount) in enumerate(expense_categories):
+            expense = Expense.objects.create(
+                category=category,
+                description=description,
+                amount=amount,
+                expense_date=date.today() - timedelta(days=random.randint(1, 60)),
+                vehicle=random.choice(vehicles),
+                status='APPROVED',
+            )
+            expenses.append(expense)
+
+        self.stdout.write(f'Created {len(expenses)} expenses')
+
+        # Create 5 advance requests
+        advance_statuses = ['PENDING', 'APPROVED', 'DISBURSED']
+        advance_amounts = [Decimal('50000'), Decimal('75000'), Decimal('100000'), Decimal('120000'), Decimal('80000')]
+        advances = []
+
+        for i, amount in enumerate(advance_amounts):
+            status = random.choice(advance_statuses)
+            request_date = date.today() - timedelta(days=random.randint(1, 20))
+
+            advance = AdvanceRequest.objects.create(
+                amount=amount,
+                status=status,
+                requested_date=request_date,
+                purpose=f'Working capital for {random.choice(["fuel", "maintenance", "expansion", "payroll", "equipment"])}',
+                repayment_terms=random.choice(['30_DAYS', '60_DAYS', '90_DAYS']),
+            )
+            advances.append(advance)
+
+        self.stdout.write(f'Created {len(advances)} advance requests')
 
         # Create activity events
         events_data = [
