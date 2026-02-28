@@ -812,13 +812,40 @@ class RouteAnalyticsView(APIView):
             avg_rev = Invoice.objects.filter(
                 load__pickup_location=r['pickup_location'], load__delivery_location=r['delivery_location']
             ).aggregate(avg=Avg('total_amount'))['avg'] or 45000
-            avg_fuel = float(avg_rev) * 0.19  # ~19% fuel cost typical SA freight
-            margin = round((float(avg_rev) - avg_fuel) / float(avg_rev) * 100) if avg_rev else 81
+
+            # Calculate actual average expenses per route from Expense records
+            # Get all loads for this route
+            route_loads = Load.objects.filter(
+                pickup_location=r['pickup_location'],
+                delivery_location=r['delivery_location']
+            ).values_list('id', flat=True)
+
+            # Get expenses linked to trips for these loads
+            from core.models import Expense, Trip
+            route_trips = Trip.objects.filter(load_id__in=route_loads).values_list('id', flat=True)
+            total_expenses = Expense.objects.filter(
+                trip_id__in=route_trips,
+                status='APPROVED'  # Only count approved expenses
+            ).aggregate(total=Sum('amount'))['total'] or 0
+
+            # Calculate average cost per route
+            trip_count = r['trip_count']
+            avg_cost = float(total_expenses) / trip_count if trip_count > 0 and total_expenses > 0 else 0
+
+            # If no expense data, fall back to estimated 19% fuel ratio
+            has_expense_data = total_expenses > 0
+            if not has_expense_data:
+                avg_cost = float(avg_rev) * 0.19
+
+            # Calculate actual margin
+            margin = round((float(avg_rev) - avg_cost) / float(avg_rev) * 100) if avg_rev else 81
+
             routes.append({
                 'route': route_str,
                 'trips': r['trip_count'],
                 'avg_revenue': round(float(avg_rev)),
-                'avg_fuel_cost': round(avg_fuel),
+                'avg_cost': round(avg_cost),
                 'margin_pct': margin,
+                'has_expense_data': has_expense_data,  # Flag to indicate if using real data
             })
         return Response({'routes': routes})
