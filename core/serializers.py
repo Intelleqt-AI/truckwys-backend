@@ -303,7 +303,8 @@ class WebhookSerializer(serializers.ModelSerializer):
     """Serializer for Webhook model."""
 
     class Meta:
-        model = None  # Will be set dynamically
+        from core.models import Webhook
+        model = Webhook
         fields = [
             'id', 'url', 'secret', 'events', 'active',
             'failure_count', 'last_fired_at', 'created_at', 'updated_at'
@@ -315,17 +316,13 @@ class IntegrationAPIKeySerializer(serializers.ModelSerializer):
     """Serializer for IntegrationAPIKey model."""
 
     class Meta:
-        model = None  # Will be set dynamically
+        from core.models import IntegrationAPIKey
+        model = IntegrationAPIKey
         fields = [
             'id', 'name', 'key', 'key_type', 'active',
             'created_at', 'last_used_at'
         ]
         read_only_fields = ['id', 'key', 'created_at', 'last_used_at']
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        from core.models import Webhook
-        self.Meta.model = Webhook
 
 
 class ActivityEventSerializer(serializers.ModelSerializer):
