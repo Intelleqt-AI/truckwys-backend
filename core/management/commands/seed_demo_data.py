@@ -30,9 +30,14 @@ class Command(BaseCommand):
             action='store_true',
             help='Clear existing demo data before seeding',
         )
+        parser.add_argument(
+            '--reset',
+            action='store_true',
+            help='Clear existing demo data before seeding (alias for --clear)',
+        )
 
     def handle(self, *args, **options):
-        if options['clear']:
+        if options['clear'] or options['reset']:
             self.stdout.write('Clearing existing demo data...')
             self._clear_data()
 
@@ -496,7 +501,7 @@ class Command(BaseCommand):
         return trips
 
     def _create_invoices(self, trips):
-        """Create invoices from completed trips."""
+        """Create invoices from completed trips with realistic aging distribution."""
         invoices = []
 
         # Get completed trips
@@ -505,38 +510,71 @@ class Command(BaseCommand):
         # Generate invoices for 75% of completed trips
         invoice_trips = random.sample(completed_trips, k=int(len(completed_trips) * 0.75))
 
+        # Define aging distribution:
+        # 30% PAID, 20% current, 20% 1-30 days overdue, 15% 31-60, 10% 61-90, 5% 90+
+        aging_buckets = [
+            ('PAID', 0.30, None),                    # 30% paid
+            ('SENT', 0.20, (7, 30)),                # 20% current (due in 7-30 days)
+            ('OVERDUE', 0.20, (-30, -1)),           # 20% 1-30 days overdue
+            ('OVERDUE', 0.15, (-60, -31)),          # 15% 31-60 days overdue
+            ('OVERDUE', 0.10, (-90, -61)),          # 10% 61-90 days overdue
+            ('OVERDUE', 0.05, (-150, -91)),         # 5% 90+ days overdue
+        ]
+
+        # Shuffle trips and assign to buckets
+        random.shuffle(invoice_trips)
+        bucket_index = 0
+        current_bucket = 0
+        bucket_size = int(len(invoice_trips) * aging_buckets[0][1])
+
         for trip in invoice_trips:
             try:
                 # Generate invoice
                 invoice = InvoiceGenerator.generate_from_trip(trip)
 
-                # Randomize status
-                status_choice = random.choices(
-                    ['DRAFT', 'SENT', 'PAID', 'OVERDUE', 'PARTIALLY_PAID'],
-                    weights=[0.1, 0.3, 0.4, 0.1, 0.1]
-                )[0]
+                # Determine which bucket this invoice belongs to
+                if bucket_index >= bucket_size and current_bucket < len(aging_buckets) - 1:
+                    current_bucket += 1
+                    bucket_size += int(len(invoice_trips) * aging_buckets[current_bucket][1])
 
-                invoice.status = status_choice
+                status, _, due_date_range = aging_buckets[current_bucket]
+                invoice.status = status
 
-                if status_choice in ['PAID', 'PARTIALLY_PAID']:
-                    invoice.paid_at = timezone.now() - timedelta(days=random.randint(1, 30))
-                    if status_choice == 'PAID':
-                        invoice.paid_amount = invoice.total_amount
-                        invoice.balance = Decimal('0.00')
-                    else:
-                        invoice.paid_amount = invoice.total_amount * Decimal('0.5')
-                        invoice.balance = invoice.total_amount - invoice.paid_amount
+                # Set invoice dates
+                if due_date_range:
+                    # Set due_date based on bucket
+                    days_offset = random.randint(due_date_range[0], due_date_range[1])
+                    invoice.due_date = date.today() + timedelta(days=days_offset)
+                    # Set invoice date ~30 days before due date
+                    invoice.invoice_date = invoice.due_date - timedelta(days=30)
+                    invoice.created_at = timezone.make_aware(
+                        timezone.datetime.combine(invoice.invoice_date, timezone.datetime.min.time())
+                    )
 
-                if status_choice in ['SENT', 'VIEWED', 'OVERDUE']:
-                    invoice.sent_at = timezone.now() - timedelta(days=random.randint(1, 45))
-
-                if status_choice == 'OVERDUE':
-                    # Make due date in the past
+                if status == 'PAID':
+                    # Paid invoices
                     invoice.due_date = date.today() - timedelta(days=random.randint(1, 60))
+                    invoice.invoice_date = invoice.due_date - timedelta(days=30)
+                    invoice.paid_at = timezone.now() - timedelta(days=random.randint(1, 30))
+                    invoice.paid_amount = invoice.total_amount
+                    invoice.balance = Decimal('0.00')
+                    invoice.sent_at = timezone.make_aware(
+                        timezone.datetime.combine(invoice.invoice_date, timezone.datetime.min.time())
+                    )
+
+                if status == 'SENT':
+                    # Sent invoices (current or 1-30 overdue)
+                    invoice.sent_at = timezone.make_aware(
+                        timezone.datetime.combine(invoice.invoice_date, timezone.datetime.min.time())
+                    )
 
                 invoice.save()
                 invoices.append(invoice)
-                self.stdout.write(f'Created invoice: {invoice.invoice_number} ({status_choice})')
+
+                bucket_name = 'PAID' if status == 'PAID' else f'{(invoice.due_date - date.today()).days}d'
+                self.stdout.write(f'Created invoice: {invoice.invoice_number} ({status}, {bucket_name})')
+
+                bucket_index += 1
 
             except Exception as e:
                 self.stdout.write(self.style.WARNING(f'Failed to create invoice for trip {trip.id}: {str(e)}'))
