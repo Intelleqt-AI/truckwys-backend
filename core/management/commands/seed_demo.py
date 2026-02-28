@@ -154,16 +154,16 @@ class Command(BaseCommand):
             status = random.choice(load_statuses)
 
             # Date logic: past loads delivered, recent loads in transit, future loads pending
-            from datetime import datetime
+            from django.utils import timezone as tz
             if status == 'DELIVERED':
-                pickup_date = datetime.combine(date.today() - timedelta(days=random.randint(5, 30)), datetime.min.time())
-                delivery_date = datetime.combine(pickup_date.date() + timedelta(days=random.randint(1, 3)), datetime.min.time())
+                pickup_date = tz.now() - timedelta(days=random.randint(5, 30))
+                delivery_date = pickup_date + timedelta(days=random.randint(1, 3))
             elif status == 'IN_TRANSIT':
-                pickup_date = datetime.combine(date.today() - timedelta(days=random.randint(0, 3)), datetime.min.time())
-                delivery_date = datetime.combine(pickup_date.date() + timedelta(days=random.randint(1, 2)), datetime.min.time())
+                pickup_date = tz.now() - timedelta(days=random.randint(0, 3))
+                delivery_date = pickup_date + timedelta(days=random.randint(1, 2))
             else:  # PENDING
-                pickup_date = datetime.combine(date.today() + timedelta(days=random.randint(1, 10)), datetime.min.time())
-                delivery_date = datetime.combine(pickup_date.date() + timedelta(days=random.randint(1, 3)), datetime.min.time())
+                pickup_date = tz.now() + timedelta(days=random.randint(1, 10))
+                delivery_date = pickup_date + timedelta(days=random.randint(1, 3))
 
             weight = Decimal(str(random.randint(15000, 25000)))
             fuel_surcharge = rate * Decimal('0.05')
@@ -265,7 +265,7 @@ class Command(BaseCommand):
         self.stdout.write(f'Created {len(expenses)} expenses')
 
         # Create a facility for advances
-        from .facility import Facility
+        from core.models import Facility
         facility, _ = Facility.objects.get_or_create(
             name='Truckwys Capital Facility',
             defaults={
