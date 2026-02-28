@@ -740,16 +740,16 @@ class RouteAnalyticsView(APIView):
 
     def get(self, request):
         # Get top 10 routes by trip count
-        routes_qs = Load.objects.exclude(origin='').exclude(destination='').values(
-            'origin', 'destination'
+        routes_qs = Load.objects.exclude(pickup_location='').exclude(delivery_location='').values(
+            'pickup_location', 'delivery_location'
         ).annotate(trip_count=Count('id')).order_by('-trip_count')[:10]
 
         routes = []
         for r in routes_qs:
-            route_str = f"{r['origin']} → {r['destination']}"
+            route_str = f"{r['pickup_location']} → {r['delivery_location']}"
             # Try to get avg revenue from linked invoices
             avg_rev = Invoice.objects.filter(
-                load__origin=r['origin'], load__destination=r['destination']
+                load__pickup_location=r['pickup_location'], load__delivery_location=r['delivery_location']
             ).aggregate(avg=Avg('total_amount'))['avg'] or 45000
             avg_fuel = float(avg_rev) * 0.19  # ~19% fuel cost typical SA freight
             margin = round((float(avg_rev) - avg_fuel) / float(avg_rev) * 100) if avg_rev else 81

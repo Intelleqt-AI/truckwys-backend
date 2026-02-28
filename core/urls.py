@@ -65,6 +65,7 @@ router.register(r'partner/risk', PartnerRiskScoreViewSet, basename='partner-risk
 # Webhook ViewSet (Sprint B)
 router.register(r'webhooks', WebhookViewSet, basename='webhook')
 router.register(r'integrations/api-keys', IntegrationAPIKeyViewSet, basename='integration-api-key')
+router.register(r'integration-keys', IntegrationAPIKeyViewSet, basename='integration-key')
 
 # Activity Events ViewSet (Sprint 1)
 router.register(r'activity', ActivityEventViewSet, basename='activity')
