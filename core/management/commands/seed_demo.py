@@ -9,8 +9,7 @@ from core.models import (
     Expense, AdvanceRequest, ActivityEvent, User, Company, VehicleType, Trip, Quote
 )
 from decimal import Decimal
-from datetime import date, timedelta, datetime
-from django.utils import timezone
+from datetime import date, timedelta
 import random
 
 
@@ -26,32 +25,22 @@ class Command(BaseCommand):
 
     @transaction.atomic
     def handle(self, *args, **options):
-        # Disable signals during seed to avoid webhook issues
-        from django.db.models import signals
-        from core import models
+        if options['clear']:
+            self.stdout.write(self.style.WARNING('Clearing existing data...'))
+            ActivityEvent.objects.all().delete()
+            Payment.objects.all().delete()
+            AdvanceRequest.objects.all().delete()
+            Expense.objects.all().delete()
+            Invoice.objects.all().delete()
+            Trip.objects.all().delete()  # Delete trips before loads (protected FK)
+            Load.objects.all().delete()
+            Quote.objects.all().delete()  # Delete quotes before customers (protected FK)
+            Driver.objects.all().delete()
+            Vehicle.objects.all().delete()
+            Customer.objects.all().delete()
+            self.stdout.write(self.style.SUCCESS('Cleared all demo data'))
 
-        signals.post_save.disconnect(sender=models.Load)
-        signals.post_save.disconnect(sender=models.Invoice)
-        signals.post_save.disconnect(sender=models.AdvanceRequest)
-        signals.post_save.disconnect(sender=models.Quote)
-
-        try:
-            if options['clear']:
-                self.stdout.write(self.style.WARNING('Clearing existing data...'))
-                ActivityEvent.objects.all().delete()
-                Payment.objects.all().delete()
-                AdvanceRequest.objects.all().delete()
-                Expense.objects.all().delete()
-                Invoice.objects.all().delete()
-                Trip.objects.all().delete()  # Delete trips before loads (protected FK)
-                Load.objects.all().delete()
-                Quote.objects.all().delete()  # Delete quotes before customers (protected FK)
-                Driver.objects.all().delete()
-                Vehicle.objects.all().delete()
-                Customer.objects.all().delete()
-                self.stdout.write(self.style.SUCCESS('Cleared all demo data'))
-
-            self.stdout.write('Seeding demo data...')
+        self.stdout.write('Seeding demo data...')
 
         # Ensure vehicle types exist
         truck_type, _ = VehicleType.objects.get_or_create(
@@ -165,15 +154,16 @@ class Command(BaseCommand):
             status = random.choice(load_statuses)
 
             # Date logic: past loads delivered, recent loads in transit, future loads pending
+            from datetime import datetime
             if status == 'DELIVERED':
-                pickup_date = timezone.make_aware(datetime.combine(date.today() - timedelta(days=random.randint(5, 30)), datetime.min.time()))
-                delivery_date = timezone.make_aware(datetime.combine(pickup_date.date() + timedelta(days=random.randint(1, 3)), datetime.min.time()))
+                pickup_date = datetime.combine(date.today() - timedelta(days=random.randint(5, 30)), datetime.min.time())
+                delivery_date = datetime.combine(pickup_date.date() + timedelta(days=random.randint(1, 3)), datetime.min.time())
             elif status == 'IN_TRANSIT':
-                pickup_date = timezone.make_aware(datetime.combine(date.today() - timedelta(days=random.randint(0, 3)), datetime.min.time()))
-                delivery_date = timezone.make_aware(datetime.combine(pickup_date.date() + timedelta(days=random.randint(1, 2)), datetime.min.time()))
+                pickup_date = datetime.combine(date.today() - timedelta(days=random.randint(0, 3)), datetime.min.time())
+                delivery_date = datetime.combine(pickup_date.date() + timedelta(days=random.randint(1, 2)), datetime.min.time())
             else:  # PENDING
-                pickup_date = timezone.make_aware(datetime.combine(date.today() + timedelta(days=random.randint(1, 10)), datetime.min.time()))
-                delivery_date = timezone.make_aware(datetime.combine(pickup_date.date() + timedelta(days=random.randint(1, 3)), datetime.min.time()))
+                pickup_date = datetime.combine(date.today() + timedelta(days=random.randint(1, 10)), datetime.min.time())
+                delivery_date = datetime.combine(pickup_date.date() + timedelta(days=random.randint(1, 3)), datetime.min.time())
 
             weight = Decimal(str(random.randint(15000, 25000)))
             fuel_surcharge = rate * Decimal('0.05')
@@ -314,6 +304,7 @@ class Command(BaseCommand):
 
             # Set timestamps based on status
             if status in ['REQUESTED', 'APPROVED', 'DISBURSED']:
+                from django.utils import timezone
                 advance.requested_at = timezone.now() - timedelta(days=random.randint(1, 10))
             if status in ['APPROVED', 'DISBURSED']:
                 advance.approved_at = timezone.now() - timedelta(days=random.randint(0, 5))
@@ -349,20 +340,12 @@ class Command(BaseCommand):
             )
         self.stdout.write(f'Created {len(events_data)} activity events')
 
-            self.stdout.write(self.style.SUCCESS('✓ Demo data seeded successfully!'))
-            self.stdout.write(f'  - {len(customers)} customers')
-            self.stdout.write(f'  - {len(vehicles)} vehicles')
-            self.stdout.write(f'  - {len(drivers)} drivers')
-            self.stdout.write(f'  - {len(loads)} loads')
-            self.stdout.write(f'  - {len(invoices)} invoices')
-            self.stdout.write(f'  - {len(advances)} advances')
-            self.stdout.write(f'  - {len(expenses)} expenses')
-            self.stdout.write(f'  - {len(events_data)} activity events')
-
-        finally:
-            # Re-enable signals
-            from core.signals import load_saved, invoice_saved, advance_saved, quote_saved
-            signals.post_save.connect(load_saved, sender=models.Load)
-            signals.post_save.connect(invoice_saved, sender=models.Invoice)
-            signals.post_save.connect(advance_saved, sender=models.AdvanceRequest)
-            signals.post_save.connect(quote_saved, sender=models.Quote)
+        self.stdout.write(self.style.SUCCESS('✓ Demo data seeded successfully!'))
+        self.stdout.write(f'  - {len(customers)} customers')
+        self.stdout.write(f'  - {len(vehicles)} vehicles')
+        self.stdout.write(f'  - {len(drivers)} drivers')
+        self.stdout.write(f'  - {len(loads)} loads')
+        self.stdout.write(f'  - {len(invoices)} invoices')
+        self.stdout.write(f'  - {len(advances)} advances')
+        self.stdout.write(f'  - {len(expenses)} expenses')
+        self.stdout.write(f'  - {len(events_data)} activity events')

@@ -21,7 +21,7 @@ def load_saved(sender, instance, created, **kwargs):
         ActivityEvent.objects.create(
             event_type='load',
             title=f'New load created: {instance.load_number}',
-            description=f'{instance.origin} → {instance.destination}',
+            description=f'{instance.pickup_city} → {instance.delivery_city}',
             entity_id=instance.id,
             entity_type='Load',
             metadata={'load_number': instance.load_number, 'status': instance.status}
@@ -56,26 +56,28 @@ def invoice_saved(sender, instance, created, **kwargs):
         data = InvoiceSerializer(instance).data
         dispatch_webhook('invoice.created', data)
         # Create activity event
+        amount = getattr(instance, 'total_amount', getattr(instance, 'amount', 0))
         ActivityEvent.objects.create(
             event_type='invoice',
             title=f'New invoice created: {instance.invoice_number}',
-            description=f'Customer: {instance.customer.name if instance.customer else "N/A"} - Amount: R{instance.amount}',
+            description=f'Customer: {instance.customer.name if instance.customer else "N/A"} - Amount: R{amount}',
             entity_id=instance.id,
             entity_type='Invoice',
-            metadata={'invoice_number': instance.invoice_number, 'status': instance.status, 'amount': str(instance.amount)}
+            metadata={'invoice_number': instance.invoice_number, 'status': instance.status, 'amount': str(amount)}
         )
     elif instance.status == 'PAID':
         # Fire invoice.paid event (on status update to PAID)
         data = InvoiceSerializer(instance).data
         dispatch_webhook('invoice.paid', data)
         # Create activity event
+        amount = getattr(instance, 'total_amount', getattr(instance, 'amount', 0))
         ActivityEvent.objects.create(
             event_type='invoice',
             title=f'Invoice paid: {instance.invoice_number}',
-            description=f'Payment received for R{instance.amount}',
+            description=f'Payment received for R{amount}',
             entity_id=instance.id,
             entity_type='Invoice',
-            metadata={'invoice_number': instance.invoice_number, 'status': instance.status, 'amount': str(instance.amount)}
+            metadata={'invoice_number': instance.invoice_number, 'status': instance.status, 'amount': str(amount)}
         )
 
 
@@ -87,10 +89,12 @@ def quote_saved(sender, instance, created, **kwargs):
 
     if created:
         # Create activity event for new quote
+        origin = getattr(instance, 'origin', getattr(instance, 'pickup_city', 'N/A'))
+        destination = getattr(instance, 'destination', getattr(instance, 'delivery_city', 'N/A'))
         ActivityEvent.objects.create(
             event_type='quote',
             title=f'New quote created: {instance.quote_number}',
-            description=f'{instance.origin} → {instance.destination}',
+            description=f'{origin} → {destination}',
             entity_id=instance.id,
             entity_type='Quote',
             metadata={'quote_number': instance.quote_number, 'status': instance.status}
