@@ -10,6 +10,7 @@ from core.models import (
 )
 from decimal import Decimal
 from datetime import date, timedelta
+from django.utils import timezone
 import random
 
 
@@ -224,6 +225,7 @@ class Command(BaseCommand):
                 total_amount=total,
                 balance=total if status != 'PAID' else Decimal('0.00'),
                 paid_amount=total if status == 'PAID' else Decimal('0.00'),
+                paid_at=timezone.now() - timedelta(days=random.randint(1, 20)) if status == 'PAID' else None,
             )
             invoices.append(invoice)
 
