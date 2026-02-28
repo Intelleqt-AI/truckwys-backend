@@ -540,33 +540,41 @@ class Command(BaseCommand):
                 status, _, due_date_range = aging_buckets[current_bucket]
                 invoice.status = status
 
-                # Set invoice dates
-                if due_date_range:
-                    # Set due_date based on bucket
-                    days_offset = random.randint(due_date_range[0], due_date_range[1])
-                    invoice.due_date = date.today() + timedelta(days=days_offset)
-                    # Set issue date ~30 days before due date
-                    invoice.issue_date = invoice.due_date - timedelta(days=30)
-                    invoice.created_at = timezone.make_aware(
-                        timezone.datetime.combine(invoice.issue_date, timezone.datetime.min.time())
-                    )
-
+                # Set invoice dates based on status
                 if status == 'PAID':
-                    # Paid invoices
-                    invoice.due_date = date.today() - timedelta(days=random.randint(1, 60))
+                    # Paid invoices - already settled
+                    invoice.due_date = date.today() - timedelta(days=random.randint(30, 90))
                     invoice.issue_date = invoice.due_date - timedelta(days=30)
-                    invoice.paid_at = timezone.now() - timedelta(days=random.randint(1, 30))
+                    # Paid on or before due date
+                    payment_days_early = random.randint(0, 5)
+                    invoice.paid_at = timezone.make_aware(
+                        timezone.datetime.combine(
+                            invoice.due_date - timedelta(days=payment_days_early),
+                            timezone.datetime.min.time()
+                        )
+                    )
                     invoice.paid_amount = invoice.total_amount
                     invoice.balance = Decimal('0.00')
                     invoice.sent_at = timezone.make_aware(
                         timezone.datetime.combine(invoice.issue_date, timezone.datetime.min.time())
                     )
-
-                if status == 'SENT' or status == 'OVERDUE':
-                    # Sent/Overdue invoices
+                    invoice.created_at = timezone.make_aware(
+                        timezone.datetime.combine(invoice.issue_date, timezone.datetime.min.time())
+                    )
+                elif due_date_range:
+                    # SENT or OVERDUE invoices
+                    days_offset = random.randint(due_date_range[0], due_date_range[1])
+                    invoice.due_date = date.today() + timedelta(days=days_offset)
+                    invoice.issue_date = invoice.due_date - timedelta(days=30)
                     invoice.sent_at = timezone.make_aware(
                         timezone.datetime.combine(invoice.issue_date, timezone.datetime.min.time())
                     )
+                    invoice.created_at = timezone.make_aware(
+                        timezone.datetime.combine(invoice.issue_date, timezone.datetime.min.time())
+                    )
+                    invoice.paid_at = None
+                    invoice.paid_amount = Decimal('0.00')
+                    invoice.balance = invoice.total_amount
 
                 invoice.save()
                 invoices.append(invoice)
