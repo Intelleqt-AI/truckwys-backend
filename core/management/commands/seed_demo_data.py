@@ -545,27 +545,27 @@ class Command(BaseCommand):
                     # Set due_date based on bucket
                     days_offset = random.randint(due_date_range[0], due_date_range[1])
                     invoice.due_date = date.today() + timedelta(days=days_offset)
-                    # Set invoice date ~30 days before due date
-                    invoice.invoice_date = invoice.due_date - timedelta(days=30)
+                    # Set issue date ~30 days before due date
+                    invoice.issue_date = invoice.due_date - timedelta(days=30)
                     invoice.created_at = timezone.make_aware(
-                        timezone.datetime.combine(invoice.invoice_date, timezone.datetime.min.time())
+                        timezone.datetime.combine(invoice.issue_date, timezone.datetime.min.time())
                     )
 
                 if status == 'PAID':
                     # Paid invoices
                     invoice.due_date = date.today() - timedelta(days=random.randint(1, 60))
-                    invoice.invoice_date = invoice.due_date - timedelta(days=30)
+                    invoice.issue_date = invoice.due_date - timedelta(days=30)
                     invoice.paid_at = timezone.now() - timedelta(days=random.randint(1, 30))
                     invoice.paid_amount = invoice.total_amount
                     invoice.balance = Decimal('0.00')
                     invoice.sent_at = timezone.make_aware(
-                        timezone.datetime.combine(invoice.invoice_date, timezone.datetime.min.time())
+                        timezone.datetime.combine(invoice.issue_date, timezone.datetime.min.time())
                     )
 
-                if status == 'SENT':
-                    # Sent invoices (current or 1-30 overdue)
+                if status == 'SENT' or status == 'OVERDUE':
+                    # Sent/Overdue invoices
                     invoice.sent_at = timezone.make_aware(
-                        timezone.datetime.combine(invoice.invoice_date, timezone.datetime.min.time())
+                        timezone.datetime.combine(invoice.issue_date, timezone.datetime.min.time())
                     )
 
                 invoice.save()
