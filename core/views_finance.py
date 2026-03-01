@@ -113,6 +113,11 @@ class InvoiceFinanceViewSet(viewsets.ModelViewSet):
             )
 
     @action(detail=True, methods=['post'])
+    def send_invoice(self, request, pk=None):
+        """Alias for send_email — frontend compatibility."""
+        return self.send_email(request, pk)
+
+    @action(detail=True, methods=['post'])
     def mark_sent(self, request, pk=None):
         """Mark invoice as sent."""
         invoice = self.get_object()
