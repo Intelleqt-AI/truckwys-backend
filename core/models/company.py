@@ -21,6 +21,74 @@ class Company(models.Model):
         help_text='Current fuel price per litre in ZAR (default: R23.50)'
     )
 
+    # Risk engine fields
+    cipc_age_years = models.IntegerField(
+        default=5,
+        help_text='Years since CIPC registration'
+    )
+    annual_turnover = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=5000000.00,
+        help_text='ZAR annual turnover'
+    )
+    turnover_trend = models.CharField(
+        max_length=20,
+        default='stable',
+        choices=[
+            ('growing', 'Growing'),
+            ('stable', 'Stable'),
+            ('declining', 'Declining')
+        ],
+        help_text='Annual turnover trend'
+    )
+    fleet_size = models.IntegerField(
+        default=10,
+        help_text='Number of vehicles in fleet'
+    )
+    province_count = models.IntegerField(
+        default=1,
+        help_text='Number of provinces operated in'
+    )
+    business_type = models.CharField(
+        max_length=20,
+        default='owner_operator',
+        choices=[
+            ('owner_operator', 'Owner Operator'),
+            ('fleet_operator', 'Fleet Operator'),
+            ('broker', 'Broker')
+        ],
+        help_text='Type of business operation'
+    )
+    sub_sector = models.CharField(
+        max_length=20,
+        default='general_freight',
+        choices=[
+            ('general_freight', 'General Freight'),
+            ('refrigerated', 'Refrigerated'),
+            ('hazmat', 'Hazmat'),
+            ('abnormal', 'Abnormal'),
+            ('container', 'Container')
+        ],
+        help_text='Freight sub-sector specialization'
+    )
+    insurance_status = models.CharField(
+        max_length=20,
+        default='comprehensive',
+        choices=[
+            ('comprehensive', 'Comprehensive'),
+            ('basic', 'Basic'),
+            ('none', 'None')
+        ],
+        help_text='Insurance coverage level'
+    )
+    b_bbee_level = models.IntegerField(
+        null=True,
+        blank=True,
+        default=4,
+        help_text='B-BBEE level (1-8)'
+    )
+
     # NEW: Xero integration fields (Phase 4)
     xero_access_token = models.TextField(
         blank=True,
