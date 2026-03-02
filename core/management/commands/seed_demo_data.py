@@ -475,6 +475,7 @@ class Command(BaseCommand):
             load, created = Load.objects.get_or_create(
                 load_number=load_number,
                 defaults={
+                    'company': company,
                     'customer': customer,
                     'vehicle': vehicle,
                     'driver': driver,
@@ -509,7 +510,7 @@ class Command(BaseCommand):
         self.stdout.write(f'✓ Created {len(loads)} loads')
         return loads
 
-    def _create_invoices(self, loads, customers):
+    def _create_invoices(self, loads, customers, company):
         """Create 100+ invoices with realistic aging distribution."""
         invoices = []
 
@@ -604,6 +605,7 @@ class Command(BaseCommand):
                 invoice_number = f'INV-{issue_date.strftime("%Y%m%d")}-{1000 + i + random.randint(100, 999)}'
 
             invoice = Invoice.objects.create(
+                company=company,
                 invoice_number=invoice_number,
                 customer=customer,
                 load=load,
@@ -626,7 +628,7 @@ class Command(BaseCommand):
         self.stdout.write(f'✓ Created {len(invoices)} invoices')
         return invoices
 
-    def _create_expenses(self, loads, vehicles, drivers, admin_user):
+    def _create_expenses(self, loads, vehicles, drivers, admin_user, company):
         """Create 50+ expenses across all 6 categories."""
         expenses = []
 
@@ -658,6 +660,7 @@ class Command(BaseCommand):
             fuel_cost = fuel_litres * Decimal('23.50')
             expense_num = f'EXP-{load.delivery_date.date().strftime("%Y%m%d")}-{random.randint(1000, 9999)}'
             expense = Expense.objects.create(
+                company=company,
                 expense_number=expense_num,
                 category=fuel_template['category'],
                 description=f'Fuel for {load.pickup_city} to {load.delivery_city}',
@@ -678,6 +681,7 @@ class Command(BaseCommand):
                 toll_cost = (load.distance * Decimal('0.95')).quantize(Decimal('0.01'))
                 expense_num = f'EXP-{load.delivery_date.date().strftime("%Y%m%d")}-{random.randint(1000, 9999)}'
                 expense = Expense.objects.create(
+                    company=company,
                     expense_number=expense_num,
                     category=tolls_template['category'],
                     description=f'Toll charges for {load.pickup_city} to {load.delivery_city}',
@@ -700,6 +704,7 @@ class Command(BaseCommand):
             expense_num = f'EXP-{expense_date.strftime("%Y%m%d")}-{random.randint(1000, 9999)}'
             amount = Decimal(str(random.randint(maint_template['amount_range'][0], maint_template['amount_range'][1])))
             expense = Expense.objects.create(
+                company=company,
                 expense_number=expense_num,
                 category=maint_template['category'],
                 description=f'Maintenance service for {vehicle.make} {vehicle.model}',
