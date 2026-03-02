@@ -70,25 +70,25 @@ class Command(BaseCommand):
         facility = self._create_facility(company)
 
         # Create customers (20)
-        customers = self._create_customers()
+        customers = self._create_customers(company)
 
         # Create vehicle types
-        vehicle_types = self._create_vehicle_types()
+        vehicle_types = self._create_vehicle_types(company)
 
         # Create vehicles (20)
-        vehicles = self._create_vehicles(vehicle_types)
+        vehicles = self._create_vehicles(vehicle_types, company)
 
         # Create drivers (16)
         drivers = self._create_drivers()
 
         # Create loads (150+)
-        loads = self._create_loads(customers, vehicles, drivers, admin_user)
+        loads = self._create_loads(customers, vehicles, drivers, admin_user, company)
 
         # Create invoices (100+)
-        invoices = self._create_invoices(loads, customers)
+        invoices = self._create_invoices(loads, customers, company)
 
         # Create expenses (50+)
-        expenses = self._create_expenses(loads, vehicles, drivers, admin_user)
+        expenses = self._create_expenses(loads, vehicles, drivers, admin_user, company)
 
         # Create payments for paid invoices
         payments = self._create_payments(invoices)
@@ -197,7 +197,7 @@ class Command(BaseCommand):
             self.stdout.write('✓ Updated facility to R2,000,000 limit')
         return facility
 
-    def _create_customers(self):
+    def _create_customers(self, company):
         """Create 20 customers with realistic SA company names."""
         customer_data = [
             {'name': 'Shoprite Holdings Ltd', 'city': 'Cape Town', 'credit_score': 780, 'credit_limit': 5000000, 'payment_terms': 60},
@@ -227,7 +227,8 @@ class Command(BaseCommand):
             customer, created = Customer.objects.get_or_create(
                 name=data['name'],
                 defaults={
-                    'company': data['name'],
+                    'company': company,
+                    'company_name': data['name'],
                     'email': f"accounts@{data['name'].lower().replace(' ', '').replace('(', '').replace(')', '').replace('.', '')[:20]}.co.za",
                     'phone': f"+27 {random.randint(10, 87)} {random.randint(100, 999)} {random.randint(1000, 9999)}",
                     'address': f"{random.randint(1, 999)} Industrial Park",
@@ -247,7 +248,7 @@ class Command(BaseCommand):
 
         return customers
 
-    def _create_vehicle_types(self):
+    def _create_vehicle_types(self, company):
         """Create vehicle types."""
         types_data = [
             {'name': 'Semi-Trailer Truck', 'capacity': 28000, 'max_distance': 5000, 'base_rate': 18000},
@@ -259,6 +260,7 @@ class Command(BaseCommand):
         for data in types_data:
             vtype, created = VehicleType.objects.get_or_create(
                 name=data['name'],
+                company=company,
                 defaults={
                     'capacity': data['capacity'],
                     'max_distance': data['max_distance'],
@@ -270,7 +272,7 @@ class Command(BaseCommand):
 
         return vehicle_types
 
-    def _create_vehicles(self, vehicle_types):
+    def _create_vehicles(self, vehicle_types, company):
         """Create 20 vehicles with SA truck types."""
         # SA registration format: Province Code + Numbers + Letters
         sa_plates = [
@@ -312,6 +314,7 @@ class Command(BaseCommand):
             vehicle, created = Vehicle.objects.get_or_create(
                 plate=plate,
                 defaults={
+                    'company': company,
                     'vin': f'ZA{random.randint(10000000, 99999999)}',
                     'make': make,
                     'model': model,
@@ -385,7 +388,7 @@ class Command(BaseCommand):
 
         return drivers
 
-    def _create_loads(self, customers, vehicles, drivers, admin_user):
+    def _create_loads(self, customers, vehicles, drivers, admin_user, company):
         """Create 150+ loads across all statuses with realistic SA routes."""
         # Realistic SA freight routes with distances
         routes = [
