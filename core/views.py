@@ -125,9 +125,9 @@ class NotificationSettingsView(APIView):
         return Response(user.notification_settings)
 
 
-class IsAdmin(AllowAny):
+class IsAdmin(IsAuthenticated):
     def has_permission(self, request, view):
-        return super().has_permission(request, view) and request.user.role == 'ADMIN'
+        return super().has_permission(request, view) and hasattr(request.user, 'role') and request.user.role == 'ADMIN'
 
 
 class CompanyProfileView(APIView):
