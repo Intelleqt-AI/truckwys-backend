@@ -104,19 +104,19 @@ class RiskScoreViewSet(viewsets.ReadOnlyModelViewSet):
                 status=status.HTTP_404_NOT_FOUND
             )
 
-        # Check permissions
+        # Check permissions — admin/staff can score any invoice
         user = request.user
-        if not user.is_staff and invoice.company != user.company:
-            return Response(
-                {'error': 'You do not have permission to score this invoice'},
-                status=status.HTTP_403_FORBIDDEN
-            )
 
-        # Get or create facility for company
-        facility = Facility.objects.filter(
-            company=invoice.company,
-            status='ACTIVE'
-        ).first()
+        # Get facility for the OPERATOR (logged-in user's company), not the debtor
+        # For staff/admin, use the first active facility
+        if user.is_staff:
+            facility = Facility.objects.filter(status='ACTIVE').first()
+        else:
+            company = getattr(user, 'company', None)
+            facility = Facility.objects.filter(
+                company=company,
+                status='ACTIVE'
+            ).first() if company else None
 
         if not facility:
             return Response(
@@ -197,19 +197,16 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
         invoice_id = serializer.validated_data['invoice_id']
         invoice = Invoice.objects.get(id=invoice_id)
 
-        # Check permissions
+        # Get facility for the OPERATOR (logged-in user's company)
         user = request.user
-        if not user.is_staff and invoice.company != user.company:
-            return Response(
-                {'error': 'You do not have permission to request advance on this invoice'},
-                status=status.HTTP_403_FORBIDDEN
-            )
-
-        # Get active facility
-        facility = Facility.objects.filter(
-            company=invoice.company,
-            status='ACTIVE'
-        ).first()
+        if user.is_staff:
+            facility = Facility.objects.filter(status='ACTIVE').first()
+        else:
+            company = getattr(user, 'company', None)
+            facility = Facility.objects.filter(
+                company=company,
+                status='ACTIVE'
+            ).first() if company else None
 
         if not facility:
             return Response(
@@ -223,12 +220,14 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
 
         # Check eligibility
         if not result.is_eligible:
+            reasons = [r.description for r in result.ineligibility_reasons] if result.ineligibility_reasons else ['Score below minimum']
             return Response(
                 {
                     'error': 'Invoice is not eligible for advance',
-                    'reason': result.ineligibility_reason,
-                    'total_score': result.total_score,
-                    'tier': result.tier,
+                    'reason': reasons[0] if reasons else 'Ineligible',
+                    'reasons': reasons,
+                    'total_score': result.final_score,
+                    'tier': result.risk_tier,
                 },
                 status=status.HTTP_400_BAD_REQUEST
             )
@@ -242,9 +241,9 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
             facility=facility,
             risk_score=risk_score,
             amount=invoice.total_amount,
-            fee_percent=result.fee_percent,
+            fee_percent=result.final_fee_percent,
             fee_amount=result.fee_amount,
-            net_amount=result.net_amount,
+            net_amount=result.net_advance,
             status='REQUESTED',
             requested_at=timezone.now(),
         )
