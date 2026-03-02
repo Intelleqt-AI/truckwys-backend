@@ -206,11 +206,17 @@ class InvoicePDFGenerator:
         customer = self.invoice.customer
         customer_lines = [f"<b>{customer.name}</b>"]
 
-        if customer.vat_number:
+        if hasattr(customer, 'vat_number') and customer.vat_number:
             customer_lines.append(f"VAT No: {customer.vat_number}")
 
         if customer.billing_address:
             customer_lines.append(customer.billing_address)
+        elif customer.address:
+            # Fall back to regular address if billing address not set
+            address_parts = [customer.address, customer.city, customer.state, customer.zip_code]
+            address_str = ", ".join(filter(None, address_parts))
+            if address_str:
+                customer_lines.append(address_str)
 
         if customer.email:
             customer_lines.append(f"Email: {customer.email}")
