@@ -251,7 +251,7 @@ class InvoicePDFGenerator:
         # If no line items, show basic freight charge
         if not line_items:
             data.append([
-                f"Freight Charge - {self.invoice.load.origin if self.invoice.load else 'Service'}",
+                f"Freight Charge - {self.invoice.load.pickup_location + ' → ' + self.invoice.load.delivery_location if self.invoice.load else 'Service'}",
                 '1',
                 f"R {self.invoice.subtotal:,.2f}",
                 f"R {self.invoice.subtotal:,.2f}",

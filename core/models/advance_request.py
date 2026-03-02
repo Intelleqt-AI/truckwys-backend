@@ -66,7 +66,7 @@ class AdvanceRequest(models.Model):
     )
     fee_percent = models.DecimalField(
         max_digits=5,
-        decimal_places=2,
+        decimal_places=3,
         default=Decimal('0.00'),
         validators=[MinValueValidator(Decimal('0.00'))],
         help_text='Fee percentage applied'
