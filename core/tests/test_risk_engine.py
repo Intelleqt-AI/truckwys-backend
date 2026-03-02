@@ -21,6 +21,15 @@ class RiskEngineTestCase(TestCase):
         self.company = Company.objects.create(
             company_name='Test Logistics',
             registration_number='REG123',
+            cipc_age_years=8,
+            annual_turnover=Decimal('12000000.00'),
+            turnover_trend='growing',
+            fleet_size=20,
+            province_count=4,
+            business_type='fleet_operator',
+            sub_sector='general_freight',
+            insurance_status='comprehensive',
+            b_bbee_level=3,
         )
 
         # Create customer
@@ -35,6 +44,11 @@ class RiskEngineTestCase(TestCase):
             zip_code='2000',
             credit_score=85,
             credit_score_source='MANUAL',
+            payment_consistency=Decimal('0.92'),
+            dispute_rate=Decimal('0.01'),
+            avg_days_to_pay=25,
+            total_invoices_paid=50,
+            total_invoices_late=4,
         )
 
         # Set customer created_at to simulate relationship length
@@ -80,6 +94,8 @@ class RiskEngineTestCase(TestCase):
             rate=Decimal('10000.00'),
             total_amount=Decimal('10000.00'),
             status='DELIVERED',
+            pod_signature='test_signature_data',
+            pod_received_by='Test Receiver',
         )
 
         # Create vehicle
@@ -112,6 +128,9 @@ class RiskEngineTestCase(TestCase):
             license_expiry=timezone.now().date() + timedelta(days=365),
             license_state='Gauteng',
             hire_date=timezone.now().date() - timedelta(days=365),
+            violation_count=0,
+            accident_history=0,
+            experience_years=5,
         )
 
         # Create invoice
@@ -167,11 +186,11 @@ class RiskEngineTestCase(TestCase):
         result = engine.calculate_risk_score()
 
         self.assertTrue(result.is_eligible)
-        self.assertGreaterEqual(result.total_score, 85)
-        self.assertEqual(result.tier, 'EXCELLENT')
+        self.assertGreaterEqual(result.final_score, 85)
+        self.assertEqual(result.risk_tier, 'PRIME')
         # Fee should be within reasonable range for excellent tier
-        self.assertGreaterEqual(result.fee_percent, Decimal('0.75'))
-        self.assertLessEqual(result.fee_percent, Decimal('2.5'))
+        self.assertGreaterEqual(result.final_fee_percent, Decimal('0.75'))
+        self.assertLessEqual(result.final_fee_percent, Decimal('2.5'))
 
     def test_good_score(self):
         """Test good risk score (70-84)."""
@@ -198,9 +217,9 @@ class RiskEngineTestCase(TestCase):
         result = engine.calculate_risk_score()
 
         self.assertTrue(result.is_eligible)
-        self.assertGreaterEqual(result.total_score, 70)
-        self.assertLess(result.total_score, 85)
-        self.assertEqual(result.tier, 'GOOD')
+        self.assertGreaterEqual(result.final_score, 70)
+        self.assertLess(result.final_score, 85)
+        self.assertEqual(result.risk_tier, 'STANDARD')
 
     def test_fair_score(self):
         """Test fair risk score (55-69)."""
@@ -229,11 +248,11 @@ class RiskEngineTestCase(TestCase):
         result = engine.calculate_risk_score()
 
         self.assertTrue(result.is_eligible)
-        self.assertGreaterEqual(result.total_score, 55)
+        self.assertGreaterEqual(result.final_score, 55)
         # Score may be at the upper boundary
-        self.assertLessEqual(result.total_score, 84)
-        # Check tier is FAIR or GOOD (either is acceptable)
-        self.assertIn(result.tier, ['FAIR', 'GOOD'])
+        self.assertLessEqual(result.final_score, 84)
+        # Check tier is ELEVATED or STANDARD (either is acceptable)
+        self.assertIn(result.risk_tier, ['ELEVATED', 'STANDARD'])
 
     def test_elevated_score(self):
         """Test elevated risk score (40-54)."""
@@ -263,10 +282,10 @@ class RiskEngineTestCase(TestCase):
         result = engine.calculate_risk_score()
 
         self.assertTrue(result.is_eligible)
-        self.assertGreaterEqual(result.total_score, 40)
-        # Score may be at boundary - accept ELEVATED or FAIR tier
-        self.assertLessEqual(result.total_score, 69)
-        self.assertIn(result.tier, ['ELEVATED', 'FAIR'])
+        self.assertGreaterEqual(result.final_score, 40)
+        # Score may be at boundary - accept HIGH or ELEVATED tier
+        self.assertLessEqual(result.final_score, 69)
+        self.assertIn(result.risk_tier, ['HIGH', 'ELEVATED'])
 
     def test_ineligible_score(self):
         """Test ineligible score (<40)."""
@@ -288,7 +307,7 @@ class RiskEngineTestCase(TestCase):
         result = engine.calculate_risk_score()
 
         self.assertTrue(result.is_eligible)  # Score is low but not below 40
-        self.assertLess(result.total_score, 55)
+        self.assertLess(result.final_score, 55)
 
     def test_ineligible_invoice_too_old(self):
         """Test ineligibility due to invoice age >91 days."""
@@ -299,19 +318,21 @@ class RiskEngineTestCase(TestCase):
         result = engine.calculate_risk_score()
 
         self.assertFalse(result.is_eligible)
-        self.assertIn('age', result.ineligibility_reason.lower())
+        self.assertTrue(len(result.ineligibility_reasons) > 0)
+        self.assertIn('age', result.ineligibility_reasons[0].description.lower())
 
     def test_ineligible_no_pod(self):
         """Test ineligibility due to no POD."""
-        self.trip.pod_type = 'PENDING'
-        self.trip.pod_verified = False
-        self.trip.save()
+        # Remove POD signature from load
+        self.load.pod_signature = None
+        self.load.save()
 
         engine = RiskEngine(self.invoice, self.facility)
         result = engine.calculate_risk_score()
 
         self.assertFalse(result.is_eligible)
-        self.assertIn('proof of delivery', result.ineligibility_reason.lower())
+        self.assertTrue(len(result.ineligibility_reasons) > 0)
+        self.assertIn('proof of delivery', result.ineligibility_reasons[0].description.lower())
 
     def test_ineligible_active_dispute(self):
         """Test ineligibility due to active dispute."""
@@ -322,7 +343,8 @@ class RiskEngineTestCase(TestCase):
         result = engine.calculate_risk_score()
 
         self.assertFalse(result.is_eligible)
-        self.assertIn('dispute', result.ineligibility_reason.lower())
+        self.assertTrue(len(result.ineligibility_reasons) > 0)
+        self.assertIn('dispute', result.ineligibility_reasons[0].description.lower())
 
     def test_fee_calculation_excellent(self):
         """Test fee calculation for excellent tier."""
@@ -343,13 +365,13 @@ class RiskEngineTestCase(TestCase):
         engine = RiskEngine(self.invoice, self.facility)
         result = engine.calculate_risk_score()
 
-        self.assertEqual(result.tier, 'EXCELLENT')
+        self.assertEqual(result.risk_tier, 'PRIME')
         # Fee should be reasonable for excellent tier
-        self.assertGreaterEqual(result.fee_percent, Decimal('0.75'))
-        self.assertLessEqual(result.fee_percent, Decimal('2.5'))
+        self.assertGreaterEqual(result.final_fee_percent, Decimal('0.75'))
+        self.assertLessEqual(result.final_fee_percent, Decimal('2.5'))
 
         # Calculate expected fee amount
-        expected_fee = result.fee_percent * self.invoice.total_amount / Decimal('100')
+        expected_fee = result.final_fee_percent * self.invoice.total_amount / Decimal('100')
         self.assertEqual(result.fee_amount, expected_fee.quantize(Decimal('0.01')))
 
     def test_fee_adjustment_fresh_invoice(self):
@@ -378,7 +400,7 @@ class RiskEngineTestCase(TestCase):
         # Should get -0.25% discount for fresh invoice
         # Base fee for EXCELLENT is 2.0-2.5%, midpoint is 2.25%
         # With -0.25% adjustment = 2.0%
-        self.assertLessEqual(result.fee_percent, Decimal('2.25'))
+        self.assertLessEqual(result.final_fee_percent, Decimal('2.25'))
 
     def test_fee_adjustment_aged_invoice(self):
         """Test fee adjustment for aged invoice (46-60d) +0.50%."""
@@ -404,7 +426,7 @@ class RiskEngineTestCase(TestCase):
         result = engine.calculate_risk_score()
 
         # Should get +0.50% adjustment for aged invoice
-        self.assertGreaterEqual(result.fee_percent, Decimal('2.25'))
+        self.assertGreaterEqual(result.final_fee_percent, Decimal('2.25'))
 
     def test_fee_adjustment_first_time_customer(self):
         """Test fee adjustment for first-time customer +0.25%."""
@@ -422,7 +444,7 @@ class RiskEngineTestCase(TestCase):
 
         # Should get +0.25% adjustment for first-time customer
         # Fee will be higher due to first-time customer adjustment
-        self.assertGreater(result.fee_percent, Decimal('0.75'))
+        self.assertGreater(result.final_fee_percent, Decimal('0.75'))
 
     def test_fee_cap(self):
         """Test fee cap (never exceeds 5.0%)."""
@@ -449,7 +471,7 @@ class RiskEngineTestCase(TestCase):
         result = engine.calculate_risk_score()
 
         # Fee should never exceed 5.0%
-        self.assertLessEqual(result.fee_percent, Decimal('5.00'))
+        self.assertLessEqual(result.final_fee_percent, Decimal('5.00'))
 
     def test_fee_floor(self):
         """Test fee floor (never below 0.75%)."""
@@ -485,7 +507,7 @@ class RiskEngineTestCase(TestCase):
         result = engine.calculate_risk_score()
 
         # Fee should never be below 0.75%
-        self.assertGreaterEqual(result.fee_percent, Decimal('0.75'))
+        self.assertGreaterEqual(result.final_fee_percent, Decimal('0.75'))
 
     def test_facility_utilization_factor(self):
         """Test facility utilization impact on score and fee."""
@@ -518,4 +540,4 @@ class RiskEngineTestCase(TestCase):
         result_high = engine2.calculate_risk_score()
 
         # High utilization should have higher fee
-        self.assertGreater(result_high.fee_percent, result_low.fee_percent)
+        self.assertGreater(result_high.final_fee_percent, result_low.final_fee_percent)

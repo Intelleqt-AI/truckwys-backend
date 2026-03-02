@@ -69,6 +69,32 @@ class Customer(models.Model):
     # Keep old status field for backward compatibility
     status = models.CharField(max_length=50, default='ACTIVE')
 
+    # Risk engine payment history fields
+    payment_consistency = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=0.75,
+        help_text='Payment consistency ratio (0 to 1)'
+    )
+    dispute_rate = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=0.02,
+        help_text='Dispute rate ratio (0 to 1)'
+    )
+    avg_days_to_pay = models.IntegerField(
+        default=30,
+        help_text='Historical average days to pay invoices'
+    )
+    total_invoices_paid = models.IntegerField(
+        default=10,
+        help_text='Total number of invoices paid by this customer'
+    )
+    total_invoices_late = models.IntegerField(
+        default=2,
+        help_text='Total number of late payments'
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

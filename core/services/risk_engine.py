@@ -953,40 +953,15 @@ class RiskEngine:
 
     def _get_company_age_years(self) -> int:
         """Get company age in years."""
-        if self.company.created_at:
-            delta = timezone.now() - self.company.created_at
-            return max(0, delta.days // 365)
-        return 0
+        return getattr(self.company, 'cipc_age_years', 0)
 
     def _get_fleet_size(self) -> int:
         """Get fleet size."""
-        from core.models import Vehicle
-        return Vehicle.objects.count()
+        return getattr(self.company, 'fleet_size', 10)
 
     def _get_turnover_trend(self) -> str:
         """Get turnover trend (growing/stable/declining)."""
-        # Analyze last 6 months of invoices
-        six_months_ago = timezone.now() - timedelta(days=180)
-        three_months_ago = timezone.now() - timedelta(days=90)
-
-        recent_total = Invoice.objects.filter(
-            customer=self.customer,
-            created_at__gte=three_months_ago,
-            status='PAID'
-        ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.0')
-
-        older_total = Invoice.objects.filter(
-            customer=self.customer,
-            created_at__gte=six_months_ago,
-            created_at__lt=three_months_ago,
-            status='PAID'
-        ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.0')
-
-        if recent_total > older_total * Decimal('1.1'):
-            return 'growing'
-        elif recent_total < older_total * Decimal('0.9'):
-            return 'declining'
-        return 'stable'
+        return getattr(self.company, 'turnover_trend', 'stable')
 
     def _get_turnover_volatility(self) -> float:
         """Get turnover volatility (coefficient of variation)."""
@@ -1013,24 +988,7 @@ class RiskEngine:
 
     def _get_platform_avg_days_to_pay(self) -> float:
         """Get average days to pay for this customer."""
-        paid_invoices = Invoice.objects.filter(
-            customer=self.customer,
-            status='PAID',
-            paid_at__isnull=False
-        )
-
-        if not paid_invoices.exists():
-            return 45.0  # Default moderate
-
-        total_days = 0
-        count = 0
-        for inv in paid_invoices:
-            if inv.paid_at and inv.due_date:
-                days = (inv.paid_at.date() - inv.due_date).days
-                total_days += days
-                count += 1
-
-        return float(total_days) / count if count > 0 else 45.0
+        return float(getattr(self.customer, 'avg_days_to_pay', 30))
 
     def _get_operator_avg_invoice_amount(self) -> Decimal:
         """Get operator's average invoice amount."""

@@ -13,11 +13,25 @@ class Driver(models.Model):
     emergency_phone = models.CharField(max_length=20, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    
+
     # Performance tracking fields (optional)
     # total_trips = models.IntegerField(default=0)
     # on_time_trips = models.IntegerField(default=0)
     # safety_incidents = models.IntegerField(default=0)
+
+    # Risk engine fields
+    violation_count = models.IntegerField(
+        default=0,
+        help_text='Number of traffic violations'
+    )
+    accident_history = models.IntegerField(
+        default=0,
+        help_text='Number of accidents in history'
+    )
+    experience_years = models.IntegerField(
+        default=3,
+        help_text='Years of driving experience'
+    )
     
     class Meta:
         db_table = 'drivers'
