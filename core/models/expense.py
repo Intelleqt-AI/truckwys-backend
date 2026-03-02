@@ -22,6 +22,8 @@ class Expense(models.Model):
         ('REJECTED', 'Rejected'),
     ]
 
+    company = models.ForeignKey("Company", on_delete=models.CASCADE, null=True, blank=True, related_name="%(class)ss")
+
     expense_number = models.CharField(max_length=100, unique=True, db_index=True)
     category = models.CharField(max_length=50, choices=CATEGORY_CHOICES, db_index=True)
     description = models.TextField()

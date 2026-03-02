@@ -25,6 +25,7 @@ class Invoice(models.Model):
     ]
 
     # Core fields
+    company = models.ForeignKey("Company", on_delete=models.CASCADE, null=True, blank=True, related_name="%(class)ss")
     invoice_number = models.CharField(max_length=100, unique=True, db_index=True)
     customer = models.ForeignKey(Customer, on_delete=models.PROTECT, related_name='invoices')
     load = models.ForeignKey(Load, on_delete=models.PROTECT, null=True, blank=True, related_name='invoices')

@@ -15,6 +15,7 @@ class User(AbstractUser):
         ('PENDING', 'Pending'),
     ]
     
+    company = models.ForeignKey("Company", on_delete=models.CASCADE, null=True, blank=True, related_name="users")
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='ADMIN')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='ACTIVE')
     phone = models.CharField(max_length=20, blank=True)

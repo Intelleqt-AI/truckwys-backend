@@ -18,7 +18,8 @@ class Customer(models.Model):
     ]
 
     name = models.CharField(max_length=200, db_index=True)
-    company = models.CharField(max_length=200, blank=True)
+    company_name = models.CharField(max_length=200, blank=True)
+    company = models.ForeignKey("Company", on_delete=models.CASCADE, null=True, blank=True, related_name="customers")
     email = models.EmailField(unique=True)
     phone = models.CharField(max_length=20)
     address = models.TextField()
@@ -108,7 +109,7 @@ class Customer(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.name} - {self.company}" if self.company else self.name
+        return f"{self.name} - {self.company_name}" if self.company_name else self.name
 
     @property
     def relationship_months(self) -> int:

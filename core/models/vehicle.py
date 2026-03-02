@@ -3,6 +3,7 @@ from django.conf import settings
 
 
 class VehicleType(models.Model):
+    company = models.ForeignKey("Company", on_delete=models.CASCADE, null=True, blank=True, related_name="%(class)ss")
     name = models.CharField(max_length=100)
     description = models.TextField(blank=True)
     capacity = models.DecimalField(max_digits=10, decimal_places=2)
