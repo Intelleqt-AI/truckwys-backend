@@ -127,6 +127,9 @@ class RiskEngine:
     Calculates comprehensive risk scores for invoice factoring decisions.
     """
 
+    # ML/Hybrid scoring weight (0.0 = rules only, 1.0 = ML only)
+    ML_WEIGHT = 0.0  # Start at 0, increase as data accumulates
+
     # Tier thresholds
     TIER_PRIME_MIN = 85
     TIER_STANDARD_MIN = 70
@@ -235,6 +238,129 @@ class RiskEngine:
             valid_until=valid_until.isoformat(),
             factors_breakdown=self._build_factors_breakdown(pillar_breakdown, raw_score, final_score, tier)
         )
+
+    def score_with_ml(self) -> Dict:
+        """
+        Calculate hybrid risk score using rules engine + ML model.
+
+        Returns enriched result with:
+        - rules_score: Traditional 7-pillar score
+        - ml_score: ML model prediction (if available)
+        - blend_score: Weighted blend of rules and ML
+        - ml_confidence: ML model confidence
+        - feature_importances: Top feature drivers
+
+        If ML model not trained, falls back to rules_score only.
+        """
+        from core.services.feature_engineering import FeatureExtractor
+        from core.services.ml_pipeline import RiskMLPipeline
+
+        # 1. Calculate traditional rules-based score
+        rules_result = self.calculate_risk_score()
+        rules_score = rules_result.final_score
+
+        # 2. Try to get ML prediction
+        ml_score = None
+        ml_confidence = 0.0
+        ml_prediction = None
+        feature_importances = []
+
+        try:
+            # Extract features
+            feature_extractor = FeatureExtractor()
+            features = feature_extractor.extract_features(self.invoice)
+
+            # Get ML prediction
+            ml_pipeline = RiskMLPipeline()
+            if ml_pipeline.is_model_trained():
+                ml_prediction = ml_pipeline.predict(features)
+                if ml_prediction:
+                    # Convert ML probability to 0-100 score
+                    # Low probability = high score (inverse relationship)
+                    ml_score = int((1.0 - ml_prediction.probability) * 100)
+                    ml_confidence = ml_prediction.confidence
+
+                    # Get feature explanations
+                    feature_importances = ml_pipeline.explain(features, top_n=10)
+
+        except Exception as e:
+            # ML failed - fall back to rules only
+            print(f"ML prediction failed: {e}")
+
+        # 3. Blend scores
+        if ml_score is not None and self.ML_WEIGHT > 0:
+            # Weighted blend: final = (rules_weight * rules) + (ml_weight * ml)
+            rules_weight = 1.0 - self.ML_WEIGHT
+            blend_score = int((rules_weight * rules_score) + (self.ML_WEIGHT * ml_score))
+        else:
+            # No ML or ML_WEIGHT=0, use rules only
+            blend_score = rules_score
+
+        # Re-determine tier based on blend score
+        blend_tier = self._get_risk_tier(blend_score)
+
+        # 4. Build enriched response
+        return {
+            'success': True,
+            'invoice_id': self.invoice.id,
+            'invoice_number': self.invoice.invoice_number,
+
+            # Scores
+            'rules_score': rules_score,
+            'ml_score': ml_score,
+            'blend_score': blend_score,
+            'final_score': blend_score,  # Use blend as final
+
+            # Tiers
+            'rules_tier': rules_result.risk_tier,
+            'blend_tier': blend_tier,
+            'final_tier': blend_tier,
+
+            # ML details
+            'ml_available': ml_score is not None,
+            'ml_confidence': ml_confidence,
+            'ml_weight_used': self.ML_WEIGHT if ml_score is not None else 0.0,
+            'ml_prediction': ml_prediction.to_dict() if ml_prediction else None,
+
+            # Feature importance
+            'feature_importances': [
+                {
+                    'feature': name,
+                    'importance': importance,
+                    'direction': direction
+                }
+                for name, importance, direction in feature_importances
+            ],
+
+            # Original rules result
+            'rules_result': {
+                'is_eligible': rules_result.is_eligible,
+                'ineligibility_reasons': [
+                    {
+                        'rule': r.rule,
+                        'description': r.description,
+                        'severity': r.severity
+                    }
+                    for r in rules_result.ineligibility_reasons
+                ],
+                'pillar_breakdown': [
+                    {
+                        'pillar': p.pillar,
+                        'raw_score': p.raw_score,
+                        'weighted_score': p.weighted_score,
+                        'weight': p.weight,
+                    }
+                    for p in rules_result.pillar_breakdown
+                ],
+                'fee_percent': float(rules_result.final_fee_percent),
+                'max_advance_percent': rules_result.max_advance_percent,
+                'turnaround': rules_result.estimated_turnaround,
+            },
+
+            # Metadata
+            'calculated_at': rules_result.calculated_at,
+            'valid_until': rules_result.valid_until,
+        }
 
     def _check_hard_criteria(self) -> List[IneligibilityReason]:
         """Check hard stop ineligibility rules."""

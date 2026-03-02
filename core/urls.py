@@ -78,6 +78,9 @@ router.register(r'integration-keys', IntegrationAPIKeyViewSet, basename='integra
 # Activity Events ViewSet (Sprint 1)
 router.register(r'activity', ActivityEventViewSet, basename='activity')
 
+# Partner API ViewSets (Fleet Management + Capital APIs)
+router.register(r'partners/webhooks', PartnerWebhookSubscriptionViewSet, basename='partner-webhook')
+
 urlpatterns = [
     # Authentication endpoints (must come before router)
     path('auth/register/', RegisterView.as_view(), name='register'),
@@ -150,6 +153,19 @@ urlpatterns = [
 
     # Capital eligible invoices for operators (Sprint A4)
     path('capital/eligible/', CapitalEligibleInvoicesView.as_view(), name='capital-eligible'),
+
+    # Fleet Management API endpoints (outbound + inbound webhooks)
+    path('fleet/trips/sync/', FleetTripSyncAPIView.as_view(), name='fleet-trip-sync'),
+    path('fleet/bookings/sync/', FleetBookingSyncAPIView.as_view(), name='fleet-booking-sync'),
+    path('fleet/vehicles/status/', FleetVehicleStatusAPIView.as_view(), name='fleet-vehicle-status'),
+    path('fleet/webhooks/trip-update/', FleetWebhookTripUpdateView.as_view(), name='fleet-webhook-trip-update'),
+    path('fleet/webhooks/vehicle-event/', FleetWebhookVehicleEventView.as_view(), name='fleet-webhook-vehicle-event'),
+    path('fleet/webhooks/driver-event/', FleetWebhookDriverEventView.as_view(), name='fleet-webhook-driver-event'),
+
+    # Partner/Capital API endpoints (API key authenticated)
+    path('partners/risk-assessment/<int:invoice_id>/', PartnerRiskAssessmentView.as_view(), name='partner-risk-assessment'),
+    path('partners/portfolio/summary/', PartnerPortfolioSummaryView.as_view(), name='partner-portfolio-summary'),
+    path('partners/eligible/', PartnerEligibleInvoicesView.as_view(), name='partner-eligible-invoices'),
 
     # Router URLs (comes last)
     path('', include(router.urls)),
