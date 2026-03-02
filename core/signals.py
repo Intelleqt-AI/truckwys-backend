@@ -9,7 +9,7 @@ def load_saved(sender, instance, created, **kwargs):
     """Fire webhook when load is created or status changes."""
     from core.services.webhook_dispatcher import dispatch_webhook
     from core.serializers import LoadSerializer
-    from core.models import ActivityEvent
+    from core.models import ActivityEvent, Notification, User
 
     # Serialize the load data
     data = LoadSerializer(instance).data
@@ -26,6 +26,22 @@ def load_saved(sender, instance, created, **kwargs):
             entity_type='Load',
             metadata={'load_number': instance.load_number, 'status': instance.status}
         )
+
+        # Create notification for new load
+        user = None
+        if instance.company:
+            user = User.objects.filter(company=instance.company, role='ADMIN', status='ACTIVE').first()
+        elif instance.created_by:
+            user = instance.created_by
+
+        if user:
+            Notification.objects.create(
+                user=user,
+                type='INFO',
+                title="New Load Created",
+                message=f"Load {instance.load_number} for {instance.customer.name}",
+                link=f"/loads/{instance.id}"
+            )
     else:
         # Fire load.status_changed event
         dispatch_webhook('load.status_changed', data)
@@ -49,7 +65,7 @@ def invoice_saved(sender, instance, created, **kwargs):
     """Fire webhook when invoice is created or paid."""
     from core.services.webhook_dispatcher import dispatch_webhook
     from core.serializers import InvoiceSerializer
-    from core.models import ActivityEvent
+    from core.models import ActivityEvent, Notification, User
 
     if created:
         # Fire invoice.created event
@@ -79,6 +95,27 @@ def invoice_saved(sender, instance, created, **kwargs):
             entity_type='Invoice',
             metadata={'invoice_number': instance.invoice_number, 'status': instance.status, 'amount': str(amount)}
         )
+
+    # Create notification for overdue invoices
+    if not created and instance.status == 'OVERDUE':
+        # Check if notification already exists to avoid duplicates
+        if not Notification.objects.filter(
+            title="Invoice Overdue",
+            message__contains=instance.invoice_number
+        ).exists():
+            # Get company admin user
+            user = None
+            if instance.company:
+                user = User.objects.filter(company=instance.company, role='ADMIN', status='ACTIVE').first()
+
+            if user:
+                Notification.objects.create(
+                    user=user,
+                    type='ALERT',
+                    title="Invoice Overdue",
+                    message=f"Invoice {instance.invoice_number} for {instance.customer.name} is overdue (R{instance.balance})",
+                    link=f"/invoices/{instance.id}"
+                )
 
 
 @receiver(post_save, sender='core.Quote')
@@ -120,11 +157,32 @@ def quote_saved(sender, instance, created, **kwargs):
         )
 
 
+@receiver(post_save, sender='core.RiskScore')
+def risk_score_saved(sender, instance, created, **kwargs):
+    """Create notification when risk score is calculated."""
+    from core.models import Notification, User
+
+    if created:
+        # Create notification for new risk score
+        user = None
+        if instance.company:
+            user = User.objects.filter(company=instance.company, role='ADMIN', status='ACTIVE').first()
+
+        if user:
+            Notification.objects.create(
+                user=user,
+                type='INFO',
+                title="Risk Score Updated",
+                message=f"Invoice {instance.invoice.invoice_number} scored {instance.total_score} ({instance.tier})",
+                link=f"/invoices/{instance.invoice.id}"
+            )
+
+
 @receiver(post_save, sender='core.AdvanceRequest')
 def advance_saved(sender, instance, created, **kwargs):
     """Fire webhook when advance is approved."""
     from core.services.webhook_dispatcher import dispatch_webhook
-    from core.models import ActivityEvent
+    from core.models import ActivityEvent, Notification, User
 
     if created:
         # Create activity event for new advance request
@@ -156,6 +214,21 @@ def advance_saved(sender, instance, created, **kwargs):
             entity_type='AdvanceRequest',
             metadata={'amount': str(instance.amount), 'status': instance.status}
         )
+
+        # Create notification for approved advance
+        user = None
+        if instance.invoice and instance.invoice.company:
+            user = User.objects.filter(company=instance.invoice.company, role='ADMIN', status='ACTIVE').first()
+
+        if user:
+            Notification.objects.create(
+                user=user,
+                type='SUCCESS',
+                title="Advance Approved",
+                message=f"Advance of R{instance.net_amount} approved for {instance.invoice.invoice_number}",
+                link=f"/capital/advances/{instance.id}"
+            )
+
     elif not created and instance.status == 'DISBURSED':
         dispatch_webhook('advance.disbursed', {
             'id': instance.id,
@@ -174,3 +247,17 @@ def advance_saved(sender, instance, created, **kwargs):
             entity_type='AdvanceRequest',
             metadata={'amount': str(instance.amount), 'status': instance.status}
         )
+
+        # Create notification for disbursed advance
+        user = None
+        if instance.invoice and instance.invoice.company:
+            user = User.objects.filter(company=instance.invoice.company, role='ADMIN', status='ACTIVE').first()
+
+        if user:
+            Notification.objects.create(
+                user=user,
+                type='SUCCESS',
+                title="Funds Disbursed",
+                message=f"R{instance.net_amount} disbursed for {instance.invoice.invoice_number}",
+                link=f"/capital/advances/{instance.id}"
+            )

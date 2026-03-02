@@ -1688,6 +1688,12 @@ class NotificationViewSet(viewsets.ModelViewSet):
         self.get_queryset().update(is_read=True, read_at=timezone.now())
         return Response({'message': 'All notifications marked as read'})
 
+    @action(detail=False, methods=['get'])
+    def unread_count(self, request):
+        """Get count of unread notifications"""
+        count = self.get_queryset().filter(is_read=False).count()
+        return Response({'count': count})
+
 # ============================================================
 # TomTom Route Calculator
 # ============================================================
