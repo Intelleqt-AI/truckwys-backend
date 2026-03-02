@@ -53,9 +53,12 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'config.wsgi.application'
 
-import pymysql
-pymysql.version_info = (2, 2, 1, 'final', 0)
-pymysql.install_as_MySQLdb()
+try:
+    import pymysql
+    pymysql.version_info = (2, 2, 1, 'final', 0)
+    pymysql.install_as_MySQLdb()
+except ImportError:
+    pass  # Not needed for SQLite
 
 # ── AWS RDS MySQL (swap in once security group allows 146.70.237.145) ──
 # DATABASES = {
