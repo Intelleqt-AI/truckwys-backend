@@ -76,6 +76,7 @@ class LoadSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source='customer.name', read_only=True)
     driver_name = serializers.CharField(source='driver.user.username', read_only=True)
     vehicle_info = serializers.SerializerMethodField()
+    quote_number = serializers.SerializerMethodField()
     
     class Meta:
         model = Load
@@ -85,6 +86,11 @@ class LoadSerializer(serializers.ModelSerializer):
     def get_vehicle_info(self, obj):
         if obj.vehicle:
             return f"{obj.vehicle.make} {obj.vehicle.model} - {obj.vehicle.plate}"
+        return None
+
+    def get_quote_number(self, obj):
+        if obj.quote:
+            return obj.quote.quote_number
         return None
 
 

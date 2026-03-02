@@ -43,7 +43,7 @@ class FacilityViewSet(viewsets.ModelViewSet):
     """
 
     serializer_class = FacilitySerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
         """Filter facilities by user's company."""
@@ -72,7 +72,7 @@ class RiskScoreViewSet(viewsets.ReadOnlyModelViewSet):
     """
 
     serializer_class = RiskScoreSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
         """Filter risk scores by user's company."""
@@ -170,7 +170,7 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
     """
 
     serializer_class = AdvanceRequestSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
         """Filter advance requests by user's company."""
@@ -385,7 +385,7 @@ class CapitalDashboardViewSet(viewsets.ViewSet):
     dashboard: GET /api/v1/dashboard/capital/
     """
 
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     @action(detail=False, methods=['get'], url_path='capital')
     def capital(self, request):
@@ -548,7 +548,7 @@ class CapitalEligibleInvoicesView(APIView):
     Returns eligible invoices for fast-pay/advance for the authenticated operator.
     Similar logic to lender eligible-invoices but with Token authentication.
     """
-    permission_classes = [AllowAny]  # Using Token auth in practice
+    permission_classes = [IsAuthenticated]  # Using Token auth in practice
 
     def get(self, request):
         # Get invoices eligible for advance

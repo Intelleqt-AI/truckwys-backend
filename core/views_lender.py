@@ -15,7 +15,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 
 
 # ---------------------------------------------------------------------------
@@ -49,7 +49,7 @@ class LenderAPIKeyAuthentication(BaseAuthentication):
 
 class LenderBaseView(APIView):
     authentication_classes = [LenderAPIKeyAuthentication]
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def _require_api_key(self, request):
         """Returns error response if not authenticated via API key, else None."""

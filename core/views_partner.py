@@ -3,7 +3,7 @@
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from rest_framework.permissions import BasePermission, AllowAny
+from rest_framework.permissions import BasePermission, AllowAny, IsAuthenticated
 from django.db.models import Q
 from typing import Optional
 
@@ -103,7 +103,7 @@ class PartnerAdvanceViewSet(viewsets.ReadOnlyModelViewSet):
     """
 
     serializer_class = PartnerAdvanceSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
         """
@@ -207,7 +207,7 @@ class PartnerOperatorViewSet(viewsets.ViewSet):
     retrieve: GET /api/v1/partner/operators/{company_id}/ - Get operator profile
     """
 
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def list(self, request):
         """List all companies as operator summaries."""
@@ -312,7 +312,7 @@ class PartnerRiskScoreViewSet(viewsets.ReadOnlyModelViewSet):
     """
 
     serializer_class = RiskScoreSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
         """Partners can view all risk scores."""

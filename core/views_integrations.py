@@ -5,7 +5,7 @@ Handles API endpoints for third-party integrations (Xero, Fleet software, Credit
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed
 from django.shortcuts import redirect
@@ -30,7 +30,7 @@ class XeroConnectView(APIView):
     Initiate Xero OAuth connection.
     GET /api/v1/integrations/xero/connect/
     """
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
         # Get company (assuming single company per deployment)
@@ -107,7 +107,7 @@ class XeroDisconnectView(APIView):
     Disconnect Xero integration.
     POST /api/v1/integrations/xero/disconnect/
     """
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def post(self, request):
         company = Company.objects.first()
@@ -131,7 +131,7 @@ class XeroStatusView(APIView):
     Get Xero connection status.
     GET /api/v1/integrations/xero/status/
     """
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
         company = Company.objects.first()
@@ -156,7 +156,7 @@ class XeroSyncInvoicesView(APIView):
     Push pending invoices to Xero.
     POST /api/v1/integrations/xero/sync-invoices/
     """
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def post(self, request):
         company = Company.objects.first()
@@ -205,7 +205,7 @@ class XeroSyncPaymentsView(APIView):
     Pull payments from Xero.
     POST /api/v1/integrations/xero/sync-payments/
     """
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def post(self, request):
         company = Company.objects.first()
@@ -247,7 +247,7 @@ class FleetImportTripsView(APIView):
     Expected CSV columns:
     origin, destination, distance_km, vehicle_reg, driver_name, start_date, end_date, fuel_litres, toll_cost
     """
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def post(self, request):
         # Get uploaded file
@@ -311,7 +311,7 @@ class CreditLookupView(APIView):
     POST /api/v1/integrations/credit/lookup/
     Body: {"customer_id": 123}
     """
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def post(self, request):
         from core.models import Customer
@@ -352,7 +352,7 @@ class DashboardInsightsView(APIView):
     Get dashboard insights and recommendations.
     GET /api/v1/dashboard/insights/
     """
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
         company = Company.objects.first()
@@ -404,7 +404,7 @@ class CashFlowForecastView(APIView):
     Get cash flow forecast.
     GET /api/v1/dashboard/cashflow/?days=90
     """
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
         # Get forecast period from query params
@@ -479,7 +479,7 @@ class FleetTripSyncView(APIView):
     }
     """
     authentication_classes = [FleetAPIKeyAuthentication]
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def post(self, request):
         # Require API key
@@ -619,7 +619,7 @@ class FleetTripBulkSyncView(APIView):
     }
     """
     authentication_classes = [FleetAPIKeyAuthentication]
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def post(self, request):
         # Require API key

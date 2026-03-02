@@ -8,6 +8,7 @@ class Load(models.Model):
     STATUS_CHOICES = [
         ('PENDING', 'Pending'),
         ('ASSIGNED', 'Assigned'),
+        ('LOADING', 'Loading'),
         ('IN_TRANSIT', 'In Transit'),
         ('DELIVERED', 'Delivered'),
         ('INVOICED', 'Invoiced'),
@@ -18,6 +19,7 @@ class Load(models.Model):
     customer = models.ForeignKey(Customer, on_delete=models.PROTECT, related_name='loads')
     driver = models.ForeignKey(Driver, on_delete=models.SET_NULL, null=True, blank=True, related_name='loads')
     vehicle = models.ForeignKey(Vehicle, on_delete=models.SET_NULL, null=True, blank=True, related_name='loads')
+    quote = models.ForeignKey('core.Quote', on_delete=models.SET_NULL, null=True, blank=True, related_name='loads')
     
     pickup_location = models.CharField(max_length=500)
     pickup_city = models.CharField(max_length=100)

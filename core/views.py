@@ -69,7 +69,7 @@ class LoginView(APIView):
 
 
 class LogoutView(APIView):
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
     
     def post(self, request):
         request.user.auth_token.delete()
@@ -77,7 +77,7 @@ class LogoutView(APIView):
 
 
 class UserProfileView(APIView):
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
     
     def get(self, request):
         serializer = UserSerializer(request.user)
@@ -92,7 +92,7 @@ class UserProfileView(APIView):
 
 
 class NotificationSettingsView(APIView):
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
     
     def get(self, request):
         # Default settings if none exist
@@ -190,7 +190,7 @@ class FleetOverviewView(APIView):
     """
     Fleet Profitability Overview - AI-driven vehicle performance, efficiency, and profitability insights
     """
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
     
     def get(self, request):
         now = datetime.now()
@@ -341,7 +341,7 @@ class VehicleInsightsView(APIView):
     """
     Vehicle Insights Table - Detailed vehicle performance data
     """
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
     
     def get(self, request):
         # Get all vehicles with their associated data
@@ -465,7 +465,7 @@ class VehicleIntelligenceFeedView(APIView):
     """
     Intelligence Feed - Opportunities & Risks for fleet optimization
     """
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
     
     def get(self, request):
         active_opportunities = [
@@ -587,7 +587,7 @@ class VehicleActionView(APIView):
     """
     Apply Action from Intelligence Feed
     """
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
     
     def post(self, request):
         action_id = request.data.get('action_id')
@@ -617,7 +617,7 @@ class DriverOverviewView(APIView):
     """
     Driver Intelligence Hub Overview - Performance metrics and insights
     """
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
     
     def get(self, request):
         from datetime import datetime, timedelta
@@ -766,7 +766,7 @@ class DriverPerformanceLeaderboardView(APIView):
     """
     Driver Performance Leaderboard - Sortable table of all drivers
     """
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
     
     def get(self, request):
         from core.serializers import DriverPerformanceSerializer
@@ -838,7 +838,7 @@ class QuotesPipelineOverviewView(APIView):
     """
     Quotes Pipeline Overview - Kanban-style pipeline with stats
     """
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
     
     def get(self, request):
         from django.db.models import Sum, Count, Q
@@ -1070,7 +1070,7 @@ class UserViewSet(viewsets.ModelViewSet):
 class CustomerViewSet(viewsets.ModelViewSet):
     queryset = Customer.objects.all()
     serializer_class = CustomerSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['status', 'city', 'state']
     search_fields = ['name', 'company', 'email', 'phone']
@@ -1096,7 +1096,7 @@ class CustomerViewSet(viewsets.ModelViewSet):
 class DriverViewSet(viewsets.ModelViewSet):
     queryset = Driver.objects.all()
     serializer_class = DriverSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['status', 'license_state']
     search_fields = ['user__username', 'license_number', 'user__first_name', 'user__last_name']
@@ -1122,7 +1122,7 @@ class DriverViewSet(viewsets.ModelViewSet):
 class VehicleViewSet(viewsets.ModelViewSet):
     queryset = Vehicle.objects.all()
     serializer_class = VehicleSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['status', 'type', 'fuel_type']
     search_fields = ['vin', 'plate', 'make', 'model']
@@ -1148,7 +1148,7 @@ class VehicleViewSet(viewsets.ModelViewSet):
 class VehicleTypeViewSet(viewsets.ModelViewSet):
     queryset = VehicleType.objects.all()
     serializer_class = VehicleTypeSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['active']
     search_fields = ['name', 'description']
@@ -1158,7 +1158,7 @@ class VehicleTypeViewSet(viewsets.ModelViewSet):
 class VehicleLogViewSet(viewsets.ModelViewSet):
     queryset = VehicleLog.objects.all()
     serializer_class = VehicleLogSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['vehicle', 'log_type', 'date']
     search_fields = ['description', 'vehicle__vin', 'vehicle__plate']
@@ -1171,7 +1171,7 @@ class VehicleLogViewSet(viewsets.ModelViewSet):
 class LoadViewSet(viewsets.ModelViewSet):
     queryset = Load.objects.all()
     serializer_class = LoadSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['status', 'customer', 'driver', 'vehicle']
     search_fields = ['load_number', 'pickup_city', 'delivery_city', 'cargo_description']
@@ -1300,7 +1300,7 @@ class LoadViewSet(viewsets.ModelViewSet):
 class QuoteViewSet(viewsets.ModelViewSet):
     queryset = Quote.objects.all()
     serializer_class = QuoteSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['status', 'customer']
     search_fields = ['quote_number', 'customer__name', 'pickup_location', 'delivery_location']
@@ -1338,6 +1338,56 @@ class QuoteViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(quote)
         return Response(serializer.data)
 
+    @action(detail=True, methods=['post'])
+    def convert_to_load(self, request, pk=None):
+        """Convert quote to load"""
+        import random
+        quote = self.get_object()
+
+        # Check if quote already converted
+        if quote.status in ['IT', 'COMPLETED']:
+            return Response(
+                {'error': 'Quote already converted'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Auto-generate unique load_number
+        load_number = f'LOAD-{timezone.now().strftime("%Y%m%d")}-{random.randint(1000, 9999)}'
+        while Load.objects.filter(load_number=load_number).exists():
+            load_number = f'LOAD-{timezone.now().strftime("%Y%m%d")}-{random.randint(1000, 9999)}'
+
+        # Create load from quote
+        load = Load.objects.create(
+            load_number=load_number,
+            customer=quote.customer,
+            quote=quote,
+            pickup_location=quote.pickup_location,
+            delivery_location=quote.delivery_location,
+            pickup_city=quote.origin or 'TBD',
+            pickup_state='GP',
+            pickup_zip='0000',
+            pickup_date=timezone.now() + timedelta(days=2),
+            delivery_city=quote.destination or 'TBD',
+            delivery_state='GP',
+            delivery_zip='0000',
+            delivery_date=timezone.now() + timedelta(days=4),
+            cargo_description=quote.cargo_description,
+            weight=quote.weight,
+            distance=quote.distance,
+            rate=quote.base_rate,
+            fuel_surcharge=quote.fuel_surcharge,
+            additional_charges=quote.additional_charges,
+            total_amount=quote.total_amount,
+            status='PENDING',
+            created_by=request.user
+        )
+
+        # Update quote status to In-Transit
+        quote.status = 'IT'
+        quote.save()
+
+        serializer = LoadSerializer(load)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=['get'])
     def generate_pdf(self, request, pk=None):
@@ -1478,7 +1528,7 @@ class QuoteViewSet(viewsets.ModelViewSet):
 class InvoiceViewSet(viewsets.ModelViewSet):
     queryset = Invoice.objects.all()
     serializer_class = InvoiceSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['status', 'customer', 'load']
     search_fields = ['invoice_number', 'customer__name']
@@ -1496,7 +1546,7 @@ class InvoiceViewSet(viewsets.ModelViewSet):
 class PaymentViewSet(viewsets.ModelViewSet):
     queryset = Payment.objects.all()
     serializer_class = PaymentSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['payment_method', 'customer', 'invoice']
     search_fields = ['payment_number', 'reference_number', 'customer__name']
@@ -1506,7 +1556,7 @@ class PaymentViewSet(viewsets.ModelViewSet):
 class ExpenseViewSet(viewsets.ModelViewSet):
     queryset = Expense.objects.all()
     serializer_class = ExpenseSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['category', 'vehicle', 'driver']
     search_fields = ['expense_number', 'description', 'vendor']
@@ -1519,7 +1569,7 @@ class ExpenseViewSet(viewsets.ModelViewSet):
 class SettlementViewSet(viewsets.ModelViewSet):
     queryset = Settlement.objects.all()
     serializer_class = SettlementSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['status', 'driver']
     search_fields = ['settlement_number', 'driver__user__username']
@@ -1547,7 +1597,7 @@ class SettlementViewSet(viewsets.ModelViewSet):
 
 class NotificationViewSet(viewsets.ModelViewSet):
     serializer_class = NotificationSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
     filterset_fields = ['type', 'is_read']
     ordering_fields = ['created_at']
@@ -1752,7 +1802,7 @@ class DashboardOverviewView(APIView):
 # ---------------------------------------------------------------------------
 class DashboardSignalsView(APIView):
     """Generate real AI signals from live data."""
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
         signals = []
