@@ -34,6 +34,14 @@ from .views_lender import (
     LenderHealthView, LenderRiskProfileView, LenderEligibleInvoicesView,
     LenderAdvanceRequestView, LenderPortfolioView
 )
+from .views_fleet import (
+    FleetTripSyncAPIView, FleetBookingSyncAPIView, FleetVehicleStatusAPIView,
+    FleetWebhookTripUpdateView, FleetWebhookVehicleEventView, FleetWebhookDriverEventView
+)
+from .views_partner_api import (
+    PartnerRiskAssessmentView, PartnerPortfolioSummaryView, PartnerEligibleInvoicesView,
+    PartnerWebhookSubscriptionViewSet
+)
 
 router = DefaultRouter()
 router.register(r'users', UserViewSet, basename='user')

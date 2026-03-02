@@ -727,6 +727,7 @@ class Command(BaseCommand):
             amount = Decimal(str(random.randint(driver_template['amount_range'][0], driver_template['amount_range'][1])))
             vendor = random.choice(driver_template['vendor_choices'])
             expense = Expense.objects.create(
+                company=company,
                 expense_number=expense_num,
                 category=driver_template['category'],
                 description=f'{vendor} for {driver.user.first_name} {driver.user.last_name}',
@@ -748,6 +749,7 @@ class Command(BaseCommand):
             expense_num = f'EXP-{expense_date.strftime("%Y%m%d")}-{random.randint(1000, 9999)}'
             amount = Decimal(str(random.randint(insurance_template['amount_range'][0], insurance_template['amount_range'][1])))
             expense = Expense.objects.create(
+                company=company,
                 expense_number=expense_num,
                 category=insurance_template['category'],
                 description=f'Insurance premium for {vehicle.make} {vehicle.model}',
@@ -769,6 +771,7 @@ class Command(BaseCommand):
             amount = Decimal(str(random.randint(overhead_template['amount_range'][0], overhead_template['amount_range'][1])))
             vendor = random.choice(overhead_template['vendor_choices'])
             expense = Expense.objects.create(
+                company=company,
                 expense_number=expense_num,
                 category=overhead_template['category'],
                 description=f'{vendor} expense',
