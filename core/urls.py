@@ -42,6 +42,10 @@ from .views_partner_api import (
     PartnerRiskAssessmentView, PartnerPortfolioSummaryView, PartnerEligibleInvoicesView,
     PartnerWebhookSubscriptionViewSet
 )
+from .views_risk_api import (
+    RiskAssessmentView, RiskPortfolioView, RiskRetrainView,
+    RiskModelInfoView, RiskAnomaliesView, RiskRescoreCustomerView
+)
 
 router = DefaultRouter()
 router.register(r'users', UserViewSet, basename='user')
@@ -166,6 +170,14 @@ urlpatterns = [
     path('partners/risk-assessment/<int:invoice_id>/', PartnerRiskAssessmentView.as_view(), name='partner-risk-assessment'),
     path('partners/portfolio/summary/', PartnerPortfolioSummaryView.as_view(), name='partner-portfolio-summary'),
     path('partners/eligible/', PartnerEligibleInvoicesView.as_view(), name='partner-eligible-invoices'),
+
+    # ML Risk API endpoints (Sprint 2)
+    path('risk/assessment/<int:invoice_id>/', RiskAssessmentView.as_view(), name='risk-assessment'),
+    path('risk/portfolio/', RiskPortfolioView.as_view(), name='risk-portfolio'),
+    path('risk/retrain/', RiskRetrainView.as_view(), name='risk-retrain'),
+    path('risk/model-info/', RiskModelInfoView.as_view(), name='risk-model-info'),
+    path('risk/anomalies/', RiskAnomaliesView.as_view(), name='risk-anomalies'),
+    path('risk/rescore-customer/<int:customer_id>/', RiskRescoreCustomerView.as_view(), name='risk-rescore-customer'),
 
     # Router URLs (comes last)
     path('', include(router.urls)),
