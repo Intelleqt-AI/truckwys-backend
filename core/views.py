@@ -8,6 +8,27 @@ from rest_framework.authtoken.models import Token
 from django.contrib.auth import authenticate
 from django_filters.rest_framework import DjangoFilterBackend
 from django.utils import timezone
+
+
+class CompanyFilterMixin:
+    """Filter querysets by the authenticated user's company for multi-tenancy."""
+    
+    def get_queryset(self):
+        qs = super().get_queryset()
+        user = self.request.user
+        if not user.is_authenticated:
+            return qs.none()
+        if user.is_superuser:
+            return qs  # Superusers see all
+        if hasattr(qs.model, 'company_id'):
+            return qs.filter(company=user.company)
+        return qs
+    
+    def perform_create(self, serializer):
+        if hasattr(serializer.Meta.model, 'company_id'):
+            serializer.save(company=self.request.user.company)
+        else:
+            serializer.save()
 from django.db.models import Sum, Count, Q, Avg, F, ExpressionWrapper, DecimalField
 from django.db.models.functions import TruncMonth
 from datetime import datetime, timedelta
@@ -39,7 +60,22 @@ class RegisterView(APIView):
         if serializer.is_valid():
             user = serializer.save()
             user.set_password(request.data.get('password'))
+            
+            # Create a Company for the new user
+            company_name = request.data.get('company_name', f"{user.first_name or user.username}'s Transport")
+            from core.models import Company, Facility
+            company = Company.objects.create(company_name=company_name)
+            user.company = company
             user.save()
+            
+            # Create a default Facility for the company
+            Facility.objects.create(
+                company=company,
+                limit=1000000,
+                outstanding=0,
+                status='ACTIVE'
+            )
+            
             token, created = Token.objects.get_or_create(user=user)
             return Response({
                 'token': token.key,
@@ -1067,7 +1103,7 @@ class UserViewSet(viewsets.ModelViewSet):
         }, status=status.HTTP_201_CREATED)
 
 
-class CustomerViewSet(viewsets.ModelViewSet):
+class CustomerViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     queryset = Customer.objects.all()
     serializer_class = CustomerSerializer
     permission_classes = [IsAuthenticated]
@@ -1093,7 +1129,7 @@ class CustomerViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
 
 
-class DriverViewSet(viewsets.ModelViewSet):
+class DriverViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     queryset = Driver.objects.all()
     serializer_class = DriverSerializer
     permission_classes = [IsAuthenticated]
@@ -1119,7 +1155,7 @@ class DriverViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
 
 
-class VehicleViewSet(viewsets.ModelViewSet):
+class VehicleViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     queryset = Vehicle.objects.all()
     serializer_class = VehicleSerializer
     permission_classes = [IsAuthenticated]
@@ -1145,7 +1181,7 @@ class VehicleViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
 
 
-class VehicleTypeViewSet(viewsets.ModelViewSet):
+class VehicleTypeViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     queryset = VehicleType.objects.all()
     serializer_class = VehicleTypeSerializer
     permission_classes = [IsAuthenticated]
@@ -1155,7 +1191,7 @@ class VehicleTypeViewSet(viewsets.ModelViewSet):
     ordering_fields = ['name', 'capacity', 'base_rate']
 
 
-class VehicleLogViewSet(viewsets.ModelViewSet):
+class VehicleLogViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     queryset = VehicleLog.objects.all()
     serializer_class = VehicleLogSerializer
     permission_classes = [IsAuthenticated]
@@ -1168,7 +1204,7 @@ class VehicleLogViewSet(viewsets.ModelViewSet):
         serializer.save(user=self.request.user)
 
 
-class LoadViewSet(viewsets.ModelViewSet):
+class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     queryset = Load.objects.all()
     serializer_class = LoadSerializer
     permission_classes = [IsAuthenticated]
@@ -1297,7 +1333,7 @@ class LoadViewSet(viewsets.ModelViewSet):
         })
 
 
-class QuoteViewSet(viewsets.ModelViewSet):
+class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     queryset = Quote.objects.all()
     serializer_class = QuoteSerializer
     permission_classes = [IsAuthenticated]
@@ -1525,7 +1561,7 @@ class QuoteViewSet(viewsets.ModelViewSet):
         return response
 
 
-class InvoiceViewSet(viewsets.ModelViewSet):
+class InvoiceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     queryset = Invoice.objects.all()
     serializer_class = InvoiceSerializer
     permission_classes = [IsAuthenticated]
@@ -1543,7 +1579,7 @@ class InvoiceViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
 
 
-class PaymentViewSet(viewsets.ModelViewSet):
+class PaymentViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     queryset = Payment.objects.all()
     serializer_class = PaymentSerializer
     permission_classes = [IsAuthenticated]
@@ -1553,7 +1589,7 @@ class PaymentViewSet(viewsets.ModelViewSet):
     ordering_fields = ['payment_date', 'amount']
 
 
-class ExpenseViewSet(viewsets.ModelViewSet):
+class ExpenseViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     queryset = Expense.objects.all()
     serializer_class = ExpenseSerializer
     permission_classes = [IsAuthenticated]
@@ -1566,7 +1602,7 @@ class ExpenseViewSet(viewsets.ModelViewSet):
         serializer.save(created_by=self.request.user)
 
 
-class SettlementViewSet(viewsets.ModelViewSet):
+class SettlementViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     queryset = Settlement.objects.all()
     serializer_class = SettlementSerializer
     permission_classes = [IsAuthenticated]

@@ -25,7 +25,7 @@ class Invoice(models.Model):
     ]
 
     # Core fields
-    company = models.ForeignKey("Company", on_delete=models.CASCADE, null=True, blank=True, related_name="%(class)ss")
+    company = models.ForeignKey("Company", on_delete=models.CASCADE, null=True, blank=True, related_name="invoices")
     invoice_number = models.CharField(max_length=100, unique=True, db_index=True)
     customer = models.ForeignKey(Customer, on_delete=models.PROTECT, related_name='invoices')
     load = models.ForeignKey(Load, on_delete=models.PROTECT, null=True, blank=True, related_name='invoices')
@@ -152,16 +152,7 @@ class Invoice(models.Model):
         """Calculate days until due (negative if overdue)."""
         return (self.due_date - date.today()).days
 
-    @property
-    def company(self):
-        """
-        Get the operator Company that issued this invoice.
-        NOTE: Invoice model needs a company FK in a future migration.
-        For now, derive from load.created_by.company if available.
-        """
-        if self.load and hasattr(self.load, 'created_by') and self.load.created_by:
-            return getattr(self.load.created_by, 'company', None)
-        return None
+    # company FK is now a real field (migration 0023) — removed old property
 
     def calculate_vat(self) -> Decimal:
         """Calculate VAT amount (15% for South Africa)."""

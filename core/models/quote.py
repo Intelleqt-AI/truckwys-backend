@@ -17,7 +17,7 @@ class Quote(models.Model):
         ('LOW', 'Low'),
     ]
     
-    company = models.ForeignKey("Company", on_delete=models.CASCADE, null=True, blank=True, related_name="%(class)ss")
+    company = models.ForeignKey("Company", on_delete=models.CASCADE, null=True, blank=True, related_name="quotes")
     
     quote_number = models.CharField(max_length=100, unique=True)
     customer = models.ForeignKey(Customer, on_delete=models.PROTECT, related_name='quotes')

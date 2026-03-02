@@ -5,7 +5,8 @@ Extends the base ViewSets with invoice generation, PDF creation, email sending,
 aging analysis, and financial reporting.
 """
 
-from rest_framework import viewsets, status
+from rest_framework import viewsets
+from .views import CompanyFilterMixin, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -25,7 +26,7 @@ from core.services.email_service import InvoiceEmailService
 from core.services.aging_service import AgingAnalysisService
 
 
-class InvoiceFinanceViewSet(viewsets.ModelViewSet):
+class InvoiceFinanceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     """
     Enhanced Invoice ViewSet with finance-specific actions.
     """
@@ -361,7 +362,7 @@ class InvoiceFinanceViewSet(viewsets.ModelViewSet):
             )
 
 
-class PaymentFinanceViewSet(viewsets.ModelViewSet):
+class PaymentFinanceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     """
     Enhanced Payment ViewSet with validation.
     """
@@ -420,7 +421,7 @@ class PaymentFinanceViewSet(viewsets.ModelViewSet):
         return response
 
 
-class ExpenseFinanceViewSet(viewsets.ModelViewSet):
+class ExpenseFinanceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     """
     Enhanced Expense ViewSet with approval workflow.
     """

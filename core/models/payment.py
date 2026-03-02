@@ -14,7 +14,7 @@ class Payment(models.Model):
         ('ACH', 'ACH'),
     ]
 
-    company = models.ForeignKey("Company", on_delete=models.CASCADE, null=True, blank=True, related_name="%(class)ss")
+    company = models.ForeignKey("Company", on_delete=models.CASCADE, null=True, blank=True, related_name="payments")
 
     payment_number = models.CharField(max_length=100, unique=True, db_index=True)
     invoice = models.ForeignKey(Invoice, on_delete=models.PROTECT, related_name='payments')

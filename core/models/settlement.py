@@ -9,7 +9,7 @@ class Settlement(models.Model):
         ('PAID', 'Paid'),
     ]
     
-    company = models.ForeignKey("Company", on_delete=models.CASCADE, null=True, blank=True, related_name="%(class)ss")
+    company = models.ForeignKey("Company", on_delete=models.CASCADE, null=True, blank=True, related_name="settlements")
     
     settlement_number = models.CharField(max_length=100, unique=True)
     driver = models.ForeignKey(Driver, on_delete=models.PROTECT, related_name='settlements')
