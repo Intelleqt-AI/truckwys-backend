@@ -21,11 +21,16 @@ class RiskScore(models.Model):
     """
 
     TIER_CHOICES = [
-        ('EXCELLENT', 'Excellent (85-100)'),
-        ('GOOD', 'Good (70-84)'),
-        ('FAIR', 'Fair (55-69)'),
-        ('ELEVATED', 'Elevated (40-54)'),
+        # New 7-pillar tier names
+        ('PRIME', 'Prime (85-100)'),
+        ('STANDARD', 'Standard (70-84)'),
+        ('ELEVATED', 'Elevated (55-69)'),
+        ('HIGH', 'High (40-54)'),
         ('INELIGIBLE', 'Ineligible (<40)'),
+        # Old tiers for backward compatibility
+        ('EXCELLENT', 'Excellent (85-100) - DEPRECATED'),
+        ('GOOD', 'Good (70-84) - DEPRECATED'),
+        ('FAIR', 'Fair (55-69) - DEPRECATED'),
     ]
 
     # Relationships
@@ -74,36 +79,73 @@ class RiskScore(models.Model):
         help_text='Calculated fee amount in ZAR'
     )
 
-    # Factor scores (6 factors)
+    # Factor scores (6 factors - DEPRECATED, kept for backward compatibility)
     factor_payment_history = models.IntegerField(
         default=0,
         validators=[MinValueValidator(0), MaxValueValidator(35)],
-        help_text='Payment history score (0-35 points, 35% weight)'
+        help_text='DEPRECATED: Payment history score (0-35 points, 35% weight)'
     )
     factor_invoice_age = models.IntegerField(
         default=0,
         validators=[MinValueValidator(0), MaxValueValidator(20)],
-        help_text='Invoice age score (0-20 points, 20% weight)'
+        help_text='DEPRECATED: Invoice age score (0-20 points, 20% weight)'
     )
     factor_pod_quality = models.IntegerField(
         default=0,
         validators=[MinValueValidator(0), MaxValueValidator(15)],
-        help_text='POD quality score (0-15 points, 15% weight)'
+        help_text='DEPRECATED: POD quality score (0-15 points, 15% weight)'
     )
     factor_credit_score = models.IntegerField(
         default=0,
         validators=[MinValueValidator(0), MaxValueValidator(15)],
-        help_text='Credit score factor (0-15 points, 15% weight)'
+        help_text='DEPRECATED: Credit score factor (0-15 points, 15% weight)'
     )
     factor_relationship_length = models.IntegerField(
         default=0,
         validators=[MinValueValidator(0), MaxValueValidator(10)],
-        help_text='Relationship length score (0-10 points, 10% weight)'
+        help_text='DEPRECATED: Relationship length score (0-10 points, 10% weight)'
     )
     factor_facility_ratio = models.IntegerField(
         default=0,
         validators=[MinValueValidator(0), MaxValueValidator(5)],
-        help_text='Facility ratio score (0-5 points, 5% weight)'
+        help_text='DEPRECATED: Facility ratio score (0-5 points, 5% weight)'
+    )
+
+    # NEW: 7-Pillar Institutional Risk Engine factors
+    factor_client_identity = models.IntegerField(
+        default=0,
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+        help_text='Pillar 1: Client Identity & Profile raw score (0-100, 15% weight)'
+    )
+    factor_client_financial = models.IntegerField(
+        default=0,
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+        help_text='Pillar 2: Client Financial Health raw score (0-100, 20% weight)'
+    )
+    factor_debtor_credit = models.IntegerField(
+        default=0,
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+        help_text='Pillar 3: Debtor Creditworthiness raw score (0-100, 20% weight)'
+    )
+    factor_invoice_chars = models.IntegerField(
+        default=0,
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+        help_text='Pillar 4: Invoice Characteristics raw score (0-100, 15% weight)'
+    )
+    factor_pod_docs = models.IntegerField(
+        default=0,
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+        help_text='Pillar 5: POD & Documentation raw score (0-100, 10% weight)'
+    )
+    factor_operational = models.IntegerField(
+        default=0,
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+        help_text='Pillar 6: Operational & Trip Factors raw score (0-100, 10% weight)'
+    )
+    factor_macro_market = models.IntegerField(
+        default=0,
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+        help_text='Pillar 7: Macro & Market Factors raw score (0-100, 10% weight)'
     )
 
     # Detailed breakdown

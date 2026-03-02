@@ -151,6 +151,17 @@ class Invoice(models.Model):
         """Calculate days until due (negative if overdue)."""
         return (self.due_date - date.today()).days
 
+    @property
+    def company(self):
+        """
+        Get the operator Company that issued this invoice.
+        NOTE: Invoice model needs a company FK in a future migration.
+        For now, derive from load.created_by.company if available.
+        """
+        if self.load and hasattr(self.load, 'created_by') and self.load.created_by:
+            return getattr(self.load.created_by, 'company', None)
+        return None
+
     def calculate_vat(self) -> Decimal:
         """Calculate VAT amount (15% for South Africa)."""
         vat_rate = Decimal('0.15')  # 15% VAT
