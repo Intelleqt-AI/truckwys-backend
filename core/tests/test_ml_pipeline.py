@@ -70,13 +70,13 @@ class FeatureEngineeringTests(TestCase):
         )
 
     def test_feature_extraction_produces_correct_count(self):
-        """Test that feature extraction produces exactly 54 features."""
+        """Test that feature extraction produces exactly 53 features."""
         extractor = FeatureExtractor()
         features = extractor.extract_features(self.invoice)
 
         expected_feature_names = extractor.get_feature_names()
         self.assertEqual(len(features), len(expected_feature_names))
-        self.assertEqual(len(features), 54)  # 15+7+8+7+7+5+4 = 53... wait let me recount
+        self.assertEqual(len(features), 53)  # 15+7+8+7+7+5+4 = 53
 
     def test_feature_values_are_numeric(self):
         """Test that all extracted features are numeric."""
@@ -231,11 +231,9 @@ class HybridRiskScoringTests(TestCase):
         )
         self.facility = Facility.objects.create(
             company=self.company,
-            name='Test Facility',
-            facility_type='REVOLVING',
-            total_limit=Decimal('500000.00'),
-            available_amount=Decimal('500000.00'),
-            is_active=True,
+            limit=Decimal('500000.00'),
+            outstanding=Decimal('0.00'),
+            status='ACTIVE',
         )
 
     def test_hybrid_scoring_runs_without_ml(self):
