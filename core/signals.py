@@ -1,6 +1,6 @@
-"""Django signals for webhook dispatching and activity tracking."""
+"""Django signals for webhook dispatching, activity tracking, and audit logging."""
 
-from django.db.models.signals import post_save
+from django.db.models.signals import post_save, post_delete, pre_save
 from django.dispatch import receiver
 
 
@@ -261,3 +261,161 @@ def advance_saved(sender, instance, created, **kwargs):
                 message=f"R{instance.net_amount} disbursed for {instance.invoice.invoice_number}",
                 link=f"/capital/advances/{instance.id}"
             )
+
+
+# ============================================================================
+# AUDIT LOGGING SIGNALS
+# ============================================================================
+
+@receiver(post_save, sender='core.Load')
+def audit_load_save(sender, instance, created, **kwargs):
+    """Log Load creation and updates to audit log."""
+    from core.models import AuditLog
+
+    user = getattr(instance, 'created_by', None) or getattr(instance, '_request_user', None)
+
+    if created:
+        AuditLog.log_create(instance, user=user, details={
+            'load_number': instance.load_number,
+            'status': instance.status,
+        })
+    else:
+        AuditLog.log_update(instance, user=user, details={
+            'load_number': instance.load_number,
+            'status': instance.status,
+        })
+
+
+@receiver(post_delete, sender='core.Load')
+def audit_load_delete(sender, instance, **kwargs):
+    """Log Load deletion to audit log."""
+    from core.models import AuditLog
+
+    user = getattr(instance, '_request_user', None)
+    AuditLog.log_delete(instance, user=user, details={
+        'load_number': instance.load_number,
+    })
+
+
+@receiver(post_save, sender='core.Invoice')
+def audit_invoice_save(sender, instance, created, **kwargs):
+    """Log Invoice creation and updates to audit log."""
+    from core.models import AuditLog
+
+    user = getattr(instance, 'created_by', None) or getattr(instance, '_request_user', None)
+
+    if created:
+        AuditLog.log_create(instance, user=user, details={
+            'invoice_number': instance.invoice_number,
+            'status': instance.status,
+            'amount': str(getattr(instance, 'total_amount', 0)),
+        })
+    else:
+        AuditLog.log_update(instance, user=user, details={
+            'invoice_number': instance.invoice_number,
+            'status': instance.status,
+            'amount': str(getattr(instance, 'total_amount', 0)),
+        })
+
+
+@receiver(post_delete, sender='core.Invoice')
+def audit_invoice_delete(sender, instance, **kwargs):
+    """Log Invoice deletion to audit log."""
+    from core.models import AuditLog
+
+    user = getattr(instance, '_request_user', None)
+    AuditLog.log_delete(instance, user=user, details={
+        'invoice_number': instance.invoice_number,
+    })
+
+
+@receiver(post_save, sender='core.AdvanceRequest')
+def audit_advance_save(sender, instance, created, **kwargs):
+    """Log AdvanceRequest creation and updates to audit log."""
+    from core.models import AuditLog
+
+    user = getattr(instance, 'created_by', None) or getattr(instance, '_request_user', None)
+
+    if created:
+        AuditLog.log_create(instance, user=user, details={
+            'amount': str(instance.amount),
+            'status': instance.status,
+        })
+    else:
+        AuditLog.log_update(instance, user=user, details={
+            'amount': str(instance.amount),
+            'status': instance.status,
+        })
+
+
+@receiver(post_delete, sender='core.AdvanceRequest')
+def audit_advance_delete(sender, instance, **kwargs):
+    """Log AdvanceRequest deletion to audit log."""
+    from core.models import AuditLog
+
+    user = getattr(instance, '_request_user', None)
+    AuditLog.log_delete(instance, user=user, details={
+        'amount': str(instance.amount),
+    })
+
+
+@receiver(post_save, sender='core.Vehicle')
+def audit_vehicle_save(sender, instance, created, **kwargs):
+    """Log Vehicle creation and updates to audit log."""
+    from core.models import AuditLog
+
+    user = getattr(instance, '_request_user', None)
+
+    if created:
+        AuditLog.log_create(instance, user=user, details={
+            'plate': instance.plate,
+            'vin': instance.vin,
+            'status': instance.status,
+        })
+    else:
+        AuditLog.log_update(instance, user=user, details={
+            'plate': instance.plate,
+            'status': instance.status,
+        })
+
+
+@receiver(post_delete, sender='core.Vehicle')
+def audit_vehicle_delete(sender, instance, **kwargs):
+    """Log Vehicle deletion to audit log."""
+    from core.models import AuditLog
+
+    user = getattr(instance, '_request_user', None)
+    AuditLog.log_delete(instance, user=user, details={
+        'plate': instance.plate,
+        'vin': instance.vin,
+    })
+
+
+@receiver(post_save, sender='core.Driver')
+def audit_driver_save(sender, instance, created, **kwargs):
+    """Log Driver creation and updates to audit log."""
+    from core.models import AuditLog
+
+    user = getattr(instance, '_request_user', None)
+
+    if created:
+        AuditLog.log_create(instance, user=user, details={
+            'driver_name': getattr(instance, 'driver_name', ''),
+            'driver_id': getattr(instance, 'driver_id', ''),
+        })
+    else:
+        AuditLog.log_update(instance, user=user, details={
+            'driver_name': getattr(instance, 'driver_name', ''),
+        })
+
+
+@receiver(post_delete, sender='core.Driver')
+def audit_driver_delete(sender, instance, **kwargs):
+    """Log Driver deletion to audit log."""
+    from core.models import AuditLog
+
+    user = getattr(instance, '_request_user', None)
+    AuditLog.log_delete(instance, user=user, details={
+        'driver_name': getattr(instance, 'driver_name', ''),
+        'driver_id': getattr(instance, 'driver_id', ''),
+    })
