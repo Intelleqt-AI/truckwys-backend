@@ -5,8 +5,8 @@ Creates realistic demo data:
 - 20 customers with SA company names
 - 20 vehicles with SA truck types
 - 16 drivers with SA names
-- 150+ loads across all statuses
-- 100+ invoices with realistic aging
+- 20 loads across all statuses
+- 30 invoices with realistic aging
 - 50+ expenses across all categories
 - 20 risk scores across all tiers
 - 15 advance requests across all statuses
@@ -81,10 +81,10 @@ class Command(BaseCommand):
         # Create drivers (16)
         drivers = self._create_drivers()
 
-        # Create loads (150+)
+        # Create loads (20)
         loads = self._create_loads(customers, vehicles, drivers, admin_user, company)
 
-        # Create invoices (100+)
+        # Create invoices (30)
         invoices = self._create_invoices(loads, customers, company)
 
         # Create expenses (50+)
@@ -389,7 +389,7 @@ class Command(BaseCommand):
         return drivers
 
     def _create_loads(self, customers, vehicles, drivers, admin_user, company):
-        """Create 150+ loads across all statuses with realistic SA routes."""
+        """Create 20 loads across all statuses with realistic SA routes."""
         # Realistic SA freight routes with distances
         routes = [
             ('Johannesburg', 'Durban', Decimal('570')),
@@ -439,16 +439,16 @@ class Command(BaseCommand):
 
         # Status distribution: 60% DELIVERED, 15% IN_TRANSIT, 10% LOADING, 10% ASSIGNED, 5% CANCELLED
         statuses = (
-            ['DELIVERED'] * 90 +
-            ['IN_TRANSIT'] * 23 +
-            ['LOADING'] * 15 +
-            ['ASSIGNED'] * 15 +
-            ['CANCELLED'] * 7
+            ['DELIVERED'] * 12 +
+            ['IN_TRANSIT'] * 3 +
+            ['LOADING'] * 2 +
+            ['ASSIGNED'] * 2 +
+            ['CANCELLED'] * 1
         )
         random.shuffle(statuses)
 
         loads = []
-        for i in range(150):
+        for i in range(20):
             pickup, delivery, distance = random.choice(routes)
             customer = random.choice(customers)
             vehicle = random.choice(vehicles)
@@ -511,18 +511,18 @@ class Command(BaseCommand):
         return loads
 
     def _create_invoices(self, loads, customers, company):
-        """Create 100+ invoices with realistic aging distribution."""
+        """Create 30 invoices with realistic aging distribution."""
         invoices = []
 
-        # Get delivered loads (60% of 150 = ~90 loads)
+        # Get delivered loads (60% of 20 = ~12 loads)
         delivered_loads = [l for l in loads if l.status == 'DELIVERED']
 
-        # Create invoices for all delivered loads (90+)
-        # Plus some extra invoices for repeat customers (10+ more)
+        # Create invoices for all delivered loads (~12)
+        # Plus some extra invoices for repeat customers (18 more to reach 30 total)
         invoice_loads = delivered_loads.copy()
 
-        # Add 10-15 additional invoices by reusing some customers (invoices without loads)
-        for i in range(random.randint(10, 15)):
+        # Add 18 additional invoices by reusing some customers (invoices without loads)
+        for i in range(30 - len(delivered_loads)):
             invoice_loads.append(None)  # None = invoice without load
 
         # Status distribution: 40% PAID, 25% SENT, 25% OVERDUE, 10% DRAFT
@@ -622,6 +622,7 @@ class Command(BaseCommand):
                 paid_at=timezone.make_aware(timezone.datetime.combine(paid_date, timezone.datetime.min.time())) if paid_date else None,
                 sent_at=timezone.make_aware(timezone.datetime.combine(issue_date, timezone.datetime.min.time())) if status in ['SENT', 'PAID', 'OVERDUE'] else None,
                 created_at=timezone.make_aware(timezone.datetime.combine(issue_date, timezone.datetime.min.time())),
+                early_pay_eligible=status in ['SENT', 'OVERDUE'],
             )
             invoices.append(invoice)
 
