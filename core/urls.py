@@ -128,6 +128,10 @@ urlpatterns = [
     path('dashboard/insights/', DashboardInsightsView.as_view(), name='dashboard-insights'),
     path('dashboard/cashflow/', CashFlowForecastView.as_view(), name='cashflow-forecast'),
 
+    # Intelligence API alias (cleaner partner/lender endpoint)
+    path('intelligence/', DashboardInsightsView.as_view(), name='intelligence'),
+    path('intelligence/recommendations/', DashboardInsightsView.as_view(), name='intelligence-recommendations'),
+
     # Xero Integration endpoints (NEW - Phase 4)
     path('integrations/xero/connect/', XeroConnectView.as_view(), name='xero-connect'),
     path('integrations/xero/callback/', XeroCallbackView.as_view(), name='xero-callback'),
