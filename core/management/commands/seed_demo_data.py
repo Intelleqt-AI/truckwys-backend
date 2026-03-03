@@ -5,9 +5,9 @@ Creates realistic demo data:
 - 20 customers with SA company names
 - 20 vehicles with SA truck types
 - 16 drivers with SA names
-- 15 loads across all statuses
-- 30 invoices with realistic aging
-- 50+ expenses across all categories
+- 20 loads across all statuses
+- ~30 invoices with realistic aging
+- ~50 expenses across all categories
 - 20 risk scores across all tiers
 - 15 advance requests across all statuses
 - R2M facility limit
@@ -89,7 +89,7 @@ class Command(BaseCommand):
         # Create loads (20)
         loads = self._create_loads(customers, vehicles, drivers, admin_user, company)
 
-        # Create invoices (30)
+        # Create invoices (~30)
         invoices = self._create_invoices(loads, customers, company)
 
         # Create expenses (50+)
@@ -394,7 +394,7 @@ class Command(BaseCommand):
         return drivers
 
     def _create_loads(self, customers, vehicles, drivers, admin_user, company):
-        """Create 15 loads across all statuses with realistic SA routes."""
+        """Create 20 loads across all statuses with realistic SA routes."""
         # Realistic SA freight routes with distances
         routes = [
             ('Johannesburg', 'Durban', Decimal('570')),
@@ -444,16 +444,16 @@ class Command(BaseCommand):
 
         # Status distribution: 60% DELIVERED, 15% IN_TRANSIT, 10% LOADING, 10% ASSIGNED, 5% CANCELLED
         statuses = (
-            ['DELIVERED'] * 9 +
-            ['IN_TRANSIT'] * 2 +
+            ['DELIVERED'] * 12 +
+            ['IN_TRANSIT'] * 3 +
             ['LOADING'] * 2 +
-            ['ASSIGNED'] * 1 +
+            ['ASSIGNED'] * 2 +
             ['CANCELLED'] * 1
         )
         random.shuffle(statuses)
 
         loads = []
-        for i in range(15):
+        for i in range(20):
             pickup, delivery, distance = random.choice(routes)
             customer = random.choice(customers)
             vehicle = random.choice(vehicles)
@@ -516,14 +516,14 @@ class Command(BaseCommand):
         return loads
 
     def _create_invoices(self, loads, customers, company):
-        """Create 30 invoices with realistic aging distribution."""
+        """Create ~30 invoices with realistic aging distribution."""
         invoices = []
 
-        # Get delivered loads (60% of 15 = ~9 loads)
+        # Get delivered loads (60% of 20 = ~12 loads)
         delivered_loads = [l for l in loads if l.status == 'DELIVERED']
 
-        # Create invoices for all delivered loads (~9)
-        # Plus some extra invoices for repeat customers (21 more to reach 30 total)
+        # Create invoices for all delivered loads (~12)
+        # Plus some extra invoices for repeat customers (~18 more to reach ~30 total)
         invoice_loads = delivered_loads.copy()
 
         # Add additional invoices by reusing some customers (invoices without loads)
