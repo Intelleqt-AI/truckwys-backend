@@ -14,9 +14,11 @@ from rest_framework.views import APIView
 from django.db.models import Sum, Count, Q, Avg, F
 from django.db.models.functions import TruncMonth
 from django.utils import timezone
+from django.http import HttpResponse
 from datetime import datetime, timedelta, date
 from decimal import Decimal
 from dateutil.relativedelta import relativedelta
+import csv
 
 from core.models import Invoice, Payment, Expense, Trip, Customer, Vehicle, Company, Load
 from core.serializers import InvoiceSerializer, PaymentSerializer, ExpenseSerializer
@@ -599,19 +601,52 @@ class FinanceDashboardView(APIView):
     Financial dashboard with revenue, expenses, and metrics.
 
     GET /api/v1/dashboard/finance/
+    Query params:
+    - from: YYYY-MM-DD (optional, defaults to start of month)
+    - to: YYYY-MM-DD (optional, defaults to today)
+    - compare: 'previous_period' (optional, returns previous period data for delta calculation)
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         today = date.today()
 
-        # Month to date
+        # Parse date range from query params
+        from_date_str = request.query_params.get('from')
+        to_date_str = request.query_params.get('to')
+        compare = request.query_params.get('compare')
+
+        # Default: month to date
+        if from_date_str:
+            try:
+                from_date = datetime.strptime(from_date_str, '%Y-%m-%d').date()
+            except ValueError:
+                return Response({'error': 'Invalid from date format. Use YYYY-MM-DD'}, status=400)
+        else:
+            from_date = today.replace(day=1)
+
+        if to_date_str:
+            try:
+                to_date = datetime.strptime(to_date_str, '%Y-%m-%d').date()
+            except ValueError:
+                return Response({'error': 'Invalid to date format. Use YYYY-MM-DD'}, status=400)
+        else:
+            to_date = today
+
+        # Month to date (for legacy compatibility)
         mtd_start = today.replace(day=1)
 
         # Year to date
         ytd_start = today.replace(month=1, day=1)
 
-        # Revenue MTD (paid invoices)
+        # Revenue for selected period (paid invoices)
+        revenue_period = Invoice.objects.filter(
+            paid_at__gte=from_date,
+            paid_at__lte=to_date,
+            status='PAID'
+        ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
+
+        # Revenue MTD (paid invoices) - for legacy compatibility
         revenue_mtd = Invoice.objects.filter(
             paid_at__gte=mtd_start,
             status='PAID'
@@ -628,7 +663,14 @@ class FinanceDashboardView(APIView):
             status='PAID'
         ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
 
-        # Expenses MTD (approved)
+        # Expenses for selected period (approved)
+        expenses_period = Expense.objects.filter(
+            expense_date__gte=from_date,
+            expense_date__lte=to_date,
+            status='APPROVED'
+        ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+
+        # Expenses MTD (approved) - for legacy compatibility
         expenses_mtd = Expense.objects.filter(
             expense_date__gte=mtd_start,
             status='APPROVED'
@@ -639,6 +681,14 @@ class FinanceDashboardView(APIView):
             status='APPROVED'
         ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
 
+        # Fuel expenses for selected period
+        fuel_expenses_period = Expense.objects.filter(
+            expense_date__gte=from_date,
+            expense_date__lte=to_date,
+            status='APPROVED',
+            category='FUEL'
+        ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+
         # Fuel expenses MTD
         fuel_expenses_mtd = Expense.objects.filter(
             expense_date__gte=mtd_start,
@@ -646,12 +696,16 @@ class FinanceDashboardView(APIView):
             category='FUEL'
         ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
 
+        # Net margin for selected period
+        net_margin_period = revenue_period - expenses_period
+        net_margin_percent_period = float((net_margin_period / revenue_period * 100) if revenue_period > 0 else 0)
+
         # Net margin MTD
         net_margin_mtd = revenue_mtd - expenses_mtd
         net_margin_percent = float((net_margin_mtd / revenue_mtd * 100) if revenue_mtd > 0 else 0)
 
-        # Fuel cost ratio (fuel / revenue)
-        fuel_cost_ratio = float((fuel_expenses_mtd / revenue_mtd * 100) if revenue_mtd > 0 else 0)
+        # Fuel cost ratio (fuel / revenue) for selected period
+        fuel_cost_ratio = float((fuel_expenses_period / revenue_period * 100) if revenue_period > 0 else 0)
 
         # Idle vehicles count (vehicles with no recent loads)
         thirty_days_ago = today - timedelta(days=30)
@@ -764,7 +818,57 @@ class FinanceDashboardView(APIView):
             revenue_by_week.append(float(week_revenue))
             fuel_by_week.append(float(week_fuel))
 
-        return Response({
+        # Calculate previous period data if compare=previous_period
+        previous_period_data = None
+        if compare == 'previous_period':
+            # Calculate previous period dates (same length as current period)
+            period_length = (to_date - from_date).days
+            prev_from_date = from_date - timedelta(days=period_length + 1)
+            prev_to_date = from_date - timedelta(days=1)
+
+            prev_revenue = Invoice.objects.filter(
+                paid_at__gte=prev_from_date,
+                paid_at__lte=prev_to_date,
+                status='PAID'
+            ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
+
+            prev_expenses = Expense.objects.filter(
+                expense_date__gte=prev_from_date,
+                expense_date__lte=prev_to_date,
+                status='APPROVED'
+            ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+
+            prev_margin = prev_revenue - prev_expenses
+            prev_margin_percent = float((prev_margin / prev_revenue * 100) if prev_revenue > 0 else 0)
+
+            # Calculate deltas
+            revenue_delta = float(revenue_period - prev_revenue)
+            revenue_delta_pct = float(((revenue_period - prev_revenue) / prev_revenue * 100) if prev_revenue > 0 else 0)
+            margin_delta = float(net_margin_period - prev_margin)
+            margin_delta_pct = float(net_margin_percent_period - prev_margin_percent)
+
+            previous_period_data = {
+                'revenue': float(prev_revenue),
+                'expenses': float(prev_expenses),
+                'margin': float(prev_margin),
+                'margin_percent': prev_margin_percent,
+                'from_date': prev_from_date.isoformat(),
+                'to_date': prev_to_date.isoformat(),
+                'deltas': {
+                    'revenue': revenue_delta,
+                    'revenue_pct': round(revenue_delta_pct, 2),
+                    'margin': margin_delta,
+                    'margin_pct': round(margin_delta_pct, 2),
+                }
+            }
+
+        response_data = {
+            'revenue_period': float(revenue_period),
+            'expenses_period': float(expenses_period),
+            'net_margin_period': float(net_margin_period),
+            'net_margin_percent_period': net_margin_percent_period,
+            'from_date': from_date.isoformat(),
+            'to_date': to_date.isoformat(),
             'revenue_mtd': float(revenue_mtd),
             'revenue_ytd': float(revenue_ytd),
             'total_revenue': float(total_revenue),
@@ -794,7 +898,12 @@ class FinanceDashboardView(APIView):
             'monthly_trend': monthly_trend,
             'revenue_by_week': revenue_by_week,
             'fuel_by_week': fuel_by_week,
-        })
+        }
+
+        if previous_period_data:
+            response_data['previous_period'] = previous_period_data
+
+        return Response(response_data)
 
 
 class RouteAnalyticsView(APIView):
@@ -802,28 +911,62 @@ class RouteAnalyticsView(APIView):
     Route profitability analytics.
 
     GET /api/v1/dashboard/routes/
+    Query params:
+    - from: YYYY-MM-DD (optional, defaults to start of month)
+    - to: YYYY-MM-DD (optional, defaults to today)
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        # Get top 10 routes by trip count
-        routes_qs = Load.objects.exclude(pickup_location='').exclude(delivery_location='').values(
+        # Parse date range from query params
+        from_date_str = request.query_params.get('from')
+        to_date_str = request.query_params.get('to')
+
+        today = date.today()
+
+        # Default: month to date
+        if from_date_str:
+            try:
+                from_date = datetime.strptime(from_date_str, '%Y-%m-%d').date()
+            except ValueError:
+                return Response({'error': 'Invalid from date format. Use YYYY-MM-DD'}, status=400)
+        else:
+            from_date = today.replace(day=1)
+
+        if to_date_str:
+            try:
+                to_date = datetime.strptime(to_date_str, '%Y-%m-%d').date()
+            except ValueError:
+                return Response({'error': 'Invalid to date format. Use YYYY-MM-DD'}, status=400)
+        else:
+            to_date = today
+
+        # Get top 10 routes by trip count in date range
+        routes_qs = Load.objects.filter(
+            created_at__gte=from_date,
+            created_at__lte=to_date
+        ).exclude(pickup_location='').exclude(delivery_location='').values(
             'pickup_location', 'delivery_location'
         ).annotate(trip_count=Count('id')).order_by('-trip_count')[:10]
 
         routes = []
         for r in routes_qs:
             route_str = f"{r['pickup_location']} → {r['delivery_location']}"
-            # Try to get avg revenue from linked invoices
+            # Try to get avg revenue from linked invoices in date range
             avg_rev = Invoice.objects.filter(
-                load__pickup_location=r['pickup_location'], load__delivery_location=r['delivery_location']
+                load__pickup_location=r['pickup_location'],
+                load__delivery_location=r['delivery_location'],
+                issue_date__gte=from_date,
+                issue_date__lte=to_date
             ).aggregate(avg=Avg('total_amount'))['avg'] or 45000
 
             # Calculate actual average expenses per route from Expense records
-            # Get all loads for this route
+            # Get all loads for this route in date range
             route_loads = Load.objects.filter(
                 pickup_location=r['pickup_location'],
-                delivery_location=r['delivery_location']
+                delivery_location=r['delivery_location'],
+                created_at__gte=from_date,
+                created_at__lte=to_date
             ).values_list('id', flat=True)
 
             # Get expenses linked to trips for these loads
@@ -854,7 +997,163 @@ class RouteAnalyticsView(APIView):
                 'margin_pct': margin,
                 'has_expense_data': has_expense_data,  # Flag to indicate if using real data
             })
-        return Response({'routes': routes})
+        return Response({
+            'routes': routes,
+            'from_date': from_date.isoformat(),
+            'to_date': to_date.isoformat()
+        })
+
+
+class CustomerHealthView(APIView):
+    """
+    Customer health analytics endpoint.
+
+    GET /api/v1/dashboard/customer-health/
+    Query params:
+    - from: YYYY-MM-DD (optional, defaults to start of month)
+    - to: YYYY-MM-DD (optional, defaults to today)
+
+    Returns customer intelligence data: revenue, invoices, payment days, DSO, risk tier, concentration %
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        # Parse date range from query params
+        from_date_str = request.query_params.get('from')
+        to_date_str = request.query_params.get('to')
+
+        today = date.today()
+
+        # Default: month to date
+        if from_date_str:
+            try:
+                from_date = datetime.strptime(from_date_str, '%Y-%m-%d').date()
+            except ValueError:
+                return Response({'error': 'Invalid from date format. Use YYYY-MM-DD'}, status=400)
+        else:
+            from_date = today.replace(day=1)
+
+        if to_date_str:
+            try:
+                to_date = datetime.strptime(to_date_str, '%Y-%m-%d').date()
+            except ValueError:
+                return Response({'error': 'Invalid to date format. Use YYYY-MM-DD'}, status=400)
+        else:
+            to_date = today
+
+        # Get all customers with invoices in the period
+        customers_with_invoices = Invoice.objects.filter(
+            issue_date__gte=from_date,
+            issue_date__lte=to_date
+        ).values('customer_id').distinct()
+
+        customer_ids = [c['customer_id'] for c in customers_with_invoices]
+        customers = Customer.objects.filter(id__in=customer_ids)
+
+        # Calculate total revenue for concentration %
+        total_revenue = Invoice.objects.filter(
+            issue_date__gte=from_date,
+            issue_date__lte=to_date,
+            status='PAID'
+        ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
+
+        customer_data = []
+        for customer in customers:
+            # Revenue in period
+            customer_revenue = Invoice.objects.filter(
+                customer=customer,
+                issue_date__gte=from_date,
+                issue_date__lte=to_date,
+                status='PAID'
+            ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
+
+            # Invoice count
+            invoice_count = Invoice.objects.filter(
+                customer=customer,
+                issue_date__gte=from_date,
+                issue_date__lte=to_date
+            ).count()
+
+            # Average payment days (for paid invoices)
+            paid_invoices = Invoice.objects.filter(
+                customer=customer,
+                status='PAID',
+                paid_at__isnull=False,
+                issue_date__gte=from_date,
+                issue_date__lte=to_date
+            )
+
+            if paid_invoices.exists():
+                total_days = sum(
+                    (inv.paid_at.date() - inv.issue_date).days
+                    for inv in paid_invoices
+                )
+                avg_payment_days = round(total_days / paid_invoices.count(), 1)
+            else:
+                avg_payment_days = 0
+
+            # DSO calculation (Days Sales Outstanding)
+            # DSO = (Accounts Receivable / Total Credit Sales) * Number of Days
+            receivable = Invoice.objects.filter(
+                customer=customer,
+                balance__gt=0
+            ).aggregate(total=Sum('balance'))['total'] or Decimal('0.00')
+
+            if customer_revenue > 0:
+                period_days = (to_date - from_date).days + 1
+                dso = round(float((receivable / customer_revenue) * period_days), 1)
+            else:
+                dso = 0
+
+            # Overdue count
+            overdue_count = Invoice.objects.filter(
+                customer=customer,
+                due_date__lt=today,
+                balance__gt=0
+            ).count()
+
+            # Risk tier (based on payment behavior and DSO)
+            # PRIME: DSO < 30, no overdue
+            # STANDARD: DSO < 45, max 1 overdue
+            # ELEVATED: DSO < 60, max 3 overdue
+            # HIGH: DSO >= 60 or > 3 overdue
+            if dso < 30 and overdue_count == 0:
+                risk_tier = 'PRIME'
+            elif dso < 45 and overdue_count <= 1:
+                risk_tier = 'STANDARD'
+            elif dso < 60 and overdue_count <= 3:
+                risk_tier = 'ELEVATED'
+            else:
+                risk_tier = 'HIGH'
+
+            # Concentration % (their revenue / total revenue * 100)
+            if total_revenue > 0:
+                concentration_pct = round(float((customer_revenue / total_revenue) * 100), 2)
+            else:
+                concentration_pct = 0
+
+            customer_data.append({
+                'customer_name': customer.name,
+                'customer_id': customer.id,
+                'revenue': float(customer_revenue),
+                'invoice_count': invoice_count,
+                'avg_payment_days': avg_payment_days,
+                'dso': dso,
+                'overdue_count': overdue_count,
+                'risk_tier': risk_tier,
+                'concentration_pct': concentration_pct,
+            })
+
+        # Sort by revenue descending
+        customer_data.sort(key=lambda x: x['revenue'], reverse=True)
+
+        return Response({
+            'customers': customer_data,
+            'total_customers': len(customer_data),
+            'from_date': from_date.isoformat(),
+            'to_date': to_date.isoformat(),
+            'total_revenue': float(total_revenue),
+        })
 
 
 class DashboardKPIView(APIView):
@@ -961,3 +1260,200 @@ class DashboardKPIView(APIView):
             'advances_this_month': advances_this_month,
             'total_advance_amount': float(total_advance_amount),
         })
+
+
+class ReportsExportView(APIView):
+    """
+    Export reports to CSV.
+
+    GET /api/v1/reports/export/
+    Query params:
+    - type: 'finance' | 'fleet' | 'customers' (required)
+    - format: 'csv' (default, only CSV supported for now)
+    - from: YYYY-MM-DD (optional, defaults to start of month)
+    - to: YYYY-MM-DD (optional, defaults to today)
+
+    Returns CSV file download with Content-Disposition header
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        report_type = request.query_params.get('type')
+        report_format = request.query_params.get('format', 'csv')
+        from_date_str = request.query_params.get('from')
+        to_date_str = request.query_params.get('to')
+
+        # Validate report type
+        if not report_type or report_type not in ['finance', 'fleet', 'customers']:
+            return Response({
+                'error': 'type parameter required. Must be one of: finance, fleet, customers'
+            }, status=400)
+
+        # Only CSV supported for now
+        if report_format != 'csv':
+            return Response({'error': 'Only CSV format is supported'}, status=400)
+
+        # Parse date range
+        today = date.today()
+
+        if from_date_str:
+            try:
+                from_date = datetime.strptime(from_date_str, '%Y-%m-%d').date()
+            except ValueError:
+                return Response({'error': 'Invalid from date format. Use YYYY-MM-DD'}, status=400)
+        else:
+            from_date = today.replace(day=1)
+
+        if to_date_str:
+            try:
+                to_date = datetime.strptime(to_date_str, '%Y-%m-%d').date()
+            except ValueError:
+                return Response({'error': 'Invalid to date format. Use YYYY-MM-DD'}, status=400)
+        else:
+            to_date = today
+
+        # Generate CSV based on report type
+        if report_type == 'finance':
+            return self._export_finance_csv(from_date, to_date)
+        elif report_type == 'fleet':
+            return self._export_fleet_csv(from_date, to_date)
+        elif report_type == 'customers':
+            return self._export_customers_csv(from_date, to_date)
+
+    def _export_finance_csv(self, from_date, to_date):
+        """Export finance data to CSV."""
+        response = HttpResponse(content_type='text/csv')
+        response['Content-Disposition'] = f'attachment; filename="finance_report_{from_date}_{to_date}.csv"'
+
+        writer = csv.writer(response)
+        writer.writerow(['Invoice Number', 'Customer', 'Issue Date', 'Due Date', 'Amount', 'Paid Amount', 'Balance', 'Status'])
+
+        invoices = Invoice.objects.filter(
+            issue_date__gte=from_date,
+            issue_date__lte=to_date
+        ).select_related('customer').order_by('-issue_date')
+
+        for invoice in invoices:
+            writer.writerow([
+                invoice.invoice_number,
+                invoice.customer.name if invoice.customer else 'N/A',
+                invoice.issue_date.isoformat(),
+                invoice.due_date.isoformat() if invoice.due_date else 'N/A',
+                float(invoice.total_amount),
+                float(invoice.paid_amount),
+                float(invoice.balance),
+                invoice.status,
+            ])
+
+        return response
+
+    def _export_fleet_csv(self, from_date, to_date):
+        """Export fleet data to CSV."""
+        response = HttpResponse(content_type='text/csv')
+        response['Content-Disposition'] = f'attachment; filename="fleet_report_{from_date}_{to_date}.csv"'
+
+        writer = csv.writer(response)
+        writer.writerow(['Vehicle', 'Load Number', 'Pickup', 'Delivery', 'Distance (km)', 'Status', 'Created Date'])
+
+        loads = Load.objects.filter(
+            created_at__gte=from_date,
+            created_at__lte=to_date
+        ).select_related('vehicle').order_by('-created_at')
+
+        for load in loads:
+            writer.writerow([
+                load.vehicle.plate if load.vehicle else 'N/A',
+                load.load_number,
+                load.pickup_location or load.pickup_city,
+                load.delivery_location or load.delivery_city,
+                float(load.distance) if load.distance else 0,
+                load.status,
+                load.created_at.date().isoformat(),
+            ])
+
+        return response
+
+    def _export_customers_csv(self, from_date, to_date):
+        """Export customer health data to CSV."""
+        response = HttpResponse(content_type='text/csv')
+        response['Content-Disposition'] = f'attachment; filename="customers_report_{from_date}_{to_date}.csv"'
+
+        writer = csv.writer(response)
+        writer.writerow(['Customer Name', 'Revenue', 'Invoice Count', 'Avg Payment Days', 'DSO', 'Overdue Count', 'Risk Tier', 'Concentration %'])
+
+        # Get customer health data (reuse logic from CustomerHealthView)
+        customers_with_invoices = Invoice.objects.filter(
+            issue_date__gte=from_date,
+            issue_date__lte=to_date
+        ).values('customer_id').distinct()
+
+        customer_ids = [c['customer_id'] for c in customers_with_invoices]
+        customers = Customer.objects.filter(id__in=customer_ids)
+
+        total_revenue = Invoice.objects.filter(
+            issue_date__gte=from_date,
+            issue_date__lte=to_date,
+            status='PAID'
+        ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
+
+        for customer in customers:
+            customer_revenue = Invoice.objects.filter(
+                customer=customer,
+                issue_date__gte=from_date,
+                issue_date__lte=to_date,
+                status='PAID'
+            ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
+
+            invoice_count = Invoice.objects.filter(
+                customer=customer,
+                issue_date__gte=from_date,
+                issue_date__lte=to_date
+            ).count()
+
+            paid_invoices = Invoice.objects.filter(
+                customer=customer,
+                status='PAID',
+                paid_at__isnull=False,
+                issue_date__gte=from_date,
+                issue_date__lte=to_date
+            )
+
+            if paid_invoices.exists():
+                total_days = sum((inv.paid_at.date() - inv.issue_date).days for inv in paid_invoices)
+                avg_payment_days = round(total_days / paid_invoices.count(), 1)
+            else:
+                avg_payment_days = 0
+
+            receivable = Invoice.objects.filter(customer=customer, balance__gt=0).aggregate(total=Sum('balance'))['total'] or Decimal('0.00')
+
+            if customer_revenue > 0:
+                period_days = (to_date - from_date).days + 1
+                dso = round(float((receivable / customer_revenue) * period_days), 1)
+            else:
+                dso = 0
+
+            overdue_count = Invoice.objects.filter(customer=customer, due_date__lt=date.today(), balance__gt=0).count()
+
+            if dso < 30 and overdue_count == 0:
+                risk_tier = 'PRIME'
+            elif dso < 45 and overdue_count <= 1:
+                risk_tier = 'STANDARD'
+            elif dso < 60 and overdue_count <= 3:
+                risk_tier = 'ELEVATED'
+            else:
+                risk_tier = 'HIGH'
+
+            concentration_pct = round(float((customer_revenue / total_revenue) * 100), 2) if total_revenue > 0 else 0
+
+            writer.writerow([
+                customer.name,
+                float(customer_revenue),
+                invoice_count,
+                avg_payment_days,
+                dso,
+                overdue_count,
+                risk_tier,
+                concentration_pct,
+            ])
+
+        return response

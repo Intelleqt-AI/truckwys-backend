@@ -1843,10 +1843,40 @@ class DashboardOverviewView(APIView):
 # Real-time signals endpoint (Sprint 5)
 # ---------------------------------------------------------------------------
 class DashboardSignalsView(APIView):
-    """Generate real AI signals from live data."""
+    """
+    Generate real AI signals from live data.
+    GET /api/v1/dashboard/signals/
+    Query params:
+    - from: YYYY-MM-DD (optional, defaults to 30 days ago)
+    - to: YYYY-MM-DD (optional, defaults to today)
+    """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        from datetime import datetime, date, timedelta
+
+        # Parse date range from query params
+        from_date_str = request.query_params.get('from')
+        to_date_str = request.query_params.get('to')
+
+        # Default: last 30 days
+        today = date.today()
+        if from_date_str:
+            try:
+                from_date = datetime.strptime(from_date_str, '%Y-%m-%d').date()
+            except ValueError:
+                return Response({'error': 'Invalid from date format. Use YYYY-MM-DD'}, status=400)
+        else:
+            from_date = today - timedelta(days=30)
+
+        if to_date_str:
+            try:
+                to_date = datetime.strptime(to_date_str, '%Y-%m-%d').date()
+            except ValueError:
+                return Response({'error': 'Invalid to date format. Use YYYY-MM-DD'}, status=400)
+        else:
+            to_date = today
+
         signals = []
 
         # INVOICE_CHASE — overdue invoices
@@ -1909,10 +1939,11 @@ class DashboardSignalsView(APIView):
                     'created_at': timezone.now().isoformat(),
                 })
 
-        # MARGIN — check recent loads for low margin
+        # MARGIN — check loads in date range for low margin
         recent_loads = Load.objects.filter(
             status='DELIVERED',
-            created_at__gte=timezone.now() - timezone.timedelta(days=30)
+            created_at__gte=from_date,
+            created_at__lte=to_date
         ).select_related('customer')
         low_margin = [l for l in recent_loads if float(l.fuel_surcharge or 0) > float(l.total_amount or 1) * 0.15]
         if low_margin:
@@ -1920,7 +1951,7 @@ class DashboardSignalsView(APIView):
                 'type': 'CRITICAL',
                 'category': 'Route Intelligence',
                 'title': f'Margin Leak — {len(low_margin)} Routes',
-                'body': f'Fuel costs above 15% of revenue on {len(low_margin)} recent loads. Review pricing.',
+                'body': f'Fuel costs above 15% of revenue on {len(low_margin)} loads in selected period. Review pricing.',
                 'action': 'REVIEW',
                 'action_url': '/finance/reports',
                 'severity': 'high',

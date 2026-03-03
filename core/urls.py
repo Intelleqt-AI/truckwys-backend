@@ -14,7 +14,8 @@ from .views import (
 )
 from .views_finance import (
     InvoiceFinanceViewSet, PaymentFinanceViewSet, ExpenseFinanceViewSet,
-    TripCostView, FinanceDashboardView, RouteAnalyticsView, DashboardKPIView
+    TripCostView, FinanceDashboardView, RouteAnalyticsView, DashboardKPIView,
+    CustomerHealthView, ReportsExportView
 )
 from .views_capital import (
     FacilityViewSet, RiskScoreViewSet, AdvanceRequestViewSet,
@@ -119,6 +120,8 @@ urlpatterns = [
     path('dashboard/kpi/', DashboardKPIView.as_view(), name='dashboard-kpi'),
     path('dashboard/overview/', DashboardOverviewView.as_view(), name='dashboard-overview'),
     path('dashboard/routes/', RouteAnalyticsView.as_view(), name='route-analytics'),
+    path('dashboard/customer-health/', CustomerHealthView.as_view(), name='customer-health'),
+    path('reports/export/', ReportsExportView.as_view(), name='reports-export'),
     path('trips/<int:trip_id>/costs/', TripCostView.as_view(), name='trip-costs'),
 
     # Intelligence & Cash Flow endpoints (NEW - Phase 4)

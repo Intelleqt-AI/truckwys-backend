@@ -351,10 +351,37 @@ class DashboardInsightsView(APIView):
     """
     Get dashboard insights and recommendations.
     GET /api/v1/dashboard/insights/
+    Query params:
+    - from: YYYY-MM-DD (optional, defaults to 30 days ago)
+    - to: YYYY-MM-DD (optional, defaults to today)
+    - create_notifications: 'true' to create notifications (default false)
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        # Parse date range from query params
+        from_date_str = request.query_params.get('from')
+        to_date_str = request.query_params.get('to')
+
+        today = date.today()
+
+        # Default: last 30 days
+        if from_date_str:
+            try:
+                from_date = datetime.strptime(from_date_str, '%Y-%m-%d').date()
+            except ValueError:
+                return Response({'error': 'Invalid from date format. Use YYYY-MM-DD'}, status=400)
+        else:
+            from_date = today - timedelta(days=30)
+
+        if to_date_str:
+            try:
+                to_date = datetime.strptime(to_date_str, '%Y-%m-%d').date()
+            except ValueError:
+                return Response({'error': 'Invalid to date format. Use YYYY-MM-DD'}, status=400)
+        else:
+            to_date = today
+
         company = Company.objects.first()
         if not company:
             return Response(
@@ -362,9 +389,9 @@ class DashboardInsightsView(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
 
-        # Generate intelligence recommendations
+        # Generate intelligence recommendations with date range
         intelligence_service = IntelligenceService(company)
-        recommendations = intelligence_service.generate_recommendations()
+        recommendations = intelligence_service.generate_recommendations(from_date=from_date, to_date=to_date)
 
         # Optionally create notifications
         create_notifications = request.query_params.get('create_notifications', 'false').lower() == 'true'
@@ -377,6 +404,8 @@ class DashboardInsightsView(APIView):
             'total': len(recommendations),
             'by_type': self._group_by_type(recommendations),
             'by_severity': self._group_by_severity(recommendations),
+            'from_date': from_date.isoformat(),
+            'to_date': to_date.isoformat(),
         }, status=status.HTTP_200_OK)
 
     def _group_by_type(self, recommendations):
@@ -402,13 +431,19 @@ class DashboardInsightsView(APIView):
 class CashFlowForecastView(APIView):
     """
     Get cash flow forecast.
-    GET /api/v1/dashboard/cashflow/?days=90
+    GET /api/v1/dashboard/cashflow/
+    Query params:
+    - days: forecast period in days (default 90, max 365)
+    - from: YYYY-MM-DD (optional start date for historical analysis)
+    - to: YYYY-MM-DD (optional end date for historical analysis)
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         # Get forecast period from query params
         days = int(request.query_params.get('days', 90))
+        from_date_str = request.query_params.get('from')
+        to_date_str = request.query_params.get('to')
 
         # Validate days
         if days < 1 or days > 365:
@@ -417,16 +452,38 @@ class CashFlowForecastView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        # Parse historical date range if provided
+        from_date = None
+        to_date = None
+        if from_date_str:
+            try:
+                from_date = datetime.strptime(from_date_str, '%Y-%m-%d').date()
+            except ValueError:
+                return Response({'error': 'Invalid from date format. Use YYYY-MM-DD'}, status=400)
+
+        if to_date_str:
+            try:
+                to_date = datetime.strptime(to_date_str, '%Y-%m-%d').date()
+            except ValueError:
+                return Response({'error': 'Invalid to date format. Use YYYY-MM-DD'}, status=400)
+
         # Generate forecast
         cashflow_service = CashFlowForecastService()
-        forecast = cashflow_service.forecast_cashflow(days=days)
+        forecast = cashflow_service.forecast_cashflow(days=days, from_date=from_date, to_date=to_date)
         summary = cashflow_service.get_summary_stats(forecast)
 
-        return Response({
+        response_data = {
             'forecast': forecast,
             'summary': summary,
             'period_days': days,
-        }, status=status.HTTP_200_OK)
+        }
+
+        if from_date:
+            response_data['from_date'] = from_date.isoformat()
+        if to_date:
+            response_data['to_date'] = to_date.isoformat()
+
+        return Response(response_data, status=status.HTTP_200_OK)
 
 
 # ---------------------------------------------------------------------------
