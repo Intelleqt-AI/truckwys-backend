@@ -586,15 +586,19 @@ class Command(BaseCommand):
                 paid_date = None
 
             elif status == 'OVERDUE':
-                # Overdue — spread across aging buckets
+                # Overdue — keep within 90-day total age (issue_date to today)
+                # so invoices remain eligible for Fast Pay (risk engine caps at 90 days)
                 overdue_days = random.choice([
-                    random.randint(1, 30),    # 1-30 days
-                    random.randint(31, 60),   # 31-60 days
-                    random.randint(61, 90),   # 61-90 days
-                    random.randint(91, 120),  # 90+ days
+                    random.randint(1, 15),    # 1-15 days overdue
+                    random.randint(16, 30),   # 16-30 days overdue
+                    random.randint(31, 45),   # 31-45 days overdue
                 ])
                 due_date = date.today() - timedelta(days=overdue_days)
-                issue_date = due_date - timedelta(days=payment_days)
+                # Ensure total age (issue_date to today) stays under 90 days
+                issue_date = max(
+                    due_date - timedelta(days=payment_days),
+                    date.today() - timedelta(days=85)  # hard cap: 85 days old max
+                )
                 paid_date = None
 
             else:  # DRAFT
