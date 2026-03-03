@@ -486,8 +486,12 @@ class Command(BaseCommand):
             driver = random.choice(drivers)
             status = statuses[i]
 
-            # Date spread over past 6 months
-            days_ago = random.randint(1, 180)
+            # Date spread over past 6 months, with some in current month
+            if i < 4:
+                # First 4 loads: current month (ensures dashboard has data)
+                days_ago = random.randint(0, min(28, (date.today() - date.today().replace(day=1)).days))
+            else:
+                days_ago = random.randint(1, 180)
             pickup_date = date.today() - timedelta(days=days_ago)
 
             # Delivery date based on status

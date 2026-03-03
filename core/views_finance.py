@@ -941,10 +941,10 @@ class RouteAnalyticsView(APIView):
         else:
             to_date = today
 
-        # Get top 10 routes by trip count in date range
+        # Get top 10 routes by trip count in date range (use pickup_date for proper filtering)
         routes_qs = Load.objects.filter(
-            created_at__gte=from_date,
-            created_at__lte=to_date
+            pickup_date__gte=from_date,
+            pickup_date__lte=to_date
         ).exclude(pickup_location='').exclude(delivery_location='').values(
             'pickup_location', 'delivery_location'
         ).annotate(trip_count=Count('id')).order_by('-trip_count')[:10]
@@ -965,8 +965,8 @@ class RouteAnalyticsView(APIView):
             route_loads = Load.objects.filter(
                 pickup_location=r['pickup_location'],
                 delivery_location=r['delivery_location'],
-                created_at__gte=from_date,
-                created_at__lte=to_date
+                pickup_date__gte=from_date,
+                pickup_date__lte=to_date
             ).values_list('id', flat=True)
 
             # Get expenses linked to trips for these loads
