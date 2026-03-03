@@ -30,6 +30,22 @@ DEMO_API_KEYS = {
 }
 
 
+class LenderUser:
+    """Pseudo-user for API key authenticated lender requests."""
+    is_authenticated = True
+    is_active = True
+    pk = None
+    id = None
+
+    def __init__(self, api_key, lender_name):
+        self.api_key = api_key
+        self.lender = lender_name
+        self.username = lender_name
+
+    def __str__(self):
+        return self.lender
+
+
 class LenderAPIKeyAuthentication(BaseAuthentication):
     """Authenticate lenders via X-API-Key header."""
 
@@ -40,8 +56,8 @@ class LenderAPIKeyAuthentication(BaseAuthentication):
         lender_name = DEMO_API_KEYS.get(key)
         if not lender_name:
             raise AuthenticationFailed('Invalid API key.')
-        # Return a pseudo-user tuple
-        return ({'api_key': key, 'lender': lender_name}, key)
+        # Return a proper user-like object
+        return (LenderUser(api_key=key, lender_name=lender_name), key)
 
     def authenticate_header(self, request):
         return 'X-API-Key'
@@ -53,7 +69,7 @@ class LenderBaseView(APIView):
 
     def _require_api_key(self, request):
         """Returns error response if not authenticated via API key, else None."""
-        if not request.auth or not isinstance(request.user, dict):
+        if not request.auth or not isinstance(request.user, LenderUser):
             return Response(
                 {'error': 'API key required. Pass X-API-Key header.'},
                 status=status.HTTP_401_UNAUTHORIZED
@@ -61,8 +77,8 @@ class LenderBaseView(APIView):
         return None
 
     def _get_lender_name(self, request):
-        if isinstance(request.user, dict):
-            return request.user.get('lender', 'Unknown Lender')
+        if isinstance(request.user, LenderUser):
+            return request.user.lender
         return 'Unknown Lender'
 
 
@@ -174,7 +190,7 @@ class LenderRiskProfileView(LenderBaseView):
 
         # Active advances
         advances = AdvanceRequest.objects.filter(status__in=['ACTIVE', 'DISBURSED', 'FUNDED'])
-        outstanding = sum(float(a.requested_amount or 0) for a in advances)
+        outstanding = sum(float(a.amount or 0) for a in advances)
 
         # Payment performance
         on_time = paid_invoices.filter(
@@ -219,7 +235,7 @@ class LenderRiskProfileView(LenderBaseView):
             'advance_history': [
                 {
                     'id': str(a.id),
-                    'amount': float(a.requested_amount or 0),
+                    'amount': float(a.amount or 0),
                     'status': a.status,
                     'created': a.created_at.isoformat(),
                 }
@@ -351,7 +367,7 @@ class LenderAdvanceRequestView(LenderBaseView):
         advance = AdvanceRequest.objects.create(
             invoice=invoice,
             facility=facility,
-            requested_amount=amount,
+            amount=amount,
             status='PENDING',
             notes=f'Submitted by lender: {lender_name}',
         )
@@ -392,9 +408,9 @@ class LenderPortfolioView(LenderBaseView):
         return Response({
             'summary': {
                 'active_advances': active.count(),
-                'total_outstanding_zar': round(sum(float(a.requested_amount or 0) for a in active), 2),
+                'total_outstanding_zar': round(sum(float(a.amount or 0) for a in active), 2),
                 'completed_advances': completed.count(),
-                'total_repaid_zar': round(sum(float(a.requested_amount or 0) for a in completed), 2),
+                'total_repaid_zar': round(sum(float(a.amount or 0) for a in completed), 2),
             },
             'active': [
                 {
@@ -402,7 +418,7 @@ class LenderPortfolioView(LenderBaseView):
                     'reference': f'ADV-{a.id:06d}',
                     'invoice': a.invoice.invoice_number if a.invoice else None,
                     'customer': a.invoice.customer.name if a.invoice else None,
-                    'amount_zar': float(a.requested_amount or 0),
+                    'amount_zar': float(a.amount or 0),
                     'status': a.status,
                     'created_at': a.created_at.isoformat(),
                 }
