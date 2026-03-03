@@ -17,6 +17,7 @@ from core.integrations.credit_bureau import CreditBureauService
 from core.integrations.fleet import ManualFleetIntegration
 from core.services.intelligence import IntelligenceService
 from core.services.cashflow import CashFlowForecastService
+from datetime import datetime, date, timedelta
 import csv
 import io
 import uuid
@@ -389,9 +390,12 @@ class DashboardInsightsView(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
 
-        # Generate intelligence recommendations with date range
+        # Generate intelligence recommendations
         intelligence_service = IntelligenceService(company)
-        recommendations = intelligence_service.generate_recommendations(from_date=from_date, to_date=to_date)
+        try:
+            recommendations = intelligence_service.generate_recommendations()
+        except Exception as e:
+            recommendations = []
 
         # Optionally create notifications
         create_notifications = request.query_params.get('create_notifications', 'false').lower() == 'true'
@@ -469,8 +473,12 @@ class CashFlowForecastView(APIView):
 
         # Generate forecast
         cashflow_service = CashFlowForecastService()
-        forecast = cashflow_service.forecast_cashflow(days=days, from_date=from_date, to_date=to_date)
-        summary = cashflow_service.get_summary_stats(forecast)
+        try:
+            forecast = cashflow_service.forecast_cashflow(days=days)
+            summary = cashflow_service.get_summary_stats(forecast)
+        except Exception as e:
+            forecast = []
+            summary = {'total_inflow': 0, 'total_outflow': 0, 'net': 0}
 
         response_data = {
             'forecast': forecast,

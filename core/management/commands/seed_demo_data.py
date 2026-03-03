@@ -316,6 +316,15 @@ class Command(BaseCommand):
         for i in range(20):
             plate = sa_plates[i]
             make, model = sa_trucks[i]
+            status = random.choice(['AVAILABLE', 'AVAILABLE', 'IN_USE', 'IN_USE', 'IN_USE', 'MAINTENANCE'])
+            # Generate realistic AI scores
+            health = random.randint(60, 98)
+            fuel_eff = random.randint(40, 95)
+            uptime = random.randint(70, 99)
+            maint = random.randint(50, 98)
+            cpk = Decimal(str(round(random.uniform(8.50, 18.50), 2)))
+            mpt = Decimal(str(random.randint(2500, 15000)))
+
             vehicle, created = Vehicle.objects.get_or_create(
                 plate=plate,
                 defaults={
@@ -326,13 +335,30 @@ class Command(BaseCommand):
                     'year': random.randint(2018, 2024),
                     'type': 'TRUCK',
                     'capacity': Decimal(str(random.randint(20000, 30000))),
-                    'status': random.choice(['AVAILABLE', 'AVAILABLE', 'IN_USE', 'IN_USE', 'MAINTENANCE']),
+                    'status': status,
                     'fuel_type': 'DIESEL',
                     'mileage': Decimal(str(random.randint(50000, 500000))),
-                    'fuel_consumption_per_km': Decimal('0.35'),  # 0.35 L/km
+                    'fuel_consumption_per_km': Decimal('0.35'),
                     'vehicle_type': vehicle_types[i % len(vehicle_types)],
+                    'ai_health_score': health,
+                    'fuel_efficiency_score': fuel_eff,
+                    'uptime_score': uptime,
+                    'maintenance_score': maint,
+                    'cost_per_km': cpk,
+                    'margin_per_trip': mpt,
+                    'uptime_percentage': Decimal(str(round(uptime * 0.98, 2))),
                 }
             )
+            # Update existing vehicles with scores too
+            if not created:
+                vehicle.ai_health_score = health
+                vehicle.fuel_efficiency_score = fuel_eff
+                vehicle.uptime_score = uptime
+                vehicle.maintenance_score = maint
+                vehicle.cost_per_km = cpk
+                vehicle.margin_per_trip = mpt
+                vehicle.uptime_percentage = Decimal(str(round(uptime * 0.98, 2)))
+                vehicle.save()
             if created:
                 self.stdout.write(f'  ✓ {make} {model} ({plate})')
             vehicles.append(vehicle)
@@ -530,11 +556,12 @@ class Command(BaseCommand):
         for i in range(30 - len(delivered_loads)):
             invoice_loads.append(None)  # None = invoice without load
 
-        # Status distribution: 40% PAID, 25% SENT, 25% OVERDUE, 10% DRAFT
+        # Status distribution: 30% PAID, 30% SENT, 30% OVERDUE, 10% DRAFT
+        # (Heavier on SENT/OVERDUE to ensure enough eligible invoices for risk scoring)
         total_invoices = len(invoice_loads)
-        paid_count = int(total_invoices * 0.40)
-        sent_count = int(total_invoices * 0.25)
-        overdue_count = int(total_invoices * 0.25)
+        paid_count = int(total_invoices * 0.30)
+        sent_count = int(total_invoices * 0.30)
+        overdue_count = int(total_invoices * 0.30)
         draft_count = total_invoices - paid_count - sent_count - overdue_count
 
         statuses = (['PAID'] * paid_count +
@@ -613,6 +640,9 @@ class Command(BaseCommand):
             if Invoice.objects.filter(invoice_number=invoice_number).exists():
                 invoice_number = f'INV-{issue_date.strftime("%Y%m%d")}-{1000 + i + random.randint(100, 999)}'
 
+            # Generate realistic line items
+            line_items = self._generate_line_items(subtotal, load)
+
             invoice = Invoice.objects.create(
                 company=company,
                 invoice_number=invoice_number,
@@ -628,6 +658,7 @@ class Command(BaseCommand):
                 paid_amount=total_amount if status == 'PAID' else Decimal('0.00'),
                 balance=Decimal('0.00') if status == 'PAID' else total_amount,
                 status=status,
+                line_items=line_items,
                 paid_at=timezone.make_aware(timezone.datetime.combine(paid_date, timezone.datetime.min.time())) if paid_date else None,
                 sent_at=timezone.make_aware(timezone.datetime.combine(issue_date, timezone.datetime.min.time())) if status in ['SENT', 'PAID', 'OVERDUE'] else None,
                 created_at=timezone.make_aware(timezone.datetime.combine(issue_date, timezone.datetime.min.time())),
@@ -637,6 +668,65 @@ class Command(BaseCommand):
 
         self.stdout.write(f'✓ Created {len(invoices)} invoices')
         return invoices
+
+    def _generate_line_items(self, subtotal, load=None):
+        """Generate realistic invoice line items that sum to subtotal."""
+        items = []
+
+        # Base freight is always ~70-80% of subtotal
+        base_freight = (subtotal * Decimal(str(random.uniform(0.70, 0.80)))).quantize(Decimal('0.01'))
+        route_desc = f'{load.pickup_city} → {load.delivery_city}' if load else 'Freight Transport'
+        distance = f'{load.distance}km' if load and load.distance else ''
+
+        items.append({
+            'description': f'Base Freight Charge — {route_desc}' + (f' ({distance})' if distance else ''),
+            'quantity': 1,
+            'unit_price': str(base_freight),
+            'amount': str(base_freight),
+        })
+
+        remaining = subtotal - base_freight
+
+        # Fuel surcharge (~10-15% of subtotal)
+        if remaining > 0:
+            fuel = min(remaining, (subtotal * Decimal(str(random.uniform(0.10, 0.15)))).quantize(Decimal('0.01')))
+            items.append({
+                'description': 'Fuel Surcharge',
+                'quantity': 1,
+                'unit_price': str(fuel),
+                'amount': str(fuel),
+            })
+            remaining -= fuel
+
+        # Toll charges (random, smaller amount)
+        if remaining > Decimal('50') and random.random() > 0.3:
+            tolls = min(remaining, Decimal(str(random.randint(80, 650))))
+            items.append({
+                'description': 'Toll Charges (SANRAL / TRAC)',
+                'quantity': 1,
+                'unit_price': str(tolls),
+                'amount': str(tolls),
+            })
+            remaining -= tolls
+
+        # Loading/offloading fee (sometimes)
+        if remaining > Decimal('100') and random.random() > 0.5:
+            loading = min(remaining, Decimal(str(random.randint(200, 800))))
+            items.append({
+                'description': 'Loading & Offloading',
+                'quantity': 1,
+                'unit_price': str(loading),
+                'amount': str(loading),
+            })
+            remaining -= loading
+
+        # If there's remaining, add it to base freight
+        if remaining > 0:
+            base_freight += remaining
+            items[0]['unit_price'] = str(base_freight)
+            items[0]['amount'] = str(base_freight)
+
+        return items
 
     def _create_expenses(self, loads, vehicles, drivers, admin_user, company):
         """Create 50+ expenses across all 6 categories."""
@@ -824,26 +914,34 @@ class Command(BaseCommand):
         return payments
 
     def _create_risk_scores(self, invoices, customers, company):
-        """Create 20 risk scores across all tiers."""
+        """Create risk scores for all eligible invoices."""
         risk_scores = []
 
         # Get eligible invoices (SENT, OVERDUE)
         eligible_invoices = [inv for inv in invoices if inv.status in ['SENT', 'OVERDUE']]
-        if len(eligible_invoices) < 20:
-            self.stdout.write(self.style.WARNING(f'Only {len(eligible_invoices)} eligible invoices for risk scoring'))
+        if not eligible_invoices:
+            self.stdout.write(self.style.WARNING('No eligible invoices for risk scoring'))
             return risk_scores
 
-        # Tier distribution: PRIME (20%), STANDARD (30%), ELEVATED (25%), HIGH (20%), INELIGIBLE (5%)
+        count = len(eligible_invoices)
+
+        # Tier distribution proportional to count: PRIME (20%), STANDARD (30%), ELEVATED (25%), HIGH (20%), INELIGIBLE (5%)
+        prime_n = max(1, int(count * 0.20))
+        standard_n = max(1, int(count * 0.30))
+        elevated_n = max(1, int(count * 0.25))
+        high_n = max(1, int(count * 0.20))
+        ineligible_n = count - prime_n - standard_n - elevated_n - high_n
+
         tiers = (
-            [('PRIME', Decimal('1.75'), (85, 100))] * 4 +
-            [('STANDARD', Decimal('2.25'), (70, 84))] * 6 +
-            [('ELEVATED', Decimal('3.00'), (55, 69))] * 5 +
-            [('HIGH', Decimal('4.50'), (40, 54))] * 4 +
-            [('INELIGIBLE', Decimal('0.00'), (0, 39))] * 1
+            [('PRIME', Decimal('1.75'), (85, 100))] * prime_n +
+            [('STANDARD', Decimal('2.25'), (70, 84))] * standard_n +
+            [('ELEVATED', Decimal('3.00'), (55, 69))] * elevated_n +
+            [('HIGH', Decimal('4.50'), (40, 54))] * high_n +
+            [('INELIGIBLE', Decimal('0.00'), (0, 39))] * max(0, ineligible_n)
         )
 
-        # Select 20 invoices
-        selected_invoices = random.sample(eligible_invoices, 20)
+        # Use all eligible invoices
+        selected_invoices = eligible_invoices[:count]
 
         for i, invoice in enumerate(selected_invoices):
             tier, fee_percent, score_range = tiers[i]
@@ -890,12 +988,16 @@ class Command(BaseCommand):
         return risk_scores
 
     def _create_advance_requests(self, invoices, facility, risk_scores):
-        """Create 15 advance requests across all statuses."""
+        """Create advance requests for eligible risk scores."""
         advances = []
 
-        if len(risk_scores) < 15:
-            self.stdout.write(self.style.WARNING(f'Only {len(risk_scores)} risk scores available for advances'))
+        # Filter to only eligible (non-INELIGIBLE) risk scores
+        eligible_scores = [rs for rs in risk_scores if rs.is_eligible]
+        if not eligible_scores:
+            self.stdout.write(self.style.WARNING('No eligible risk scores for advances'))
             return advances
+
+        advance_count = min(15, len(eligible_scores))
 
         # Status distribution: REQUESTED (20%), APPROVED (13%), DISBURSED (27%), SETTLED (33%), DENIED (7%)
         statuses = (
@@ -907,8 +1009,10 @@ class Command(BaseCommand):
         )
         random.shuffle(statuses)
 
-        # Select 15 risk scores
-        selected_risk_scores = random.sample(risk_scores, 15)
+        # Select risk scores for advances
+        selected_risk_scores = random.sample(eligible_scores, advance_count)
+        # Ensure statuses list matches count
+        statuses = (statuses * ((advance_count // len(statuses)) + 1))[:advance_count]
 
         for i, risk_score in enumerate(selected_risk_scores):
             status = statuses[i]
