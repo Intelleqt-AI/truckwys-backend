@@ -5,7 +5,7 @@ Creates realistic demo data:
 - 20 customers with SA company names
 - 20 vehicles with SA truck types
 - 16 drivers with SA names
-- 20 loads across all statuses
+- 15 loads across all statuses
 - 30 invoices with realistic aging
 - 50+ expenses across all categories
 - 20 risk scores across all tiers
@@ -394,7 +394,7 @@ class Command(BaseCommand):
         return drivers
 
     def _create_loads(self, customers, vehicles, drivers, admin_user, company):
-        """Create 20 loads across all statuses with realistic SA routes."""
+        """Create 15 loads across all statuses with realistic SA routes."""
         # Realistic SA freight routes with distances
         routes = [
             ('Johannesburg', 'Durban', Decimal('570')),
@@ -444,16 +444,16 @@ class Command(BaseCommand):
 
         # Status distribution: 60% DELIVERED, 15% IN_TRANSIT, 10% LOADING, 10% ASSIGNED, 5% CANCELLED
         statuses = (
-            ['DELIVERED'] * 12 +
-            ['IN_TRANSIT'] * 3 +
+            ['DELIVERED'] * 9 +
+            ['IN_TRANSIT'] * 2 +
             ['LOADING'] * 2 +
-            ['ASSIGNED'] * 2 +
+            ['ASSIGNED'] * 1 +
             ['CANCELLED'] * 1
         )
         random.shuffle(statuses)
 
         loads = []
-        for i in range(20):
+        for i in range(15):
             pickup, delivery, distance = random.choice(routes)
             customer = random.choice(customers)
             vehicle = random.choice(vehicles)
@@ -519,14 +519,14 @@ class Command(BaseCommand):
         """Create 30 invoices with realistic aging distribution."""
         invoices = []
 
-        # Get delivered loads (60% of 20 = ~12 loads)
+        # Get delivered loads (60% of 15 = ~9 loads)
         delivered_loads = [l for l in loads if l.status == 'DELIVERED']
 
-        # Create invoices for all delivered loads (~12)
-        # Plus some extra invoices for repeat customers (18 more to reach 30 total)
+        # Create invoices for all delivered loads (~9)
+        # Plus some extra invoices for repeat customers (21 more to reach 30 total)
         invoice_loads = delivered_loads.copy()
 
-        # Add 18 additional invoices by reusing some customers (invoices without loads)
+        # Add additional invoices by reusing some customers (invoices without loads)
         for i in range(30 - len(delivered_loads)):
             invoice_loads.append(None)  # None = invoice without load
 
@@ -657,8 +657,8 @@ class Command(BaseCommand):
             {'category': 'OVERHEAD', 'vendor_choices': ['Office Rent', 'Utilities', 'Software Licenses', 'Admin Costs'], 'amount_range': (2000, 10000), 'link_vehicle': False, 'link_driver': False},
         ]
 
-        # Create FUEL and TOLLS for most delivered loads (30 loads)
-        fuel_toll_loads = random.sample(delivered_loads, min(30, len(delivered_loads)))
+        # Create FUEL and TOLLS for all delivered loads (~9 loads)
+        fuel_toll_loads = delivered_loads
         for load in fuel_toll_loads:
             # FUEL
             fuel_template = expense_templates[0]
