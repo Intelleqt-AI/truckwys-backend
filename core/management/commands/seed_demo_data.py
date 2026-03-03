@@ -44,9 +44,14 @@ class Command(BaseCommand):
             action='store_true',
             help='Clear existing demo data before seeding (alias for --clear)',
         )
+        parser.add_argument(
+            '--flush',
+            action='store_true',
+            help='Clear existing demo data before seeding (alias for --clear)',
+        )
 
     def handle(self, *args, **options):
-        if options['clear'] or options['reset']:
+        if options['clear'] or options['reset'] or options['flush']:
             self.stdout.write('Clearing existing demo data...')
             self._clear_data()
 
