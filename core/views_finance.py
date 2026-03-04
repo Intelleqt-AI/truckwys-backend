@@ -639,22 +639,29 @@ class FinanceDashboardView(APIView):
         # Year to date
         ytd_start = today.replace(month=1, day=1)
 
+        # Helper to make date filters timezone-aware
+        def aware_start(d):
+            return timezone.make_aware(datetime.combine(d, datetime.min.time()))
+
+        def aware_end(d):
+            return timezone.make_aware(datetime.combine(d, datetime.max.time()))
+
         # Revenue for selected period (paid invoices)
         revenue_period = Invoice.objects.filter(
-            paid_at__gte=from_date,
-            paid_at__lte=to_date,
+            paid_at__gte=aware_start(from_date),
+            paid_at__lte=aware_end(to_date),
             status='PAID'
         ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
 
         # Revenue MTD (paid invoices) - for legacy compatibility
         revenue_mtd = Invoice.objects.filter(
-            paid_at__gte=mtd_start,
+            paid_at__gte=aware_start(mtd_start),
             status='PAID'
         ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
 
         # Revenue YTD
         revenue_ytd = Invoice.objects.filter(
-            paid_at__gte=ytd_start,
+            paid_at__gte=aware_start(ytd_start),
             status='PAID'
         ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
 
@@ -700,9 +707,15 @@ class FinanceDashboardView(APIView):
         net_margin_period = revenue_period - expenses_period
         net_margin_percent_period = float((net_margin_period / revenue_period * 100) if revenue_period > 0 else 0)
 
-        # Net margin MTD
+        # Net margin MTD (fall back to all-time if MTD has no revenue)
         net_margin_mtd = revenue_mtd - expenses_mtd
-        net_margin_percent = float((net_margin_mtd / revenue_mtd * 100) if revenue_mtd > 0 else 0)
+        if revenue_mtd > 0:
+            net_margin_percent = float((net_margin_mtd / revenue_mtd * 100))
+        elif total_revenue > 0:
+            net_margin_all = total_revenue - total_expenses
+            net_margin_percent = float((net_margin_all / total_revenue * 100))
+        else:
+            net_margin_percent = 0.0
 
         # Fuel cost ratio (fuel / revenue) for selected period
         fuel_cost_ratio = float((fuel_expenses_period / revenue_period * 100) if revenue_period > 0 else 0)
@@ -710,7 +723,7 @@ class FinanceDashboardView(APIView):
         # Idle vehicles count (vehicles with no recent loads)
         thirty_days_ago = today - timedelta(days=30)
         active_vehicle_ids = Load.objects.filter(
-            created_at__gte=thirty_days_ago
+            created_at__gte=aware_start(thirty_days_ago)
         ).values_list('vehicle_id', flat=True).distinct()
 
         idle_vehicles = Vehicle.objects.exclude(
@@ -758,7 +771,7 @@ class FinanceDashboardView(APIView):
         # Top customers by revenue
         top_customers = Invoice.objects.filter(
             status='PAID',
-            paid_at__gte=ytd_start
+            paid_at__gte=aware_start(ytd_start)
         ).values(
             'customer__id',
             'customer__name'
@@ -775,8 +788,8 @@ class FinanceDashboardView(APIView):
             month_end = (month_start + relativedelta(months=1)) - timedelta(days=1)
 
             month_revenue = Invoice.objects.filter(
-                paid_at__gte=month_start,
-                paid_at__lte=month_end,
+                paid_at__gte=aware_start(month_start),
+                paid_at__lte=aware_end(month_end),
                 status='PAID'
             ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
 
@@ -803,8 +816,8 @@ class FinanceDashboardView(APIView):
             week_end = week_start + timedelta(days=6)
 
             week_revenue = Invoice.objects.filter(
-                paid_at__gte=week_start,
-                paid_at__lte=week_end,
+                paid_at__gte=aware_start(week_start),
+                paid_at__lte=aware_end(week_end),
                 status='PAID'
             ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
 
@@ -827,8 +840,8 @@ class FinanceDashboardView(APIView):
             prev_to_date = from_date - timedelta(days=1)
 
             prev_revenue = Invoice.objects.filter(
-                paid_at__gte=prev_from_date,
-                paid_at__lte=prev_to_date,
+                paid_at__gte=aware_start(prev_from_date),
+                paid_at__lte=aware_end(prev_to_date),
                 status='PAID'
             ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
 
@@ -1169,6 +1182,12 @@ class DashboardKPIView(APIView):
 
         today = date.today()
 
+        def aware_start(d):
+            return timezone.make_aware(datetime.combine(d, datetime.min.time()))
+
+        def aware_end(d):
+            return timezone.make_aware(datetime.combine(d, datetime.max.time()))
+
         # Current month
         current_month_start = today.replace(day=1)
         current_month_end = (current_month_start + relativedelta(months=1)) - timedelta(days=1)
@@ -1179,15 +1198,15 @@ class DashboardKPIView(APIView):
 
         # Revenue MTD (current month paid invoices)
         revenue_mtd = Invoice.objects.filter(
-            paid_at__gte=current_month_start,
-            paid_at__lte=current_month_end,
+            paid_at__gte=aware_start(current_month_start),
+            paid_at__lte=aware_end(current_month_end),
             status='PAID'
         ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
 
         # Revenue previous month
         revenue_prev_month = Invoice.objects.filter(
-            paid_at__gte=prev_month_start,
-            paid_at__lte=prev_month_end,
+            paid_at__gte=aware_start(prev_month_start),
+            paid_at__lte=aware_end(prev_month_end),
             status='PAID'
         ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
 
