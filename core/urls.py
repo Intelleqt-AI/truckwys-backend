@@ -30,7 +30,11 @@ from .views_integrations import (
     CreditLookupView, DashboardInsightsView, CashFlowForecastView,
     FleetTripSyncView, FleetTripBulkSyncView, TripSyncView
 )
-from .views import RouteCalculatorView, DashboardSignalsView, PasswordResetRequestView, PasswordResetConfirmView, IntegrationAPIKeyViewSet
+from .views import RouteCalculatorView, DashboardSignalsView, IntegrationAPIKeyViewSet
+from .views_auth import (
+    InviteCreateView, InviteValidateView, InviteAcceptView,
+    PasswordResetRequestView, PasswordResetConfirmView
+)
 from .views_lender import (
     LenderHealthView, LenderRiskProfileView, LenderEligibleInvoicesView,
     LenderAdvanceRequestView, LenderPortfolioView
@@ -92,6 +96,13 @@ urlpatterns = [
     path('auth/login/', LoginView.as_view(), name='login'),
     path('auth/logout/', LogoutView.as_view(), name='logout'),
     path('auth/me/', UserProfileView.as_view(), name='user-profile'),
+
+    # Invitation endpoints (NEW - Resend integration)
+    path('auth/invite/', InviteCreateView.as_view(), name='invite-create'),
+    path('auth/invite/<uuid:token>/', InviteValidateView.as_view(), name='invite-validate'),
+    path('auth/invite/<uuid:token>/accept/', InviteAcceptView.as_view(), name='invite-accept'),
+
+    # Password reset endpoints (NEW - Resend integration)
     path('auth/password-reset/', PasswordResetRequestView.as_view(), name='password-reset'),
     path('auth/password-reset/confirm/', PasswordResetConfirmView.as_view(), name='password-reset-confirm'),
     
