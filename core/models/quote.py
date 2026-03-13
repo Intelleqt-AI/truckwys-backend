@@ -17,6 +17,8 @@ class Quote(models.Model):
         ('LOW', 'Low'),
     ]
     
+    company = models.ForeignKey("Company", on_delete=models.CASCADE, null=True, blank=True, related_name="quotes")
+    
     quote_number = models.CharField(max_length=100, unique=True)
     customer = models.ForeignKey(Customer, on_delete=models.PROTECT, related_name='quotes')
     
@@ -29,11 +31,14 @@ class Quote(models.Model):
     cargo_description = models.TextField()
     weight = models.DecimalField(max_digits=10, decimal_places=2)
     distance = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    vehicle_type = models.CharField(max_length=50, blank=True, default='')
     
     sla_hours = models.IntegerField(default=48, help_text="Service Level Agreement in hours")
     
     base_rate = models.DecimalField(max_digits=10, decimal_places=2)
     fuel_surcharge = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    toll_charges = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    driver_allowance = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     additional_charges = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     total_amount = models.DecimalField(max_digits=10, decimal_places=2)
     

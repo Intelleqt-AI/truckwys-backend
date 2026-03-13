@@ -2,7 +2,7 @@ from rest_framework import serializers
 from django.db.models import Avg  # ADD THIS IMPORT
 from .models import (
     User, Customer, Driver, Vehicle, VehicleLog, VehicleType, Load,
-    Quote, Invoice, Payment, Expense, Settlement, Notification, Company
+    Quote, Invoice, Payment, Expense, Settlement, Notification, Company, ActivityEvent
 )
 
 # User Serializer
@@ -76,6 +76,7 @@ class LoadSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source='customer.name', read_only=True)
     driver_name = serializers.CharField(source='driver.user.username', read_only=True)
     vehicle_info = serializers.SerializerMethodField()
+    quote_number = serializers.SerializerMethodField()
     
     class Meta:
         model = Load
@@ -87,11 +88,17 @@ class LoadSerializer(serializers.ModelSerializer):
             return f"{obj.vehicle.make} {obj.vehicle.model} - {obj.vehicle.plate}"
         return None
 
+    def get_quote_number(self, obj):
+        if obj.quote:
+            return obj.quote.quote_number
+        return None
+
 
 # Quote Serializer
 class QuoteSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source='customer.name', read_only=True)
     created_by_name = serializers.CharField(source='created_by.username', read_only=True)
+    quote_number = serializers.CharField(required=False, allow_blank=True)
     
     class Meta:
         model = Quote
@@ -296,3 +303,38 @@ class DriverPerformanceSerializer(serializers.ModelSerializer):
             elif recent_load.status == 'ASSIGNED':
                 return 'Active'
         return 'Active'
+
+
+class WebhookSerializer(serializers.ModelSerializer):
+    """Serializer for Webhook model."""
+
+    class Meta:
+        from core.models import Webhook
+        model = Webhook
+        fields = [
+            'id', 'url', 'secret', 'events', 'active',
+            'failure_count', 'last_fired_at', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'secret', 'failure_count', 'last_fired_at', 'created_at', 'updated_at']
+
+
+class IntegrationAPIKeySerializer(serializers.ModelSerializer):
+    """Serializer for IntegrationAPIKey model."""
+
+    class Meta:
+        from core.models import IntegrationAPIKey
+        model = IntegrationAPIKey
+        fields = [
+            'id', 'name', 'key', 'key_type', 'active',
+            'created_at', 'last_used_at'
+        ]
+        read_only_fields = ['id', 'key', 'created_at', 'last_used_at']
+
+
+class ActivityEventSerializer(serializers.ModelSerializer):
+    """Serializer for ActivityEvent model."""
+
+    class Meta:
+        model = ActivityEvent
+        fields = ['id', 'event_type', 'title', 'description', 'entity_id', 'entity_type', 'metadata', 'created_at']
+        read_only_fields = ['id', 'created_at']

@@ -21,6 +21,8 @@ class Command(BaseCommand):
             {'name': 'Makana Foods', 'email': 'contact@makanafoods.co.za'},
             {'name': 'Tiger Brands', 'email': 'info@tigerbrands.com'},
             {'name': 'Pick n Pay', 'email': 'logistics@pnp.co.za'},
+            {'name': 'Shoprite', 'email': 'logistics@shoprite.co.za'},
+            {'name': 'Woolworths', 'email': 'transport@woolworths.co.za'},
         ]
         
         customers = {}
@@ -81,8 +83,78 @@ class Command(BaseCommand):
                 'total_amount': Decimal('8500.00'),
                 'margin_percentage': Decimal('9.8'),
                 'confidence': 'LOW',
-                'status': 'EXPIRED',
+                'status': 'ACCEPTED',
                 'updated_at': datetime(2025, 8, 25, 14, 45, 0)
+            },
+            {
+                'quote_number': 'Q-1004',
+                'customer': customers['Shoprite'],
+                'origin': 'JHB',
+                'destination': 'DBN',
+                'pickup_location': 'Johannesburg',
+                'delivery_location': 'Durban',
+                'sla_hours': 36,
+                'total_amount': Decimal('16200.00'),
+                'margin_percentage': Decimal('11.5'),
+                'confidence': 'HIGH',
+                'status': 'DRAFT',
+                'updated_at': datetime(2025, 8, 27, 16, 20, 0)
+            },
+            {
+                'quote_number': 'Q-1005',
+                'customer': customers['Woolworths'],
+                'origin': 'PE',
+                'destination': 'CPT',
+                'pickup_location': 'Port Elizabeth',
+                'delivery_location': 'Cape Town',
+                'sla_hours': 48,
+                'total_amount': Decimal('12800.00'),
+                'margin_percentage': Decimal('13.2'),
+                'confidence': 'MEDIUM',
+                'status': 'SENT',
+                'updated_at': datetime(2025, 8, 28, 11, 15, 0)
+            },
+            {
+                'quote_number': 'Q-1006',
+                'customer': customers['Tiger Brands'],
+                'origin': 'JHB',
+                'destination': 'CPT',
+                'pickup_location': 'Johannesburg',
+                'delivery_location': 'Cape Town',
+                'sla_hours': 48,
+                'total_amount': Decimal('22400.00'),
+                'margin_percentage': Decimal('14.8'),
+                'confidence': 'HIGH',
+                'status': 'IN_TRANSIT',
+                'updated_at': datetime(2025, 8, 29, 8, 45, 0)
+            },
+            {
+                'quote_number': 'Q-1007',
+                'customer': customers['Makana Foods'],
+                'origin': 'DBN',
+                'destination': 'PE',
+                'pickup_location': 'Durban',
+                'delivery_location': 'Port Elizabeth',
+                'sla_hours': 60,
+                'total_amount': Decimal('14500.00'),
+                'margin_percentage': Decimal('10.2'),
+                'confidence': 'MEDIUM',
+                'status': 'COMPLETED',
+                'updated_at': datetime(2025, 8, 26, 13, 30, 0)
+            },
+            {
+                'quote_number': 'Q-1008',
+                'customer': customers['Shoprite'],
+                'origin': 'CPT',
+                'destination': 'JHB',
+                'pickup_location': 'Cape Town',
+                'delivery_location': 'Johannesburg',
+                'sla_hours': 48,
+                'total_amount': Decimal('19800.00'),
+                'margin_percentage': Decimal('12.9'),
+                'confidence': 'HIGH',
+                'status': 'DRAFT',
+                'updated_at': datetime(2025, 8, 29, 15, 10, 0)
             },
         ]
         

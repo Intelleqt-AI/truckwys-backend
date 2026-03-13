@@ -1,12 +1,34 @@
 from rest_framework import viewsets, status, filters
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.views import APIView
+from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.authtoken.models import Token
 from django.contrib.auth import authenticate
 from django_filters.rest_framework import DjangoFilterBackend
 from django.utils import timezone
+
+
+class CompanyFilterMixin:
+    """Filter querysets by the authenticated user's company for multi-tenancy."""
+    
+    def get_queryset(self):
+        qs = super().get_queryset()
+        user = self.request.user
+        if not user.is_authenticated:
+            return qs.none()
+        if user.is_superuser:
+            return qs  # Superusers see all
+        if hasattr(qs.model, 'company_id'):
+            return qs.filter(company=user.company)
+        return qs
+    
+    def perform_create(self, serializer):
+        if hasattr(serializer.Meta.model, 'company_id'):
+            serializer.save(company=self.request.user.company)
+        else:
+            serializer.save()
 from django.db.models import Sum, Count, Q, Avg, F, ExpressionWrapper, DecimalField
 from django.db.models.functions import TruncMonth
 from datetime import datetime, timedelta
@@ -19,14 +41,14 @@ import threading
 
 from .models import (
     User, Customer, Driver, Vehicle, VehicleLog, VehicleType, Load,
-    Quote, Invoice, Payment, Expense, Settlement, Notification, Company
+    Quote, Invoice, Payment, Expense, Settlement, Notification, Company, ActivityEvent
 )
 from .serializers import (
     UserSerializer, CustomerSerializer, DriverSerializer,
     VehicleSerializer, VehicleTypeSerializer, VehicleLogSerializer, LoadSerializer,
     QuoteSerializer, InvoiceSerializer, PaymentSerializer,
     ExpenseSerializer, SettlementSerializer, NotificationSerializer,
-    CompanySerializer
+    CompanySerializer, ActivityEventSerializer
 )
 
 
@@ -38,7 +60,22 @@ class RegisterView(APIView):
         if serializer.is_valid():
             user = serializer.save()
             user.set_password(request.data.get('password'))
+            
+            # Create a Company for the new user
+            company_name = request.data.get('company_name', f"{user.first_name or user.username}'s Transport")
+            from core.models import Company, Facility
+            company = Company.objects.create(company_name=company_name)
+            user.company = company
             user.save()
+            
+            # Create a default Facility for the company
+            Facility.objects.create(
+                company=company,
+                limit=1000000,
+                outstanding=0,
+                status='ACTIVE'
+            )
+            
             token, created = Token.objects.get_or_create(user=user)
             return Response({
                 'token': token.key,
@@ -126,7 +163,7 @@ class NotificationSettingsView(APIView):
 
 class IsAdmin(IsAuthenticated):
     def has_permission(self, request, view):
-        return super().has_permission(request, view) and request.user.role == 'ADMIN'
+        return super().has_permission(request, view) and hasattr(request.user, 'role') and request.user.role == 'ADMIN'
 
 
 class CompanyProfileView(APIView):
@@ -1066,7 +1103,7 @@ class UserViewSet(viewsets.ModelViewSet):
         }, status=status.HTTP_201_CREATED)
 
 
-class CustomerViewSet(viewsets.ModelViewSet):
+class CustomerViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     queryset = Customer.objects.all()
     serializer_class = CustomerSerializer
     permission_classes = [IsAuthenticated]
@@ -1092,7 +1129,7 @@ class CustomerViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
 
 
-class DriverViewSet(viewsets.ModelViewSet):
+class DriverViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     queryset = Driver.objects.all()
     serializer_class = DriverSerializer
     permission_classes = [IsAuthenticated]
@@ -1118,7 +1155,7 @@ class DriverViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
 
 
-class VehicleViewSet(viewsets.ModelViewSet):
+class VehicleViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     queryset = Vehicle.objects.all()
     serializer_class = VehicleSerializer
     permission_classes = [IsAuthenticated]
@@ -1144,7 +1181,7 @@ class VehicleViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
 
 
-class VehicleTypeViewSet(viewsets.ModelViewSet):
+class VehicleTypeViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     queryset = VehicleType.objects.all()
     serializer_class = VehicleTypeSerializer
     permission_classes = [IsAuthenticated]
@@ -1154,7 +1191,7 @@ class VehicleTypeViewSet(viewsets.ModelViewSet):
     ordering_fields = ['name', 'capacity', 'base_rate']
 
 
-class VehicleLogViewSet(viewsets.ModelViewSet):
+class VehicleLogViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     queryset = VehicleLog.objects.all()
     serializer_class = VehicleLogSerializer
     permission_classes = [IsAuthenticated]
@@ -1167,7 +1204,7 @@ class VehicleLogViewSet(viewsets.ModelViewSet):
         serializer.save(user=self.request.user)
 
 
-class LoadViewSet(viewsets.ModelViewSet):
+class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     queryset = Load.objects.all()
     serializer_class = LoadSerializer
     permission_classes = [IsAuthenticated]
@@ -1217,7 +1254,86 @@ class LoadViewSet(viewsets.ModelViewSet):
             )
 
 
-class QuoteViewSet(viewsets.ModelViewSet):
+    @action(detail=True, methods=['post'])
+    def convert_to_invoice(self, request, pk=None):
+        """Convert a delivered load to an invoice (one-click)."""
+        from core.models.invoice import Invoice
+        from datetime import date, timedelta
+        from decimal import Decimal
+        import random
+
+        load = self.get_object()
+
+        if Invoice.objects.filter(load=load).exists():
+            existing = Invoice.objects.filter(load=load).first()
+            return Response({
+                'error': 'Invoice already exists for this load',
+                'invoice_id': existing.id,
+                'invoice_number': existing.invoice_number,
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        today = date.today()
+        rand = random.randint(10000, 99999)
+        inv_number = f'INV-{today.strftime("%Y%m%d")}-{rand:05d}'
+        while Invoice.objects.filter(invoice_number=inv_number).exists():
+            rand = random.randint(10000, 99999)
+            inv_number = f'INV-{today.strftime("%Y%m%d")}-{rand:05d}'
+
+        subtotal = load.total_amount
+        vat = (subtotal * Decimal('0.15')).quantize(Decimal('0.01'))
+        total = subtotal + vat
+
+        invoice = Invoice.objects.create(
+            invoice_number=inv_number,
+            customer=load.customer,
+            load=load,
+            issue_date=today,
+            due_date=today + timedelta(days=30),
+            subtotal=subtotal,
+            vat_amount=vat,
+            tax_amount=vat,
+            total_amount=total,
+            paid_amount=Decimal('0'),
+            balance=total,
+            status='DRAFT',
+            payment_terms='NET30',
+            notes=f'Auto-generated from Load {load.load_number}',
+            early_pay_eligible=True,
+        )
+
+        load.status = 'INVOICED'
+        load.save()
+
+        return Response({
+            'message': 'Invoice created successfully',
+            'invoice_id': invoice.id,
+            'invoice_number': invoice.invoice_number,
+            'total_amount': float(invoice.total_amount),
+            'due_date': invoice.due_date.isoformat(),
+        }, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'], parser_classes=[MultiPartParser, FormParser])
+    def upload_pod(self, request, pk=None):
+        """Upload Proof of Delivery."""
+        load = self.get_object()
+        file = request.FILES.get('pod_document') or request.FILES.get('file')
+        if not file:
+            return Response({'error': 'No file provided'}, status=400)
+        load.pod_document = file
+        load.pod_received_by = request.data.get('received_by', file.name)
+        load.pod_signature = f'POD: {file.name} ({file.size} bytes)'
+        if load.status == 'IN_TRANSIT':
+            load.status = 'DELIVERED'
+        load.save()
+        return Response({
+            'message': 'POD uploaded successfully',
+            'filename': file.name,
+            'load_id': load.id,
+            'pod_url': request.build_absolute_uri(load.pod_document.url) if load.pod_document else None
+        })
+
+
+class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     queryset = Quote.objects.all()
     serializer_class = QuoteSerializer
     permission_classes = [IsAuthenticated]
@@ -1227,7 +1343,19 @@ class QuoteViewSet(viewsets.ModelViewSet):
     ordering_fields = ['created_at', 'valid_until']
 
     def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
+        from django.utils import timezone
+        import random
+        # Auto-generate quote_number if not provided
+        quote_number = self.request.data.get('quote_number')
+        if not quote_number:
+            ts = timezone.now().strftime('%Y%m%d')
+            rand = random.randint(1000, 9999)
+            quote_number = f'QT-{ts}-{rand}'
+            # Ensure uniqueness
+            while Quote.objects.filter(quote_number=quote_number).exists():
+                rand = random.randint(1000, 9999)
+                quote_number = f'QT-{ts}-{rand}'
+        serializer.save(created_by=self.request.user, quote_number=quote_number)
 
     @action(detail=True, methods=['patch'])
     def update_status(self, request, pk=None):
@@ -1246,8 +1374,194 @@ class QuoteViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(quote)
         return Response(serializer.data)
 
+    @action(detail=True, methods=['post'])
+    def convert_to_load(self, request, pk=None):
+        """Convert quote to load"""
+        import random
+        quote = self.get_object()
 
-class InvoiceViewSet(viewsets.ModelViewSet):
+        # Check if quote already converted
+        if quote.status in ['IT', 'COMPLETED']:
+            return Response(
+                {'error': 'Quote already converted'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Auto-generate unique load_number
+        load_number = f'LOAD-{timezone.now().strftime("%Y%m%d")}-{random.randint(1000, 9999)}'
+        while Load.objects.filter(load_number=load_number).exists():
+            load_number = f'LOAD-{timezone.now().strftime("%Y%m%d")}-{random.randint(1000, 9999)}'
+
+        # Create load from quote
+        load = Load.objects.create(
+            load_number=load_number,
+            customer=quote.customer,
+            quote=quote,
+            pickup_location=quote.pickup_location,
+            delivery_location=quote.delivery_location,
+            pickup_city=quote.origin or 'TBD',
+            pickup_state='GP',
+            pickup_zip='0000',
+            pickup_date=timezone.now() + timedelta(days=2),
+            delivery_city=quote.destination or 'TBD',
+            delivery_state='GP',
+            delivery_zip='0000',
+            delivery_date=timezone.now() + timedelta(days=4),
+            cargo_description=quote.cargo_description,
+            weight=quote.weight,
+            distance=quote.distance,
+            rate=quote.base_rate,
+            fuel_surcharge=quote.fuel_surcharge,
+            additional_charges=quote.additional_charges,
+            total_amount=quote.total_amount,
+            status='PENDING',
+            created_by=request.user
+        )
+
+        # Update quote status to In-Transit
+        quote.status = 'IT'
+        quote.save()
+
+        serializer = LoadSerializer(load)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['get'])
+    def generate_pdf(self, request, pk=None):
+        """Generate a PDF quote document."""
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib import colors
+        from reportlab.lib.units import mm
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.enums import TA_RIGHT, TA_CENTER
+        import io
+        from django.http import HttpResponse
+
+        quote = self.get_object()
+        buf = io.BytesIO()
+        doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=20*mm, leftMargin=20*mm, topMargin=20*mm, bottomMargin=20*mm)
+
+        styles = getSampleStyleSheet()
+        accent = colors.HexColor('#2563EB')
+        dark = colors.HexColor('#0F172A')
+        mid = colors.HexColor('#64748B')
+
+        title_style = ParagraphStyle('title', fontSize=24, textColor=dark, spaceAfter=4, fontName='Helvetica-Bold')
+        sub_style = ParagraphStyle('sub', fontSize=10, textColor=mid, spaceAfter=2)
+        label_style = ParagraphStyle('label', fontSize=9, textColor=mid, fontName='Helvetica')
+        value_style = ParagraphStyle('value', fontSize=10, textColor=dark, fontName='Helvetica-Bold')
+        normal = styles['Normal']
+
+        story = []
+
+        # Header
+        story.append(Paragraph('TRUCKWYS', title_style))
+        story.append(Paragraph('Road Freight Intelligence Platform', sub_style))
+        story.append(Spacer(1, 8*mm))
+
+        # Quote title
+        story.append(Paragraph(f'FREIGHT QUOTE', ParagraphStyle('qt', fontSize=16, textColor=accent, fontName='Helvetica-Bold', spaceAfter=2)))
+        story.append(Paragraph(f'{quote.quote_number}', ParagraphStyle('qn', fontSize=12, textColor=mid, spaceAfter=6)))
+        story.append(Spacer(1, 4*mm))
+
+        # Quote meta table
+        cname = quote.customer.name if quote.customer else 'Direct Customer'
+        meta = [
+            ['Customer', cname, 'Status', quote.status],
+            ['Valid Until', str(quote.valid_until) if quote.valid_until else 'N/A', 'Created', str(quote.created_at.date())],
+            ['Confidence', f'{quote.confidence or 0}%', 'Vehicle Type', quote.vehicle_type or 'Standard'],
+        ]
+        meta_table = Table(meta, colWidths=[35*mm, 65*mm, 35*mm, 35*mm])
+        meta_table.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (0,-1), colors.HexColor('#F1F5F9')),
+            ('BACKGROUND', (2,0), (2,-1), colors.HexColor('#F1F5F9')),
+            ('FONTNAME', (0,0), (-1,-1), 'Helvetica'),
+            ('FONTSIZE', (0,0), (-1,-1), 9),
+            ('TEXTCOLOR', (0,0), (0,-1), mid),
+            ('TEXTCOLOR', (2,0), (2,-1), mid),
+            ('FONTNAME', (1,0), (1,-1), 'Helvetica-Bold'),
+            ('FONTNAME', (3,0), (3,-1), 'Helvetica-Bold'),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#E2E8F0')),
+            ('PADDING', (0,0), (-1,-1), 6),
+        ]))
+        story.append(meta_table)
+        story.append(Spacer(1, 6*mm))
+
+        # Route
+        story.append(Paragraph('ROUTE', ParagraphStyle('section', fontSize=10, textColor=mid, fontName='Helvetica-Bold', spaceAfter=3)))
+        route_data = [
+            ['Pickup', quote.pickup_location or quote.origin or '—', 'Distance', f'{quote.distance or 0} km'],
+            ['Delivery', quote.delivery_location or quote.destination or '—', 'SLA', f'{quote.sla_hours or 48}h'],
+            ['Cargo', quote.cargo_description or '—', 'Weight', f'{quote.weight or 0} kg'],
+        ]
+        route_table = Table(route_data, colWidths=[30*mm, 80*mm, 30*mm, 30*mm])
+        route_table.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (0,-1), colors.HexColor('#F1F5F9')),
+            ('BACKGROUND', (2,0), (2,-1), colors.HexColor('#F1F5F9')),
+            ('FONTNAME', (0,0), (-1,-1), 'Helvetica'),
+            ('FONTSIZE', (0,0), (-1,-1), 9),
+            ('TEXTCOLOR', (0,0), (0,-1), mid),
+            ('TEXTCOLOR', (2,0), (2,-1), mid),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#E2E8F0')),
+            ('PADDING', (0,0), (-1,-1), 6),
+        ]))
+        story.append(route_table)
+        story.append(Spacer(1, 6*mm))
+
+        # Cost breakdown
+        story.append(Paragraph('COST BREAKDOWN', ParagraphStyle('section', fontSize=10, textColor=mid, fontName='Helvetica-Bold', spaceAfter=3)))
+        def zar(v):
+            try: return f'R {float(v):,.2f}'
+            except: return 'R 0.00'
+
+        cost_data = [
+            ['Description', 'Amount'],
+            ['Base Rate', zar(quote.base_rate)],
+            ['Fuel Surcharge', zar(quote.fuel_surcharge)],
+            ['Toll Charges', zar(quote.toll_charges or 0)],
+            ['Driver Allowance', zar(quote.driver_allowance or 0)],
+            ['Additional Charges', zar(quote.additional_charges or 0)],
+            ['TOTAL (excl. VAT)', zar(quote.total_amount)],
+        ]
+        cost_table = Table(cost_data, colWidths=[120*mm, 50*mm])
+        cost_table.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), accent),
+            ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+            ('FONTNAME', (0,1), (-1,-2), 'Helvetica'),
+            ('FONTNAME', (0,-1), (-1,-1), 'Helvetica-Bold'),
+            ('BACKGROUND', (0,-1), (-1,-1), colors.HexColor('#F1F5F9')),
+            ('FONTSIZE', (0,0), (-1,-1), 10),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#E2E8F0')),
+            ('ALIGN', (1,0), (1,-1), 'RIGHT'),
+            ('PADDING', (0,0), (-1,-1), 7),
+        ]))
+        story.append(cost_table)
+        story.append(Spacer(1, 6*mm))
+
+        # Notes
+        if quote.notes:
+            story.append(Paragraph('NOTES', ParagraphStyle('section', fontSize=10, textColor=mid, fontName='Helvetica-Bold', spaceAfter=3)))
+            story.append(Paragraph(quote.notes, ParagraphStyle('notes', fontSize=9, textColor=dark, spaceAfter=4)))
+
+        # T&C
+        story.append(Spacer(1, 4*mm))
+        story.append(Paragraph('Terms & Conditions', ParagraphStyle('tc', fontSize=9, textColor=mid, fontName='Helvetica-Bold', spaceAfter=2)))
+        story.append(Paragraph(
+            'This quote is valid for the period indicated. Prices subject to fuel surcharge adjustments. '
+            'Payment terms: 30 days from invoice date. All rates in South African Rand (ZAR) excl. VAT.',
+            ParagraphStyle('tcbody', fontSize=8, textColor=mid)
+        ))
+
+        doc.build(story)
+        buf.seek(0)
+
+        response = HttpResponse(buf.read(), content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="Quote-{quote.quote_number}.pdf"'
+        return response
+
+
+class InvoiceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     queryset = Invoice.objects.all()
     serializer_class = InvoiceSerializer
     permission_classes = [IsAuthenticated]
@@ -1265,7 +1579,7 @@ class InvoiceViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
 
 
-class PaymentViewSet(viewsets.ModelViewSet):
+class PaymentViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     queryset = Payment.objects.all()
     serializer_class = PaymentSerializer
     permission_classes = [IsAuthenticated]
@@ -1275,7 +1589,7 @@ class PaymentViewSet(viewsets.ModelViewSet):
     ordering_fields = ['payment_date', 'amount']
 
 
-class ExpenseViewSet(viewsets.ModelViewSet):
+class ExpenseViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     queryset = Expense.objects.all()
     serializer_class = ExpenseSerializer
     permission_classes = [IsAuthenticated]
@@ -1288,7 +1602,7 @@ class ExpenseViewSet(viewsets.ModelViewSet):
         serializer.save(created_by=self.request.user)
 
 
-class SettlementViewSet(viewsets.ModelViewSet):
+class SettlementViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     queryset = Settlement.objects.all()
     serializer_class = SettlementSerializer
     permission_classes = [IsAuthenticated]
@@ -1373,3 +1687,434 @@ class NotificationViewSet(viewsets.ModelViewSet):
         """Mark all notifications as read"""
         self.get_queryset().update(is_read=True, read_at=timezone.now())
         return Response({'message': 'All notifications marked as read'})
+
+    @action(detail=False, methods=['get'])
+    def unread_count(self, request):
+        """Get count of unread notifications"""
+        count = self.get_queryset().filter(is_read=False).count()
+        return Response({'count': count})
+
+# ============================================================
+# TomTom Route Calculator
+# ============================================================
+import math
+import requests as http_requests
+
+
+class RouteCalculatorView(APIView):
+    """POST /api/v1/route/calculate/ — TomTom routing with fuel/toll calc"""
+    permission_classes = [IsAuthenticated]
+
+    TOMTOM_API_KEY = 'YTeWrKe8YSDqWkgs7D7QCMv1Ic4V6BHb'
+    FUEL_RATE = 0.35        # litres/km
+    DIESEL_ZAR = 22.50      # ZAR/litre
+    TOLL_ZAR_KM = 0.95      # ZAR/km
+
+    def post(self, request):
+        data = request.data
+        origin = data.get('origin', '')
+        destination = data.get('destination', '')
+        origin_lat = data.get('origin_lat')
+        origin_lon = data.get('origin_lon')
+        dest_lat = data.get('dest_lat')
+        dest_lon = data.get('dest_lon')
+        weight_kg = int(data.get('weight_kg', 20000))
+
+        # Geocode if no coords
+        if origin_lat and origin_lon:
+            o = {'lat': float(origin_lat), 'lon': float(origin_lon)}
+        else:
+            o = self._geocode(origin)
+            if not o:
+                return Response({'success': False, 'error': f'Cannot geocode: {origin}'}, status=400)
+
+        if dest_lat and dest_lon:
+            d = {'lat': float(dest_lat), 'lon': float(dest_lon)}
+        else:
+            d = self._geocode(destination)
+            if not d:
+                return Response({'success': False, 'error': f'Cannot geocode: {destination}'}, status=400)
+
+        # TomTom route
+        route = self._route(o, d, weight_kg)
+        if route:
+            distance_km = route['distance_km']
+            duration_min = route['duration_min']
+            source = 'tomtom'
+        else:
+            distance_km = self._haversine(o['lat'], o['lon'], d['lat'], d['lon']) * 1.3
+            duration_min = (distance_km / 80) * 60
+            source = 'estimated'
+
+        fuel_litres = round(distance_km * self.FUEL_RATE, 2)
+        fuel_zar = round(fuel_litres * self.DIESEL_ZAR, 2)
+        toll_zar = round(distance_km * self.TOLL_ZAR_KM, 2)
+
+        return Response({
+            'success': True,
+            'source': source,
+            'distance_km': round(distance_km, 1),
+            'duration_minutes': int(duration_min),
+            'fuel_usage_litres': fuel_litres,
+            'fuel_cost_zar': fuel_zar,
+            'toll_cost_zar': toll_zar,
+            'total_cost_zar': round(fuel_zar + toll_zar, 2),
+            'origin_coords': o,
+            'dest_coords': d,
+        })
+
+    def _geocode(self, query):
+        try:
+            url = f'https://api.tomtom.com/search/2/geocode/{query}.json'
+            r = http_requests.get(url, params={'key': self.TOMTOM_API_KEY}, timeout=10)
+            if r.status_code == 200:
+                results = r.json().get('results', [])
+                if results:
+                    p = results[0]['position']
+                    return {'lat': p['lat'], 'lon': p['lon']}
+        except Exception:
+            pass
+        return None
+
+    def _route(self, o, d, weight_kg):
+        try:
+            url = f"https://api.tomtom.com/routing/1/calculateRoute/{o['lat']},{o['lon']}:{d['lat']},{d['lon']}/json"
+            r = http_requests.get(url, params={
+                'key': self.TOMTOM_API_KEY, 'travelMode': 'truck',
+                'vehicleWeight': weight_kg, 'traffic': 'true',
+            }, timeout=15)
+            if r.status_code == 200:
+                routes = r.json().get('routes', [])
+                if routes:
+                    s = routes[0]['summary']
+                    return {'distance_km': s['lengthInMeters'] / 1000, 'duration_min': s['travelTimeInSeconds'] / 60}
+        except Exception:
+            pass
+        return None
+
+    def _haversine(self, lat1, lon1, lat2, lon2):
+        R = 6371
+        dlat = math.radians(lat2 - lat1)
+        dlon = math.radians(lon2 - lon1)
+        a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
+        return R * 2 * math.asin(math.sqrt(a))
+
+class DashboardOverviewView(APIView):
+    """Overview dashboard KPIs in one call"""
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        now = timezone.now()
+        start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        
+        # Revenue MTD from PAID invoices
+        revenue_mtd = Invoice.objects.filter(
+            created_at__gte=start_of_month,
+            status='PAID'
+        ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0')
+        
+        # Outstanding invoices (SENT + OVERDUE)
+        outstanding = Invoice.objects.filter(status__in=['SENT', 'OVERDUE'])
+        outstanding_total = outstanding.aggregate(total=Sum('total_amount'))['total'] or Decimal('0')
+        outstanding_count = outstanding.count()
+        
+        # Active loads (IN_TRANSIT + LOADING)
+        active_loads = Load.objects.filter(status__in=['IN_TRANSIT', 'LOADING']).count()
+        
+        # Fast pay available (SENT invoices)
+        fast_pay = Invoice.objects.filter(status='SENT').aggregate(
+            total=Sum('total_amount'))['total'] or Decimal('0')
+        
+        # Quote pipeline value (DRAFT + SENT)
+        pipeline = Quote.objects.filter(status__in=['DRAFT', 'SENT']).aggregate(
+            total=Sum('total_amount'))['total'] or Decimal('0')
+        
+        return Response({
+            'revenue_mtd': float(revenue_mtd),
+            'outstanding_invoices_total': float(outstanding_total),
+            'outstanding_invoices_count': outstanding_count,
+            'active_loads': active_loads,
+            'fast_pay_available': float(fast_pay),
+            'quote_pipeline_value': float(pipeline),
+        })
+
+
+# ---------------------------------------------------------------------------
+# Real-time signals endpoint (Sprint 5)
+# ---------------------------------------------------------------------------
+class DashboardSignalsView(APIView):
+    """
+    Generate real AI signals from live data.
+    GET /api/v1/dashboard/signals/
+    Query params:
+    - from: YYYY-MM-DD (optional, defaults to 30 days ago)
+    - to: YYYY-MM-DD (optional, defaults to today)
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from datetime import datetime, date, timedelta
+
+        # Parse date range from query params
+        from_date_str = request.query_params.get('from')
+        to_date_str = request.query_params.get('to')
+
+        # Default: last 30 days
+        today = date.today()
+        if from_date_str:
+            try:
+                from_date = datetime.strptime(from_date_str, '%Y-%m-%d').date()
+            except ValueError:
+                return Response({'error': 'Invalid from date format. Use YYYY-MM-DD'}, status=400)
+        else:
+            from_date = today - timedelta(days=30)
+
+        if to_date_str:
+            try:
+                to_date = datetime.strptime(to_date_str, '%Y-%m-%d').date()
+            except ValueError:
+                return Response({'error': 'Invalid to date format. Use YYYY-MM-DD'}, status=400)
+        else:
+            to_date = today
+
+        signals = []
+
+        # INVOICE_CHASE — overdue invoices
+        overdue = Invoice.objects.filter(status='OVERDUE').select_related('customer')
+        for inv in overdue[:3]:
+            signals.append({
+                'type': 'CRITICAL',
+                'category': 'Cash Alerts',
+                'title': f'Invoice Overdue — {inv.invoice_number}',
+                'body': f'{inv.customer.name} owes R {inv.total_amount:,.2f}. Due {inv.due_date}. Chase now.',
+                'action': 'CHASE',
+                'action_url': f'/finance/invoices/{inv.id}',
+                'severity': 'high',
+                'created_at': timezone.now().isoformat(),
+            })
+
+        # IDLE_FLEET — available vehicles not on a load
+        from core.models.vehicle import Vehicle
+        idle_vehicles = Vehicle.objects.filter(status='AVAILABLE')
+        if idle_vehicles.count() >= 2:
+            names = ', '.join([v.plate or v.make for v in idle_vehicles[:3]])
+            signals.append({
+                'type': 'WARNING',
+                'category': 'Fleet Performance',
+                'title': f'{idle_vehicles.count()} Vehicles Idle',
+                'body': f'{names} available with no assigned load. Estimated revenue loss: R {idle_vehicles.count() * 8000:,}/day.',
+                'action': 'ASSIGN',
+                'action_url': '/fleet',
+                'severity': 'medium',
+                'created_at': timezone.now().isoformat(),
+            })
+
+        # FAST_PAY — eligible invoices
+        eligible = Invoice.objects.filter(status='SENT', early_pay_eligible=True)
+        if eligible.exists():
+            total = eligible.aggregate(t=Sum('total_amount'))['t'] or 0
+            signals.append({
+                'type': 'OPPORTUNITY',
+                'category': 'Cash Alerts',
+                'title': f'Fast Pay — {eligible.count()} Invoices Ready',
+                'body': f'R {float(total):,.0f} in eligible invoices. Advance at 2–3% fee. Cash in 4 hours.',
+                'action': 'FAST PAY',
+                'action_url': '/capital',
+                'severity': 'low',
+                'created_at': timezone.now().isoformat(),
+            })
+        else:
+            # Show all sent invoices as potential fast pay
+            sent = Invoice.objects.filter(status='SENT')
+            if sent.exists():
+                total = sent.aggregate(t=Sum('total_amount'))['t'] or 0
+                signals.append({
+                    'type': 'OPPORTUNITY',
+                    'category': 'Cash Alerts',
+                    'title': f'Fast Pay — {sent.count()} Invoices Sent',
+                    'body': f'R {float(total):,.0f} awaiting payment. Eligible for fast pay at 2.5% fee.',
+                    'action': 'FAST PAY',
+                    'action_url': '/capital',
+                    'severity': 'low',
+                    'created_at': timezone.now().isoformat(),
+                })
+
+        # MARGIN — check loads in date range for low margin
+        recent_loads = Load.objects.filter(
+            status='DELIVERED',
+            created_at__gte=from_date,
+            created_at__lte=to_date
+        ).select_related('customer')
+        low_margin = [l for l in recent_loads if float(l.fuel_surcharge or 0) > float(l.total_amount or 1) * 0.15]
+        if low_margin:
+            signals.append({
+                'type': 'CRITICAL',
+                'category': 'Route Intelligence',
+                'title': f'Margin Leak — {len(low_margin)} Routes',
+                'body': f'Fuel costs above 15% of revenue on {len(low_margin)} loads in selected period. Review pricing.',
+                'action': 'REVIEW',
+                'action_url': '/finance/reports',
+                'severity': 'high',
+                'created_at': timezone.now().isoformat(),
+            })
+
+        # Active loads update
+        active = Load.objects.filter(status='IN_TRANSIT').count()
+        if active > 0:
+            signals.append({
+                'type': 'INFO',
+                'category': 'Fleet Performance',
+                'title': f'{active} Loads In Transit',
+                'body': f'{active} active deliveries on the road. All tracking normally.',
+                'action': 'VIEW',
+                'action_url': '/bookings',
+                'severity': 'low',
+                'created_at': timezone.now().isoformat(),
+            })
+
+        return Response({'signals': signals, 'count': len(signals)})
+
+
+# ---------------------------------------------------------------------------
+# Password Reset (Sprint 5)
+# ---------------------------------------------------------------------------
+class PasswordResetRequestView(APIView):
+    """Request a password reset code."""
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        email = request.data.get('email', '').strip().lower()
+        if not email:
+            return Response({'email': ['Email is required.']}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Always return 200 to prevent email enumeration
+        try:
+            user = User.objects.filter(email__iexact=email).first()
+            if user:
+                import random
+                code = str(random.randint(100000, 999999))
+                # Store in cache/session — use Django cache
+                from django.core.cache import cache
+                cache.set(f'pwd_reset_{email}', code, timeout=3600)  # 1hr
+                # Log to console for demo (in prod: send email via SMTP/Sendgrid)
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.info(f'Password reset code for {email}: {code}')
+                print(f'[PASSWORD RESET] Code for {email}: {code}')  # visible in server logs
+        except Exception as e:
+            pass
+
+        return Response({'detail': 'If an account exists, a reset code has been sent.'})
+
+
+class PasswordResetConfirmView(APIView):
+    """Confirm a password reset with code."""
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        from django.core.cache import cache
+
+        email = request.data.get('email', '').strip().lower()
+        code = request.data.get('code', '').strip()
+        new_password = request.data.get('new_password', '')
+
+        if not all([email, code, new_password]):
+            return Response({'detail': 'email, code, and new_password are required.'}, status=400)
+
+        if len(new_password) < 8:
+            return Response({'detail': 'Password must be at least 8 characters.'}, status=400)
+
+        stored_code = cache.get(f'pwd_reset_{email}')
+        if not stored_code or stored_code != code:
+            return Response({'code': ['Invalid or expired reset code.']}, status=400)
+
+        user = User.objects.filter(email__iexact=email).first()
+        if not user:
+            return Response({'detail': 'Invalid or expired reset code.'}, status=400)
+
+        user.set_password(new_password)
+        user.save()
+        cache.delete(f'pwd_reset_{email}')
+
+        return Response({'detail': 'Password has been reset. You can now log in.'})
+
+
+class WebhookViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for Webhook CRUD and testing.
+    
+    list: Get all webhooks for current user
+    create: Create new webhook
+    retrieve: Get webhook detail
+    update/partial_update: Update webhook
+    destroy: Delete webhook
+    test: POST /api/v1/webhooks/{id}/test/ - Send test ping
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        from core.models import Webhook
+        return Webhook.objects.filter(operator=self.request.user)
+    
+    def get_serializer_class(self):
+        from core.serializers import WebhookSerializer
+        return WebhookSerializer
+    
+    def perform_create(self, serializer):
+        serializer.save(operator=self.request.user)
+    
+    @action(detail=True, methods=['post'], url_path='test')
+    def test_webhook(self, request, pk=None):
+        """Fire a test ping to this webhook."""
+        webhook = self.get_object()
+        
+        from core.services.webhook_dispatcher import dispatch_webhook
+        dispatch_webhook('webhook.test', {
+            'message': 'Test ping from Truckwys',
+            'webhook_id': webhook.id,
+            'timestamp': timezone.now().isoformat(),
+        })
+        
+        return Response({'message': 'Test ping sent successfully'})
+
+
+class IntegrationAPIKeyViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for IntegrationAPIKey CRUD.
+
+    list: Get all API keys for current user
+    create: Create new API key
+    retrieve: Get API key detail
+    update/partial_update: Update API key (name, active status)
+    destroy: Delete/revoke API key
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        from core.models import IntegrationAPIKey
+        return IntegrationAPIKey.objects.filter(operator=self.request.user)
+
+    def get_serializer_class(self):
+        from core.serializers import IntegrationAPIKeySerializer
+        return IntegrationAPIKeySerializer
+
+    def perform_create(self, serializer):
+        serializer.save(operator=self.request.user)
+
+
+class ActivityEventViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    ViewSet for viewing activity events.
+
+    list: Get last 50 activity events
+    retrieve: Get specific activity event
+    """
+    permission_classes = [IsAuthenticated]
+    serializer_class = ActivityEventSerializer
+
+    def get_queryset(self):
+        return ActivityEvent.objects.all()[:50]
