@@ -15,9 +15,15 @@ from django.conf import settings
 logger = logging.getLogger(__name__)
 
 PLAN_PRICING = {
-    'pro': {
-        'item_name': 'TruckWys Pro',
+    'growth': {
+        'item_name': 'TruckWys Growth',
         'amount': Decimal('4999.00'),
+        'frequency': 3,   # Monthly
+        'cycles': 0,      # Indefinite
+    },
+    'enterprise': {
+        'item_name': 'TruckWys Enterprise',
+        'amount': Decimal('9999.00'),
         'frequency': 3,
         'cycles': 0,
     },

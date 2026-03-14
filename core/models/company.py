@@ -122,8 +122,7 @@ class Company(models.Model):
         max_length=20,
         choices=[
             ('free', 'Free'),
-            ('starter', 'Starter'),
-            ('professional', 'Professional'),
+            ('growth', 'Growth'),
             ('enterprise', 'Enterprise'),
         ],
         default='free',
