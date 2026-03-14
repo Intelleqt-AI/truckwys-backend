@@ -176,3 +176,9 @@ CSRF_COOKIE_SECURE = not DEBUG  # Only HTTPS in production
 SESSION_COOKIE_SECURE = not DEBUG  # Only HTTPS in production
 SECURE_BROWSER_XSS_FILTER = True
 X_FRAME_OPTIONS = 'DENY'
+
+# PayFast Billing Configuration
+PAYFAST_MERCHANT_ID = config('PAYFAST_MERCHANT_ID', default='10000100')
+PAYFAST_MERCHANT_KEY = config('PAYFAST_MERCHANT_KEY', default='46f0cd694581a')
+PAYFAST_PASSPHRASE = config('PAYFAST_PASSPHRASE', default='')
+PAYFAST_SANDBOX = config('PAYFAST_SANDBOX', default=True, cast=bool)

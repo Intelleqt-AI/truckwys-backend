@@ -117,6 +117,37 @@ class Company(models.Model):
         help_text='When the current Xero access token expires'
     )
 
+    # Billing / subscription fields
+    subscription_plan = models.CharField(
+        max_length=20,
+        choices=[
+            ('free', 'Free'),
+            ('starter', 'Starter'),
+            ('professional', 'Professional'),
+            ('enterprise', 'Enterprise'),
+        ],
+        default='free',
+    )
+    subscription_status = models.CharField(
+        max_length=20,
+        choices=[
+            ('none', 'None'),
+            ('trialing', 'Trialing'),
+            ('active', 'Active'),
+            ('past_due', 'Past Due'),
+            ('cancelled', 'Cancelled'),
+        ],
+        default='none',
+    )
+    payfast_token = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        help_text='PayFast subscription token',
+    )
+    subscription_start = models.DateTimeField(null=True, blank=True)
+    subscription_end = models.DateTimeField(null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

@@ -1,6 +1,10 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from rest_framework.authtoken.views import obtain_auth_token
+from .views_billing import (
+    SubscribeView, CancelSubscriptionView, BillingStatusView,
+    BillingHistoryView, PayFastITNView,
+)
 from .views import (
     UserViewSet, CustomerViewSet, DriverViewSet,
     VehicleViewSet, VehicleTypeViewSet, VehicleLogViewSet, LoadViewSet,
@@ -185,6 +189,13 @@ urlpatterns = [
     path('risk/model-info/', RiskModelInfoView.as_view(), name='risk-model-info'),
     path('risk/anomalies/', RiskAnomaliesView.as_view(), name='risk-anomalies'),
     path('risk/rescore-customer/<int:customer_id>/', RiskRescoreCustomerView.as_view(), name='risk-rescore-customer'),
+
+    # Billing endpoints (PayFast)
+    path('billing/subscribe/', SubscribeView.as_view(), name='billing-subscribe'),
+    path('billing/cancel/', CancelSubscriptionView.as_view(), name='billing-cancel'),
+    path('billing/status/', BillingStatusView.as_view(), name='billing-status'),
+    path('billing/history/', BillingHistoryView.as_view(), name='billing-history'),
+    path('billing/itn/', PayFastITNView.as_view(), name='billing-itn'),
 
     # Router URLs (comes last)
     path('', include(router.urls)),
