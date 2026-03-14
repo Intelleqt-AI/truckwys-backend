@@ -20,6 +20,7 @@ from .webhook import Webhook
 from .integration_api_key import IntegrationAPIKey
 from .activity_event import ActivityEvent
 from .webhook_subscription import WebhookSubscription
+from .billing import BillingTransaction
 
 __all__ = [
     'User',
@@ -46,4 +47,5 @@ __all__ = [
     'IntegrationAPIKey',
     'ActivityEvent',
     'WebhookSubscription',
+    'BillingTransaction',
 ]
