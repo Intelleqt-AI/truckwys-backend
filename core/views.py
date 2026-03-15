@@ -81,6 +81,7 @@ class RegisterView(APIView):
             from core.models import Company, Facility
             company = Company.objects.create(company_name=company_name)
             user.company = company
+            user.role = 'ADMIN'  # Explicitly set role to admin for company owner
             user.save()
             
             # Create a default Facility for the company
