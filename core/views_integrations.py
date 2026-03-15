@@ -1,3 +1,14 @@
+# TENANCY AUDIT: 2026-03-15 — Integration views audited
+# - XeroConnectView, XeroCallbackView, XeroDisconnectView, XeroStatusView,
+#   XeroSyncInvoicesView, XeroSyncPaymentsView: All use Company.objects.first()
+#   which assumes single-tenant deployment. OK for current sprint, but needs
+#   request.user.company for true multi-tenancy ⚠️
+# - FleetImportTripsView, CreditLookupView: Authenticated, operate on specific IDs ✓
+# - FleetTripSyncView, FleetTripBulkSyncView: API key authenticated, operate on specific entities ✓
+# - DashboardInsightsView: Uses Company.objects.first() - needs user company ⚠️
+# - CashFlowForecastView: Aggregates all data - needs company filter ⚠️
+# - TripSyncView: API key validated, operates on specific trips ✓
+
 """
 Integration Views
 Handles API endpoints for third-party integrations (Xero, Fleet software, Credit bureaus)

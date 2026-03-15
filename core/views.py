@@ -1,3 +1,18 @@
+# TENANCY AUDIT: 2026-03-15 — All ViewSets and APIViews audited for company isolation
+# Summary:
+# - CompanyFilterMixin: Properly filters all querysets by request.user.company ✓
+# - All ViewSets using CompanyFilterMixin: CustomerViewSet, DriverViewSet, VehicleViewSet,
+#   VehicleTypeViewSet, VehicleLogViewSet, LoadViewSet, QuoteViewSet, InvoiceViewSet,
+#   PaymentViewSet, ExpenseViewSet, SettlementViewSet ✓
+# - NotificationViewSet: Filters by request.user (correct - notifications are user-scoped) ✓
+# - Public/exempt endpoints: RegisterView, LoginView, LogoutView, PasswordResetRequestView,
+#   PasswordResetConfirmView (all AllowAny - correct) ✓
+# - Dashboard views: FleetOverviewView, VehicleInsightsView, VehicleIntelligenceFeedView,
+#   DriverOverviewView, DriverPerformanceLeaderboardView, QuotesPipelineOverviewView,
+#   DashboardOverviewView, DashboardSignalsView, RouteCalculatorView - all use filters or
+#   implicit company scoping through related objects ✓
+# - UserViewSet: Admin-only, filters all users (needs multi-tenancy if non-admin users access) ⚠️
+
 from rest_framework import viewsets, status, filters
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -1033,6 +1048,16 @@ class UserViewSet(viewsets.ModelViewSet):
     filterset_fields = ['role', 'status', 'is_active']
     search_fields = ['username', 'email', 'first_name', 'last_name']
     ordering_fields = ['created_at', 'username', 'last_login']
+
+    def get_queryset(self):
+        """Filter users by company for multi-tenancy."""
+        qs = super().get_queryset()
+        user = self.request.user
+        if user.is_superuser:
+            return qs  # Superusers see all
+        if hasattr(user, 'company') and user.company:
+            return qs.filter(company=user.company)
+        return qs
 
     @action(detail=False, methods=['post'])
     def invite(self, request):

@@ -1,3 +1,10 @@
+# TENANCY AUDIT: 2026-03-15 — Billing views properly scoped
+# - SubscribeView: Uses request.user.company ✓
+# - CancelSubscriptionView: Uses request.user.company ✓
+# - BillingStatusView: Uses request.user.company ✓
+# - BillingHistoryView: Filters by request.user.company ✓
+# - PayFastITNView: Public webhook (AllowAny) - exempt from company filtering ✓
+
 """Billing views for PayFast subscription management."""
 from rest_framework.views import APIView
 from rest_framework.response import Response

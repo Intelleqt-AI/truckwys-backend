@@ -1,3 +1,11 @@
+# TENANCY AUDIT: 2026-03-15 — Lender API intentionally multi-company
+# This is an EXTERNAL API for lenders/partners to view operator data.
+# Lenders are authenticated via API key and can see all companies they finance.
+# Company isolation is INTENTIONALLY NOT APPLIED here - this is by design.
+# Views: LenderHealthView, LenderRiskProfileView, LenderEligibleInvoicesView,
+#        LenderAdvanceRequestView, LenderPortfolioView
+# Status: EXEMPT from single-company filtering (multi-tenant lender platform) ✓
+
 """
 Lender-facing Fast Pay API.
 Authentication: X-API-Key header.
