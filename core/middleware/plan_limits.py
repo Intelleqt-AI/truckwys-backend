@@ -4,6 +4,7 @@ Enforces per-plan resource and API call limits for Free, Pro, and Enterprise tie
 """
 from django.http import JsonResponse
 from django.utils import timezone
+from django.db.models import F
 from datetime import date
 from core.models import Company, User, Vehicle
 
@@ -77,7 +78,7 @@ class PlanLimitsMiddleware:
         # Reset API call counter if month has changed
         self._reset_api_calls_if_needed(company)
 
-        # Check API call limit
+        # Check API call limit and increment atomically
         if limits['max_api_calls_per_month'] is not None:
             if company.api_calls_this_month >= limits['max_api_calls_per_month']:
                 return JsonResponse({
@@ -89,9 +90,8 @@ class PlanLimitsMiddleware:
                     'usage': company.api_calls_this_month,
                 }, status=402)
 
-        # Increment API call counter
-        company.api_calls_this_month += 1
-        company.save(update_fields=['api_calls_this_month'])
+        # Increment API call counter atomically to prevent race conditions
+        Company.objects.filter(id=company.id).update(api_calls_this_month=F('api_calls_this_month') + 1)
 
         # Process the request
         response = self.get_response(request)
@@ -112,7 +112,7 @@ class PlanLimitsMiddleware:
         return None
 
     def _reset_api_calls_if_needed(self, company):
-        """Reset API call counter if we're in a new month."""
+        """Reset API call counter if we're in a new month (race-safe)."""
         today = date.today()
 
         # If no reset date set, or if reset date is in a different month, reset counter
@@ -120,9 +120,22 @@ class PlanLimitsMiddleware:
             company.api_calls_reset_date.month != today.month or
             company.api_calls_reset_date.year != today.year):
 
-            company.api_calls_this_month = 0
-            company.api_calls_reset_date = today
-            company.save(update_fields=['api_calls_this_month', 'api_calls_reset_date'])
+            # Use select_for_update to prevent multiple resets from concurrent requests
+            try:
+                locked_company = Company.objects.select_for_update(nowait=True).get(id=company.id)
+                # Double-check after acquiring lock (another request may have already reset)
+                if (not locked_company.api_calls_reset_date or
+                    locked_company.api_calls_reset_date.month != today.month or
+                    locked_company.api_calls_reset_date.year != today.year):
+
+                    locked_company.api_calls_this_month = 0
+                    locked_company.api_calls_reset_date = today
+                    locked_company.save(update_fields=['api_calls_this_month', 'api_calls_reset_date'])
+                    # Update the instance we're working with
+                    company.api_calls_this_month = 0
+                    company.api_calls_reset_date = today
+            except Company.DoesNotExist:
+                pass  # Company was deleted, skip reset
 
 
 def check_user_limit(company):
