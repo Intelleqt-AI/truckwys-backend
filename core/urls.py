@@ -43,6 +43,7 @@ from .views_fleet import (
     FleetTripSyncAPIView, FleetBookingSyncAPIView, FleetVehicleStatusAPIView,
     FleetWebhookTripUpdateView, FleetWebhookVehicleEventView, FleetWebhookDriverEventView
 )
+from .integrations.controlfleet import ControlFleetWebhookView
 from .views_partner_api import (
     PartnerRiskAssessmentView, PartnerPortfolioSummaryView, PartnerEligibleInvoicesView,
     PartnerWebhookSubscriptionViewSet
@@ -184,6 +185,7 @@ urlpatterns = [
     path('fleet/webhooks/trip-update/', FleetWebhookTripUpdateView.as_view(), name='fleet-webhook-trip-update'),
     path('fleet/webhooks/vehicle-event/', FleetWebhookVehicleEventView.as_view(), name='fleet-webhook-vehicle-event'),
     path('fleet/webhooks/driver-event/', FleetWebhookDriverEventView.as_view(), name='fleet-webhook-driver-event'),
+    path('fleet/webhooks/controlfleet/', ControlFleetWebhookView.as_view(), name='controlfleet-webhook'),
 
     # Partner/Capital API endpoints (API key authenticated)
     path('partners/risk-assessment/<int:invoice_id>/', PartnerRiskAssessmentView.as_view(), name='partner-risk-assessment'),
