@@ -1,5 +1,6 @@
 from pathlib import Path
 from decouple import config
+import dj_database_url
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -57,32 +58,12 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'config.wsgi.application'
 
-try:
-    import pymysql
-    pymysql.version_info = (2, 2, 1, 'final', 0)
-    pymysql.install_as_MySQLdb()
-except ImportError:
-    pass  # Not needed for SQLite
-
-# ── AWS RDS MySQL (swap in once security group allows 146.70.237.145) ──
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.db.backends.mysql',
-#         'NAME': 'truckwys',
-#         'USER': 'admin',
-#         'PASSWORD': 'truckwys@2026!',
-#         'HOST': '3.8.208.109',
-#         'PORT': '3306',
-#         'OPTIONS': {'charset': 'utf8mb4', 'connect_timeout': 10},
-#     }
-# }
-
-# ── SQLite (local dev until RDS is accessible) ──
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-    }
+    'default': dj_database_url.config(
+        default='sqlite:///db.sqlite3',
+        conn_max_age=600,
+        conn_health_checks=True,
+    )
 }
 
 AUTH_USER_MODEL = 'core.User'
