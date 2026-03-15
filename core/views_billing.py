@@ -65,6 +65,7 @@ class SubscribeView(APIView):
 
         return Response({
             'payfast_url': payment_data['payfast_url'],
+            'payment_url': payment_data['payfast_url'],
             'form_data': payment_data['form_data'],
             'plan': plan,
             'amount': str(plan_info['amount']),
