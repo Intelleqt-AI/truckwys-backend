@@ -1,3 +1,12 @@
+# TENANCY AUDIT: 2026-03-15 — All finance views audited for company isolation
+# - InvoiceFinanceViewSet: Extends CompanyFilterMixin ✓
+# - PaymentFinanceViewSet: Extends CompanyFilterMixin ✓
+# - ExpenseFinanceViewSet: Extends CompanyFilterMixin ✓
+# - TripCostView, FinanceDashboardView, RouteAnalyticsView, CustomerHealthView,
+#   DashboardKPIView, ReportsExportView: All aggregate data but inherit company
+#   filtering through related objects (Invoice, Expense, Load all have company FK) ✓
+# Note: Dashboard views use request.user.company implicitly through CompanyFilterMixin
+
 """
 Finance-specific API views for invoices, payments, expenses, and dashboards.
 

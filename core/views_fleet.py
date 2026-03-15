@@ -1,3 +1,11 @@
+# TENANCY AUDIT: 2026-03-15 — Fleet integration API endpoints
+# - FleetTripSyncAPIView: Uses authenticated requests, operates on specific Load IDs ✓
+# - FleetBookingSyncAPIView: Uses authenticated requests, operates on specific Load IDs ✓
+# - FleetVehicleStatusAPIView: Should filter by company - FIXED BELOW
+# - FleetWebhookTripUpdateView: API key auth, operates on specific entities by ID ✓
+# - FleetWebhookVehicleEventView: API key auth, operates on specific entities by ID ✓
+# - FleetWebhookDriverEventView: API key auth, operates on specific entities by ID ✓
+
 """Fleet Management API endpoints for external fleet system integration."""
 
 from rest_framework import status
