@@ -48,6 +48,7 @@ from .views_partner_api import (
     PartnerRiskAssessmentView, PartnerPortfolioSummaryView, PartnerEligibleInvoicesView,
     PartnerWebhookSubscriptionViewSet
 )
+from .views_partner_auth import PartnerLoginView
 from .views_risk_api import (
     RiskAssessmentView, RiskPortfolioView, RiskRetrainView,
     RiskModelInfoView, RiskAnomaliesView, RiskRescoreCustomerView
@@ -199,6 +200,9 @@ urlpatterns = [
     path('risk/model-info/', RiskModelInfoView.as_view(), name='risk-model-info'),
     path('risk/anomalies/', RiskAnomaliesView.as_view(), name='risk-anomalies'),
     path('risk/rescore-customer/<int:customer_id>/', RiskRescoreCustomerView.as_view(), name='risk-rescore-customer'),
+
+    # Partner Auth endpoint
+    path('partner/auth/login/', PartnerLoginView.as_view(), name='partner-auth-login'),
 
     # Billing endpoints (PayFast)
     path('billing/subscribe/', SubscribeView.as_view(), name='billing-subscribe'),
