@@ -123,7 +123,7 @@ class Company(models.Model):
         choices=[
             ('free', 'Free'),
             ('starter', 'Starter'),
-            ('professional', 'Professional'),
+            ('pro', 'Pro'),  # Changed from 'professional' to match middleware
             ('enterprise', 'Enterprise'),
         ],
         default='free',

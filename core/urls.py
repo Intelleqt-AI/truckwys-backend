@@ -51,6 +51,9 @@ from .views_risk_api import (
     RiskAssessmentView, RiskPortfolioView, RiskRetrainView,
     RiskModelInfoView, RiskAnomaliesView, RiskRescoreCustomerView
 )
+from .views_invite import (
+    InviteCreateView, InviteValidateView, InviteAcceptView
+)
 
 router = DefaultRouter()
 router.register(r'users', UserViewSet, basename='user')
@@ -98,6 +101,11 @@ urlpatterns = [
     path('auth/me/', UserProfileView.as_view(), name='user-profile'),
     path('auth/password-reset/', PasswordResetRequestView.as_view(), name='password-reset'),
     path('auth/password-reset/confirm/', PasswordResetConfirmView.as_view(), name='password-reset-confirm'),
+
+    # Team invitation endpoints
+    path('auth/invite/', InviteCreateView.as_view(), name='invite-create'),
+    path('auth/invite/<uuid:token>/', InviteValidateView.as_view(), name='invite-validate'),
+    path('auth/invite/<uuid:token>/accept/', InviteAcceptView.as_view(), name='invite-accept'),
     
     # Fleet/Vehicle specific endpoints (must come before router to avoid conflicts)
     path('fleet/overview/', FleetOverviewView.as_view(), name='fleet-overview'),
