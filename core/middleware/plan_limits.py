@@ -35,6 +35,8 @@ EXEMPT_PATHS = [
     '/admin/',
     '/static/',
     '/media/',
+    '/api/docs/',      # DRF Spectacular API documentation
+    '/api/schema/',    # OpenAPI schema endpoint
 ]
 
 
