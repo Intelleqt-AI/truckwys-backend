@@ -184,3 +184,7 @@ PAYFAST_MERCHANT_ID = config('PAYFAST_MERCHANT_ID', default='10000100')
 PAYFAST_MERCHANT_KEY = config('PAYFAST_MERCHANT_KEY', default='46f0cd694581a')
 PAYFAST_PASSPHRASE = config('PAYFAST_PASSPHRASE', default='')
 PAYFAST_SANDBOX = config('PAYFAST_SANDBOX', default=True, cast=bool)
+
+# ControlFleet Integration Configuration
+CONTROLFLEET_WEBHOOK_KEY = config('CONTROLFLEET_WEBHOOK_KEY', default='changeme')
+CONTROLFLEET_API_KEY = config('CONTROLFLEET_API_KEY', default='')
