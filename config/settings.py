@@ -33,6 +33,8 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    # Plan limits enforcement (T1.3) - must be after SessionMiddleware and AuthenticationMiddleware
+    'core.middleware.plan_limits.PlanLimitsMiddleware',
 ]
 
 ROOT_URLCONF = 'config.urls'

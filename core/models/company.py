@@ -147,6 +147,17 @@ class Company(models.Model):
     subscription_start = models.DateTimeField(null=True, blank=True)
     subscription_end = models.DateTimeField(null=True, blank=True)
 
+    # API usage tracking for plan limits (T1.3)
+    api_calls_this_month = models.IntegerField(
+        default=0,
+        help_text='Number of API calls made this month (resets monthly)'
+    )
+    api_calls_reset_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text='Date when API call counter was last reset'
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
