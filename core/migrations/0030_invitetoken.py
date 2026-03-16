@@ -9,7 +9,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('core', '0029_add_api_usage_tracking'),
+        ('core', '0029_merge_0029'),
     ]
 
     operations = [
