@@ -29,7 +29,7 @@ def remove_partner_user(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('core', '0029_alter_company_subscription_plan'),
+        ('core', '0031_make_invoice_optional_in_payment_outcome'),
     ]
 
     operations = [
