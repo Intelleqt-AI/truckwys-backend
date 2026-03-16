@@ -44,7 +44,7 @@ class APIIntegrationTestCase(TestCase):
 
         # Create customer
         self.customer = Customer.objects.create(
-            company='Test Customer Company',
+            company=self.company,
             name='Test Customer',
             email='customer@test.com',
             phone='0123456789',
