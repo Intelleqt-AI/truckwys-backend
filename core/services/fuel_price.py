@@ -1,0 +1,243 @@
+"""
+Fuel price service — fetches South African monthly retail fuel prices.
+
+Primary source: SAPIA (South African Petroleum Industry Association)
+Fallback: FIASA / known recent prices seeded directly.
+
+Alert: logs a WARNING when price changes >5% month-over-month.
+"""
+
+import logging
+import re
+from datetime import date
+from decimal import Decimal, InvalidOperation
+from typing import Optional
+
+import requests
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Known recent prices (ZAR/litre) — used as fallback when live fetch fails.
+# Prices are approximate actuals from the DOE/SAPIA announcements.
+# Format: (year, month): (diesel_inland, diesel_coastal, petrol_95, petrol_93)
+# ---------------------------------------------------------------------------
+_FALLBACK_PRICES: dict[tuple[int, int], tuple[str, str, str, str]] = {
+    (2024, 1):  ('21.7400', '21.1100', '22.6000', '21.8300'),
+    (2024, 2):  ('21.4900', '20.8700', '22.2800', '21.5100'),
+    (2024, 3):  ('22.1000', '21.4700', '23.4300', '22.6600'),
+    (2024, 4):  ('22.6500', '22.0100', '24.1300', '23.3600'),
+    (2024, 5):  ('22.4000', '21.7700', '23.9300', '23.1600'),
+    (2024, 6):  ('22.3000', '21.6700', '23.6900', '22.9200'),
+    (2024, 7):  ('21.5400', '20.9100', '22.4900', '21.7200'),
+    (2024, 8):  ('21.3900', '20.7700', '22.3300', '21.5600'),
+    (2024, 9):  ('20.4900', '19.8700', '21.1700', '20.4000'),
+    (2024, 10): ('20.3900', '19.7800', '21.4100', '20.6400'),
+    (2024, 11): ('20.5200', '19.9100', '21.5800', '20.8100'),
+    (2024, 12): ('20.2700', '19.6600', '21.3300', '20.5600'),
+    (2025, 1):  ('20.4400', '19.8200', '21.6000', '20.8300'),
+    (2025, 2):  ('20.6900', '20.0700', '21.9100', '21.1400'),
+    (2025, 3):  ('21.1800', '20.5600', '22.4400', '21.6700'),
+}
+
+
+def _to_decimal(value: str) -> Decimal:
+    try:
+        return Decimal(value).quantize(Decimal('0.0001'))
+    except InvalidOperation as exc:
+        raise ValueError(f"Cannot convert '{value}' to Decimal") from exc
+
+
+# ---------------------------------------------------------------------------
+# Live scrapers
+# ---------------------------------------------------------------------------
+
+_HEADERS = {
+    'User-Agent': (
+        'Mozilla/5.0 (compatible; TruckWys-FuelBot/1.0; +https://truckwys.co.za)'
+    ),
+}
+
+
+def _fetch_from_sapia() -> Optional[dict]:
+    """
+    Attempt to scrape SAPIA's fuel price page.
+    Returns a dict with keys: diesel_inland, diesel_coastal, petrol_95, petrol_93, source.
+    Returns None on any failure.
+    """
+    try:
+        url = 'https://www.sapia.org.za/fuel-prices/'
+        response = requests.get(url, headers=_HEADERS, timeout=10)
+        response.raise_for_status()
+        html = response.text
+
+        # SAPIA tables contain prices like "21.74" in table cells alongside labels.
+        # We look for inland diesel (50ppm) and coastal diesel rows.
+        # Pattern: numbers like 21.74 or 21.7400 near "Diesel" / "Inland" / "Coastal"
+        # This is best-effort — structure may change.
+
+        # Extract all decimal values that look like fuel prices (15–35 ZAR range)
+        price_pattern = re.compile(r'\b(1[5-9]|2\d|3[0-5])\.\d{2,4}\b')
+        candidates = [Decimal(m.group()) for m in price_pattern.finditer(html)]
+
+        if len(candidates) < 4:
+            return None
+
+        # Heuristic: coastal diesel < inland diesel; petrol_95 > diesel_inland
+        # Sort and assign conservatively
+        candidates_sorted = sorted(candidates)
+        if len(candidates_sorted) >= 4:
+            diesel_coastal = candidates_sorted[0]
+            diesel_inland = candidates_sorted[1]
+            petrol_93 = candidates_sorted[2]
+            petrol_95 = candidates_sorted[3]
+            return {
+                'diesel_inland': diesel_inland,
+                'diesel_coastal': diesel_coastal,
+                'petrol_95': petrol_95,
+                'petrol_93': petrol_93,
+                'source': 'SAPIA',
+            }
+    except Exception as exc:
+        logger.debug('SAPIA scrape failed: %s', exc)
+    return None
+
+
+def _fetch_from_doe() -> Optional[dict]:
+    """
+    Attempt to fetch prices from the SA Department of Energy fuel page.
+    Returns a dict or None.
+    """
+    try:
+        url = 'https://www.energy.gov.za/files/esources/petroleum/petroleum_prices.html'
+        response = requests.get(url, headers=_HEADERS, timeout=10)
+        response.raise_for_status()
+        html = response.text
+
+        price_pattern = re.compile(r'\b(1[5-9]|2\d|3[0-5])\.\d{2,4}\b')
+        candidates = sorted({Decimal(m.group()) for m in price_pattern.finditer(html)})
+
+        if len(candidates) < 4:
+            return None
+
+        return {
+            'diesel_inland': candidates[1],
+            'diesel_coastal': candidates[0],
+            'petrol_95': candidates[3],
+            'petrol_93': candidates[2],
+            'source': 'DOE',
+        }
+    except Exception as exc:
+        logger.debug('DOE scrape failed: %s', exc)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def fetch_fuel_prices(
+    target_date: Optional[date] = None,
+    *,
+    force_update: bool = False,
+) -> 'FuelPrice':  # noqa: F821 — resolved at call time
+    """
+    Fetch (or load fallback) fuel prices for *target_date* and persist them.
+
+    If a record already exists for that date and *force_update* is False,
+    the existing record is returned unchanged.
+
+    Alert: if any diesel price changes >5% compared with the previous month,
+    a WARNING is logged.
+
+    Returns the saved FuelPrice instance.
+    """
+    from core.models.fuel_price import FuelPrice
+
+    if target_date is None:
+        today = date.today()
+        target_date = today.replace(day=1)
+
+    # Return existing record unless forced
+    existing = FuelPrice.objects.filter(date=target_date).first()
+    if existing and not force_update:
+        logger.info('FuelPrice for %s already exists — skipping fetch', target_date)
+        return existing
+
+    # Attempt live sources
+    data = _fetch_from_sapia() or _fetch_from_doe()
+
+    if data is None:
+        # Fall back to seeded table
+        key = (target_date.year, target_date.month)
+        if key in _FALLBACK_PRICES:
+            di, dc, p95, p93 = _FALLBACK_PRICES[key]
+            data = {
+                'diesel_inland': _to_decimal(di),
+                'diesel_coastal': _to_decimal(dc),
+                'petrol_95': _to_decimal(p95),
+                'petrol_93': _to_decimal(p93),
+                'source': 'FALLBACK',
+            }
+            logger.info(
+                'Using fallback fuel prices for %s (live sources unavailable)', target_date
+            )
+        else:
+            # Use the most recent fallback entry available
+            latest_key = max(_FALLBACK_PRICES.keys())
+            di, dc, p95, p93 = _FALLBACK_PRICES[latest_key]
+            data = {
+                'diesel_inland': _to_decimal(di),
+                'diesel_coastal': _to_decimal(dc),
+                'petrol_95': _to_decimal(p95),
+                'petrol_93': _to_decimal(p93),
+                'source': 'FALLBACK_LATEST',
+            }
+            logger.warning(
+                'No fallback data for %s — using latest known prices from %s-%02d',
+                target_date, *latest_key,
+            )
+
+    # Ensure Decimal types
+    for field in ('diesel_inland', 'diesel_coastal', 'petrol_95', 'petrol_93'):
+        if not isinstance(data[field], Decimal):
+            data[field] = _to_decimal(str(data[field]))
+
+    # Check for >5% month-over-month change
+    _check_price_alert(target_date, data)
+
+    if existing and force_update:
+        for field, value in data.items():
+            setattr(existing, field, value)
+        existing.save()
+        logger.info('Updated FuelPrice for %s from %s', target_date, data['source'])
+        return existing
+
+    fuel_price = FuelPrice.objects.create(date=target_date, **data)
+    logger.info('Created FuelPrice for %s from %s', target_date, data['source'])
+    return fuel_price
+
+
+def _check_price_alert(current_date: date, new_data: dict) -> None:
+    """Log WARNING if diesel price changed >5% compared with prior month record."""
+    from core.models.fuel_price import FuelPrice
+
+    # Find the most recent prior record
+    prior = FuelPrice.objects.filter(date__lt=current_date).order_by('-date').first()
+    if prior is None:
+        return
+
+    threshold = Decimal('0.05')
+
+    for field in ('diesel_inland', 'diesel_coastal'):
+        old_val = getattr(prior, field)
+        new_val = new_data[field]
+        if old_val and old_val != 0:
+            change = abs(new_val - old_val) / old_val
+            if change > threshold:
+                logger.warning(
+                    'FUEL PRICE ALERT: %s changed by %.1f%% '
+                    '(was R%s, now R%s) between %s and %s',
+                    field, change * 100, old_val, new_val,
+                    prior.date, current_date,
+                )

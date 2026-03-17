@@ -2,7 +2,7 @@ from django.contrib import admin
 from .models import (
     User, Vehicle, VehicleType, VehicleLog, Load, Quote, Driver,
     Customer, Invoice, Payment, Expense, Notification, Settlement, Company,
-    Trip, Facility, RiskScore, AdvanceRequest, AuditLog
+    Trip, Facility, RiskScore, AdvanceRequest, AuditLog, FuelPrice, TollPlaza
 )
 
 @admin.register(User)
@@ -127,3 +127,19 @@ class AuditLogAdmin(admin.ModelAdmin):
     list_filter = ['action', 'resource_type']
     search_fields = ['user__email', 'resource_type', 'resource_id']
     readonly_fields = ['created_at']
+
+
+@admin.register(FuelPrice)
+class FuelPriceAdmin(admin.ModelAdmin):
+    list_display = ['date', 'diesel_inland', 'diesel_coastal', 'petrol_95', 'petrol_93', 'source']
+    list_filter = ['source']
+    search_fields = ['date']
+    readonly_fields = ['created_at', 'updated_at']
+
+
+@admin.register(TollPlaza)
+class TollPlazaAdmin(admin.ModelAdmin):
+    list_display = ['name', 'route', 'location_km', 'tariff_class_3', 'tariff_class_4', 'tariff_class_5', 'tariff_year', 'is_active']
+    list_filter = ['route', 'is_active', 'tariff_year']
+    search_fields = ['name', 'direction']
+    readonly_fields = ['created_at', 'updated_at']
