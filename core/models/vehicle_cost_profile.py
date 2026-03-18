@@ -19,6 +19,7 @@ class VehicleCostProfile(models.Model):
         ('tipper', 'Tipper truck'),
         ('reefer', 'Refrigerated truck'),
         ('tanker', 'Tanker truck'),
+        ('interlink', 'Interlink'),
     ]
 
     truck_type = models.CharField(
@@ -51,10 +52,10 @@ class VehicleCostProfile(models.Model):
         validators=[MinValueValidator(0)],
         help_text="Driver cost per day in ZAR (includes salary, accommodation, meals)"
     )
-    is_rfa_baseline = models.BooleanField(
-        default=False,
+    is_custom = models.BooleanField(
+        default=True,
         db_index=True,
-        help_text="True if this is an RFA baseline, False if company override"
+        help_text="False if this is an RFA baseline, True if company override"
     )
     company = models.ForeignKey(
         'Company',
@@ -64,8 +65,22 @@ class VehicleCostProfile(models.Model):
         related_name='vehicle_cost_profiles',
         help_text="Company that owns this profile (null for RFA baselines)"
     )
+    source = models.CharField(
+        max_length=100,
+        default='Manual Entry',
+        help_text="Source of this cost profile data (e.g., 'RFA VCI 2024', 'Company Override')"
+    )
+    effective_date = models.DateField(
+        help_text="Date from which this profile is effective"
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    # Legacy field for backwards compatibility
+    @property
+    def is_rfa_baseline(self):
+        """Backwards compatibility: is_rfa_baseline = not is_custom"""
+        return not self.is_custom
 
     class Meta:
         ordering = ['truck_type', '-is_rfa_baseline']
@@ -103,3 +118,7 @@ class VehicleCostProfile(models.Model):
             float: Total cost per km in ZAR
         """
         return float(self.fuel_cpk + self.tyre_cpk + self.maintenance_cpk)
+
+
+# Module-level export for test compatibility
+TRUCK_TYPE_CHOICES = VehicleCostProfile.TRUCK_TYPE_CHOICES

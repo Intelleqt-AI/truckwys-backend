@@ -4,7 +4,8 @@ from typing import Any
 from rest_framework import serializers
 
 from .models import VehicleCostProfile
-from .models.vehicle_cost_profile import TRUCK_TYPE_CHOICES
+from .models.vehicle_cost_profile import VehicleCostProfile as _VCP
+TRUCK_TYPE_CHOICES = _VCP.TRUCK_TYPE_CHOICES
 
 
 class VehicleCostProfileSerializer(serializers.ModelSerializer):

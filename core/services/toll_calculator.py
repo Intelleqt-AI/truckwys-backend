@@ -146,3 +146,133 @@ class TollCalculatorService:
                 seen.add(route_key)
 
         return routes
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Module-level constants and functions (for test compatibility)
+# ──────────────────────────────────────────────────────────────────────────────
+
+from dataclasses import dataclass
+from decimal import Decimal
+
+TRUCK_TYPE_TO_CLASS = {
+    'light': 2,
+    'medium': 3,
+    'heavy': 4,
+    'combination': 5,
+    'rigid': 3,
+    'semi': 5,
+    'interlink': 5,
+}
+
+
+@dataclass
+class TollBreakdownItem:
+    """Individual toll plaza cost."""
+    plaza_name: str
+    route: str
+    cost_zar: Decimal
+    location_km: Decimal = Decimal('0')
+
+
+@dataclass
+class TollResult:
+    """Result of toll calculation."""
+    total_zar: Decimal
+    breakdown: List[TollBreakdownItem]
+    routes_used: List[str]
+    origin: str = ''
+    destination: str = ''
+    truck_type: str = ''
+    vehicle_class: int = 0
+    warning: Optional[str] = None
+
+
+def _detect_routes(origin: str, destination: str) -> List[str]:
+    """
+    Detect routes for a city pair.
+
+    Args:
+        origin: Origin city
+        destination: Destination city
+
+    Returns:
+        List of route codes (e.g., ['N3'])
+    """
+    origin_norm = TollCalculatorService.normalize_city(origin)
+    dest_norm = TollCalculatorService.normalize_city(destination)
+
+    key = (origin_norm, dest_norm)
+    route_info = TollCalculatorService.ROUTE_MAP.get(key)
+
+    if route_info:
+        return [route_info[0]]
+    return []
+
+
+def calculate_tolls(origin: str, destination: str, truck_type: str) -> TollResult:
+    """
+    Calculate tolls for a route.
+
+    Args:
+        origin: Origin city
+        destination: Destination city
+        truck_type: Truck type string (maps to SANRAL class via TRUCK_TYPE_TO_CLASS)
+
+    Returns:
+        TollResult: Toll calculation result
+
+    Raises:
+        ValueError: If truck_type is unknown
+    """
+    if truck_type not in TRUCK_TYPE_TO_CLASS:
+        raise ValueError(f'Unknown truck type: {truck_type}')
+
+    vehicle_class = TRUCK_TYPE_TO_CLASS[truck_type]
+
+    origin_norm = TollCalculatorService.normalize_city(origin)
+    dest_norm = TollCalculatorService.normalize_city(destination)
+
+    key = (origin_norm, dest_norm)
+
+    if key not in TollCalculatorService.ROUTE_MAP:
+        return TollResult(
+            total_zar=Decimal('0.00'),
+            breakdown=[],
+            routes_used=[],
+            origin=origin,
+            destination=destination,
+            truck_type=truck_type,
+            vehicle_class=vehicle_class,
+            warning=f'No route data for {origin} to {destination}'
+        )
+
+    route_code, plaza_names = TollCalculatorService.ROUTE_MAP[key]
+
+    breakdown = []
+    total = Decimal('0.00')
+
+    for plaza_name in plaza_names:
+        plaza = TollPlaza.objects.filter(name=plaza_name, route=route_code, is_active=True).first()
+
+        if plaza:
+            cost = plaza.get_tariff(vehicle_class)
+            total += cost
+
+            breakdown.append(TollBreakdownItem(
+                plaza_name=plaza.name,
+                route=plaza.route,
+                cost_zar=cost,
+                location_km=plaza.location_km
+            ))
+
+    return TollResult(
+        total_zar=total,
+        breakdown=breakdown,
+        routes_used=[route_code],
+        origin=origin,
+        destination=destination,
+        truck_type=truck_type,
+        vehicle_class=vehicle_class,
+        warning=None
+    )

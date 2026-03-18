@@ -1,5 +1,6 @@
 """True margin calculator service integrating fuel, tolls, and RFA benchmarks."""
 
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from typing import Dict, Optional
@@ -8,6 +9,31 @@ from core.services.fuel_price import FuelPriceService
 from core.services.toll_calculator import TollCalculatorService
 from core.services.rfa_benchmarks import RFABenchmarkService
 from core.models import Company
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Module-level constants (for test compatibility)
+# ──────────────────────────────────────────────────────────────────────────────
+
+DEFAULT_DEADHEAD_FACTOR = Decimal('1.30')  # 30% deadhead
+DEFAULT_DRIVER_RATE_PER_KM = Decimal('1.20')
+DEFAULT_KM_PER_LITRE = Decimal('2.80')  # articulated default
+DEFAULT_MAINTENANCE_PER_KM = Decimal('0.85')
+DEFAULT_TYRE_WEAR_PER_KM = Decimal('0.60')
+_FALLBACK_DIESEL_PRICE = Decimal('22.00')
+
+
+@dataclass
+class MarginResult:
+    """Result of margin calculation."""
+    true_cost: Decimal
+    margin_zar: Decimal
+    margin_pct: Decimal
+    cost_breakdown: Dict[str, Decimal]
+    fuel_price_used: Decimal
+    margin_status: str
+    distance_km: Decimal = Decimal('0')
+    effective_distance_km: Decimal = Decimal('0')
 
 
 class TrueMarginCalculatorService:
@@ -133,3 +159,97 @@ class TrueMarginCalculatorService:
             'fuel_price_used': round(fuel_price_per_liter, 2),
             'margin_status': margin_status
         }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Module-level function (for test compatibility)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def calculate_true_margin(
+    route: dict,
+    truck_type: str,
+    load_type: str,
+    quote_price: Decimal,
+    client_id: Optional[int] = None
+) -> MarginResult:
+    """
+    Calculate true margin for a freight quote.
+
+    This is a test-compatible wrapper around the service implementation.
+
+    Args:
+        route: Dict with distance_km, optional tolls_zar, optional deadhead_factor
+        truck_type: Truck type (articulated, rigid, etc.)
+        load_type: Load type (general, hazmat, refrigerated, bulk, abnormal)
+        quote_price: Quoted price in ZAR
+        client_id: Optional client ID (reserved for future use)
+
+    Returns:
+        MarginResult: Margin calculation result
+
+    Raises:
+        ValueError: If distance_km is invalid
+    """
+    from core.models import FuelPrice
+
+    distance_km = Decimal(str(route.get('distance_km', 0)))
+
+    if distance_km <= 0:
+        raise ValueError('distance_km must be positive')
+
+    tolls_zar = Decimal(str(route.get('tolls_zar', 0)))
+    deadhead_factor = Decimal(str(route.get('deadhead_factor', DEFAULT_DEADHEAD_FACTOR)))
+
+    # Calculate effective distance with deadhead
+    effective_distance_km = distance_km * deadhead_factor
+
+    # Get fuel price
+    latest_fuel = FuelPrice.objects.order_by('-date').first()
+    if latest_fuel:
+        diesel_price = latest_fuel.diesel_inland
+    else:
+        diesel_price = _FALLBACK_DIESEL_PRICE
+
+    # Determine km per litre based on truck type
+    km_per_litre_map = {
+        'rigid': Decimal('4.50'),
+        'articulated': DEFAULT_KM_PER_LITRE,
+    }
+    km_per_litre = km_per_litre_map.get(truck_type, DEFAULT_KM_PER_LITRE)
+
+    # Calculate costs
+    fuel_cost = (effective_distance_km / km_per_litre * diesel_price).quantize(Decimal('0.01'))
+    driver_cost = (effective_distance_km * DEFAULT_DRIVER_RATE_PER_KM).quantize(Decimal('0.01'))
+    tyre_wear = (effective_distance_km * DEFAULT_TYRE_WEAR_PER_KM).quantize(Decimal('0.01'))
+    maintenance = (effective_distance_km * DEFAULT_MAINTENANCE_PER_KM).quantize(Decimal('0.01'))
+
+    cost_breakdown = {
+        'fuel': fuel_cost,
+        'driver': driver_cost,
+        'tolls': tolls_zar.quantize(Decimal('0.01')),
+        'tyre_wear': tyre_wear,
+        'maintenance': maintenance,
+    }
+
+    true_cost = sum(cost_breakdown.values()).quantize(Decimal('0.01'))
+    margin_zar = (quote_price - true_cost).quantize(Decimal('0.01'))
+    margin_pct = (margin_zar / quote_price * Decimal('100')).quantize(Decimal('0.01')) if quote_price > 0 else Decimal('0.00')
+
+    # Determine margin status
+    if margin_pct >= 18:
+        margin_status = 'healthy'
+    elif margin_pct >= 12:
+        margin_status = 'caution'
+    else:
+        margin_status = 'at_risk'
+
+    return MarginResult(
+        true_cost=true_cost,
+        margin_zar=margin_zar,
+        margin_pct=margin_pct,
+        cost_breakdown=cost_breakdown,
+        fuel_price_used=diesel_price,
+        margin_status=margin_status,
+        distance_km=distance_km,
+        effective_distance_km=effective_distance_km.quantize(Decimal('0.01'))
+    )
