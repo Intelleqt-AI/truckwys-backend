@@ -57,6 +57,7 @@ from .views_invite import (
     InviteCreateView, InviteValidateView, InviteAcceptView
 )
 from .views_vehicle_cost import VehicleCostProfileViewSet
+from .views_ai_quote import QuoteSuggestView, QuoteGuardView
 
 router = DefaultRouter()
 router.register(r'users', UserViewSet, basename='user')
@@ -207,6 +208,10 @@ urlpatterns = [
 
     # Partner Auth endpoint
     path('partner/auth/login/', PartnerLoginView.as_view(), name='partner-auth-login'),
+
+    # AI Quote endpoints (Phase 2 Sprint 2)
+    path('v1/quotes/suggest/', QuoteSuggestView.as_view(), name='quote-suggest'),
+    path('v1/quotes/guard/', QuoteGuardView.as_view(), name='quote-guard'),
 
     # Billing endpoints (PayFast)
     path('billing/subscribe/', SubscribeView.as_view(), name='billing-subscribe'),
