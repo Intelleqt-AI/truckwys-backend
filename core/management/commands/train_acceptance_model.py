@@ -65,7 +65,8 @@ class Command(BaseCommand):
             for i, item in enumerate(metrics['feature_importances'][:10], 1):
                 self.stdout.write(f"{i:2d}. {item['feature']:35s} {item['importance']:.4f}")
 
-            self.stdout.write(self.style.SUCCESS(f'\nModel saved to {model.MODEL_PATH}'))
+            from core.services.quote_acceptance_model import MODEL_PATH
+            self.stdout.write(self.style.SUCCESS(f'\nModel saved to {MODEL_PATH}'))
 
         except Exception as e:
             self.stdout.write(self.style.ERROR(f'Training failed: {e}'))

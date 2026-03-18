@@ -20,7 +20,7 @@ from core.services.quote_ml_lgbm import QuoteMarginModel
 from core.services.quote_acceptance_model import QuoteAcceptanceModel
 from core.services.quote_explainer import QuoteExplainer
 from core.services.revenue_guard import RevenueGuardEngine
-from core.services.true_margin_calculator import TrueMarginCalculatorService
+from core.services.margin_calculator import TrueMarginCalculatorService
 
 logger = logging.getLogger(__name__)
 
