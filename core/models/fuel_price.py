@@ -48,6 +48,7 @@ class FuelPrice(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
+        db_table = 'fuel_prices'
         ordering = ['-date']
         verbose_name = "Fuel Price"
         verbose_name_plural = "Fuel Prices"

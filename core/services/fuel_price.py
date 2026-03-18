@@ -316,34 +316,3 @@ def fetch_fuel_prices(target_date: Optional[date] = None, force_update: bool = F
     )
 
     return fp
-
-
-# ── Module-level exports for test compatibility ──────────────────────────────
-from decimal import Decimal as _Decimal
-
-
-def _to_decimal(val) -> _Decimal:
-    """Convert a value to Decimal."""
-    return _Decimal(str(val))
-
-
-def _check_price_alert(old_price: float, new_price: float, threshold: float = 0.05) -> bool:
-    """Return True if price change exceeds threshold (default 5%)."""
-    if old_price == 0:
-        return False
-    return abs(new_price - old_price) / old_price > threshold
-
-
-def _fetch_from_doe() -> None:
-    """Stub — DOE integration not yet implemented."""
-    return None
-
-
-def _fetch_from_sapia() -> None:
-    """Stub — SAPIA integration not yet implemented."""
-    return None
-
-
-def fetch_fuel_prices() -> dict:
-    """Module-level wrapper around FuelPriceService.fetch_current_prices()."""
-    return FuelPriceService.fetch_current_prices()

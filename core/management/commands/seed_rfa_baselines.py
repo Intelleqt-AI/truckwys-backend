@@ -37,7 +37,7 @@ class Command(BaseCommand):
         )
 
         profiles = VehicleCostProfile.objects.filter(
-            is_rfa_baseline=True,
+            is_custom=False,
             company__isnull=True
         ).order_by('truck_type')
 

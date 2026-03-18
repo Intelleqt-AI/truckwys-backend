@@ -1,5 +1,6 @@
 """Management command to generate synthetic quote training data for ML models."""
 
+import csv
 import random
 from decimal import Decimal
 from datetime import datetime, timedelta
@@ -73,12 +74,34 @@ class Command(BaseCommand):
             action='store_true',
             help='Clear existing training records before generating new ones'
         )
+        parser.add_argument(
+            '--output',
+            type=str,
+            default=None,
+            help='Output CSV file path (if not specified, writes to database)'
+        )
+        parser.add_argument(
+            '--seed',
+            type=int,
+            default=None,
+            help='Random seed for reproducibility'
+        )
 
     def handle(self, *args, **options):
         """Execute the command to generate training data."""
         count = options['count']
         clear = options['clear']
+        output_path = options.get('output')
+        seed = options.get('seed')
 
+        if seed is not None:
+            random.seed(seed)
+
+        if output_path:
+            # CSV output mode for ML training
+            return self._generate_csv(count, output_path, seed)
+
+        # Database mode (legacy)
         if clear:
             self.stdout.write(self.style.WARNING('Clearing existing training records...'))
             deleted_count = QuoteTrainingRecord.objects.all().delete()[0]
@@ -208,3 +231,77 @@ class Command(BaseCommand):
                 '\nNote: These records are for ML training only and are NOT exposed via API.'
             )
         )
+
+    def _generate_csv(self, count, output_path, seed):
+        """Generate CSV with ML features for training."""
+        from core.services.quote_ml import FEATURE_NAMES, TARGET
+
+        route_map = {i: pair for i, pair in enumerate(self.CITY_PAIRS)}
+
+        self.stdout.write(self.style.NOTICE(f'Generating {count} training records to {output_path}...'))
+
+        with open(output_path, 'w', newline='', encoding='utf-8') as f:
+            fieldnames = FEATURE_NAMES + [TARGET]
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+
+            for i in range(count):
+                route_id = random.randint(0, 9)
+                origin, destination, distance_km = self.CITY_PAIRS[route_id]
+
+                truck_type_idx = random.randint(0, 4)
+                load_type_idx = random.randint(0, 4)
+                load_weight = random.uniform(5000, 34000)
+
+                fuel_price = round(random.uniform(18.0, 26.0), 2)
+                toll_cost = round(random.uniform(100, 1200), 2) if distance_km > 400 else 0
+                driver_cost = round(random.uniform(800, 5000), 2)
+
+                client_tier = random.randint(0, 2)
+                historical_acceptance_rate = round(random.uniform(0.50, 0.90), 2)
+
+                day_of_week = random.randint(0, 6)
+                month = random.randint(1, 12)
+                is_holiday = 1 if random.random() < 0.05 else 0
+                is_return_load = 1 if random.random() < 0.35 else 0
+
+                competitor_quote = round(random.uniform(10000, 150000), 2)
+                urgency = random.randint(1, 5)
+                route_popularity = round(random.uniform(0.1, 1.0), 2)
+                weather_risk = round(random.uniform(0.0, 0.5), 2)
+                historical_margin_avg = round(random.uniform(0.10, 0.30), 2)
+                fleet_utilization = round(random.uniform(0.40, 0.95), 2)
+                deadhead_prob = round(random.uniform(0.10, 0.70), 2)
+                load_value_zar = round(random.uniform(50000, 1000000), 2)
+
+                actual_margin_pct = round(random.uniform(0.05, 0.45), 2)
+
+                row = {
+                    'route_id': route_id,
+                    'distance_km': distance_km,
+                    'truck_type': truck_type_idx,
+                    'load_type': load_type_idx,
+                    'load_weight': load_weight,
+                    'fuel_price': fuel_price,
+                    'toll_cost': toll_cost,
+                    'driver_cost': driver_cost,
+                    'client_tier': client_tier,
+                    'historical_acceptance_rate': historical_acceptance_rate,
+                    'day_of_week': day_of_week,
+                    'month': month,
+                    'is_holiday': is_holiday,
+                    'is_return_load': is_return_load,
+                    'competitor_quote': competitor_quote,
+                    'urgency': urgency,
+                    'route_popularity': route_popularity,
+                    'weather_risk': weather_risk,
+                    'historical_margin_avg': historical_margin_avg,
+                    'fleet_utilization': fleet_utilization,
+                    'deadhead_prob': deadhead_prob,
+                    'load_value_zar': load_value_zar,
+                    TARGET: actual_margin_pct,
+                }
+
+                writer.writerow(row)
+
+        self.stdout.write(self.style.SUCCESS(f'Successfully wrote {count} records to {output_path}'))

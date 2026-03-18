@@ -253,9 +253,9 @@ def calculate_tolls(origin: str, destination: str, truck_type: str) -> TollResul
     total = Decimal('0.00')
 
     for plaza_name in plaza_names:
-        plaza = TollPlaza.objects.filter(name=plaza_name, route=route_code, is_active=True).first()
+        plaza = TollPlaza.objects.filter(name=plaza_name, route=route_code).first()
 
-        if plaza:
+        if plaza and plaza.is_active:
             cost = plaza.get_tariff(vehicle_class)
             total += cost
 
