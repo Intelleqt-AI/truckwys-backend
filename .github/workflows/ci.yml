@@ -1,6 +1,8 @@
 name: TruckWys CI
 
 on:
+  push:
+    branches: [main, feat/phase2-consolidated, feat/*]
   pull_request:
     branches: [main]
 
