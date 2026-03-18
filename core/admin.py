@@ -150,8 +150,8 @@ class TollPlazaAdmin(admin.ModelAdmin):
 
 @admin.register(VehicleCostProfile)
 class VehicleCostProfileAdmin(admin.ModelAdmin):
-    list_display = ['truck_type', 'is_rfa_baseline', 'company', 'fuel_cpk', 'tyre_cpk', 'maintenance_cpk', 'driver_cost_per_day']
-    list_filter = ['is_rfa_baseline', 'truck_type']
+    list_display = ['truck_type', 'company', 'fuel_cpk', 'tyre_cpk', 'maintenance_cpk', 'driver_cost_per_day']
+    list_filter = ['truck_type']
     search_fields = ['truck_type', 'company__company_name']
     readonly_fields = ['created_at', 'updated_at']
-    ordering = ['truck_type', '-is_rfa_baseline']
+    ordering = ['truck_type']
