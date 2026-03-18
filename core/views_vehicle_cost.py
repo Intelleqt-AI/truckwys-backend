@@ -44,6 +44,7 @@ class VehicleCostProfileViewSet(viewsets.ModelViewSet):
 
     permission_classes = [IsAuthenticated]
     serializer_class = VehicleCostProfileSerializer
+    pagination_class = None
 
     def get_queryset(self):
         user = self.request.user
@@ -68,13 +69,18 @@ class VehicleCostProfileViewSet(viewsets.ModelViewSet):
             return VehicleCostProfileCreateSerializer
         return VehicleCostProfileSerializer
 
-    def perform_create(self, serializer: VehicleCostProfileCreateSerializer) -> None:
-        """Auto-set company and mark as custom override."""
-        serializer.save(
-            company=self.request.user.company,
+    def create(self, request: Request, *args: Any, **kwargs: Any) -> Response:
+        """Create a company override and return full representation."""
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        instance = serializer.save(
+            company=request.user.company,
             is_custom=True,
             source=serializer.validated_data.get('source', 'Company Override'),
         )
+        # Return full representation with id and total_cpk
+        output_serializer = VehicleCostProfileSerializer(instance)
+        return Response(output_serializer.data, status=status.HTTP_201_CREATED)
 
     def destroy(self, request: Request, *args: Any, **kwargs: Any) -> Response:
         """Prevent deletion of RFA default profiles."""

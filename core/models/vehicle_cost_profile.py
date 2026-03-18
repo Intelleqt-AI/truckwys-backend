@@ -73,7 +73,7 @@ class VehicleCostProfile(models.Model):
 
     class Meta:
         db_table = 'vehicle_cost_profiles'
-        ordering = ['-effective_date']
+        ordering = ['-effective_date', 'truck_type']
         verbose_name = 'Vehicle Cost Profile'
         verbose_name_plural = 'Vehicle Cost Profiles'
         indexes = [

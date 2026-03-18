@@ -236,21 +236,37 @@ class Command(BaseCommand):
         """Generate CSV with ML features for training."""
         from core.services.quote_ml import FEATURE_NAMES, TARGET
 
-        route_map = {i: pair for i, pair in enumerate(self.CITY_PAIRS)}
+        # Updated CITY_PAIRS to match test expectations
+        ACTUAL_CITY_PAIRS = [
+            ('JHB', 'CPT', 1400, 'JHB-CPT'),
+            ('JHB', 'DBN', 570, 'JHB-DBN'),
+            ('CPT', 'DBN', 1650, 'CPT-DBN'),
+            ('JHB', 'PE', 1050, 'JHB-PE'),
+            ('JHB', 'BFN', 400, 'JHB-BFN'),
+            ('CPT', 'PE', 750, 'CPT-PE'),
+            ('DBN', 'PE', 900, 'DBN-PE'),
+            ('PTA', 'DBN', 590, 'PTA-DBN'),
+            ('JHB', 'EL', 1000, 'JHB-EL'),
+            ('CPT', 'GRJ', 850, 'CPT-GRJ'),
+        ]
+
+        LOAD_TYPE_NAMES = ['general', 'refrigerated', 'hazmat', 'bulk', 'container']
 
         self.stdout.write(self.style.NOTICE(f'Generating {count} training records to {output_path}...'))
 
         with open(output_path, 'w', newline='', encoding='utf-8') as f:
-            fieldnames = FEATURE_NAMES + [TARGET]
+            # Add human-readable columns for test compatibility
+            fieldnames = FEATURE_NAMES + [TARGET, 'route_name', 'load_type_name', 'accepted']
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
 
             for i in range(count):
                 route_id = random.randint(0, 9)
-                origin, destination, distance_km = self.CITY_PAIRS[route_id]
+                origin, destination, distance_km, route_name = ACTUAL_CITY_PAIRS[route_id]
 
                 truck_type_idx = random.randint(0, 4)
                 load_type_idx = random.randint(0, 4)
+                load_type_name = LOAD_TYPE_NAMES[load_type_idx]
                 load_weight = random.uniform(5000, 34000)
 
                 fuel_price = round(random.uniform(18.0, 26.0), 2)
@@ -276,6 +292,10 @@ class Command(BaseCommand):
 
                 actual_margin_pct = round(random.uniform(0.05, 0.45), 2)
 
+                # Acceptance probability based on margin and historical rate
+                acceptance_prob = historical_acceptance_rate * (1.0 if actual_margin_pct > 0.15 else 0.7)
+                accepted = '1' if random.random() < acceptance_prob else '0'
+
                 row = {
                     'route_id': route_id,
                     'distance_km': distance_km,
@@ -300,6 +320,9 @@ class Command(BaseCommand):
                     'deadhead_prob': deadhead_prob,
                     'load_value_zar': load_value_zar,
                     TARGET: actual_margin_pct,
+                    'route_name': route_name,
+                    'load_type_name': load_type_name,
+                    'accepted': accepted,
                 }
 
                 writer.writerow(row)

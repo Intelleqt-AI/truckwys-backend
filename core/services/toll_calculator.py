@@ -230,7 +230,7 @@ def calculate_tolls(origin: str, destination: str, truck_type: str) -> TollResul
         truck_type: Truck type string (maps to SANRAL class via TRUCK_TYPE_TO_CLASS)
 
     Returns:
-        TollResult: Toll calculation result
+        TollResult: Toll calculation result with breakdown of active plazas only
 
     Raises:
         ValueError: If truck_type is unknown
@@ -257,24 +257,27 @@ def calculate_tolls(origin: str, destination: str, truck_type: str) -> TollResul
             warning=f'No route data for {origin} to {destination}'
         )
 
-    route_code, plaza_names = TollCalculatorService.ROUTE_MAP[key]
+    route_code, _plaza_names = TollCalculatorService.ROUTE_MAP[key]
+
+    # Query all active plazas on this route, ordered by location_km
+    plazas = TollPlaza.objects.filter(
+        route=route_code,
+        is_active=True
+    ).order_by('location_km')
 
     breakdown = []
     total = Decimal('0.00')
 
-    for plaza_name in plaza_names:
-        plaza = TollPlaza.objects.filter(name=plaza_name, route=route_code).first()
+    for plaza in plazas:
+        cost = plaza.get_tariff(vehicle_class)
+        total += cost
 
-        if plaza and plaza.is_active:
-            cost = plaza.get_tariff(vehicle_class)
-            total += cost
-
-            breakdown.append(TollBreakdownItem(
-                plaza_name=plaza.name,
-                route=plaza.route,
-                cost_zar=cost,
-                location_km=plaza.location_km
-            ))
+        breakdown.append(TollBreakdownItem(
+            plaza_name=plaza.name,
+            route=plaza.route,
+            cost_zar=cost,
+            location_km=plaza.location_km
+        ))
 
     return TollResult(
         total_zar=total,

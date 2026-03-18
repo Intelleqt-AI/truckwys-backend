@@ -68,4 +68,9 @@ class TollPlaza(models.Model):
         return float(cost_map[vehicle_class])
 
     def get_tariff(self, vehicle_class: int):
-        return self.get_cost_for_class(vehicle_class)
+        """Get tariff as Decimal for a vehicle class."""
+        cost_map = {2: self.tariff_class_2, 3: self.tariff_class_3,
+                    4: self.tariff_class_4, 5: self.tariff_class_5}
+        if vehicle_class not in cost_map:
+            raise ValueError(f"Invalid vehicle_class: {vehicle_class}. Must be 2-5.")
+        return cost_map[vehicle_class]
