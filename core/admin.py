@@ -2,7 +2,8 @@ from django.contrib import admin
 from .models import (
     User, Vehicle, VehicleType, VehicleLog, Load, Quote, Driver,
     Customer, Invoice, Payment, Expense, Notification, Settlement, Company,
-    Trip, Facility, RiskScore, AdvanceRequest, AuditLog
+    Trip, Facility, RiskScore, AdvanceRequest, AuditLog, FuelPrice, TollPlaza,
+    VehicleCostProfile
 )
 
 @admin.register(User)
@@ -127,3 +128,30 @@ class AuditLogAdmin(admin.ModelAdmin):
     list_filter = ['action', 'resource_type']
     search_fields = ['user__email', 'resource_type', 'resource_id']
     readonly_fields = ['created_at']
+
+
+@admin.register(FuelPrice)
+class FuelPriceAdmin(admin.ModelAdmin):
+    list_display = ['date', 'diesel_inland', 'diesel_coastal', 'petrol_95', 'petrol_93', 'source', 'created_at']
+    list_filter = ['source', 'date']
+    search_fields = ['source']
+    readonly_fields = ['created_at']
+    ordering = ['-date']
+
+
+@admin.register(TollPlaza)
+class TollPlazaAdmin(admin.ModelAdmin):
+    list_display = ['name', 'route', 'province', 'direction', 'class5_cost', 'location_km']
+    list_filter = ['route', 'province', 'direction']
+    search_fields = ['name', 'route', 'province']
+    readonly_fields = ['created_at', 'updated_at']
+    ordering = ['route', 'location_km']
+
+
+@admin.register(VehicleCostProfile)
+class VehicleCostProfileAdmin(admin.ModelAdmin):
+    list_display = ['truck_type', 'is_rfa_baseline', 'company', 'fuel_cpk', 'tyre_cpk', 'maintenance_cpk', 'driver_cost_per_day']
+    list_filter = ['is_rfa_baseline', 'truck_type']
+    search_fields = ['truck_type', 'company__company_name']
+    readonly_fields = ['created_at', 'updated_at']
+    ordering = ['truck_type', '-is_rfa_baseline']

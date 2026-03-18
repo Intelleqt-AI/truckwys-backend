@@ -20,6 +20,10 @@ from .webhook import Webhook
 from .integration_api_key import IntegrationAPIKey
 from .activity_event import ActivityEvent
 from .webhook_subscription import WebhookSubscription
+from .fuel_price import FuelPrice
+from .toll_plaza import TollPlaza
+from .vehicle_cost_profile import VehicleCostProfile
+from .quote_training_record import QuoteTrainingRecord
 
 __all__ = [
     'User',
@@ -46,4 +50,8 @@ __all__ = [
     'IntegrationAPIKey',
     'ActivityEvent',
     'WebhookSubscription',
+    'FuelPrice',
+    'TollPlaza',
+    'VehicleCostProfile',
+    'QuoteTrainingRecord',
 ]
