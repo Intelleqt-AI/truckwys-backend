@@ -14,3 +14,6 @@ __all__ = [
 
 # Quote ML — imported lazily to avoid hard dependency on lightgbm at import time
 # Use: from core.services.quote_ml import QuoteMLModel, predict_optimal_margin
+
+# Vehicle cost — RFA VCI benchmark defaults and company overrides
+# Use: from core.services.vehicle_cost import get_cost_profile, calculate_total_cpk

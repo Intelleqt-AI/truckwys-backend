@@ -56,6 +56,7 @@ from .views_risk_api import (
 from .views_invite import (
     InviteCreateView, InviteValidateView, InviteAcceptView
 )
+from .views_vehicle_cost import VehicleCostProfileViewSet
 
 router = DefaultRouter()
 router.register(r'users', UserViewSet, basename='user')
@@ -91,6 +92,9 @@ router.register(r'integration-keys', IntegrationAPIKeyViewSet, basename='integra
 
 # Activity Events ViewSet (Sprint 1)
 router.register(r'activity', ActivityEventViewSet, basename='activity')
+
+# Vehicle Cost Profiles (Phase 2 — T1.3 RFA CPK baseline)
+router.register(r'vehicle-costs', VehicleCostProfileViewSet, basename='vehiclecostprofile')
 
 # Partner API ViewSets (Fleet Management + Capital APIs)
 router.register(r'partners/webhooks', PartnerWebhookSubscriptionViewSet, basename='partner-webhook')

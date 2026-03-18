@@ -2,7 +2,8 @@ from django.contrib import admin
 from .models import (
     User, Vehicle, VehicleType, VehicleLog, Load, Quote, Driver,
     Customer, Invoice, Payment, Expense, Notification, Settlement, Company,
-    Trip, Facility, RiskScore, AdvanceRequest, AuditLog, FuelPrice, TollPlaza
+    Trip, Facility, RiskScore, AdvanceRequest, AuditLog, FuelPrice, TollPlaza,
+    VehicleCostProfile,
 )
 
 @admin.register(User)
@@ -142,4 +143,12 @@ class TollPlazaAdmin(admin.ModelAdmin):
     list_display = ['name', 'route', 'location_km', 'tariff_class_3', 'tariff_class_4', 'tariff_class_5', 'tariff_year', 'is_active']
     list_filter = ['route', 'is_active', 'tariff_year']
     search_fields = ['name', 'direction']
+    readonly_fields = ['created_at', 'updated_at']
+
+
+@admin.register(VehicleCostProfile)
+class VehicleCostProfileAdmin(admin.ModelAdmin):
+    list_display = ['truck_type', 'company', 'fuel_cpk', 'tyre_cpk', 'maintenance_cpk', 'driver_cost_per_day', 'is_custom', 'source', 'effective_date']
+    list_filter = ['truck_type', 'is_custom', 'source']
+    search_fields = ['truck_type', 'source', 'company__company_name']
     readonly_fields = ['created_at', 'updated_at']
