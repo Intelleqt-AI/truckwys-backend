@@ -3,7 +3,7 @@ from .models import (
     User, Vehicle, VehicleType, VehicleLog, Load, Quote, Driver,
     Customer, Invoice, Payment, Expense, Notification, Settlement, Company,
     Trip, Facility, RiskScore, AdvanceRequest, AuditLog, FuelPrice, TollPlaza,
-    VehicleCostProfile,
+    VehicleCostProfile
 )
 
 @admin.register(User)
@@ -132,23 +132,26 @@ class AuditLogAdmin(admin.ModelAdmin):
 
 @admin.register(FuelPrice)
 class FuelPriceAdmin(admin.ModelAdmin):
-    list_display = ['date', 'diesel_inland', 'diesel_coastal', 'petrol_95', 'petrol_93', 'source']
-    list_filter = ['source']
-    search_fields = ['date']
-    readonly_fields = ['created_at', 'updated_at']
+    list_display = ['date', 'diesel_inland', 'diesel_coastal', 'petrol_95', 'petrol_93', 'source', 'created_at']
+    list_filter = ['source', 'date']
+    search_fields = ['source']
+    readonly_fields = ['created_at']
+    ordering = ['-date']
 
 
 @admin.register(TollPlaza)
 class TollPlazaAdmin(admin.ModelAdmin):
-    list_display = ['name', 'route', 'location_km', 'tariff_class_3', 'tariff_class_4', 'tariff_class_5', 'tariff_year', 'is_active']
-    list_filter = ['route', 'is_active', 'tariff_year']
-    search_fields = ['name', 'direction']
+    list_display = ['name', 'route', 'province', 'direction', 'class5_cost', 'location_km']
+    list_filter = ['route', 'province', 'direction']
+    search_fields = ['name', 'route', 'province']
     readonly_fields = ['created_at', 'updated_at']
+    ordering = ['route', 'location_km']
 
 
 @admin.register(VehicleCostProfile)
 class VehicleCostProfileAdmin(admin.ModelAdmin):
-    list_display = ['truck_type', 'company', 'fuel_cpk', 'tyre_cpk', 'maintenance_cpk', 'driver_cost_per_day', 'is_custom', 'source', 'effective_date']
-    list_filter = ['truck_type', 'is_custom', 'source']
-    search_fields = ['truck_type', 'source', 'company__company_name']
+    list_display = ['truck_type', 'is_rfa_baseline', 'company', 'fuel_cpk', 'tyre_cpk', 'maintenance_cpk', 'driver_cost_per_day']
+    list_filter = ['is_rfa_baseline', 'truck_type']
+    search_fields = ['truck_type', 'company__company_name']
     readonly_fields = ['created_at', 'updated_at']
+    ordering = ['truck_type', '-is_rfa_baseline']

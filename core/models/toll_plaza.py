@@ -1,79 +1,116 @@
-from decimal import Decimal
+"""Toll plaza model for SANRAL toll road costs in South Africa."""
 
 from django.db import models
+from django.core.validators import MinValueValidator
 
 
 class TollPlaza(models.Model):
     """
-    SANRAL toll plaza with per-vehicle-class tariffs (ZAR).
+    Stores SANRAL toll plaza information and costs by vehicle class.
 
-    Gauteng Urban Network (GFIP / e-toll) is EXCLUDED — scrapped April 2024.
-
-    Vehicle classes follow SANRAL classification:
-        Class 2 — light motor vehicles (passenger, LDV, minibus ≤3.5 t GVM)
-        Class 3 — medium motor vehicles (2-axle truck/bus, 3.5–11 t GVM)
-        Class 4 — heavy motor vehicles (3+ axle single unit, >11 t GVM)
-        Class 5 — multi-unit combinations (truck + trailer / semi-truck)
+    Vehicle classes:
+    - Class 2: Light motor vehicles
+    - Class 3: Medium vehicles
+    - Class 4: Heavy vehicles (2-axle)
+    - Class 5: Heavy vehicles (3+ axle, including semi-trailers)
     """
 
-    ROUTE_CHOICES = [
-        ('N1',  'N1 — Cape Town to Johannesburg'),
-        ('N2',  'N2 — Cape Town to Durban (coastal)'),
-        ('N3',  'N3 — Johannesburg to Durban'),
-        ('N4',  'N4 — Pretoria to Maputo (TRAC concession)'),
-        ('N14', 'N14 — Johannesburg to Springbok'),
+    DIRECTION_CHOICES = [
+        ('N', 'North'),
+        ('S', 'South'),
+        ('E', 'East'),
+        ('W', 'West'),
+        ('NE', 'Northeast'),
+        ('NW', 'Northwest'),
+        ('SE', 'Southeast'),
+        ('SW', 'Southwest'),
     ]
 
-    name = models.CharField(max_length=100, help_text='Official SANRAL plaza name')
-    route = models.CharField(max_length=10, choices=ROUTE_CHOICES, db_index=True)
-    direction = models.CharField(
+    name = models.CharField(
+        max_length=200,
+        help_text="Name of the toll plaza"
+    )
+    route = models.CharField(
+        max_length=50,
+        db_index=True,
+        help_text="Route identifier (e.g., N1, N2, N3, N4)"
+    )
+    province = models.CharField(
         max_length=100,
-        help_text='Route description e.g. "Cape Town → Johannesburg"',
+        help_text="South African province where the toll plaza is located"
+    )
+    direction = models.CharField(
+        max_length=2,
+        choices=DIRECTION_CHOICES,
+        help_text="Primary direction of travel"
     )
     location_km = models.DecimalField(
-        max_digits=7, decimal_places=1,
-        help_text='Distance from route origin (km)',
+        max_digits=8,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Distance in km from route start point"
     )
-    tariff_class_2 = models.DecimalField(
-        max_digits=8, decimal_places=2,
-        help_text='Light motor vehicle tariff (ZAR)',
+    class2_cost = models.DecimalField(
+        max_digits=8,
+        decimal_places=2,
+        validators=[MinValueValidator(0)],
+        help_text="Cost in ZAR for Class 2 (light motor vehicles)"
     )
-    tariff_class_3 = models.DecimalField(
-        max_digits=8, decimal_places=2,
-        help_text='Medium motor vehicle tariff (ZAR)',
+    class3_cost = models.DecimalField(
+        max_digits=8,
+        decimal_places=2,
+        validators=[MinValueValidator(0)],
+        help_text="Cost in ZAR for Class 3 (medium vehicles)"
     )
-    tariff_class_4 = models.DecimalField(
-        max_digits=8, decimal_places=2,
-        help_text='Heavy motor vehicle tariff (ZAR)',
+    class4_cost = models.DecimalField(
+        max_digits=8,
+        decimal_places=2,
+        validators=[MinValueValidator(0)],
+        help_text="Cost in ZAR for Class 4 (heavy 2-axle)"
     )
-    tariff_class_5 = models.DecimalField(
-        max_digits=8, decimal_places=2,
-        help_text='Multi-unit combination tariff (ZAR)',
+    class5_cost = models.DecimalField(
+        max_digits=8,
+        decimal_places=2,
+        validators=[MinValueValidator(0)],
+        help_text="Cost in ZAR for Class 5 (heavy 3+ axle, semis)"
     )
-    tariff_year = models.PositiveSmallIntegerField(
-        default=2024,
-        help_text='Tariff revision year (SANRAL announces increases annually)',
-    )
-    is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        db_table = 'toll_plazas'
         ordering = ['route', 'location_km']
-        unique_together = [('name', 'route')]
+        verbose_name = "Toll Plaza"
+        verbose_name_plural = "Toll Plazas"
+        indexes = [
+            models.Index(fields=['route']),
+            models.Index(fields=['route', 'location_km']),
+        ]
 
-    def __str__(self):
-        return f"{self.name} ({self.route}) km {self.location_km}"
+    def __str__(self) -> str:
+        return f"{self.name} ({self.route}) - Class 5: R{self.class5_cost}"
 
-    def get_tariff(self, vehicle_class: int) -> Decimal:
-        """Return tariff for SANRAL vehicle class 2–5."""
-        mapping = {
-            2: self.tariff_class_2,
-            3: self.tariff_class_3,
-            4: self.tariff_class_4,
-            5: self.tariff_class_5,
+    def get_cost_for_class(self, vehicle_class: int) -> float:
+        """
+        Get toll cost for a specific vehicle class.
+
+        Args:
+            vehicle_class: Vehicle class (2, 3, 4, or 5)
+
+        Returns:
+            float: Toll cost in ZAR
+
+        Raises:
+            ValueError: If vehicle_class is not 2, 3, 4, or 5
+        """
+        cost_map = {
+            2: self.class2_cost,
+            3: self.class3_cost,
+            4: self.class4_cost,
+            5: self.class5_cost,
         }
-        if vehicle_class not in mapping:
-            raise ValueError(f"Vehicle class must be 2–5, got {vehicle_class}")
-        return mapping[vehicle_class]
+
+        if vehicle_class not in cost_map:
+            raise ValueError(f"Invalid vehicle class: {vehicle_class}. Must be 2, 3, 4, or 5.")
+
+        return float(cost_map[vehicle_class])

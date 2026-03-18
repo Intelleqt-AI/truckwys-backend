@@ -1,236 +1,148 @@
-"""
-Toll calculator service — determines SANRAL toll costs for a given route.
+"""Toll calculator service for calculating SANRAL toll costs on SA routes."""
 
-Uses TollPlaza records seeded by the seed_toll_data management command.
-Gauteng e-tolls (GFIP / Urban Network) are excluded — scrapped April 2024.
-
-Usage::
-
-    from core.services.toll_calculator import calculate_tolls
-
-    result = calculate_tolls('Johannesburg', 'Durban', 'combination')
-    print(f"Total tolls: R{result.total_zar}")
-    for item in result.breakdown:
-        print(f"  {item.plaza_name} ({item.route}): R{item.tariff}")
-"""
-
-import logging
-from dataclasses import dataclass, field
-from decimal import Decimal
-from typing import Optional
-
-logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Vehicle type → SANRAL class mapping
-# ---------------------------------------------------------------------------
-
-TRUCK_TYPE_TO_CLASS: dict[str, int] = {
-    'light':       2,   # LDV / light commercial
-    'medium':      3,   # 2-axle rigid truck or bus
-    'heavy':       4,   # 3+ axle single unit
-    'combination': 5,   # truck + trailer / semi-truck
-    # Aliases
-    'rigid':       3,
-    'semi':        5,
-    'interlink':   5,
-}
-
-# ---------------------------------------------------------------------------
-# Route detection — maps keyword sets to route codes.
-# Each inner set must be fully covered by the combined origin+destination
-# strings for the route to be considered a match.
-# ---------------------------------------------------------------------------
-
-_ROUTE_KEYWORDS: dict[str, list[set[str]]] = {
-    'N1': [
-        {'cape town', 'johannesburg'},
-        {'cape town', 'joburg'},
-        {'cape town', 'jozi'},
-        {'cape town', 'gauteng'},
-        {'cape town', 'colesberg'},
-        {'worcester', 'johannesburg'},
-        {'beaufort west', 'johannesburg'},
-        {'beaufort west', 'cape town'},
-        {'touws river', 'cape town'},
-        {'laingsburg', 'johannesburg'},
-    ],
-    'N2': [
-        {'cape town', 'durban'},
-        {'cape town', 'port elizabeth'},
-        {'cape town', 'east london'},
-        {'george', 'port elizabeth'},
-        {'george', 'east london'},
-        {'knysna', 'port elizabeth'},
-        {'storms river', 'cape town'},
-        {'tsitsikamma', 'cape town'},
-        {'cape town', 'pe'},
-    ],
-    'N3': [
-        {'johannesburg', 'durban'},
-        {'joburg', 'durban'},
-        {'jozi', 'durban'},
-        {'gauteng', 'durban'},
-        {'johannesburg', 'pietermaritzburg'},
-        {'johannesburg', 'pmb'},
-        {'harrismith', 'durban'},
-        {'van reenen', 'durban'},
-        {'mooi river', 'johannesburg'},
-    ],
-    'N4': [
-        {'pretoria', 'maputo'},
-        {'pretoria', 'komatipoort'},
-        {'pretoria', 'nelspruit'},
-        {'pretoria', 'mbombela'},
-        {'johannesburg', 'maputo'},
-        {'witbank', 'maputo'},
-        {'middelburg', 'maputo'},
-    ],
-    'N14': [
-        {'johannesburg', 'springbok'},
-        {'joburg', 'springbok'},
-        {'jozi', 'springbok'},
-        {'rustenburg', 'johannesburg'},
-        {'vryburg', 'johannesburg'},
-        {'kuruman', 'johannesburg'},
-        {'lichtenburg', 'johannesburg'},
-    ],
-}
+from typing import Dict, List, Optional
+from core.models import TollPlaza
 
 
-# ---------------------------------------------------------------------------
-# Result dataclasses
-# ---------------------------------------------------------------------------
-
-@dataclass
-class TollBreakdownItem:
-    plaza_name: str
-    route: str
-    location_km: Decimal
-    tariff: Decimal
-
-
-@dataclass
-class TollResult:
-    origin: str
-    destination: str
-    truck_type: str
-    vehicle_class: int
-    routes_used: list[str]
-    total_zar: Decimal
-    breakdown: list[TollBreakdownItem] = field(default_factory=list)
-    warning: Optional[str] = None
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-def _detect_routes(origin: str, destination: str) -> list[str]:
-    """Return list of route codes that connect origin to destination."""
-    origin_lc = origin.lower().strip()
-    destination_lc = destination.lower().strip()
-
-    matched = []
-    for route_code, keyword_pairs in _ROUTE_KEYWORDS.items():
-        for kw_set in keyword_pairs:
-            hits = sum(
-                1 for kw in kw_set
-                if kw in origin_lc or kw in destination_lc
-            )
-            if hits == len(kw_set):
-                matched.append(route_code)
-                break
-
-    return matched
-
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
-def calculate_tolls(
-    origin: str,
-    destination: str,
-    truck_type: str,
-) -> TollResult:
+class TollCalculatorService:
     """
-    Calculate total SANRAL toll costs for a trip.
+    Service for calculating toll costs on South African national routes.
 
-    Parameters
-    ----------
-    origin:       City/town name (e.g. ``"Cape Town"``)
-    destination:  City/town name (e.g. ``"Johannesburg"``)
-    truck_type:   One of ``'light'``, ``'medium'``, ``'heavy'``, ``'combination'``
-                  (aliases ``'rigid'``, ``'semi'``, ``'interlink'`` also accepted)
-
-    Returns
-    -------
-    :class:`TollResult` with ``total_zar`` and per-plaza ``breakdown``.
-
-    Raises
-    ------
-    ValueError
-        If *truck_type* is not a recognised value.
+    Supports major city pairs and automatically determines the route and
+    applicable toll plazas.
     """
-    from core.models.toll_plaza import TollPlaza
 
-    truck_type_lc = truck_type.lower().strip()
-    if truck_type_lc not in TRUCK_TYPE_TO_CLASS:
-        raise ValueError(
-            f"Unknown truck_type {truck_type!r}. "
-            f"Valid options: {sorted(TRUCK_TYPE_TO_CLASS)}"
-        )
+    ROUTE_MAP = {
+        ('JHB', 'CPT'): ('N1', ['Grasmere Toll Plaza', 'Vaal Toll Plaza', 'Vanderkloof Toll Plaza', 'Touwsrivier Toll Plaza', 'Huguenot Tunnel']),
+        ('CPT', 'JHB'): ('N1', ['Huguenot Tunnel', 'Touwsrivier Toll Plaza', 'Vanderkloof Toll Plaza', 'Vaal Toll Plaza', 'Grasmere Toll Plaza']),
+        ('JHB', 'DBN'): ('N3', ['Wilge Toll Plaza', 'Tugela Toll Plaza', 'Mooi River Toll Plaza', 'Lynnfield Park Toll Plaza', 'Mariannhill Toll Plaza']),
+        ('DBN', 'JHB'): ('N3', ['Mariannhill Toll Plaza', 'Lynnfield Park Toll Plaza', 'Mooi River Toll Plaza', 'Tugela Toll Plaza', 'Wilge Toll Plaza']),
+        ('JHB', 'MAPUTO'): ('N4', ['Machadodorp Toll Plaza', 'Middelburg Toll Plaza', 'Nkomazi Toll Plaza']),
+        ('MAPUTO', 'JHB'): ('N4', ['Nkomazi Toll Plaza', 'Middelburg Toll Plaza', 'Machadodorp Toll Plaza']),
+        ('JHB', 'BEITBRIDGE'): ('N1', ['Grasmere Toll Plaza', 'Vaal Toll Plaza']),
+        ('BEITBRIDGE', 'JHB'): ('N1', ['Vaal Toll Plaza', 'Grasmere Toll Plaza']),
+        ('CPT', 'DBN'): ('N2', ['Storms River Toll Plaza', 'Tsitsikamma Toll Plaza']),
+        ('DBN', 'CPT'): ('N2', ['Tsitsikamma Toll Plaza', 'Storms River Toll Plaza']),
+        ('CPT', 'PE'): ('N2', ['Storms River Toll Plaza']),
+        ('PE', 'CPT'): ('N2', ['Storms River Toll Plaza']),
+        ('JHB', 'PE'): ('N1', ['Grasmere Toll Plaza', 'Vaal Toll Plaza']),
+        ('PE', 'JHB'): ('N1', ['Vaal Toll Plaza', 'Grasmere Toll Plaza']),
+        ('DBN', 'PE'): ('N2', ['Tsitsikamma Toll Plaza']),
+        ('PE', 'DBN'): ('N2', ['Tsitsikamma Toll Plaza']),
+        ('JHB', 'BLOEMFONTEIN'): ('N1', ['Vaal Toll Plaza']),
+        ('BLOEMFONTEIN', 'JHB'): ('N1', ['Vaal Toll Plaza']),
+        ('DBN', 'BLOEMFONTEIN'): ('N3', ['Mariannhill Toll Plaza', 'Lynnfield Park Toll Plaza', 'Mooi River Toll Plaza', 'Tugela Toll Plaza', 'Wilge Toll Plaza']),
+        ('BLOEMFONTEIN', 'DBN'): ('N3', ['Wilge Toll Plaza', 'Tugela Toll Plaza', 'Mooi River Toll Plaza', 'Lynnfield Park Toll Plaza', 'Mariannhill Toll Plaza']),
+    }
 
-    vehicle_class = TRUCK_TYPE_TO_CLASS[truck_type_lc]
-    routes = _detect_routes(origin, destination)
+    CITY_ALIASES = {
+        'JOHANNESBURG': 'JHB',
+        'JOBURG': 'JHB',
+        'JHBURG': 'JHB',
+        'GAUTENG': 'JHB',
+        'CAPE TOWN': 'CPT',
+        'CAPETOWN': 'CPT',
+        'DURBAN': 'DBN',
+        'PORT ELIZABETH': 'PE',
+        'GQEBERHA': 'PE',
+        'BEIT BRIDGE': 'BEITBRIDGE',
+        'BEIT-BRIDGE': 'BEITBRIDGE',
+    }
 
-    if not routes:
-        logger.warning(
-            'No known SANRAL route found for %s → %s — returning zero tolls',
-            origin, destination,
-        )
-        return TollResult(
-            origin=origin,
-            destination=destination,
-            truck_type=truck_type,
-            vehicle_class=vehicle_class,
-            routes_used=[],
-            total_zar=Decimal('0.00'),
-            warning=f"No known SANRAL route between {origin!r} and {destination!r}",
-        )
+    @staticmethod
+    def normalize_city(city: str) -> str:
+        """
+        Normalize city name to standard abbreviation.
 
-    plazas = (
-        TollPlaza.objects
-        .filter(route__in=routes, is_active=True)
-        .order_by('route', 'location_km')
-    )
+        Args:
+            city: City name or abbreviation
 
-    breakdown: list[TollBreakdownItem] = []
-    total = Decimal('0.00')
+        Returns:
+            str: Normalized city abbreviation
+        """
+        city_upper = city.upper().strip()
+        return TollCalculatorService.CITY_ALIASES.get(city_upper, city_upper)
 
-    for plaza in plazas:
-        tariff = plaza.get_tariff(vehicle_class)
-        breakdown.append(TollBreakdownItem(
-            plaza_name=plaza.name,
-            route=plaza.route,
-            location_km=plaza.location_km,
-            tariff=tariff,
-        ))
-        total += tariff
+    @staticmethod
+    def calculate_tolls(
+        origin_city: str,
+        destination_city: str,
+        truck_class: int = 5
+    ) -> Dict:
+        """
+        Calculate total toll costs for a route between two cities.
 
-    logger.info(
-        'Tolls %s → %s (%s / class %d): R%.2f across %d plaza(s) on %s',
-        origin, destination, truck_type, vehicle_class,
-        total, len(breakdown), ', '.join(routes),
-    )
+        Args:
+            origin_city: Origin city name or abbreviation
+            destination_city: Destination city name or abbreviation
+            truck_class: SANRAL vehicle class (2-5), default 5 for semi-trailers
 
-    return TollResult(
-        origin=origin,
-        destination=destination,
-        truck_type=truck_type,
-        vehicle_class=vehicle_class,
-        routes_used=routes,
-        total_zar=total,
-        breakdown=breakdown,
-    )
+        Returns:
+            dict: Contains total_zar, plazas (list of dicts), route
+
+        Raises:
+            ValueError: If route not found or truck_class invalid
+        """
+        if truck_class not in [2, 3, 4, 5]:
+            raise ValueError(f"Invalid truck_class: {truck_class}. Must be 2, 3, 4, or 5.")
+
+        origin = TollCalculatorService.normalize_city(origin_city)
+        destination = TollCalculatorService.normalize_city(destination_city)
+
+        route_key = (origin, destination)
+
+        if route_key not in TollCalculatorService.ROUTE_MAP:
+            return {
+                'total_zar': 0.0,
+                'plazas': [],
+                'route': 'Unknown',
+                'error': f'No route data available for {origin} to {destination}'
+            }
+
+        route_code, plaza_names = TollCalculatorService.ROUTE_MAP[route_key]
+
+        plazas_data = []
+        total_cost = 0.0
+
+        for plaza_name in plaza_names:
+            plaza = TollPlaza.objects.filter(name=plaza_name, route=route_code).first()
+
+            if plaza:
+                cost = plaza.get_cost_for_class(truck_class)
+                total_cost += cost
+
+                plazas_data.append({
+                    'name': plaza.name,
+                    'route': plaza.route,
+                    'province': plaza.province,
+                    'cost': float(cost)
+                })
+
+        return {
+            'total_zar': round(total_cost, 2),
+            'plazas': plazas_data,
+            'route': route_code
+        }
+
+    @staticmethod
+    def get_supported_routes() -> List[Dict]:
+        """
+        Get list of all supported city pairs and routes.
+
+        Returns:
+            list: List of dicts with origin, destination, route
+        """
+        routes = []
+        seen = set()
+
+        for (origin, destination), (route_code, _) in TollCalculatorService.ROUTE_MAP.items():
+            route_key = (origin, destination)
+            if route_key not in seen:
+                routes.append({
+                    'origin': origin,
+                    'destination': destination,
+                    'route': route_code
+                })
+                seen.add(route_key)
+
+        return routes
