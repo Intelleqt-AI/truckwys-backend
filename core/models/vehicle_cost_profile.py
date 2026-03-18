@@ -83,7 +83,7 @@ class VehicleCostProfile(models.Model):
     def __str__(self) -> str:
         truck_display = self.get_truck_type_display()
         if not self.is_custom and self.company is None:
-            return f"{truck_display} - {self.source}"
+            return f"{truck_display} - RFA Default ({self.source})"
         elif self.company:
             return f"{self.company.company_name}: {truck_display} - {self.source}"
         else:

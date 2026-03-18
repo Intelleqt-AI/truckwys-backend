@@ -31,6 +31,11 @@ class TollCalculatorService:
         ('PE', 'DBN'): ('N2', ['Tsitsikamma Toll Plaza']),
         ('JHB', 'BLOEMFONTEIN'): ('N1', ['Vaal Toll Plaza']),
         ('BLOEMFONTEIN', 'JHB'): ('N1', ['Vaal Toll Plaza']),
+        # N14 — JHB to Springbok (Northern Cape)
+        ('JHB', 'SPRINGBOK'): ('N14', ['Grasmere Toll Plaza', 'Vaal Toll Plaza']),
+        ('SPRINGBOK', 'JHB'): ('N14', ['Vaal Toll Plaza', 'Grasmere Toll Plaza']),
+        ('JHB', 'UPINGTON'): ('N14', ['Grasmere Toll Plaza', 'Vaal Toll Plaza']),
+        ('UPINGTON', 'JHB'): ('N14', ['Vaal Toll Plaza', 'Grasmere Toll Plaza']),
         ('DBN', 'BLOEMFONTEIN'): ('N3', ['Mariannhill Toll Plaza', 'Lynnfield Park Toll Plaza', 'Mooi River Toll Plaza', 'Tugela Toll Plaza', 'Wilge Toll Plaza']),
         ('BLOEMFONTEIN', 'DBN'): ('N3', ['Wilge Toll Plaza', 'Tugela Toll Plaza', 'Mooi River Toll Plaza', 'Lynnfield Park Toll Plaza', 'Mariannhill Toll Plaza']),
     }
@@ -40,13 +45,18 @@ class TollCalculatorService:
         'JOBURG': 'JHB',
         'JHBURG': 'JHB',
         'GAUTENG': 'JHB',
+        'PRETORIA': 'JHB',  # Pretoria is in Gauteng, same toll corridor
+        'TSHWANE': 'JHB',
         'CAPE TOWN': 'CPT',
         'CAPETOWN': 'CPT',
         'DURBAN': 'DBN',
+        'ETHEKWINI': 'DBN',
         'PORT ELIZABETH': 'PE',
         'GQEBERHA': 'PE',
         'BEIT BRIDGE': 'BEITBRIDGE',
         'BEIT-BRIDGE': 'BEITBRIDGE',
+        'SPRINGBOK': 'SPRINGBOK',
+        'UPINGTON': 'UPINGTON',
     }
 
     @staticmethod

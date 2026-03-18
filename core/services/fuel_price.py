@@ -179,8 +179,11 @@ class FuelPriceService:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _to_decimal(val) -> Decimal:
-    """Convert value to Decimal with 4 decimal places."""
-    return Decimal(str(val)).quantize(Decimal('0.0001'))
+    """Convert value to Decimal with 4 decimal places. Raises ValueError for invalid input."""
+    try:
+        return Decimal(str(val)).quantize(Decimal('0.0001'))
+    except Exception as e:
+        raise ValueError(f"Cannot convert {val!r} to Decimal: {e}") from e
 
 
 def _check_price_alert(target_date: date, new_data: dict) -> None:
