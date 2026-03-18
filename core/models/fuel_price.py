@@ -46,6 +46,7 @@ class FuelPrice(models.Model):
         help_text="Source of the price data (e.g., FIASA, manual entry, scraped)"
     )
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = 'fuel_prices'

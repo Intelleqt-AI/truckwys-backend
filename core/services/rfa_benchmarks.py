@@ -1,3 +1,4 @@
+from datetime import date
 """RFA (Road Freight Association) benchmark service for vehicle cost profiles."""
 
 from decimal import Decimal
@@ -70,7 +71,7 @@ class RFABenchmarkService:
             company_profile = VehicleCostProfile.objects.filter(
                 truck_type=truck_type,
                 company=company,
-                is_rfa_baseline=False
+                is_custom=True
             ).first()
 
             if company_profile:
@@ -78,7 +79,7 @@ class RFABenchmarkService:
 
         rfa_profile = VehicleCostProfile.objects.filter(
             truck_type=truck_type,
-            is_rfa_baseline=True,
+            is_custom=False,
             company__isnull=True
         ).first()
 
@@ -99,9 +100,11 @@ class RFABenchmarkService:
         for truck_type, costs in RFABenchmarkService.RFA_BASELINES_2026.items():
             profile, created = VehicleCostProfile.objects.update_or_create(
                 truck_type=truck_type,
-                is_rfa_baseline=True,
+                is_custom=False,
                 company=None,
                 defaults={
+                    'source': 'RFA VCI 2026',
+                    'effective_date': date(2026, 1, 1),
                     'fuel_cpk': costs['fuel_cpk'],
                     'tyre_cpk': costs['tyre_cpk'],
                     'maintenance_cpk': costs['maintenance_cpk'],
@@ -143,7 +146,7 @@ class RFABenchmarkService:
                 'tyre_cpk': tyre_cpk,
                 'maintenance_cpk': maintenance_cpk,
                 'driver_cost_per_day': driver_cost_per_day,
-                'is_rfa_baseline': False,
+                'is_custom': True,
             }
         )
 
@@ -158,6 +161,6 @@ class RFABenchmarkService:
             list: QuerySet of all RFA baseline profiles
         """
         return list(VehicleCostProfile.objects.filter(
-            is_rfa_baseline=True,
+            is_custom=False,
             company__isnull=True
         ).order_by('truck_type'))

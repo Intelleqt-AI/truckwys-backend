@@ -141,9 +141,9 @@ class FuelPriceAdmin(admin.ModelAdmin):
 
 @admin.register(TollPlaza)
 class TollPlazaAdmin(admin.ModelAdmin):
-    list_display = ['name', 'route', 'province', 'direction', 'class5_cost', 'location_km']
-    list_filter = ['route', 'province', 'direction']
-    search_fields = ['name', 'route', 'province']
+    list_display = ['name', 'route', 'direction', 'class5_cost', 'location_km']
+    list_filter = ['route', 'direction']
+    search_fields = ['name', 'route', 'route']
     readonly_fields = ['created_at', 'updated_at']
     ordering = ['route', 'location_km']
 
