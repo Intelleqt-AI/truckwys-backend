@@ -77,8 +77,8 @@ class RevenueGuardEngine:
         # Calculate true cost (simplified - use margin calculator in production)
         # For now, estimate: fuel 40%, driver 20%, tolls 10%, maintenance 10%, overhead 8%
         if fuel_cost is None:
-            fuel_cpk = 6.5  # Default ZAR per km
-            fuel_cost = distance_km * fuel_cpk
+            fuel_cpk = 18.0  # Default ZAR per km (semi_34t: fuel+tyre+maint+driver+deadhead)
+            fuel_cost = distance_km * fuel_cpk * 0.40  # fuel portion only (~40% of CPK)
 
         estimated_cost = fuel_cost / 0.40  # Fuel is ~40% of total cost
 

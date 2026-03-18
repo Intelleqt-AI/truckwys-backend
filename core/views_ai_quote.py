@@ -76,16 +76,19 @@ class QuoteSuggestView(APIView):
 
             # Calculate true cost
             margin_calc = TrueMarginCalculatorService()
-            cost_result = margin_calc.calculate_true_cost(
+            # Use rough estimate for initial cost calc (18 ZAR/km all-in)
+            rough_cost = distance_km * 18.0
+            cost_result = margin_calc.calculate(
+                origin=origin,
+                destination=destination,
                 distance_km=distance_km,
                 truck_type=truck_type,
                 load_type=load_type,
-                origin=origin,
-                destination=destination,
+                quote_price=rough_cost * 1.2,  # 20% margin estimate
                 has_return_load=return_load,
             )
 
-            true_cost = cost_result['total_cost']
+            true_cost = cost_result.get('true_cost', cost_result.get('total_cost', 0))
 
             # Build features for margin model
             margin_features = {
@@ -97,8 +100,8 @@ class QuoteSuggestView(APIView):
                 'client_tenure_months': 12,
                 'time_of_year_month': 6,
                 'deadhead_fraction': 0.0 if return_load else 0.3,
-                'toll_cost_zar': cost_result['toll_cost'],
-                'driver_cost_per_trip': cost_result['driver_cost'],
+                'toll_cost_zar': cost_result.get('cost_breakdown', {}).get('toll_cost', 0),
+                'driver_cost_per_trip': cost_result.get('cost_breakdown', {}).get('driver_cost', distance_km * 1.5),
                 'load_weight_tons': load_weight_tons,
                 'num_stops': 1,
                 'border_crossing': 0,
