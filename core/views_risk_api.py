@@ -1,3 +1,11 @@
+# TENANCY AUDIT: 2026-03-15 — Risk API views properly scoped
+# - RiskAssessmentView: Checks request.user.company against invoice.company ✓
+# - RiskPortfolioView: Scoped to request.user.company via RiskMonitor ✓
+# - RiskRetrainView: Admin-only, operates on all data (appropriate for ML training) ✓
+# - RiskModelInfoView: Returns model metadata (no data leak) ✓
+# - RiskAnomaliesView: Scoped to request.user.company via RiskMonitor ✓
+# - RiskRescoreCustomerView: Checks request.user.company against customer.company ✓
+
 """Risk API endpoints for ML-enhanced risk assessment."""
 
 from rest_framework.views import APIView

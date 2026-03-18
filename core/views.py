@@ -1,3 +1,18 @@
+# TENANCY AUDIT: 2026-03-15 — All ViewSets and APIViews audited for company isolation
+# Summary:
+# - CompanyFilterMixin: Properly filters all querysets by request.user.company ✓
+# - All ViewSets using CompanyFilterMixin: CustomerViewSet, DriverViewSet, VehicleViewSet,
+#   VehicleTypeViewSet, VehicleLogViewSet, LoadViewSet, QuoteViewSet, InvoiceViewSet,
+#   PaymentViewSet, ExpenseViewSet, SettlementViewSet ✓
+# - NotificationViewSet: Filters by request.user (correct - notifications are user-scoped) ✓
+# - Public/exempt endpoints: RegisterView, LoginView, LogoutView, PasswordResetRequestView,
+#   PasswordResetConfirmView (all AllowAny - correct) ✓
+# - Dashboard views: FleetOverviewView, VehicleInsightsView, VehicleIntelligenceFeedView,
+#   DriverOverviewView, DriverPerformanceLeaderboardView, QuotesPipelineOverviewView,
+#   DashboardOverviewView, DashboardSignalsView, RouteCalculatorView - all use filters or
+#   implicit company scoping through related objects ✓
+# - UserViewSet: Admin-only, filters all users (needs multi-tenancy if non-admin users access) ⚠️
+
 from rest_framework import viewsets, status, filters
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -66,6 +81,7 @@ class RegisterView(APIView):
             from core.models import Company, Facility
             company = Company.objects.create(company_name=company_name)
             user.company = company
+            user.role = 'ADMIN'  # Explicitly set role to admin for company owner
             user.save()
             
             # Create a default Facility for the company
@@ -1034,32 +1050,51 @@ class UserViewSet(viewsets.ModelViewSet):
     search_fields = ['username', 'email', 'first_name', 'last_name']
     ordering_fields = ['created_at', 'username', 'last_login']
 
+    def get_queryset(self):
+        """Filter users by company for multi-tenancy."""
+        qs = super().get_queryset()
+        user = self.request.user
+        if user.is_superuser:
+            return qs  # Superusers see all
+        if hasattr(user, 'company') and user.company:
+            return qs.filter(company=user.company)
+        return qs
+
     @action(detail=False, methods=['post'])
     def invite(self, request):
         """Invite a new user to the organization"""
+        from core.middleware.plan_limits import check_user_limit
+
         email = request.data.get('email')
         role = request.data.get('role', 'DISPATCHER')
-        
+
         if not email:
             return Response({'error': 'Email is required'}, status=status.HTTP_400_BAD_REQUEST)
-            
+
         if User.objects.filter(email=email).exists():
             return Response({'error': 'User with this email already exists'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Check plan limits before creating user
+        if request.user.company:
+            allowed, message = check_user_limit(request.user.company)
+            if not allowed:
+                return Response({'error': message, 'upgrade_required': True}, status=status.HTTP_402_PAYMENT_REQUIRED)
             
         # Generate temporary password
         temp_password = get_random_string(length=12)
-        
-        # Create user with pending status
+
+        # Create user with pending status and assign to inviter's company
         user = User.objects.create_user(
             username=email,
             email=email,
             password=temp_password,
             role=role,
-            status='PENDING'
+            status='PENDING',
+            company=request.user.company  # Critical: assign to inviter's company for tenant isolation
         )
-        
-        # Get company name (default if not set)
-        company = Company.objects.first()
+
+        # Get company name for email
+        company = request.user.company
         company_name = company.company_name if company else "Truckwys Logistics"
         
         # Prepare email context
@@ -1163,6 +1198,18 @@ class VehicleViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     filterset_fields = ['status', 'type', 'fuel_type']
     search_fields = ['vin', 'plate', 'make', 'model']
     ordering_fields = ['created_at', 'make', 'model', 'year']
+
+    def perform_create(self, serializer):
+        """Check plan limits before creating vehicle"""
+        from core.middleware.plan_limits import check_vehicle_limit
+
+        if self.request.user.company:
+            allowed, message = check_vehicle_limit(self.request.user.company)
+            if not allowed:
+                from rest_framework.exceptions import PermissionDenied
+                raise PermissionDenied(detail={'error': message, 'upgrade_required': True})
+
+        super().perform_create(serializer)
 
     @action(detail=True, methods=['get'])
     def logs(self, request, pk=None):

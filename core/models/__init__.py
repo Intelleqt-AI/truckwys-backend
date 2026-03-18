@@ -24,6 +24,8 @@ from .fuel_price import FuelPrice
 from .toll_plaza import TollPlaza
 from .vehicle_cost_profile import VehicleCostProfile
 from .quote_training_record import QuoteTrainingRecord
+from .billing import BillingTransaction
+from .invite_token import InviteToken
 
 __all__ = [
     'User',
@@ -54,4 +56,6 @@ __all__ = [
     'TollPlaza',
     'VehicleCostProfile',
     'QuoteTrainingRecord',
+    'BillingTransaction',
+    'InviteToken',
 ]

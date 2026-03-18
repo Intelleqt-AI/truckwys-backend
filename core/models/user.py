@@ -7,6 +7,7 @@ class User(AbstractUser):
         ('DISPATCHER', 'Dispatcher'),
         ('DRIVER', 'Driver'),
         ('CUSTOMER', 'Customer'),
+        ('PARTNER', 'Partner'),
     ]
     
     STATUS_CHOICES = [

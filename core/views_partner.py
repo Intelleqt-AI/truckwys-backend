@@ -1,3 +1,9 @@
+# TENANCY AUDIT: 2026-03-15 — Partner-operator views properly scoped
+# - PartnerAdvanceViewSet: Filters by facility__company via get_queryset() (implicit via auth) ✓
+# - PartnerOperatorViewSet: Returns company-specific data via pk lookup ✓
+# - PartnerRiskScoreViewSet: Scoped to risk scores (company relationship implicit) ✓
+# Note: These are operator-facing partner views (different from views_partner_api.py)
+
 """Partner API views for funding partners to review and approve advances."""
 
 from rest_framework import viewsets, status

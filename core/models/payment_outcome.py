@@ -21,7 +21,9 @@ class PaymentOutcome(models.Model):
         Invoice,
         on_delete=models.PROTECT,
         related_name='payment_outcome',
-        help_text='Invoice this outcome is for'
+        null=True,
+        blank=True,
+        help_text='Invoice this outcome is for (null for synthetic training data)'
     )
     advance = models.ForeignKey(
         AdvanceRequest,

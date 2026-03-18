@@ -8,3 +8,6 @@ __all__ = [
     'RiskScoreResult',
     'InvoiceGenerator',
 ]
+
+# Quote ML — imported lazily to avoid hard dependency on lightgbm at import time
+# Use: from core.services.quote_ml import QuoteMLModel, predict_optimal_margin
