@@ -76,7 +76,7 @@ class FeatureEngineeringTests(TestCase):
 
         expected_feature_names = extractor.get_feature_names()
         self.assertEqual(len(features), len(expected_feature_names))
-        self.assertEqual(len(features), 53)  # 15+7+8+7+7+5+4 = 53
+        self.assertEqual(len(features), 54)  # 15+8+8+7+7+5+4 = 54
 
     def test_feature_values_are_numeric(self):
         """Test that all extracted features are numeric."""

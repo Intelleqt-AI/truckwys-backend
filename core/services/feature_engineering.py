@@ -13,7 +13,7 @@ class FeatureExtractor:
 
     Features are organized into 7 categories:
     - Client features (15): customer payment history, relationship length
-    - Invoice features (7): amount, age, payment terms
+    - Invoice features (8): amount, age, payment terms, amount z-score
     - Trip/Load features (8): distance, POD quality, delivery metrics
     - Fleet/Operational features (7): vehicle health, driver experience
     - Financial features (7): margins, expense ratios, advance usage
@@ -98,7 +98,7 @@ class FeatureExtractor:
         return features
 
     def _extract_invoice_features(self, invoice) -> Dict[str, float]:
-        """Extract 7 invoice-specific features."""
+        """Extract 8 invoice-specific features."""
         features = {}
 
         # Amount metrics
@@ -118,6 +118,25 @@ class FeatureExtractor:
 
         # Status flags
         features['invoice_is_overdue'] = 1.0 if invoice.is_overdue else 0.0
+
+        # Amount z-score: how unusual is this invoice amount relative to the
+        # client's historical average?  (amount - mean) / std.
+        # Falls back to 0.0 when there is insufficient history.
+        customer = invoice.customer
+        historical_amounts = list(
+            customer.invoices.exclude(pk=invoice.pk)
+            .values_list('total_amount', flat=True)
+        )
+        if len(historical_amounts) >= 2:
+            amounts = [float(a) for a in historical_amounts]
+            mean_amt = sum(amounts) / len(amounts)
+            std_amt = (sum((a - mean_amt) ** 2 for a in amounts) / len(amounts)) ** 0.5
+            if std_amt > 0:
+                features['amount_zscore'] = (float(invoice.total_amount) - mean_amt) / std_amt
+            else:
+                features['amount_zscore'] = 0.0
+        else:
+            features['amount_zscore'] = 0.0
 
         return features
 
@@ -331,7 +350,7 @@ class FeatureExtractor:
             'client_recent_paid_count',
             'client_recent_payment_rate',
             'client_outstanding_balance',
-            # Invoice features (7)
+            # Invoice features (8)
             'invoice_total_amount',
             'invoice_subtotal',
             'invoice_vat_amount',
@@ -339,6 +358,7 @@ class FeatureExtractor:
             'invoice_days_until_due',
             'invoice_payment_terms_days',
             'invoice_is_overdue',
+            'amount_zscore',
             # Trip/Load features (8)
             'trip_distance_km',
             'trip_pod_uploaded',
