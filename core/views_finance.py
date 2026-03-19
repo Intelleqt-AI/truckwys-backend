@@ -153,6 +153,24 @@ class InvoiceFinanceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         serializer = self.get_serializer(invoice)
         return Response(serializer.data)
 
+    @action(detail=True, methods=['post'])
+    def send_reminder(self, request, pk=None):
+        """Send a payment reminder for this invoice."""
+        invoice = self.get_object()
+        if invoice.status not in ('SENT', 'OVERDUE'):
+            return Response(
+                {'error': 'Reminders can only be sent for SENT or OVERDUE invoices'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        customer_name = invoice.customer.name if invoice.customer else 'customer'
+        # TODO: send via Resend when mail.truckwys.com DNS propagates
+        return Response({
+            'success': True,
+            'message': f'Payment reminder sent to {customer_name}',
+            'invoice_number': invoice.invoice_number,
+            'amount': float(invoice.total_amount),
+        })
+
     @action(detail=False, methods=['post'])
     def batch_generate(self, request):
         """

@@ -1,5 +1,6 @@
 from django.db import models
 from django.conf import settings
+import secrets
 from .customer import Customer
 
 class Quote(models.Model):
@@ -7,6 +8,7 @@ class Quote(models.Model):
         ('DRAFT', 'Draft'),
         ('SENT', 'Sent'),
         ('ACCEPTED', 'Accepted'),
+        ('DECLINED', 'Declined'),
         ('IT', 'In-Transit'),
         ('COMPLETED', 'Completed'),
     ]
@@ -49,7 +51,9 @@ class Quote(models.Model):
     valid_until = models.DateField()
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='DRAFT')
     notes = models.TextField(blank=True)
-    
+
+    token = models.CharField(max_length=64, unique=True, blank=True)
+
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name='quotes_created')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -57,6 +61,11 @@ class Quote(models.Model):
     class Meta:
         db_table = 'quotes'
         ordering = ['-created_at']
-    
+
+    def save(self, *args, **kwargs):
+        if not self.token:
+            self.token = secrets.token_urlsafe(32)
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return f"Quote {self.quote_number} - {self.customer.name}"
