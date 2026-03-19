@@ -1,3 +1,10 @@
+# TENANCY AUDIT: 2026-03-15 — All querysets properly filter by company
+# - FacilityViewSet: Filters by user.company ✓
+# - RiskScoreViewSet: Filters by user.company ✓
+# - AdvanceRequestViewSet: Filters by facility__company ✓
+# - CapitalDashboardViewSet: Scoped to user.company ✓
+# - CapitalEligibleInvoicesView: Uses authenticated user context ✓
+
 """Capital module views for facilities, risk scoring, and advance requests."""
 
 from rest_framework import viewsets, status

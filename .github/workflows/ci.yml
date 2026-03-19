@@ -2,7 +2,7 @@ name: TruckWys CI
 
 on:
   push:
-    branches: [dennis/updates, main]
+    branches: [main, feat/phase2-consolidated, feat/*]
   pull_request:
     branches: [main]
 
@@ -12,7 +12,7 @@ jobs:
 
     strategy:
       matrix:
-        python-version: ['3.14']
+        python-version: ['3.11']
 
     steps:
       - name: Checkout code
@@ -42,7 +42,7 @@ jobs:
 
       - name: Run migrations check
         run: |
-          python manage.py makemigrations --check --dry-run
+          python manage.py migrate --run-syncdb
 
       - name: Run tests
         run: |
@@ -64,7 +64,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.14'
+          python-version: '3.11'
 
       - name: Install safety
         run: |

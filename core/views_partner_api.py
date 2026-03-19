@@ -1,3 +1,11 @@
+# TENANCY AUDIT: 2026-03-15 — Partner API intentionally multi-company
+# This is an EXTERNAL API for partners/lenders to access cross-company data.
+# Partners are authenticated via API key and have visibility into multiple operators.
+# Company isolation is INTENTIONALLY NOT APPLIED - this is by design for partner platform.
+# Views: PartnerRiskAssessmentView, PartnerPortfolioSummaryView, PartnerEligibleInvoicesView,
+#        PartnerWebhookSubscriptionViewSet
+# Status: EXEMPT from single-company filtering (partner-facing API) ✓
+
 """Partner/Capital API endpoints for external lender and partner integration."""
 
 from rest_framework import status

@@ -1,5 +1,6 @@
 from pathlib import Path
 from decouple import config
+import dj_database_url
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -33,6 +34,8 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    # Plan limits enforcement (T1.3) - must be after SessionMiddleware and AuthenticationMiddleware
+    'core.middleware.plan_limits.PlanLimitsMiddleware',
 ]
 
 ROOT_URLCONF = 'config.urls'
@@ -55,32 +58,12 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'config.wsgi.application'
 
-try:
-    import pymysql
-    pymysql.version_info = (2, 2, 1, 'final', 0)
-    pymysql.install_as_MySQLdb()
-except ImportError:
-    pass  # Not needed for SQLite
-
-# ── AWS RDS MySQL (swap in once security group allows 146.70.237.145) ──
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.db.backends.mysql',
-#         'NAME': 'truckwys',
-#         'USER': 'admin',
-#         'PASSWORD': 'truckwys@2026!',
-#         'HOST': '3.8.208.109',
-#         'PORT': '3306',
-#         'OPTIONS': {'charset': 'utf8mb4', 'connect_timeout': 10},
-#     }
-# }
-
-# ── SQLite (local dev until RDS is accessible) ──
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-    }
+    'default': dj_database_url.config(
+        default='sqlite:///db.sqlite3',
+        conn_max_age=600,
+        conn_health_checks=True,
+    )
 }
 
 AUTH_USER_MODEL = 'core.User'
@@ -138,7 +121,7 @@ SPECTACULAR_SETTINGS = {
     'COMPONENT_SPLIT_REQUEST': True,
 }
 
-CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', default='http://localhost:3000,http://localhost:3701', cast=lambda v: [s.strip() for s in v.split(',')])
+CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', default='http://localhost:3000,http://localhost:3701,http://localhost:3702', cast=lambda v: [s.strip() for s in v.split(',')])
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_ALL_ORIGINS = config('CORS_ALLOW_ALL_ORIGINS', default=True, cast=bool)  # True for dev, False for prod
 
@@ -176,3 +159,13 @@ CSRF_COOKIE_SECURE = not DEBUG  # Only HTTPS in production
 SESSION_COOKIE_SECURE = not DEBUG  # Only HTTPS in production
 SECURE_BROWSER_XSS_FILTER = True
 X_FRAME_OPTIONS = 'DENY'
+
+# PayFast Billing Configuration
+PAYFAST_MERCHANT_ID = config('PAYFAST_MERCHANT_ID', default='10000100')
+PAYFAST_MERCHANT_KEY = config('PAYFAST_MERCHANT_KEY', default='46f0cd694581a')
+PAYFAST_PASSPHRASE = config('PAYFAST_PASSPHRASE', default='')
+PAYFAST_SANDBOX = config('PAYFAST_SANDBOX', default=True, cast=bool)
+
+# ControlFleet Integration Configuration
+CONTROLFLEET_WEBHOOK_KEY = config('CONTROLFLEET_WEBHOOK_KEY', default='changeme')
+CONTROLFLEET_API_KEY = config('CONTROLFLEET_API_KEY', default='')
