@@ -1749,15 +1749,17 @@ import requests as http_requests
 
 
 class RouteCalculatorView(APIView):
-    """POST /api/v1/route/calculate/ — TomTom routing with fuel/toll calc"""
+    """POST /api/v1/route/calculate/ — TomTom routing with fuel/toll calc + cross-border costs"""
     permission_classes = [IsAuthenticated]
 
     TOMTOM_API_KEY = 'YTeWrKe8YSDqWkgs7D7QCMv1Ic4V6BHb'
     FUEL_RATE = 0.35        # litres/km
-    DIESEL_ZAR = 22.50      # ZAR/litre
-    TOLL_ZAR_KM = 0.95      # ZAR/km
+    TOLL_ZAR_KM = 0.95      # ZAR/km (SA tolls only)
 
     def post(self, request):
+        from core.services.cross_border import detect_countries, calculate_cross_border_costs, get_cross_border_warnings
+        from core.services.fuel_price import fetch_fuel_prices
+
         data = request.data
         origin = data.get('origin', '')
         destination = data.get('destination', '')
@@ -1766,6 +1768,7 @@ class RouteCalculatorView(APIView):
         dest_lat = data.get('dest_lat')
         dest_lon = data.get('dest_lon')
         weight_kg = int(data.get('weight_kg', 20000))
+        vehicle_type = data.get('vehicle_type', 'truck')
 
         # Geocode if no coords
         if origin_lat and origin_lon:
@@ -1793,22 +1796,60 @@ class RouteCalculatorView(APIView):
             duration_min = (distance_km / 80) * 60
             source = 'estimated'
 
-        fuel_litres = round(distance_km * self.FUEL_RATE, 2)
-        fuel_zar = round(fuel_litres * self.DIESEL_ZAR, 2)
-        toll_zar = round(distance_km * self.TOLL_ZAR_KM, 2)
+        # Get live fuel price
+        try:
+            fuel_price_obj = fetch_fuel_prices()
+            diesel_price = float(fuel_price_obj.diesel_inland)
+        except Exception:
+            diesel_price = 21.7  # Fallback
 
-        return Response({
+        # Fuel cost
+        fuel_litres = round(distance_km * self.FUEL_RATE, 2)
+        fuel_zar = round(fuel_litres * diesel_price, 2)
+
+        # Detect cross-border route
+        countries = detect_countries(origin, destination)
+        cross_border = countries is not None and len(countries) > 1
+
+        # SA tolls (only if domestic or SA portion)
+        toll_zar = round(distance_km * self.TOLL_ZAR_KM, 2) if not cross_border else 0
+
+        # Cross-border costs
+        additional_costs = {}
+        warnings = []
+        if cross_border:
+            cb_costs = calculate_cross_border_costs(countries, distance_km, vehicle_type)
+            additional_costs = {
+                'border_fees': cb_costs['border_fees'],
+                'weighbridge_fees': cb_costs['weighbridge_fees'],
+                'non_sa_tolls': cb_costs['non_sa_tolls'],
+            }
+            warnings = get_cross_border_warnings(countries)
+            # Add non-SA tolls to toll_cost_zar
+            toll_zar += cb_costs['non_sa_tolls']
+
+        response_data = {
             'success': True,
             'source': source,
             'distance_km': round(distance_km, 1),
             'duration_minutes': int(duration_min),
             'fuel_usage_litres': fuel_litres,
             'fuel_cost_zar': fuel_zar,
-            'toll_cost_zar': toll_zar,
-            'total_cost_zar': round(fuel_zar + toll_zar, 2),
+            'toll_cost_zar': round(toll_zar, 2),
+            'total_cost_zar': round(fuel_zar + toll_zar + sum(additional_costs.values()), 2),
             'origin_coords': o,
             'dest_coords': d,
-        })
+        }
+
+        # Add cross-border info if applicable
+        if cross_border:
+            response_data['cross_border'] = True
+            response_data['countries'] = countries
+            response_data['additional_costs'] = additional_costs
+            if warnings:
+                response_data['warnings'] = warnings
+
+        return Response(response_data)
 
     def _geocode(self, query):
         try:
