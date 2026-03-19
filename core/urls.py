@@ -14,7 +14,8 @@ from .views import (
     FleetOverviewView, VehicleInsightsView, VehicleIntelligenceFeedView, VehicleActionView,
     DriverOverviewView, DriverPerformanceLeaderboardView,
     QuotesPipelineOverviewView, NotificationSettingsView,
-    CompanyProfileView, CompanyLogoUploadView, DashboardOverviewView, ActivityEventViewSet
+    CompanyProfileView, CompanyLogoUploadView, DashboardOverviewView, ActivityEventViewSet,
+    PublicQuoteView, PublicQuoteRespondView
 )
 from .views_finance import (
     InvoiceFinanceViewSet, PaymentFinanceViewSet, ExpenseFinanceViewSet,
@@ -55,6 +56,10 @@ from .views_risk_api import (
 )
 from .views_invite import (
     InviteCreateView, InviteValidateView, InviteAcceptView
+)
+from .views_ai_quote import (
+    FuelPriceCurrentView, AIQuoteSuggestionView, RevenueGuardView,
+    AIChatQuoteView, AIVoiceQuoteView
 )
 
 router = DefaultRouter()
@@ -165,6 +170,17 @@ urlpatterns = [
 
     # Route Calculator endpoint (NEW - Phase 4)
     path('route/calculate/', RouteCalculatorView.as_view(), name='route-calculate'),
+
+    # Public Quote endpoints (no auth required)
+    path('quotes/public/<int:quote_id>/<str:token>/', PublicQuoteView.as_view(), name='public-quote-view'),
+    path('quotes/public/<int:quote_id>/<str:token>/respond/', PublicQuoteRespondView.as_view(), name='public-quote-respond'),
+
+    # AI Quote & Revenue Guard endpoints (Phase 2)
+    path('fuel-prices/current/', FuelPriceCurrentView.as_view(), name='fuel-prices-current'),
+    path('quotes/suggest/', AIQuoteSuggestionView.as_view(), name='quotes-suggest'),
+    path('quotes/guard/', RevenueGuardView.as_view(), name='quotes-guard'),
+    path('ai/chat-quote/', AIChatQuoteView.as_view(), name='ai-chat-quote'),
+    path('ai/voice-quote/', AIVoiceQuoteView.as_view(), name='ai-voice-quote'),
 
     # Real signals endpoint (Sprint 5)
     path('dashboard/signals/', DashboardSignalsView.as_view(), name='dashboard-signals'),
