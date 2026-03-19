@@ -57,7 +57,8 @@ from .views_invite import (
     InviteCreateView, InviteValidateView, InviteAcceptView
 )
 from .views_ai_quote import (
-    FuelPriceCurrentView, AIQuoteSuggestionView, RevenueGuardView
+    FuelPriceCurrentView, AIQuoteSuggestionView, RevenueGuardView,
+    AIChatQuoteView, AIVoiceQuoteView
 )
 
 router = DefaultRouter()
@@ -173,6 +174,8 @@ urlpatterns = [
     path('fuel-prices/current/', FuelPriceCurrentView.as_view(), name='fuel-prices-current'),
     path('quotes/suggest/', AIQuoteSuggestionView.as_view(), name='quotes-suggest'),
     path('quotes/guard/', RevenueGuardView.as_view(), name='quotes-guard'),
+    path('ai/chat-quote/', AIChatQuoteView.as_view(), name='ai-chat-quote'),
+    path('ai/voice-quote/', AIVoiceQuoteView.as_view(), name='ai-voice-quote'),
 
     # Real signals endpoint (Sprint 5)
     path('dashboard/signals/', DashboardSignalsView.as_view(), name='dashboard-signals'),

@@ -179,3 +179,153 @@ class RevenueGuardView(APIView):
                 'success': False,
                 'error': str(e),
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class AIChatQuoteView(APIView):
+    """POST /api/v1/ai/chat-quote/ — conversational quote extraction."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        """
+        Extract quote fields from natural language message.
+        Body: { message, history, current_fields }
+        Returns: { reply, extracted_fields }
+        """
+        try:
+            message = request.data.get('message', '')
+            current_fields = request.data.get('current_fields', {})
+
+            # Extract fields using regex patterns
+            extracted = {}
+            msg_lower = message.lower()
+
+            # Origin/Destination
+            import re
+            # SA cities list for reliable extraction
+            SA_CITIES = [
+                'Johannesburg', 'JHB', 'Joburg', 'Cape Town', 'CPT',
+                'Durban', 'DBN', 'Pretoria', 'PTA', 'Port Elizabeth', 'PE',
+                'Bloemfontein', 'BFN', 'East London', 'Nelspruit', 'Polokwane',
+                'Kimberley', 'Pietermaritzburg', 'Richards Bay', 'Beit Bridge',
+                'Maputo', 'Harare', 'Lusaka', 'Windhoek', 'Gaborone',
+            ]
+            city_pattern = '|'.join(re.escape(c) for c in SA_CITIES)
+            # "from X to Y" pattern with city names
+            route_match = re.search(
+                rf'from\s+({city_pattern})\s+to\s+({city_pattern})',
+                message, re.IGNORECASE
+            )
+            if route_match:
+                extracted['pickup_location'] = route_match.group(1).strip()
+                extracted['delivery_location'] = route_match.group(2).strip()
+            else:
+                # Fallback: generic from/to
+                from_match = re.search(r'from\s+([A-Za-z][A-Za-z\s]{1,25}?)\s+to\s+', message, re.IGNORECASE)
+                to_match = re.search(r'\s+to\s+([A-Za-z][A-Za-z\s]{1,25}?)(?:\s*[,\.]|\s+(?:on|next|flatbed|tautliner|refrigerated|tanker|\d)|$)', message, re.IGNORECASE)
+                if from_match:
+                    extracted['pickup_location'] = from_match.group(1).strip()
+                if to_match:
+                    extracted['delivery_location'] = to_match.group(1).strip()
+
+            # Weight
+            weight_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:ton|t\b|tons|tonne|tonnes|kg|kgs|kilogram)', message, re.IGNORECASE)
+            if weight_match:
+                val = float(weight_match.group(1))
+                unit = weight_match.group(0).lower()
+                if 'kg' in unit:
+                    extracted['weight'] = val
+                else:
+                    extracted['weight'] = val * 1000  # convert tons to kg
+
+            # Vehicle type
+            vehicle_map = {
+                'flatbed': 'Flatbed', 'tautliner': 'Tautliner', 'curtainsider': 'Tautliner',
+                'refrigerated': 'Refrigerated', 'reefer': 'Refrigerated', 'fridge': 'Refrigerated',
+                'tanker': 'Tanker', 'box truck': 'Box Truck', 'danger': 'Danger Load', 'dg': 'Danger Load',
+            }
+            for key, val in vehicle_map.items():
+                if key in msg_lower:
+                    extracted['vehicle_type'] = val
+                    break
+
+            # Cargo description
+            cargo_match = re.search(r'(?:of\s+)?([a-zA-Z\s]+?)\s+(?:from|to\s+\w)', message, re.IGNORECASE)
+            if cargo_match:
+                desc = cargo_match.group(1).strip()
+                if len(desc) > 3 and desc.lower() not in ['move', 'transport', 'ship', 'send', 'deliver', 'take']:
+                    extracted['cargo_description'] = desc
+
+            # Merge with current fields
+            merged = {**current_fields, **extracted}
+
+            # Build reply
+            missing = []
+            if not merged.get('pickup_location'):
+                missing.append('pickup location')
+            if not merged.get('delivery_location'):
+                missing.append('delivery location')
+            if not merged.get('cargo_description'):
+                missing.append('cargo type')
+            if not merged.get('weight'):
+                missing.append('weight')
+
+            if not missing:
+                reply = f"Got it — {merged.get('cargo_description', 'your cargo')} from {merged.get('pickup_location')} to {merged.get('delivery_location')}, {merged.get('weight', 0)/1000:.0f} tons. Ready to calculate your quote."
+            elif len(missing) <= 2:
+                reply = f"Almost there. Just need the {' and '.join(missing)} to complete the quote."
+            else:
+                reply = f"Thanks! I still need the {', '.join(missing[:-1])} and {missing[-1]} to build your quote."
+
+            return Response({
+                'success': True,
+                'reply': reply,
+                'extracted_fields': extracted,
+            })
+
+        except Exception as e:
+            return Response({
+                'success': False,
+                'reply': "I had trouble understanding that. Can you describe the load again? For example: '20 tons of pallets from Johannesburg to Cape Town, flatbed.'",
+                'extracted_fields': {},
+            })
+
+
+class AIVoiceQuoteView(APIView):
+    """POST /api/v1/ai/voice-quote/ — transcribe audio and return text."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        """
+        Accepts audio file, returns transcription.
+        Uses OpenAI Whisper if available, otherwise returns error.
+        """
+        try:
+            audio_file = request.FILES.get('audio')
+            if not audio_file:
+                return Response({'success': False, 'error': 'No audio file provided'}, status=400)
+
+            # Try OpenAI Whisper
+            import os
+            openai_key = os.environ.get('OPENAI_API_KEY')
+            if openai_key:
+                import openai
+                client = openai.OpenAI(api_key=openai_key)
+                transcript = client.audio.transcriptions.create(
+                    model='whisper-1',
+                    file=audio_file,
+                )
+                return Response({
+                    'success': True,
+                    'text': transcript.text,
+                })
+            else:
+                return Response({
+                    'success': False,
+                    'error': 'Voice transcription not configured (no OpenAI key)',
+                }, status=503)
+
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': str(e),
+            }, status=500)
