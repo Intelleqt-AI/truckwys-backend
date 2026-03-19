@@ -4,13 +4,17 @@ AI-powered quote suggestion and guard API endpoints (Phase 2 Sprint 2).
 Endpoints:
 - POST /api/v1/quotes/suggest/ - AI-powered quote price suggestion
 - POST /api/v1/quotes/guard/ - Revenue Guard safety check
+- POST /api/v1/ai/chat-quote/ - AI chat interface for quote extraction
+- POST /api/v1/ai/voice-quote/ - Voice transcription for quotes
 """
 
+import json
 import logging
 from decimal import Decimal
 
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.parsers import MultiPartParser
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -245,5 +249,141 @@ class QuoteGuardView(APIView):
             logger.exception('Error in QuoteGuardView')
             return Response(
                 {'error': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class ChatQuoteView(APIView):
+    """
+    AI chat interface that extracts quote fields from natural language.
+    Uses Claude or OpenAI to parse user messages into structured quote data.
+
+    POST /api/v1/ai/chat-quote/
+
+    Request:
+    {
+        "messages": [
+            {"role": "user", "content": "I need a quote from Johannesburg to Cape Town"}
+        ],
+        "current_fields": {"origin": "Johannesburg"}
+    }
+
+    Response:
+    {
+        "extracted_fields": {
+            "origin": "Johannesburg",
+            "destination": "Cape Town",
+            "truck_type": null,
+            "load_type": null,
+            "load_weight_tons": null,
+            "distance_km": null,
+            "urgency": null,
+            "return_load_available": null
+        },
+        "response_text": "I've got Johannesburg to Cape Town. What type of truck do you need?",
+        "ready_to_quote": false,
+        "missing_fields": ["truck_type", "load_type"]
+    }
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request: Request) -> Response:
+        """Extract quote fields from conversation."""
+        messages = request.data.get("messages", [])
+        current_fields = request.data.get("current_fields", {})
+
+        if not messages:
+            return Response({"error": "messages required"}, status=400)
+
+        # Build system prompt
+        system_prompt = """You are a TruckWys AI assistant that helps dispatchers create freight quotes.
+Extract quote fields from the conversation. Return JSON with:
+- extracted_fields: {origin, destination, truck_type, load_type, load_weight_tons, distance_km, urgency, return_load_available}
+- response_text: friendly assistant response
+- ready_to_quote: true if all required fields (origin, destination, truck_type, load_type) are present
+- missing_fields: list of fields still needed
+
+Truck types: semi_34t, rigid_8t, flatbed, tipper, reefer, tanker
+Load types: general, refrigerated, hazmat, bulk, abnormal
+Only return valid JSON, no markdown."""
+
+        try:
+            import openai
+            from django.conf import settings
+
+            client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
+
+            # Merge current_fields into system context
+            if current_fields:
+                system_prompt += f"\n\nCurrently extracted fields: {current_fields}"
+
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    *messages
+                ],
+                temperature=0.3,
+                response_format={"type": "json_object"}
+            )
+
+            result = json.loads(response.choices[0].message.content)
+            return Response(result)
+
+        except Exception as e:
+            logger.exception('Error in ChatQuoteView')
+            # Fallback: return a helpful response without AI
+            return Response({
+                "extracted_fields": current_fields,
+                "response_text": "I can help you create a quote. Please tell me: origin city, destination city, truck type (semi, rigid, flatbed), load type (general, refrigerated, hazmat), and load weight.",
+                "ready_to_quote": False,
+                "missing_fields": ["origin", "destination", "truck_type", "load_type"],
+                "error": str(e)
+            })
+
+
+class VoiceQuoteView(APIView):
+    """
+    Transcribe audio to text using OpenAI Whisper.
+    Returns transcribed text for use in the AI chat quote flow.
+
+    POST /api/v1/ai/voice-quote/
+
+    Request:
+    - Form data with 'audio' file field
+
+    Response:
+    {
+        "transcribed_text": "I need a quote from Johannesburg to Cape Town"
+    }
+    """
+
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser]
+
+    def post(self, request: Request) -> Response:
+        """Transcribe audio file to text."""
+        audio_file = request.FILES.get("audio")
+        if not audio_file:
+            return Response({"error": "audio file required"}, status=400)
+
+        try:
+            import openai
+            from django.conf import settings
+
+            client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
+
+            transcription = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                response_format="text"
+            )
+            return Response({"transcribed_text": transcription})
+
+        except Exception as e:
+            logger.exception('Error in VoiceQuoteView')
+            return Response(
+                {"error": f"Transcription failed: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )

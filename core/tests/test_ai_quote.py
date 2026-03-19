@@ -180,3 +180,57 @@ class QuoteGuardAPITests(TestCase):
         self.assertIn('safe', response.data)
         self.assertIn('risk_score', response.data)
         self.assertIn('rating', response.data)
+
+
+class ChatQuoteAPITests(TestCase):
+    """Tests for POST /api/v1/ai/chat-quote/ endpoint."""
+
+    def setUp(self):
+        """Set up test client and auth."""
+        self.client = APIClient()
+        self.company = Company.objects.create(company_name='Test Co')
+        self.user = User.objects.create_user(
+            username='testuser',
+            email='test@test.com',
+            password='testpass',
+        )
+        self.user.company = self.company
+        self.user.save()
+        self.client.force_authenticate(user=self.user)
+
+    def test_chat_quote_endpoint_returns_200(self):
+        """Test that chat-quote endpoint returns 200 with messages."""
+        response = self.client.post('/api/v1/ai/chat-quote/', {
+            'messages': [
+                {'role': 'user', 'content': 'Quote JHB to CPT'}
+            ]
+        }, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('extracted_fields', response.data)
+        self.assertIn('response_text', response.data)
+        self.assertIn('ready_to_quote', response.data)
+
+
+class VoiceQuoteAPITests(TestCase):
+    """Tests for POST /api/v1/ai/voice-quote/ endpoint."""
+
+    def setUp(self):
+        """Set up test client and auth."""
+        self.client = APIClient()
+        self.company = Company.objects.create(company_name='Test Co')
+        self.user = User.objects.create_user(
+            username='testuser',
+            email='test@test.com',
+            password='testpass',
+        )
+        self.user.company = self.company
+        self.user.save()
+        self.client.force_authenticate(user=self.user)
+
+    def test_voice_quote_missing_audio(self):
+        """Test that voice-quote endpoint returns 400 when no audio file."""
+        response = self.client.post('/api/v1/ai/voice-quote/', {}, format='multipart')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('error', response.data)
