@@ -56,6 +56,9 @@ from .views_risk_api import (
 from .views_invite import (
     InviteCreateView, InviteValidateView, InviteAcceptView
 )
+from .views_ai_quote import (
+    FuelPriceCurrentView, AIQuoteSuggestionView, RevenueGuardView
+)
 
 router = DefaultRouter()
 router.register(r'users', UserViewSet, basename='user')
@@ -165,6 +168,11 @@ urlpatterns = [
 
     # Route Calculator endpoint (NEW - Phase 4)
     path('route/calculate/', RouteCalculatorView.as_view(), name='route-calculate'),
+
+    # AI Quote & Revenue Guard endpoints (Phase 2)
+    path('fuel-prices/current/', FuelPriceCurrentView.as_view(), name='fuel-prices-current'),
+    path('quotes/suggest/', AIQuoteSuggestionView.as_view(), name='quotes-suggest'),
+    path('quotes/guard/', RevenueGuardView.as_view(), name='quotes-guard'),
 
     # Real signals endpoint (Sprint 5)
     path('dashboard/signals/', DashboardSignalsView.as_view(), name='dashboard-signals'),
