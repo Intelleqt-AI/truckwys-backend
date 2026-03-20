@@ -12,11 +12,18 @@ class Quote(models.Model):
         ('IT', 'In-Transit'),
         ('COMPLETED', 'Completed'),
     ]
-    
+
     CONFIDENCE_CHOICES = [
         ('HIGH', 'High'),
         ('MEDIUM', 'Medium'),
         ('LOW', 'Low'),
+    ]
+
+    OUTCOME_CHOICES = [
+        ('pending', 'Pending'),
+        ('accepted', 'Accepted'),
+        ('rejected', 'Rejected'),
+        ('expired', 'Expired'),
     ]
     
     company = models.ForeignKey("Company", on_delete=models.CASCADE, null=True, blank=True, related_name="quotes")
@@ -47,12 +54,20 @@ class Quote(models.Model):
     margin_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=0, help_text="Profit margin %")
     
     confidence = models.CharField(max_length=20, choices=CONFIDENCE_CHOICES, default='MEDIUM')
-    
+
     valid_until = models.DateField()
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='DRAFT')
     notes = models.TextField(blank=True)
 
     token = models.CharField(max_length=64, unique=True, blank=True)
+
+    # Sprint 1: Quote Feedback Loop
+    outcome = models.CharField(max_length=20, choices=OUTCOME_CHOICES, default='pending', help_text="Quote outcome for ML training")
+    rejection_reason = models.TextField(max_length=256, blank=True, null=True, help_text="Reason for rejection if applicable")
+    accepted_at = models.DateTimeField(null=True, blank=True, help_text="Timestamp when quote was accepted")
+    rejected_at = models.DateTimeField(null=True, blank=True, help_text="Timestamp when quote was rejected")
+    fuel_price_at_creation = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True, help_text="Fuel price snapshot at quote creation time")
+    win_probability = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True, help_text="Predicted win probability (0-100)")
 
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name='quotes_created')
     created_at = models.DateTimeField(auto_now_add=True)
