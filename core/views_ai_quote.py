@@ -122,7 +122,55 @@ class AIQuoteSuggestionView(APIView):
                     'error': 'Prediction failed',
                 }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-            return Response({
+            # Calculate win probability (Sprint 1)
+            try:
+                from core.services.quote_ml import WinProbabilityModel
+
+                suggested_price = prediction.recommended_price
+                market_rate = 43800  # Default market rate (JHB-CPT interlink)
+                price_ratio = suggested_price / market_rate if market_rate > 0 else 1.0
+
+                client_tier = int(data.get('client_tier', 1))
+                days_until_departure = int(data.get('days_until_departure', 2))
+
+                win_model = WinProbabilityModel()
+                win_probability = win_model.predict_proba(
+                    price_ratio=price_ratio,
+                    client_tier=client_tier,
+                    days_until_departure=days_until_departure,
+                    historical_acceptance_rate=features['historical_acceptance_rate'],
+                    month=features['month'],
+                    day_of_week=features['day_of_week'],
+                    route_popularity=features['route_popularity'],
+                )
+
+                # Calculate win probability at ±5%
+                win_probability_at_lower_price = win_model.predict_proba(
+                    price_ratio=(suggested_price * 0.95) / market_rate,
+                    client_tier=client_tier,
+                    days_until_departure=days_until_departure,
+                    historical_acceptance_rate=features['historical_acceptance_rate'],
+                    month=features['month'],
+                    day_of_week=features['day_of_week'],
+                    route_popularity=features['route_popularity'],
+                )
+
+                win_probability_at_higher_price = win_model.predict_proba(
+                    price_ratio=(suggested_price * 1.05) / market_rate,
+                    client_tier=client_tier,
+                    days_until_departure=days_until_departure,
+                    historical_acceptance_rate=features['historical_acceptance_rate'],
+                    month=features['month'],
+                    day_of_week=features['day_of_week'],
+                    route_popularity=features['route_popularity'],
+                )
+            except Exception as win_err:
+                # If win probability fails, continue without it
+                win_probability = None
+                win_probability_at_lower_price = None
+                win_probability_at_higher_price = None
+
+            response_data = {
                 'success': True,
                 'suggested_price': prediction.recommended_price,
                 'margin_pct': prediction.predicted_margin_pct * 100,
@@ -132,7 +180,15 @@ class AIQuoteSuggestionView(APIView):
                     'upper': prediction.margin_upper * 100,
                 },
                 'top_features': prediction.feature_importances,
-            })
+            }
+
+            # Add win probability fields if available
+            if win_probability is not None:
+                response_data['win_probability'] = round(win_probability, 2)
+                response_data['win_probability_at_lower_price'] = round(win_probability_at_lower_price, 2)
+                response_data['win_probability_at_higher_price'] = round(win_probability_at_higher_price, 2)
+
+            return Response(response_data)
 
         except Exception as e:
             return Response({
@@ -788,6 +844,118 @@ class QuoteBenchmarkView(APIView):
                 'your_rate': your_rate,
                 'your_vs_market_pct': round(your_vs_market_pct, 1),
                 'recommendation': recommendation,
+            })
+
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': str(e),
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class QuoteWinProbabilityView(APIView):
+    """POST /api/v1/quotes/win-probability/ — Predict win probability for a quote."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        """
+        Given quote parameters, predict win probability.
+        Body: {
+            "price": 42000,
+            "distance": 1580,
+            "vehicle_type": "interlink",
+            "client_id": 42,
+            "origin": "JHB",
+            "destination": "CPT",
+            "days_until_departure": 2
+        }
+        """
+        try:
+            from core.services.quote_ml import WinProbabilityModel
+
+            price = float(request.data.get('price', 0))
+            distance = float(request.data.get('distance', 0))
+            client_id = request.data.get('client_id')
+            days_until_departure = int(request.data.get('days_until_departure', 2))
+
+            if not price or not client_id:
+                return Response({
+                    'success': False,
+                    'error': 'price and client_id are required'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # Get market rate for benchmark (simplified)
+            market_rate = 43800  # Default JHB-CPT interlink
+            price_ratio = price / market_rate if market_rate > 0 else 1.0
+
+            # Get client historical acceptance rate
+            try:
+                customer = Customer.objects.get(id=client_id)
+                accepted_count = Quote.objects.filter(
+                    customer=customer,
+                    outcome='accepted'
+                ).count()
+                total_count = Quote.objects.filter(
+                    customer=customer,
+                    outcome__in=['accepted', 'rejected']
+                ).count()
+                historical_acceptance_rate = accepted_count / total_count if total_count > 0 else 0.7
+
+                # Determine client tier
+                if total_count >= 10:
+                    client_tier = 2  # VIP
+                elif total_count >= 3:
+                    client_tier = 1  # Regular
+                else:
+                    client_tier = 0  # New
+            except:
+                historical_acceptance_rate = 0.7
+                client_tier = 0
+
+            # Calculate route popularity
+            route_popularity = 0.5  # Default
+
+            # Predict win probability
+            win_model = WinProbabilityModel()
+            win_probability = win_model.predict_proba(
+                price_ratio=price_ratio,
+                client_tier=client_tier,
+                days_until_departure=days_until_departure,
+                historical_acceptance_rate=historical_acceptance_rate,
+                month=timezone.now().month,
+                day_of_week=timezone.now().weekday(),
+                route_popularity=route_popularity,
+            )
+
+            # Calculate win probability at ±5%
+            price_lower = price * 0.95
+            price_higher = price * 1.05
+
+            win_probability_lower = win_model.predict_proba(
+                price_ratio=price_lower / market_rate,
+                client_tier=client_tier,
+                days_until_departure=days_until_departure,
+                historical_acceptance_rate=historical_acceptance_rate,
+                month=timezone.now().month,
+                day_of_week=timezone.now().weekday(),
+                route_popularity=route_popularity,
+            )
+
+            win_probability_higher = win_model.predict_proba(
+                price_ratio=price_higher / market_rate,
+                client_tier=client_tier,
+                days_until_departure=days_until_departure,
+                historical_acceptance_rate=historical_acceptance_rate,
+                month=timezone.now().month,
+                day_of_week=timezone.now().weekday(),
+                route_popularity=route_popularity,
+            )
+
+            return Response({
+                'success': True,
+                'win_probability': round(win_probability, 2),
+                'win_probability_lower': round(win_probability_lower, 2),
+                'win_probability_higher': round(win_probability_higher, 2),
             })
 
         except Exception as e:

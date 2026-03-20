@@ -357,3 +357,195 @@ def predict_optimal_margin(
     if result is None:
         raise RuntimeError("Prediction failed unexpectedly.")
     return result.to_dict()
+
+
+# ============================================================================
+# Sprint 1: Win Probability Model
+# ============================================================================
+
+class WinProbabilityModel:
+    """
+    Logistic regression classifier that predicts P(quote accepted | features).
+
+    Features:
+    - price_ratio: proposed_price / market_rate
+    - client_tier: 0=new, 1=regular, 2=vip
+    - days_until_departure: urgency (lower = more urgent = higher win prob)
+    - historical_acceptance_rate_for_client: past accepts / total quotes
+    - month: seasonality (1-12)
+    - day_of_week: 0=Mon, 6=Sun
+    - route_popularity: quotes on this lane in past 90 days
+
+    Trained on QuoteOutcome records (accepted=1, rejected=0).
+    """
+
+    MODEL_DIR = Path(settings.MEDIA_ROOT) / 'ml_models'
+    MODEL_PATH = MODEL_DIR / 'win_probability_model.pkl'
+    METADATA_PATH = MODEL_DIR / 'win_probability_metadata.json'
+
+    def __init__(self):
+        if not ML_AVAILABLE:
+            raise ImportError("ML libraries not available")
+
+        self.model = None
+        self.metadata = {}
+        self.MODEL_DIR.mkdir(parents=True, exist_ok=True)
+        self._load_model()
+
+    def _load_model(self):
+        """Load saved model and metadata if available."""
+        if not self.MODEL_PATH.exists():
+            return
+
+        try:
+            self.model = joblib.load(self.MODEL_PATH)
+            if self.METADATA_PATH.exists():
+                with open(self.METADATA_PATH, 'r') as f:
+                    self.metadata = json.load(f)
+        except Exception as exc:
+            logger.warning('Failed to load WinProbabilityModel: %s', exc)
+
+    def _save_model(self):
+        """Save model and metadata to disk."""
+        try:
+            joblib.dump(self.model, self.MODEL_PATH)
+            with open(self.METADATA_PATH, 'w') as f:
+                json.dump(self.metadata, f, indent=2)
+            logger.info('Saved WinProbabilityModel to %s', self.MODEL_PATH)
+        except Exception as exc:
+            logger.error('Failed to save WinProbabilityModel: %s', exc)
+
+    def train(self, outcomes_df) -> Dict[str, Any]:
+        """
+        Train logistic regression on QuoteOutcome data.
+
+        Args:
+            outcomes_df: DataFrame with columns:
+                - outcome: 'accepted' or 'rejected'
+                - price_ratio, client_tier, days_until_departure, etc.
+
+        Returns:
+            Dict with training metrics
+        """
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.model_selection import train_test_split
+        from sklearn.metrics import accuracy_score, roc_auc_score
+
+        # Prepare features
+        feature_cols = [
+            'price_ratio', 'client_tier', 'days_until_departure',
+            'historical_acceptance_rate', 'month', 'day_of_week',
+            'route_popularity'
+        ]
+
+        X = outcomes_df[feature_cols].values
+        y = (outcomes_df['outcome'] == 'accepted').astype(int).values
+
+        if len(X) < 50:
+            logger.warning('Insufficient data for win probability training (<50 outcomes)')
+            # Use synthetic bootstrapping or skip training
+            return {'success': False, 'error': 'Insufficient data (<50 outcomes)'}
+
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42
+        )
+
+        self.model = LogisticRegression(
+            max_iter=1000,
+            random_state=42,
+            penalty='l2',
+            C=1.0
+        )
+        self.model.fit(X_train, y_train)
+
+        # Evaluate
+        y_pred = self.model.predict(X_test)
+        y_pred_proba = self.model.predict_proba(X_test)[:, 1]
+
+        accuracy = accuracy_score(y_test, y_pred)
+        try:
+            auc = roc_auc_score(y_test, y_pred_proba)
+        except:
+            auc = 0.5
+
+        self.metadata = {
+            'trained_at': datetime.now().isoformat(),
+            'training_count': len(X_train),
+            'test_count': len(X_test),
+            'accuracy': float(accuracy),
+            'auc': float(auc),
+            'feature_names': feature_cols,
+            'version': '1.0.0',
+        }
+
+        self._save_model()
+
+        return {
+            'success': True,
+            'accuracy': accuracy,
+            'auc': auc,
+            'training_count': len(X_train),
+        }
+
+    def predict_proba(
+        self,
+        price_ratio: float,
+        client_tier: int = 0,
+        days_until_departure: int = 2,
+        historical_acceptance_rate: float = 0.7,
+        month: int = 3,
+        day_of_week: int = 1,
+        route_popularity: float = 0.5,
+    ) -> float:
+        """
+        Predict P(accepted) for a quote.
+
+        Args:
+            price_ratio: proposed_price / market_rate (e.g., 0.95 = 5% below market)
+            client_tier: 0=new, 1=regular, 2=vip
+            days_until_departure: urgency in days
+            historical_acceptance_rate: client's past acceptance rate
+            month: 1-12
+            day_of_week: 0-6 (Mon-Sun)
+            route_popularity: normalized route popularity
+
+        Returns:
+            Probability [0.0, 1.0]
+        """
+        if self.model is None:
+            # Return heuristic if model not trained
+            # Simple heuristic: lower price = higher win prob
+            base_prob = 0.5
+            if price_ratio < 0.9:
+                base_prob = 0.75
+            elif price_ratio < 0.95:
+                base_prob = 0.65
+            elif price_ratio > 1.1:
+                base_prob = 0.35
+            elif price_ratio > 1.05:
+                base_prob = 0.45
+
+            # Adjust for client tier
+            if client_tier == 2:  # VIP
+                base_prob += 0.05
+            elif client_tier == 0:  # New
+                base_prob -= 0.05
+
+            return max(0.0, min(1.0, base_prob))
+
+        # Use trained model
+        X = np.array([[
+            price_ratio,
+            client_tier,
+            days_until_departure,
+            historical_acceptance_rate,
+            month,
+            day_of_week,
+            route_popularity,
+        ]])
+
+        prob = float(self.model.predict_proba(X)[0, 1])
+        return max(0.0, min(1.0, prob))
+
+    def is_trained(self) -> bool:
+        return self.model is not None

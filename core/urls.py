@@ -61,7 +61,7 @@ from .views_ai_quote import (
     FuelPriceCurrentView, AIQuoteSuggestionView, RevenueGuardView,
     AIChatQuoteView, AIVoiceQuoteView,
     QuoteOutcomeView, QuoteModelStatsView, FuelPriceSurchargeCheckView,
-    QuoteFuelAlertView, QuoteBenchmarkView
+    QuoteFuelAlertView, QuoteBenchmarkView, QuoteWinProbabilityView
 )
 
 router = DefaultRouter()
@@ -186,6 +186,7 @@ urlpatterns = [
     path('quotes/<int:quote_id>/fuel-alert/', QuoteFuelAlertView.as_view(), name='quote-fuel-alert'),
     path('quotes/model-stats/', QuoteModelStatsView.as_view(), name='quote-model-stats'),
     path('quotes/benchmark/', QuoteBenchmarkView.as_view(), name='quote-benchmark'),
+    path('quotes/win-probability/', QuoteWinProbabilityView.as_view(), name='quote-win-probability'),
     path('ai/chat-quote/', AIChatQuoteView.as_view(), name='ai-chat-quote'),
     path('ai/voice-quote/', AIVoiceQuoteView.as_view(), name='ai-voice-quote'),
 
