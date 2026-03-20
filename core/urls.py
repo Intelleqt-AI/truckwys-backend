@@ -61,6 +61,10 @@ from .views_ai_quote import (
     FuelPriceCurrentView, AIQuoteSuggestionView, RevenueGuardView,
     AIChatQuoteView, AIVoiceQuoteView
 )
+from .views_insights import (
+    CommandCentreView, RevenueView, LanesView, FleetView,
+    QuotesView, CashFlowView, AIInsightsView
+)
 
 router = DefaultRouter()
 router.register(r'users', UserViewSet, basename='user')
@@ -184,6 +188,15 @@ urlpatterns = [
 
     # Real signals endpoint (Sprint 5)
     path('dashboard/signals/', DashboardSignalsView.as_view(), name='dashboard-signals'),
+
+    # Insights v2 endpoints (Phase 2)
+    path('insights/command-centre/', CommandCentreView.as_view(), name='insights-command-centre'),
+    path('insights/revenue/', RevenueView.as_view(), name='insights-revenue'),
+    path('insights/lanes/', LanesView.as_view(), name='insights-lanes'),
+    path('insights/fleet/', FleetView.as_view(), name='insights-fleet'),
+    path('insights/quotes/', QuotesView.as_view(), name='insights-quotes'),
+    path('insights/cashflow/', CashFlowView.as_view(), name='insights-cashflow'),
+    path('insights/ai-insights/', AIInsightsView.as_view(), name='insights-ai-insights'),
 
     # Lender Fast Pay API (Sprint 5)
     path('lender/health/', LenderHealthView.as_view(), name='lender-health'),
