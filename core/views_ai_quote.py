@@ -374,7 +374,7 @@ class AIChatQuoteView(APIView):
                 if to_match:
                     extracted['delivery_location'] = to_match.group(1).strip()
 
-            # Weight
+            # Weight — with unit suffix
             weight_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:ton|t\b|tons|tonne|tonnes|kg|kgs|kilogram)', message, re.IGNORECASE)
             if weight_match:
                 val = float(weight_match.group(1))
@@ -383,6 +383,13 @@ class AIChatQuoteView(APIView):
                     extracted['weight'] = val
                 else:
                     extracted['weight'] = val * 1000  # convert tons to kg
+            elif not current_fields.get('weight'):
+                # Bare number fallback — if weight is still missing and user sends just a number, treat as kg
+                bare_number_match = re.search(r'^\s*(\d+(?:\.\d+)?)\s*$', message.strip())
+                if bare_number_match:
+                    val = float(bare_number_match.group(1))
+                    # Heuristic: if < 100, likely tons; if >= 100, likely kg
+                    extracted['weight'] = val * 1000 if val < 100 else val
 
             # Vehicle type
             vehicle_map = {
