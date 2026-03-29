@@ -11,7 +11,7 @@ from .views import (
     DriverOverviewView, DriverPerformanceLeaderboardView,
     QuotesPipelineOverviewView, NotificationSettingsView,
     CompanyProfileView, CompanyLogoUploadView, DashboardOverviewView, ActivityEventViewSet,
-    TestEmailView
+    TestEmailView, InviteView, InviteTokenView, InviteResendView
 )
 from .views_finance import (
     InvoiceFinanceViewSet, PaymentFinanceViewSet, ExpenseFinanceViewSet,
@@ -95,6 +95,9 @@ urlpatterns = [
     path('auth/me/', UserProfileView.as_view(), name='user-profile'),
     path('auth/password-reset/', PasswordResetRequestView.as_view(), name='password-reset'),
     path('auth/password-reset/confirm/', PasswordResetConfirmView.as_view(), name='password-reset-confirm'),
+    path('auth/invite/', InviteView.as_view(), name='auth-invite'),
+    path('auth/invite/<str:token>/', InviteTokenView.as_view(), name='auth-invite-detail'),
+    path('auth/invite/<str:token>/resend/', InviteResendView.as_view(), name='auth-invite-resend'),
     
     # Fleet/Vehicle specific endpoints (must come before router to avoid conflicts)
     path('fleet/overview/', FleetOverviewView.as_view(), name='fleet-overview'),

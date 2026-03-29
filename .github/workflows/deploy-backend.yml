@@ -1,0 +1,25 @@
+name: Deploy TruckWys Backend to AWS EC2
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Deploy to AWS EC2
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            cd /home/ubuntu/"VENUS BETTING"/../truckwys/backend 2>/dev/null || cd /home/ubuntu/truckwys-backend 2>/dev/null || true
+            git pull origin main
+            source venv/bin/activate
+            pip install -r requirements.txt
+            python manage.py migrate
+            python manage.py collectstatic --noinput
+            pm2 restart truckwys-backend || gunicorn config.wsgi:application --bind 0.0.0.0:3700 --workers 3 --daemon

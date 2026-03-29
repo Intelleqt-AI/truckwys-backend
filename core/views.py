@@ -1047,69 +1047,64 @@ class UserViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['post'])
     def invite(self, request):
         """Invite a new user to the organization"""
-        email = request.data.get('email')
+        import secrets
+        from django.core.cache import cache
+        from django.conf import settings
+        from core.services.resend_email import send_invite_email
+
+        email = request.data.get('email', '').strip().lower()
         role = request.data.get('role', 'DISPATCHER')
-        
+
         if not email:
             return Response({'error': 'Email is required'}, status=status.HTTP_400_BAD_REQUEST)
-            
+
         if User.objects.filter(email=email).exists():
             return Response({'error': 'User with this email already exists'}, status=status.HTTP_400_BAD_REQUEST)
-            
-        # Generate temporary password
-        temp_password = get_random_string(length=12)
-        
+
+        # Generate secure token
+        token = secrets.token_urlsafe(32)
+
         # Create user with pending status
-        user = User.objects.create_user(
+        user = User.objects.create(
             username=email,
             email=email,
-            password=temp_password,
+            status='PENDING',
             role=role,
-            status='PENDING'
+            company=request.user.company
         )
-        
-        # Get company name (default if not set)
-        company = Company.objects.first()
-        company_name = company.company_name if company else "Truckwys Logistics"
-        
-        # Prepare email context
-        context = {
-            'user_email': email,
-            'temp_password': temp_password,
-            'inviter_name': request.user.get_full_name() or request.user.username,
-            'company_name': company_name,
-            'role': role,
-            'login_url': 'http://localhost:3000/login' # Should be configurable in settings
-        }
-        
-        # Render HTML and plain text versions
-        html_content = render_to_string('emails/invitation_email.html', context)
-        text_content = strip_tags(html_content)
-        
-        # Define email sending function for background thread
-        def send_invitation_email():
-            subject = f"Invitation to join {company_name} on Truckwys"
-            from_email = 'Truckwys <noreply@truckwys.com>'
-            
-            msg = EmailMultiAlternatives(subject, text_content, from_email, [email])
-            msg.attach_alternative(html_content, "text/html")
-            
-            try:
-                sent = msg.send(fail_silently=False)
-                print(f"DEBUG: Email sent to {email}. Status: {sent}")
-            except Exception as e:
-                print(f"ERROR: Failed to send invitation email to {email}: {str(e)}")
+        user.set_unusable_password()  # No password until they accept invite
+        user.save()
 
-        # Start background thread for email dispatch
-        print(f"DEBUG: Starting email thread for {email}")
-        email_thread = threading.Thread(target=send_invitation_email)
-        email_thread.start()
-            
+        # Get company name
+        company_name = request.user.company.company_name if request.user.company else "TruckWys"
+
+        # Store invite data in cache (7 days)
+        cache.set(
+            f'invite_{token}',
+            {
+                'email': email,
+                'role': role,
+                'company_id': request.user.company.id if request.user.company else None,
+                'user_id': user.id
+            },
+            timeout=7 * 24 * 60 * 60  # 7 days
+        )
+
+        # Send invite email via Resend
+        try:
+            invite_url = f"{settings.FRONTEND_URL}/invite/{token}"
+            invited_by_name = request.user.get_full_name() or request.user.username
+            send_invite_email(email, invited_by_name, company_name, invite_url, role)
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Failed to send invite email to {email}: {str(e)}")
+            # Still return success - user was created
+
         serializer = self.get_serializer(user)
         return Response({
             'message': 'Invitation sent successfully',
-            'user': serializer.data,
-            'temp_password': temp_password  # Returning for dev convenience
+            'user': serializer.data
         }, status=status.HTTP_201_CREATED)
 
 
@@ -2055,6 +2050,171 @@ class PasswordResetConfirmView(APIView):
         cache.delete(f'pwd_reset_{email}')
 
         return Response({'detail': 'Password has been reset. You can now log in.'})
+
+
+class InviteView(APIView):
+    """Create user invitation and send invite email."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        import secrets
+        from django.core.cache import cache
+        from django.conf import settings
+        from core.services.resend_email import send_invite_email
+
+        email = request.data.get('email', '').strip().lower()
+        role = request.data.get('role', 'DISPATCHER')
+
+        if not email:
+            return Response({'error': 'Email is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Check if user already exists
+        if User.objects.filter(email=email).exists():
+            return Response({'error': 'User with this email already exists'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Generate secure token
+        token = secrets.token_urlsafe(32)
+
+        # Create pending user
+        user = User.objects.create(
+            username=email,
+            email=email,
+            status='PENDING',
+            role=role,
+            company=request.user.company
+        )
+        user.set_unusable_password()  # No password until they accept invite
+        user.save()
+
+        # Store invite data in cache (7 days)
+        cache.set(
+            f'invite_{token}',
+            {
+                'email': email,
+                'role': role,
+                'company_id': request.user.company.id if request.user.company else None,
+                'user_id': user.id
+            },
+            timeout=7 * 24 * 60 * 60  # 7 days
+        )
+
+        # Send invite email
+        try:
+            invite_url = f"{settings.FRONTEND_URL}/invite/{token}"
+            invited_by_name = request.user.get_full_name() or request.user.username
+            company_name = request.user.company.company_name if request.user.company else "TruckWys"
+
+            send_invite_email(email, invited_by_name, company_name, invite_url, role)
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Failed to send invite email to {email}: {str(e)}")
+            # Still return success - user was created
+
+        return Response({'success': True, 'message': 'Invite sent'}, status=status.HTTP_201_CREATED)
+
+
+class InviteTokenView(APIView):
+    """Validate and accept invite token."""
+    permission_classes = [AllowAny]
+
+    def get(self, request, token):
+        """Validate invite token."""
+        from django.core.cache import cache
+
+        invite_data = cache.get(f'invite_{token}')
+        if not invite_data:
+            return Response({'valid': False, 'error': 'Invalid or expired invite token'}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({
+            'valid': True,
+            'email': invite_data.get('email'),
+            'role': invite_data.get('role')
+        })
+
+    def post(self, request, token):
+        """Accept invite and set password."""
+        from django.core.cache import cache
+
+        invite_data = cache.get(f'invite_{token}')
+        if not invite_data:
+            return Response({'error': 'Invalid or expired invite token'}, status=status.HTTP_400_BAD_REQUEST)
+
+        password = request.data.get('password')
+        if not password or len(password) < 8:
+            return Response({'error': 'Password must be at least 8 characters'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Activate user
+        user = User.objects.filter(id=invite_data.get('user_id')).first()
+        if not user:
+            return Response({'error': 'User not found'}, status=status.HTTP_400_BAD_REQUEST)
+
+        user.set_password(password)
+        user.status = 'ACTIVE'
+        user.is_active = True
+        user.save()
+
+        # Delete invite token
+        cache.delete(f'invite_{token}')
+
+        # Generate auth token
+        token_obj, created = Token.objects.get_or_create(user=user)
+
+        return Response({
+            'token': token_obj.key,
+            'user': UserSerializer(user).data
+        }, status=status.HTTP_200_OK)
+
+
+class InviteResendView(APIView):
+    """Resend invite email for a pending user."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, token):
+        """Resend invite email."""
+        import secrets
+        from django.core.cache import cache
+        from django.conf import settings
+        from core.services.resend_email import send_invite_email
+
+        # Get existing invite data
+        invite_data = cache.get(f'invite_{token}')
+        if not invite_data:
+            return Response({'error': 'Invalid or expired invite token'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Generate new token
+        new_token = secrets.token_urlsafe(32)
+
+        # Store with new token
+        cache.set(
+            f'invite_{new_token}',
+            invite_data,
+            timeout=7 * 24 * 60 * 60  # 7 days
+        )
+
+        # Delete old token
+        cache.delete(f'invite_{token}')
+
+        # Resend invite email
+        try:
+            invite_url = f"{settings.FRONTEND_URL}/invite/{new_token}"
+            invited_by_name = request.user.get_full_name() or request.user.username
+            company_name = request.user.company.company_name if request.user.company else "TruckWys"
+
+            send_invite_email(
+                invite_data.get('email'),
+                invited_by_name,
+                company_name,
+                invite_url,
+                invite_data.get('role')
+            )
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Failed to resend invite email: {str(e)}")
+            return Response({'error': 'Failed to send invite email'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        return Response({'success': True, 'message': 'Invite resent', 'token': new_token}, status=status.HTTP_200_OK)
 
 
 class WebhookViewSet(viewsets.ModelViewSet):

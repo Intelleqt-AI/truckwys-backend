@@ -3,8 +3,8 @@ from decouple import config
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = config('SECRET_KEY', default='your-secret-key-here-change-in-production')
-DEBUG = config('DEBUG', default=True, cast=bool)
+SECRET_KEY = config('SECRET_KEY', default='django-insecure-dev-key-change-in-production')
+DEBUG = config('DEBUG', default=False, cast=bool)
 
 # ALLOWED_HOSTS from environment (CSV)
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,*.ngrok.io', cast=lambda v: [s.strip() for s in v.split(',')])
@@ -60,27 +60,18 @@ try:
     pymysql.version_info = (2, 2, 1, 'final', 0)
     pymysql.install_as_MySQLdb()
 except ImportError:
-    pass  # Not needed for SQLite
+    pass  # Not needed for SQLite or PostgreSQL
 
-# ── AWS RDS MySQL (swap in once security group allows 146.70.237.145) ──
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.db.backends.mysql',
-#         'NAME': 'truckwys',
-#         'USER': 'admin',
-#         'PASSWORD': 'truckwys@2026!',
-#         'HOST': '3.8.208.109',
-#         'PORT': '3306',
-#         'OPTIONS': {'charset': 'utf8mb4', 'connect_timeout': 10},
-#     }
-# }
+# Database configuration with dj-database-url
+# Supports PostgreSQL, MySQL, SQLite via DATABASE_URL environment variable
+# Default: SQLite for local development
+import dj_database_url
 
-# ── SQLite (local dev until RDS is accessible) ──
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-    }
+    'default': dj_database_url.config(
+        default=f'sqlite:///{BASE_DIR}/db.sqlite3',
+        conn_max_age=600,
+    )
 }
 
 AUTH_USER_MODEL = 'core.User'
@@ -172,6 +163,9 @@ DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='Truckwys <noreply@tru
 # Resend Configuration
 RESEND_API_KEY = config('RESEND_API_KEY', default='')
 EMAIL_FROM = config('EMAIL_FROM', default='TruckWys <noreply@mail.baselinq.ai>')
+
+# Frontend URL for email links
+FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:3701')
 
 # Security Settings
 CSRF_COOKIE_HTTPONLY = True
