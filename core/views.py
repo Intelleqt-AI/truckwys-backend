@@ -54,20 +54,20 @@ from .serializers import (
 
 class RegisterView(APIView):
     permission_classes = [AllowAny]
-    
+
     def post(self, request):
         serializer = UserSerializer(data=request.data)
         if serializer.is_valid():
             user = serializer.save()
             user.set_password(request.data.get('password'))
-            
+
             # Create a Company for the new user
             company_name = request.data.get('company_name', f"{user.first_name or user.username}'s Transport")
             from core.models import Company, Facility
             company = Company.objects.create(company_name=company_name)
             user.company = company
             user.save()
-            
+
             # Create a default Facility for the company
             Facility.objects.create(
                 company=company,
@@ -75,7 +75,17 @@ class RegisterView(APIView):
                 outstanding=0,
                 status='ACTIVE'
             )
-            
+
+            # Send welcome email
+            try:
+                from core.services.resend_email import send_welcome_email
+                login_url = "https://app.truckwys.co.za/login"
+                send_welcome_email(user, company_name, login_url)
+            except Exception as e:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.error(f"Failed to send welcome email to {user.email}: {str(e)}")
+
             token, created = Token.objects.get_or_create(user=user)
             return Response({
                 'token': token.key,
@@ -1998,11 +2008,15 @@ class PasswordResetRequestView(APIView):
                 # Store in cache/session — use Django cache
                 from django.core.cache import cache
                 cache.set(f'pwd_reset_{email}', code, timeout=3600)  # 1hr
-                # Log to console for demo (in prod: send email via SMTP/Sendgrid)
-                import logging
-                logger = logging.getLogger(__name__)
-                logger.info(f'Password reset code for {email}: {code}')
-                print(f'[PASSWORD RESET] Code for {email}: {code}')  # visible in server logs
+
+                # Send password reset email
+                try:
+                    from core.services.resend_email import send_password_reset_email
+                    send_password_reset_email(email, user.first_name or user.username, code)
+                except Exception as e:
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.error(f"Failed to send password reset email to {email}: {str(e)}")
         except Exception as e:
             pass
 
@@ -2118,3 +2132,123 @@ class ActivityEventViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         return ActivityEvent.objects.all()[:50]
+
+
+class TestEmailView(APIView):
+    """
+    Admin-only endpoint for testing Resend email system.
+
+    POST /api/admin/test-email/
+    Body: {"type": "welcome|invite|password_reset|invoice|advance", "to": "email@example.com"}
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        # Admin only
+        if not request.user.is_staff and not request.user.is_superuser:
+            return Response(
+                {'error': 'Admin access required'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        email_type = request.data.get('type', '').lower()
+        to_email = request.data.get('to', '')
+
+        if not email_type or not to_email:
+            return Response(
+                {'error': 'Both "type" and "to" fields are required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            from core.services.resend_email import (
+                send_welcome_email,
+                send_invite_email,
+                send_password_reset_email,
+                send_invoice_email,
+                send_advance_approved_email,
+            )
+            from core.models import User, Company, Invoice, Load
+            from decimal import Decimal
+
+            if email_type == 'welcome':
+                # Create test user object
+                test_user = User(
+                    email=to_email,
+                    first_name='Test',
+                    username=to_email
+                )
+                result = send_welcome_email(
+                    test_user,
+                    'Test Transport Company',
+                    'https://app.truckwys.co.za/login'
+                )
+
+            elif email_type == 'invite':
+                result = send_invite_email(
+                    to_email,
+                    'John Doe',
+                    'Test Transport Company',
+                    'https://app.truckwys.co.za/invite/accept/abc123',
+                    'MANAGER'
+                )
+
+            elif email_type == 'password_reset':
+                result = send_password_reset_email(
+                    to_email,
+                    'Test',
+                    '123456'
+                )
+
+            elif email_type == 'invoice':
+                # Create test invoice-like object
+                class TestInvoice:
+                    id = 'test-invoice-123'
+                    invoice_number = 'INV-2026-001'
+                    total_amount = Decimal('15750.00')
+                    due_date = timezone.now()
+                    created_at = timezone.now()
+                    customer_email = to_email
+
+                class TestCompany:
+                    name = 'Test Transport Company'
+                    bank_name = 'First National Bank'
+                    bank_account_number = '62812345678'
+
+                result = send_invoice_email(
+                    TestInvoice(),
+                    TestCompany()
+                )
+
+            elif email_type == 'advance':
+                test_user = User(
+                    email=to_email,
+                    first_name='Test',
+                    username=to_email
+                )
+                result = send_advance_approved_email(
+                    test_user,
+                    Decimal('12500.00'),
+                    'INV-2026-001'
+                )
+
+            else:
+                return Response(
+                    {'error': 'Invalid email type. Must be: welcome, invite, password_reset, invoice, or advance'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            return Response({
+                'success': True,
+                'message': f'{email_type.title()} email sent to {to_email}',
+                'result': result
+            })
+
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Failed to send test email: {str(e)}")
+            return Response(
+                {'error': f'Failed to send email: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )

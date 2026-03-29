@@ -10,7 +10,8 @@ from .views import (
     FleetOverviewView, VehicleInsightsView, VehicleIntelligenceFeedView, VehicleActionView,
     DriverOverviewView, DriverPerformanceLeaderboardView,
     QuotesPipelineOverviewView, NotificationSettingsView,
-    CompanyProfileView, CompanyLogoUploadView, DashboardOverviewView, ActivityEventViewSet
+    CompanyProfileView, CompanyLogoUploadView, DashboardOverviewView, ActivityEventViewSet,
+    TestEmailView
 )
 from .views_finance import (
     InvoiceFinanceViewSet, PaymentFinanceViewSet, ExpenseFinanceViewSet,
@@ -185,6 +186,9 @@ urlpatterns = [
     path('risk/model-info/', RiskModelInfoView.as_view(), name='risk-model-info'),
     path('risk/anomalies/', RiskAnomaliesView.as_view(), name='risk-anomalies'),
     path('risk/rescore-customer/<int:customer_id>/', RiskRescoreCustomerView.as_view(), name='risk-rescore-customer'),
+
+    # Admin test email endpoint
+    path('admin/test-email/', TestEmailView.as_view(), name='test-email'),
 
     # Router URLs (comes last)
     path('', include(router.urls)),
