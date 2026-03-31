@@ -122,7 +122,8 @@ class Company(models.Model):
         max_length=20,
         choices=[
             ('free', 'Free'),
-            ('growth', 'Growth'),
+            ('starter', 'Starter'),
+            ('pro', 'Pro'),  # Changed from 'professional' to match middleware
             ('enterprise', 'Enterprise'),
         ],
         default='free',

@@ -23,6 +23,6 @@ class BillingStatusSerializer(serializers.ModelSerializer):
 
 
 class SubscribeSerializer(serializers.Serializer):
-    plan = serializers.ChoiceField(choices=['growth', 'enterprise'])
+    plan = serializers.ChoiceField(choices=['pro', 'growth', 'enterprise'])
     return_url = serializers.URLField(required=False, default='')
     cancel_url = serializers.URLField(required=False, default='')

@@ -57,12 +57,6 @@ from .views_risk_api import (
 from .views_invite import (
     InviteCreateView, InviteValidateView, InviteAcceptView
 )
-from .views_ai_quote import (
-    FuelPriceCurrentView, AIQuoteSuggestionView, RevenueGuardView,
-    AIChatQuoteView, AIVoiceQuoteView,
-    QuoteOutcomeView, QuoteModelStatsView, FuelPriceSurchargeCheckView,
-    QuoteFuelAlertView, QuoteBenchmarkView, QuoteWinProbabilityView
-)
 
 router = DefaultRouter()
 router.register(r'users', UserViewSet, basename='user')
