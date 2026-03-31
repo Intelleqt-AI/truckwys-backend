@@ -1607,6 +1607,115 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         response['Content-Disposition'] = f'attachment; filename="Quote-{quote.quote_number}.pdf"'
         return response
 
+    @action(detail=True, methods=['post'])
+    def send_to_customer(self, request, pk=None):
+        """Generate shareable link for customer to view and respond to quote"""
+        from django.conf import settings
+        quote = self.get_object()
+
+        # Update status to SENT
+        quote.status = 'SENT'
+        if not quote.token:
+            import secrets
+            quote.token = secrets.token_urlsafe(32)
+        quote.save()
+
+        # Generate share URL
+        frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:3701')
+        share_url = f"{frontend_url}/quotes/view/{quote.id}/{quote.token[:8]}"
+
+        return Response({
+            'share_url': share_url,
+            'quote_number': quote.quote_number,
+            'status': quote.status
+        })
+
+
+class PublicQuoteView(APIView):
+    """Public view for customers to view quote details (no auth required)"""
+    permission_classes = [AllowAny]
+
+    def get(self, request, quote_id, token):
+        try:
+            quote = Quote.objects.get(id=quote_id)
+            # Validate token (use first 8 chars for URL, but check full token)
+            if not quote.token or not quote.token.startswith(token):
+                return Response(
+                    {'error': 'Invalid quote link'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            return Response({
+                'quote_number': quote.quote_number,
+                'customer_name': quote.customer.name if quote.customer else '',
+                'pickup_location': quote.pickup_location,
+                'delivery_location': quote.delivery_location,
+                'origin': quote.origin,
+                'destination': quote.destination,
+                'cargo_description': quote.cargo_description,
+                'weight': str(quote.weight),
+                'distance': str(quote.distance) if quote.distance else None,
+                'vehicle_type': quote.vehicle_type,
+                'base_rate': str(quote.base_rate),
+                'fuel_surcharge': str(quote.fuel_surcharge),
+                'toll_charges': str(quote.toll_charges),
+                'driver_allowance': str(quote.driver_allowance),
+                'additional_charges': str(quote.additional_charges),
+                'total_amount': str(quote.total_amount),
+                'valid_until': str(quote.valid_until),
+                'status': quote.status,
+                'sla_hours': quote.sla_hours,
+            })
+        except Quote.DoesNotExist:
+            return Response(
+                {'error': 'Quote not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+
+class PublicQuoteRespondView(APIView):
+    """Public endpoint for customers to accept/decline quotes (no auth required)"""
+    permission_classes = [AllowAny]
+
+    def post(self, request, quote_id, token):
+        try:
+            quote = Quote.objects.get(id=quote_id)
+            # Validate token
+            if not quote.token or not quote.token.startswith(token):
+                return Response(
+                    {'error': 'Invalid quote link'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            action = request.data.get('action')
+            if action not in ['accept', 'decline']:
+                return Response(
+                    {'error': 'Invalid action. Must be "accept" or "decline"'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            if action == 'accept':
+                quote.status = 'ACCEPTED'
+                quote.save()
+                # TODO: Optionally auto-create load here
+                return Response({
+                    'message': 'Quote accepted — your operator will be in touch',
+                    'status': quote.status
+                })
+            else:  # decline
+                quote.status = 'DECLINED'
+                quote.save()
+                return Response({
+                    'message': 'Quote declined',
+                    'status': quote.status
+                })
+
+        except Quote.DoesNotExist:
+            return Response(
+                {'error': 'Quote not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
 
 class InvoiceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     queryset = Invoice.objects.all()
@@ -1749,15 +1858,17 @@ import requests as http_requests
 
 
 class RouteCalculatorView(APIView):
-    """POST /api/v1/route/calculate/ — TomTom routing with fuel/toll calc"""
+    """POST /api/v1/route/calculate/ — TomTom routing with fuel/toll calc + cross-border costs"""
     permission_classes = [IsAuthenticated]
 
     TOMTOM_API_KEY = 'YTeWrKe8YSDqWkgs7D7QCMv1Ic4V6BHb'
     FUEL_RATE = 0.35        # litres/km
-    DIESEL_ZAR = 22.50      # ZAR/litre
-    TOLL_ZAR_KM = 0.95      # ZAR/km
+    TOLL_ZAR_KM = 0.95      # ZAR/km (SA tolls only)
 
     def post(self, request):
+        from core.services.cross_border import detect_countries, calculate_cross_border_costs, get_cross_border_warnings
+        from core.services.fuel_price import fetch_fuel_prices
+
         data = request.data
         origin = data.get('origin', '')
         destination = data.get('destination', '')
@@ -1766,6 +1877,7 @@ class RouteCalculatorView(APIView):
         dest_lat = data.get('dest_lat')
         dest_lon = data.get('dest_lon')
         weight_kg = int(data.get('weight_kg', 20000))
+        vehicle_type = data.get('vehicle_type', 'truck')
 
         # Geocode if no coords
         if origin_lat and origin_lon:
@@ -1793,32 +1905,97 @@ class RouteCalculatorView(APIView):
             duration_min = (distance_km / 80) * 60
             source = 'estimated'
 
-        fuel_litres = round(distance_km * self.FUEL_RATE, 2)
-        fuel_zar = round(fuel_litres * self.DIESEL_ZAR, 2)
-        toll_zar = round(distance_km * self.TOLL_ZAR_KM, 2)
+        # Get live fuel price
+        try:
+            fuel_price_obj = fetch_fuel_prices()
+            diesel_price = float(fuel_price_obj.diesel_inland)
+        except Exception:
+            diesel_price = 21.7  # Fallback
 
-        return Response({
+        # Fuel cost
+        fuel_litres = round(distance_km * self.FUEL_RATE, 2)
+        fuel_zar = round(fuel_litres * diesel_price, 2)
+
+        # Detect cross-border route
+        countries = detect_countries(origin, destination)
+        cross_border = countries is not None and len(countries) > 1
+
+        # SA tolls (only if domestic or SA portion)
+        toll_zar = round(distance_km * self.TOLL_ZAR_KM, 2) if not cross_border else 0
+
+        # Cross-border costs
+        additional_costs = {}
+        warnings = []
+        if cross_border:
+            cb_costs = calculate_cross_border_costs(countries, distance_km, vehicle_type)
+            additional_costs = {
+                'border_fees': cb_costs['border_fees'],
+                'weighbridge_fees': cb_costs['weighbridge_fees'],
+                'non_sa_tolls': cb_costs['non_sa_tolls'],
+            }
+            warnings = get_cross_border_warnings(countries)
+            # Add non-SA tolls to toll_cost_zar
+            toll_zar += cb_costs['non_sa_tolls']
+
+        response_data = {
             'success': True,
             'source': source,
             'distance_km': round(distance_km, 1),
             'duration_minutes': int(duration_min),
             'fuel_usage_litres': fuel_litres,
             'fuel_cost_zar': fuel_zar,
-            'toll_cost_zar': toll_zar,
-            'total_cost_zar': round(fuel_zar + toll_zar, 2),
+            'toll_cost_zar': round(toll_zar, 2),
+            'total_cost_zar': round(fuel_zar + toll_zar + sum(additional_costs.values()), 2),
             'origin_coords': o,
             'dest_coords': d,
-        })
+            'origin_resolved': o.get('label', origin),
+            'dest_resolved': d.get('label', destination),
+        }
+
+        # Add cross-border info if applicable
+        if cross_border:
+            response_data['cross_border'] = True
+            response_data['countries'] = countries
+            response_data['additional_costs'] = additional_costs
+            if warnings:
+                response_data['warnings'] = warnings
+
+        return Response(response_data)
 
     def _geocode(self, query):
         try:
             url = f'https://api.tomtom.com/search/2/geocode/{query}.json'
-            r = http_requests.get(url, params={'key': self.TOMTOM_API_KEY}, timeout=10)
+            # First try with SA country bias
+            r = http_requests.get(url, params={
+                'key': self.TOMTOM_API_KEY,
+                'countrySet': 'ZAF,ZWE,MOZ,BWA,NAM,ZMB,MWI',
+                'limit': 5,
+            }, timeout=10)
             if r.status_code == 200:
                 results = r.json().get('results', [])
-                if results:
-                    p = results[0]['position']
-                    return {'lat': p['lat'], 'lon': p['lon']}
+                for result in results:
+                    p = result['position']
+                    lat, lon = p['lat'], p['lon']
+                    # Must be within Southern Africa bounds
+                    if -36 <= lat <= -10 and 10 <= lon <= 45:
+                        addr = result.get('address', {})
+                        label = addr.get('freeformAddress') or addr.get('municipality') or query
+                        return {'lat': lat, 'lon': lon, 'label': label}
+            # Fallback: append South Africa to query and retry
+            r2 = http_requests.get(
+                f'https://api.tomtom.com/search/2/geocode/{query}, South Africa.json',
+                params={'key': self.TOMTOM_API_KEY, 'limit': 3},
+                timeout=10
+            )
+            if r2.status_code == 200:
+                results2 = r2.json().get('results', [])
+                for result in results2:
+                    p = result['position']
+                    lat, lon = p['lat'], p['lon']
+                    if -36 <= lat <= -10 and 10 <= lon <= 45:
+                        addr = result.get('address', {})
+                        label = addr.get('freeformAddress') or query
+                        return {'lat': lat, 'lon': lon, 'label': label}
         except Exception:
             pass
         return None
@@ -2165,3 +2342,53 @@ class ActivityEventViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         return ActivityEvent.objects.all()[:50]
+
+
+class QuotePublicView(APIView):
+    """Public quote view — no auth required. Customer sees and responds to quote."""
+    permission_classes = []
+    authentication_classes = []
+
+    def get(self, request, quote_id, token):
+        try:
+            quote = Quote.objects.get(id=quote_id)
+            if not quote.token or not (quote.token == token or quote.token.startswith(token)):
+                return Response({'error': 'Invalid link'}, status=404)
+            return Response({
+                'quote_number': quote.quote_number,
+                'status': quote.status,
+                'pickup_location': quote.pickup_location,
+                'delivery_location': quote.delivery_location,
+                'cargo_description': quote.cargo_description,
+                'vehicle_type': quote.vehicle_type,
+                'weight': float(quote.weight),
+                'distance': float(quote.distance) if quote.distance else 0,
+                'base_rate': float(quote.base_rate) if quote.base_rate else 0,
+                'fuel_surcharge': float(quote.fuel_surcharge) if quote.fuel_surcharge else 0,
+                'toll_charges': float(quote.toll_charges) if quote.toll_charges else 0,
+                'driver_allowance': float(quote.driver_allowance) if quote.driver_allowance else 0,
+                'total_amount': float(quote.total_amount),
+                'valid_until': quote.valid_until.isoformat() if quote.valid_until else None,
+                'company_name': quote.company.company_name if quote.company else 'TruckWys Operator',
+                'notes': quote.notes or '',
+            })
+        except Quote.DoesNotExist:
+            return Response({'error': 'Quote not found'}, status=404)
+
+    def post(self, request, quote_id, token):
+        try:
+            quote = Quote.objects.get(id=quote_id)
+            if not quote.token or not (quote.token == token or quote.token.startswith(token)):
+                return Response({'error': 'Invalid link'}, status=404)
+            action = request.data.get('action')
+            if action == 'accept':
+                quote.status = 'ACCEPTED'
+                quote.save(update_fields=['status'])
+                return Response({'success': True, 'message': 'Quote accepted. Your operator will be in touch shortly.'})
+            elif action == 'decline':
+                quote.status = 'DECLINED'
+                quote.save(update_fields=['status'])
+                return Response({'success': True, 'message': 'Quote declined.'})
+            return Response({'error': 'Invalid action'}, status=400)
+        except Quote.DoesNotExist:
+            return Response({'error': 'Quote not found'}, status=404)

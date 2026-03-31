@@ -45,11 +45,38 @@ class DriverSerializer(serializers.ModelSerializer):
 class VehicleSerializer(serializers.ModelSerializer):
     driver_name = serializers.CharField(source='driver.user.username', read_only=True)
     vehicle_type_name = serializers.CharField(source='vehicle_type.name', read_only=True)
-    
+    # Allow onboarding to pass 'registration' as alias for 'plate'
+    registration = serializers.CharField(write_only=True, required=False)
+
     class Meta:
         model = Vehicle
         fields = '__all__'
         read_only_fields = ['id', 'created_at', 'updated_at']
+        extra_kwargs = {
+            'vin': {'required': False, 'default': ''},
+            'plate': {'required': False, 'default': ''},
+            'type': {'required': False, 'default': 'Rigid Truck'},
+            'capacity': {'required': False, 'default': 0},
+            'fuel_type': {'required': False, 'default': 'Diesel'},
+            'year': {'required': False},
+        }
+
+    def validate(self, attrs):
+        # Map 'registration' to 'plate' for onboarding compatibility
+        if 'registration' in attrs:
+            if not attrs.get('plate'):
+                attrs['plate'] = attrs.pop('registration')
+            else:
+                attrs.pop('registration')
+        # Auto-generate VIN if not provided
+        if not attrs.get('vin'):
+            import uuid
+            attrs['vin'] = f'VIN-{uuid.uuid4().hex[:12].upper()}'
+        # Default year
+        if not attrs.get('year'):
+            from datetime import date
+            attrs['year'] = date.today().year
+        return attrs
 
 
 # VehicleType Serializer

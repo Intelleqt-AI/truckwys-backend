@@ -14,7 +14,8 @@ from .views import (
     FleetOverviewView, VehicleInsightsView, VehicleIntelligenceFeedView, VehicleActionView,
     DriverOverviewView, DriverPerformanceLeaderboardView,
     QuotesPipelineOverviewView, NotificationSettingsView,
-    CompanyProfileView, CompanyLogoUploadView, DashboardOverviewView, ActivityEventViewSet
+    CompanyProfileView, CompanyLogoUploadView, DashboardOverviewView, ActivityEventViewSet,
+    PublicQuoteView, PublicQuoteRespondView
 )
 from .views_finance import (
     InvoiceFinanceViewSet, PaymentFinanceViewSet, ExpenseFinanceViewSet,
@@ -165,6 +166,23 @@ urlpatterns = [
 
     # Route Calculator endpoint (NEW - Phase 4)
     path('route/calculate/', RouteCalculatorView.as_view(), name='route-calculate'),
+
+    # Public Quote endpoints (no auth required)
+    path('quotes/public/<int:quote_id>/<str:token>/', PublicQuoteView.as_view(), name='public-quote-view'),
+    path('quotes/public/<int:quote_id>/<str:token>/respond/', PublicQuoteRespondView.as_view(), name='public-quote-respond'),
+
+    # AI Quote & Revenue Guard endpoints (Phase 2 + Sprint 1)
+    path('fuel-prices/current/', FuelPriceCurrentView.as_view(), name='fuel-prices-current'),
+    path('fuel-prices/surcharge-check/', FuelPriceSurchargeCheckView.as_view(), name='fuel-surcharge-check'),
+    path('quotes/suggest/', AIQuoteSuggestionView.as_view(), name='quotes-suggest'),
+    path('quotes/guard/', RevenueGuardView.as_view(), name='quotes-guard'),
+    path('quotes/<int:quote_id>/outcome/', QuoteOutcomeView.as_view(), name='quote-outcome'),
+    path('quotes/<int:quote_id>/fuel-alert/', QuoteFuelAlertView.as_view(), name='quote-fuel-alert'),
+    path('quotes/model-stats/', QuoteModelStatsView.as_view(), name='quote-model-stats'),
+    path('quotes/benchmark/', QuoteBenchmarkView.as_view(), name='quote-benchmark'),
+    path('quotes/win-probability/', QuoteWinProbabilityView.as_view(), name='quote-win-probability'),
+    path('ai/chat-quote/', AIChatQuoteView.as_view(), name='ai-chat-quote'),
+    path('ai/voice-quote/', AIVoiceQuoteView.as_view(), name='ai-voice-quote'),
 
     # Real signals endpoint (Sprint 5)
     path('dashboard/signals/', DashboardSignalsView.as_view(), name='dashboard-signals'),
