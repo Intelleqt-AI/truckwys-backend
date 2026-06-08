@@ -34,49 +34,78 @@ class CustomerSerializer(serializers.ModelSerializer):
 # Driver Serializer
 class DriverSerializer(serializers.ModelSerializer):
     user_details = UserSerializer(source='user', read_only=True)
-    
+    revenue_generated = serializers.SerializerMethodField()
+    total_trips = serializers.SerializerMethodField()
+    avg_revenue_per_trip = serializers.SerializerMethodField()
+
     class Meta:
         model = Driver
-        fields = '__all__'
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        fields = [
+            'id', 'user', 'user_details', 'license_number', 'license_expiry',
+            'license_state', 'medical_card_expiry', 'hire_date', 'status',
+            'emergency_contact', 'emergency_phone', 'violation_count',
+            'accident_history', 'experience_years', 'created_at', 'updated_at',
+            'revenue_generated', 'total_trips', 'avg_revenue_per_trip'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at', 'revenue_generated', 'total_trips', 'avg_revenue_per_trip']
+
+    def get_revenue_generated(self, obj):
+        """Calculate total revenue from all delivered loads for this driver."""
+        from django.db.models import Sum
+        total = obj.loads.filter(status='DELIVERED').aggregate(total=Sum('total_amount'))['total']
+        return float(total) if total else 0.0
+
+    def get_total_trips(self, obj):
+        """Count total delivered loads for this driver."""
+        return obj.loads.filter(status='DELIVERED').count()
+
+    def get_avg_revenue_per_trip(self, obj):
+        """Calculate average revenue per trip for this driver."""
+        from django.db.models import Avg
+        avg = obj.loads.filter(status='DELIVERED').aggregate(avg=Avg('total_amount'))['avg']
+        return float(avg) if avg else 0.0
 
 
 # Vehicle Serializer
 class VehicleSerializer(serializers.ModelSerializer):
     driver_name = serializers.CharField(source='driver.user.username', read_only=True)
     vehicle_type_name = serializers.CharField(source='vehicle_type.name', read_only=True)
-    # Allow onboarding to pass 'registration' as alias for 'plate'
-    registration = serializers.CharField(write_only=True, required=False)
+    revenue_generated = serializers.SerializerMethodField()
+    total_trips = serializers.SerializerMethodField()
+    utilisation_rate = serializers.SerializerMethodField()
 
     class Meta:
         model = Vehicle
-        fields = '__all__'
-        read_only_fields = ['id', 'created_at', 'updated_at']
-        extra_kwargs = {
-            'vin': {'required': False, 'default': ''},
-            'plate': {'required': False, 'default': ''},
-            'type': {'required': False, 'default': 'Rigid Truck'},
-            'capacity': {'required': False, 'default': 0},
-            'fuel_type': {'required': False, 'default': 'Diesel'},
-            'year': {'required': False},
-        }
+        fields = [
+            'id', 'company', 'vin', 'make', 'model', 'driver', 'vehicle_type',
+            'year', 'plate', 'type', 'capacity', 'status', 'fuel_type', 'mileage',
+            'last_maintenance_date', 'next_maintenance_due', 'insurance_expiry',
+            'registration_expiry', 'ai_health_score', 'fuel_efficiency_score',
+            'uptime_score', 'maintenance_score', 'uptime_percentage', 'cost_per_km',
+            'margin_per_trip', 'fuel_consumption_per_km', 'created_at', 'updated_at',
+            'driver_name', 'vehicle_type_name', 'revenue_generated', 'total_trips',
+            'utilisation_rate'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at', 'driver_name', 'vehicle_type_name',
+                           'revenue_generated', 'total_trips', 'utilisation_rate']
 
-    def validate(self, attrs):
-        # Map 'registration' to 'plate' for onboarding compatibility
-        if 'registration' in attrs:
-            if not attrs.get('plate'):
-                attrs['plate'] = attrs.pop('registration')
-            else:
-                attrs.pop('registration')
-        # Auto-generate VIN if not provided
-        if not attrs.get('vin'):
-            import uuid
-            attrs['vin'] = f'VIN-{uuid.uuid4().hex[:12].upper()}'
-        # Default year
-        if not attrs.get('year'):
-            from datetime import date
-            attrs['year'] = date.today().year
-        return attrs
+    def get_revenue_generated(self, obj):
+        """Calculate total revenue from all delivered loads for this vehicle."""
+        from django.db.models import Sum
+        total = obj.loads.filter(status='DELIVERED').aggregate(total=Sum('total_amount'))['total']
+        return float(total) if total else 0.0
+
+    def get_total_trips(self, obj):
+        """Count total delivered loads for this vehicle."""
+        return obj.loads.filter(status='DELIVERED').count()
+
+    def get_utilisation_rate(self, obj):
+        """Calculate utilization rate as percentage of loads in transit or delivered."""
+        total_loads = obj.loads.count()
+        if total_loads == 0:
+            return 0.0
+        active_loads = obj.loads.filter(status__in=['IN_TRANSIT', 'DELIVERED', 'LOADING', 'ASSIGNED']).count()
+        return round((active_loads / total_loads) * 100, 2)
 
 
 # VehicleType Serializer

@@ -4,7 +4,10 @@ from django.db import models
 class User(AbstractUser):
     ROLE_CHOICES = [
         ('ADMIN', 'Admin'),
+        ('MANAGER', 'Manager'),
+        ('OPERATOR', 'Operator'),
         ('DISPATCHER', 'Dispatcher'),
+        ('VIEWER', 'Viewer'),
         ('DRIVER', 'Driver'),
         ('CUSTOMER', 'Customer'),
         ('PARTNER', 'Partner'),

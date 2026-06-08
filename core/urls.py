@@ -15,7 +15,7 @@ from .views import (
     DriverOverviewView, DriverPerformanceLeaderboardView,
     QuotesPipelineOverviewView, NotificationSettingsView,
     CompanyProfileView, CompanyLogoUploadView, DashboardOverviewView, ActivityEventViewSet,
-    PublicQuoteView, PublicQuoteRespondView
+    TestEmailView, InviteView, InviteTokenView, InviteResendView
 )
 from .views_finance import (
     InvoiceFinanceViewSet, PaymentFinanceViewSet, ExpenseFinanceViewSet,
@@ -104,11 +104,9 @@ urlpatterns = [
     path('auth/me/', UserProfileView.as_view(), name='user-profile'),
     path('auth/password-reset/', PasswordResetRequestView.as_view(), name='password-reset'),
     path('auth/password-reset/confirm/', PasswordResetConfirmView.as_view(), name='password-reset-confirm'),
-
-    # Team invitation endpoints
-    path('auth/invite/', InviteCreateView.as_view(), name='invite-create'),
-    path('auth/invite/<uuid:token>/', InviteValidateView.as_view(), name='invite-validate'),
-    path('auth/invite/<uuid:token>/accept/', InviteAcceptView.as_view(), name='invite-accept'),
+    path('auth/invite/', InviteView.as_view(), name='auth-invite'),
+    path('auth/invite/<str:token>/', InviteTokenView.as_view(), name='auth-invite-detail'),
+    path('auth/invite/<str:token>/resend/', InviteResendView.as_view(), name='auth-invite-resend'),
     
     # Fleet/Vehicle specific endpoints (must come before router to avoid conflicts)
     path('fleet/overview/', FleetOverviewView.as_view(), name='fleet-overview'),
@@ -219,15 +217,8 @@ urlpatterns = [
     path('risk/anomalies/', RiskAnomaliesView.as_view(), name='risk-anomalies'),
     path('risk/rescore-customer/<int:customer_id>/', RiskRescoreCustomerView.as_view(), name='risk-rescore-customer'),
 
-    # Partner Auth endpoint
-    path('partner/auth/login/', PartnerLoginView.as_view(), name='partner-auth-login'),
-
-    # Billing endpoints (PayFast)
-    path('billing/subscribe/', SubscribeView.as_view(), name='billing-subscribe'),
-    path('billing/cancel/', CancelSubscriptionView.as_view(), name='billing-cancel'),
-    path('billing/status/', BillingStatusView.as_view(), name='billing-status'),
-    path('billing/history/', BillingHistoryView.as_view(), name='billing-history'),
-    path('billing/itn/', PayFastITNView.as_view(), name='billing-itn'),
+    # Admin test email endpoint
+    path('admin/test-email/', TestEmailView.as_view(), name='test-email'),
 
     # Router URLs (comes last)
     path('', include(router.urls)),

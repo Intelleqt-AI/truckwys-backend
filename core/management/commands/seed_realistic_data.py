@@ -153,13 +153,21 @@ class Command(BaseCommand):
                 )
                 drivers.append(drv)
 
-        # Loads (200 total target)
+        # Loads (200 total target) - ENSURE EVERY LOAD HAS DRIVER + VEHICLE
         existing_loads = Load.objects.count()
         needed = max(0, 200 - existing_loads)
         self.stdout.write(f'  Creating {needed} loads...')
 
         load_counter = existing_loads + 1
         loads_created = []
+
+        # Ensure we have drivers and vehicles
+        if not drivers:
+            self.stdout.write(self.style.ERROR('ERROR: No drivers found! Cannot create loads.'))
+            return
+        if not vehicles:
+            self.stdout.write(self.style.ERROR('ERROR: No vehicles found! Cannot create loads.'))
+            return
 
         for i in range(needed):
             customer = random.choice(customers)
@@ -168,10 +176,26 @@ class Command(BaseCommand):
             pickup_date = timezone.now() - timedelta(days=days_ago + random.randint(1, 5))
             delivery_date = pickup_date + timedelta(days=random.randint(1, 3))
 
-            # Rate based on distance
-            base_rate = Decimal(str(distance * random.uniform(8, 14)))
-            fuel_surcharge = base_rate * Decimal('0.12')
+            # Rate based on distance - ensure realistic ZAR 8000-45000 range
+            # Base rate: R10-30 per km
+            rate_per_km = Decimal(str(random.uniform(10, 30)))
+            base_rate = (Decimal(str(distance)) * rate_per_km).quantize(Decimal('0.01'))
+
+            # Fuel surcharge (12-18% of base rate)
+            fuel_surcharge = (base_rate * Decimal(str(random.uniform(0.12, 0.18)))).quantize(Decimal('0.01'))
+
+            # Total amount (should be in R8000-45000 range for realistic loads)
             total = (base_rate + fuel_surcharge).quantize(Decimal('0.01'))
+
+            # Ensure total is in realistic range (adjust if needed)
+            if total < Decimal('8000'):
+                total = Decimal(str(random.randint(8000, 15000)))
+                base_rate = (total * Decimal('0.85')).quantize(Decimal('0.01'))
+                fuel_surcharge = (total - base_rate).quantize(Decimal('0.01'))
+            elif total > Decimal('45000'):
+                total = Decimal(str(random.randint(25000, 45000)))
+                base_rate = (total * Decimal('0.85')).quantize(Decimal('0.01'))
+                fuel_surcharge = (total - base_rate).quantize(Decimal('0.01'))
 
             # Status based on age
             if days_ago > 60:
@@ -184,11 +208,15 @@ class Command(BaseCommand):
             load_num = f'LD-{timezone.now().strftime("%Y%m%d")}-{load_counter:04d}'
             load_counter += 1
 
+            # CRITICAL: Rotate through drivers and vehicles to distribute loads evenly
+            assigned_driver = drivers[i % len(drivers)]
+            assigned_vehicle = vehicles[i % len(vehicles)]
+
             load = Load.objects.create(
                 load_number=load_num,
                 customer=customer,
-                driver=random.choice(drivers) if drivers else None,
-                vehicle=random.choice(vehicles) if vehicles else None,
+                driver=assigned_driver,  # Always assign a driver
+                vehicle=assigned_vehicle,  # Always assign a vehicle
                 pickup_location=pickup,
                 pickup_city=pickup.split(',')[0],
                 pickup_state=pickup.split(',')[1].strip() if ',' in pickup else 'GP',
@@ -207,10 +235,11 @@ class Command(BaseCommand):
                 total_amount=total,
                 status=load_status,
                 created_by=user,
+                company=company,
             )
             loads_created.append(load)
 
-        self.stdout.write(f'  ✅ {needed} loads created')
+        self.stdout.write(f'  ✅ {needed} loads created (all linked to drivers/vehicles)')
 
         # Invoices (100 total target)
         existing_invoices = Invoice.objects.count()

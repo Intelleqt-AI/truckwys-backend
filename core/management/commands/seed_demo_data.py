@@ -482,8 +482,9 @@ class Command(BaseCommand):
         for i in range(20):
             pickup, delivery, distance = random.choice(routes)
             customer = random.choice(customers)
-            vehicle = random.choice(vehicles)
-            driver = random.choice(drivers)
+            # ROTATE through vehicles and drivers instead of random selection
+            vehicle = vehicles[i % len(vehicles)]
+            driver = drivers[i % len(drivers)]
             status = statuses[i]
 
             # Date spread over past 6 months, with some in current month
@@ -505,7 +506,23 @@ class Command(BaseCommand):
                 delivery_date = pickup_date + timedelta(days=random.randint(2, 5))
 
             load_number = f'LOAD-{pickup_date.strftime("%Y%m%d")}-{1000 + i}'
-            rate = Decimal(str(random.randint(8000, 45000)))
+
+            # Calculate realistic costs based on distance
+            rate_per_km = Decimal(str(random.uniform(10, 25)))
+            base_rate = (distance * rate_per_km).quantize(Decimal('0.01'))
+
+            # Fuel cost: ~0.35 L/km * R23.50/L
+            fuel_cost = (distance * Decimal('0.35') * Decimal('23.50')).quantize(Decimal('0.01'))
+
+            # Toll cost: ~R0.95/km for long hauls
+            toll_cost = (distance * Decimal('0.95')).quantize(Decimal('0.01')) if distance > Decimal('200') else Decimal('0')
+
+            # Total: base_rate already includes costs, but ensure in range R8000-45000
+            total_amount = base_rate
+            if total_amount < Decimal('8000'):
+                total_amount = Decimal(str(random.randint(8000, 15000)))
+            elif total_amount > Decimal('45000'):
+                total_amount = Decimal(str(random.randint(25000, 45000)))
 
             load, created = Load.objects.get_or_create(
                 load_number=load_number,
@@ -531,8 +548,9 @@ class Command(BaseCommand):
                         timezone.datetime.min.time()
                     )),
                     'status': status,
-                    'rate': rate,
-                    'total_amount': rate,
+                    'rate': base_rate,
+                    'fuel_surcharge': fuel_cost,
+                    'total_amount': total_amount,
                     'distance': distance,
                     'weight': Decimal(str(random.randint(5000, 28000))),
                     'cargo_description': random.choice(cargo_types),
@@ -542,7 +560,7 @@ class Command(BaseCommand):
             if created:
                 loads.append(load)
 
-        self.stdout.write(f'✓ Created {len(loads)} loads')
+        self.stdout.write(f'✓ Created {len(loads)} loads (all linked to drivers/vehicles)')
         return loads
 
     def _create_invoices(self, loads, customers, company):
