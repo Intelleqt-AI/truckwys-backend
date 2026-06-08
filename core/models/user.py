@@ -10,6 +10,7 @@ class User(AbstractUser):
         ('VIEWER', 'Viewer'),
         ('DRIVER', 'Driver'),
         ('CUSTOMER', 'Customer'),
+        ('PARTNER', 'Partner'),
     ]
     
     STATUS_CHOICES = [

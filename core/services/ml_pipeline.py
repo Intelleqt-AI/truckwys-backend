@@ -20,6 +20,7 @@ try:
     )
     from sklearn.preprocessing import StandardScaler
     import xgboost as xgb
+    import shap
     ML_AVAILABLE = True
 except ImportError:
     ML_AVAILABLE = False
@@ -33,16 +34,20 @@ class RiskPrediction:
     confidence: float  # Model confidence (0-1)
     tier: str  # Risk tier: LOW, MEDIUM, HIGH, VERY_HIGH
     prediction_date: datetime
+    shap_explanations: Optional[list] = None  # SHAP feature explanations
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
-        return {
+        result = {
             'probability': self.probability,
             'expected_days_late': self.expected_days_late,
             'confidence': self.confidence,
             'tier': self.tier,
             'prediction_date': self.prediction_date.isoformat(),
         }
+        if self.shap_explanations is not None:
+            result['shap_explanations'] = self.shap_explanations
+        return result
 
 
 class RiskMLPipeline:
@@ -72,13 +77,14 @@ class RiskMLPipeline:
         if not ML_AVAILABLE:
             raise ImportError(
                 "ML libraries not available. Install with: "
-                "pip install scikit-learn xgboost joblib"
+                "pip install scikit-learn xgboost joblib shap"
             )
 
         self.model: Optional[xgb.XGBClassifier] = None
         self.scaler: Optional[StandardScaler] = None
         self.metadata: Dict[str, Any] = {}
         self.feature_names: list[str] = []
+        self.explainer: Optional[shap.TreeExplainer] = None
 
         # Create model directory if it doesn't exist
         self.MODEL_DIR.mkdir(parents=True, exist_ok=True)
@@ -103,11 +109,16 @@ class RiskMLPipeline:
                         self.metadata = json.load(f)
                         self.feature_names = self.metadata.get('feature_names', [])
 
+                # Initialize SHAP explainer for the loaded model
+                if self.model is not None:
+                    self.explainer = shap.TreeExplainer(self.model)
+
                 return True
         except Exception as e:
             print(f"Error loading model: {e}")
             self.model = None
             self.scaler = None
+            self.explainer = None
 
         return False
 
@@ -144,14 +155,35 @@ class RiskMLPipeline:
         y = []
         feature_names = None
 
+        # First pass: determine the feature set from the most common structure
+        feature_sets = {}
         for outcome in payment_outcomes_qs:
             if outcome.has_complete_data:
                 features = outcome.feature_snapshot
-                X.append(list(features.values()))
-                y.append(1 if outcome.is_high_risk else 0)  # Binary: high risk or not
+                feature_key = tuple(sorted(features.keys()))
+                feature_sets[feature_key] = feature_sets.get(feature_key, 0) + 1
 
-                if feature_names is None:
-                    feature_names = list(features.keys())
+        if not feature_sets:
+            raise ValueError("No valid payment outcomes found")
+
+        # Use the most common feature set
+        most_common_features = max(feature_sets.items(), key=lambda x: x[1])[0]
+        feature_names = list(most_common_features)
+
+        print(f"Using feature set with {len(feature_names)} features: {feature_names}")
+        print(f"Found {feature_sets[most_common_features]} outcomes with this feature set")
+
+        # Second pass: extract data only from outcomes with matching feature set
+        for outcome in payment_outcomes_qs:
+            if outcome.has_complete_data:
+                features = outcome.feature_snapshot
+                feature_key = tuple(sorted(features.keys()))
+
+                # Only use outcomes with the most common feature set
+                if feature_key == most_common_features:
+                    # Ensure features are in the correct order
+                    X.append([features[name] for name in feature_names])
+                    y.append(1 if outcome.is_high_risk else 0)  # Binary: high risk or not
 
         if len(X) < 50:
             raise ValueError(f"Insufficient training data: {len(X)} samples (need at least 50)")
@@ -210,6 +242,9 @@ class RiskMLPipeline:
             'metrics': metrics,
         }
 
+        # Initialize SHAP explainer
+        self.explainer = shap.TreeExplainer(self.model)
+
         # Save model
         self._save_model()
 
@@ -220,12 +255,14 @@ class RiskMLPipeline:
             'metadata': self.metadata,
         }
 
-    def predict(self, features: Dict[str, Any]) -> Optional[RiskPrediction]:
+    def predict(self, features: Dict[str, Any], include_shap: bool = True, top_n: int = 5) -> Optional[RiskPrediction]:
         """
         Predict payment risk for invoice features.
 
         Args:
             features: Dictionary of feature values
+            include_shap: Whether to include SHAP explanations (default True)
+            top_n: Number of top SHAP features to include (default 5)
 
         Returns:
             RiskPrediction object or None if model not trained
@@ -253,12 +290,18 @@ class RiskMLPipeline:
             # Determine tier
             tier = self._probability_to_tier(proba)
 
+            # Generate SHAP explanations if requested
+            shap_explanations = None
+            if include_shap and self.explainer is not None:
+                shap_explanations = self._get_shap_explanations(X_scaled, top_n)
+
             return RiskPrediction(
                 probability=float(proba),
                 expected_days_late=float(expected_days_late),
                 confidence=float(confidence),
                 tier=tier,
                 prediction_date=datetime.now(),
+                shap_explanations=shap_explanations,
             )
 
         except Exception as e:
@@ -318,6 +361,60 @@ class RiskMLPipeline:
             'high_risk_rate': self.metadata.get('high_risk_rate'),
             'model_type': 'XGBoost Classifier',
         }
+
+    def _get_shap_explanations(self, X_scaled: np.ndarray, top_n: int = 5) -> list:
+        """
+        Generate SHAP explanations for prediction.
+
+        Args:
+            X_scaled: Scaled feature array (single sample)
+            top_n: Number of top features to return
+
+        Returns:
+            List of dictionaries with feature, impact, and direction
+        """
+        try:
+            # Calculate SHAP values
+            shap_values = self.explainer.shap_values(X_scaled)
+
+            # For binary classification, shap_values may be a list [class_0, class_1]
+            # We want the SHAP values for the positive class (high risk)
+            if isinstance(shap_values, list):
+                shap_values = shap_values[1]  # Class 1 (high risk)
+
+            # Get SHAP values for this single prediction
+            shap_vals = shap_values[0] if shap_values.ndim > 1 else shap_values
+
+            # Create list of (feature_name, shap_value) tuples
+            feature_impacts = []
+            for i, feature_name in enumerate(self.feature_names):
+                shap_value = float(shap_vals[i])
+                feature_impacts.append({
+                    'feature': feature_name,
+                    'impact': abs(shap_value),  # Absolute impact for ranking
+                    'shap_value': shap_value,  # Actual SHAP value (can be negative)
+                    'direction': 'INCREASES_RISK' if shap_value > 0 else 'DECREASES_RISK'
+                })
+
+            # Sort by absolute impact (descending)
+            feature_impacts.sort(key=lambda x: x['impact'], reverse=True)
+
+            # Return top N features
+            top_features = feature_impacts[:top_n]
+
+            # Format for API response
+            return [
+                {
+                    'feature': f['feature'],
+                    'impact': round(f['shap_value'], 4),  # Use actual SHAP value
+                    'direction': f['direction']
+                }
+                for f in top_features
+            ]
+
+        except Exception as e:
+            print(f"Error generating SHAP explanations: {e}")
+            return []
 
     def _probability_to_tier(self, probability: float) -> str:
         """

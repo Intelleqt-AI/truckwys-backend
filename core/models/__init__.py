@@ -2,6 +2,7 @@ from .user import User
 from .vehicle import Vehicle, VehicleLog, VehicleType
 from .load import Load
 from .quote import Quote
+from .quote_outcome import QuoteOutcome
 from .driver import Driver
 from .customer import Customer
 from .invoice import Invoice
@@ -20,6 +21,8 @@ from .webhook import Webhook
 from .integration_api_key import IntegrationAPIKey
 from .activity_event import ActivityEvent
 from .webhook_subscription import WebhookSubscription
+from .billing import BillingTransaction
+from .invite_token import InviteToken
 
 __all__ = [
     'User',
@@ -28,6 +31,7 @@ __all__ = [
     'VehicleType',
     'Load',
     'Quote',
+    'QuoteOutcome',
     'Driver',
     'Customer',
     'Invoice',
@@ -46,4 +50,6 @@ __all__ = [
     'IntegrationAPIKey',
     'ActivityEvent',
     'WebhookSubscription',
+    'BillingTransaction',
+    'InviteToken',
 ]
