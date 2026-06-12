@@ -15,7 +15,9 @@ from .views import (
     DriverOverviewView, DriverPerformanceLeaderboardView,
     QuotesPipelineOverviewView, NotificationSettingsView,
     CompanyProfileView, CompanyLogoUploadView, DashboardOverviewView, ActivityEventViewSet,
-    TestEmailView, InviteView, InviteTokenView, InviteResendView
+    TestEmailView, InviteView, InviteTokenView, InviteResendView,
+    PublicQuoteView, PublicQuoteRespondView,
+    EmailVerifyView, ResendVerificationView,
 )
 from .views_finance import (
     InvoiceFinanceViewSet, PaymentFinanceViewSet, ExpenseFinanceViewSet,
@@ -56,6 +58,13 @@ from .views_risk_api import (
 )
 from .views_invite import (
     InviteCreateView, InviteValidateView, InviteAcceptView
+)
+from .views_ai_quote import (
+    FuelPriceCurrentView, FuelPriceSurchargeCheckView,
+    AIQuoteSuggestionView, RevenueGuardView,
+    AIChatQuoteView, AIVoiceQuoteView,
+    QuoteOutcomeView, QuoteFuelAlertView,
+    QuoteModelStatsView, QuoteBenchmarkView, QuoteWinProbabilityView,
 )
 
 router = DefaultRouter()
@@ -104,9 +113,12 @@ urlpatterns = [
     path('auth/me/', UserProfileView.as_view(), name='user-profile'),
     path('auth/password-reset/', PasswordResetRequestView.as_view(), name='password-reset'),
     path('auth/password-reset/confirm/', PasswordResetConfirmView.as_view(), name='password-reset-confirm'),
+    path('auth/verify-email/', EmailVerifyView.as_view(), name='verify-email'),
+    path('auth/resend-verification/', ResendVerificationView.as_view(), name='resend-verification'),
     path('auth/invite/', InviteView.as_view(), name='auth-invite'),
     path('auth/invite/<str:token>/', InviteTokenView.as_view(), name='auth-invite-detail'),
     path('auth/invite/<str:token>/resend/', InviteResendView.as_view(), name='auth-invite-resend'),
+    path('auth/invite/<str:token>/accept/', InviteAcceptView.as_view(), name='auth-invite-accept'),
     
     # Fleet/Vehicle specific endpoints (must come before router to avoid conflicts)
     path('fleet/overview/', FleetOverviewView.as_view(), name='fleet-overview'),

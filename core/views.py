@@ -81,7 +81,8 @@ class RegisterView(APIView):
             from core.models import Company, Facility
             company = Company.objects.create(company_name=company_name)
             user.company = company
-            user.role = 'ADMIN'  # Explicitly set role to admin for company owner
+            user.role = 'ADMIN'
+            user.is_active = False  # Require email verification before login
             user.save()
 
             # Create a default Facility for the company
@@ -92,22 +93,73 @@ class RegisterView(APIView):
                 status='ACTIVE'
             )
 
-            # Send welcome email
+            # Generate OTP and send verification email via SMTP
+            import random
+            from django.core.cache import cache
+            otp_code = str(random.randint(100000, 999999))
+            cache.set(f'email_verify_{user.email}', otp_code, timeout=600)
             try:
-                from core.services.resend_email import send_welcome_email
-                login_url = "https://app.truckwys.co.za/login"
-                send_welcome_email(user, company_name, login_url)
+                from core.services.email_service import send_verification_email
+                send_verification_email(user.email, otp_code, user.first_name or user.username)
             except Exception as e:
                 import logging
-                logger = logging.getLogger(__name__)
-                logger.error(f"Failed to send welcome email to {user.email}: {str(e)}")
+                logging.getLogger(__name__).error(f"Failed to send verification email to {user.email}: {e}")
 
-            token, created = Token.objects.get_or_create(user=user)
             return Response({
-                'token': token.key,
-                'user': UserSerializer(user).data
+                'message': 'Account created. Please check your email for a verification code.',
+                'email': user.email,
             }, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class EmailVerifyView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        import logging
+        from django.core.cache import cache
+        email = request.data.get('email', '').strip().lower()
+        code = request.data.get('code', '').strip()
+        if not email or not code:
+            return Response({'detail': 'email and code are required.'}, status=status.HTTP_400_BAD_REQUEST)
+        cached_code = cache.get(f'email_verify_{email}')
+        if not cached_code or str(cached_code) != str(code):
+            return Response({'detail': 'Invalid or expired verification code.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+        user.is_active = True
+        user.save()
+        cache.delete(f'email_verify_{email}')
+        token, _ = Token.objects.get_or_create(user=user)
+        return Response({'token': token.key, 'user': UserSerializer(user).data})
+
+
+class ResendVerificationView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        import random
+        from django.core.cache import cache
+        email = request.data.get('email', '').strip().lower()
+        if not email:
+            return Response({'detail': 'email is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            user = User.objects.get(email=email)
+            if user.is_active:
+                return Response({'detail': 'Account is already verified.'}, status=status.HTTP_400_BAD_REQUEST)
+        except User.DoesNotExist:
+            return Response({'detail': 'If an account exists, a verification email has been sent.'})
+        otp_code = str(random.randint(100000, 999999))
+        cache.set(f'email_verify_{email}', otp_code, timeout=600)
+        try:
+            from core.services.email_service import send_verification_email
+            send_verification_email(email, otp_code, user.first_name or user.username)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Failed to resend verification email to {email}: {e}")
+        return Response({'detail': 'If an account exists, a verification email has been sent.'})
 
 
 class LoginView(APIView):
@@ -1076,7 +1128,7 @@ class UserViewSet(viewsets.ModelViewSet):
         import secrets
         from django.core.cache import cache
         from django.conf import settings
-        from core.services.resend_email import send_invite_email
+        from core.services.email_service import send_invite_email
 
         email = request.data.get('email', '').strip().lower()
         role = request.data.get('role', 'DISPATCHER')
@@ -1224,7 +1276,7 @@ class VehicleViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         return Response(serializer.data)
 
 
-class VehicleTypeViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
+class VehicleTypeViewSet(viewsets.ModelViewSet):
     queryset = VehicleType.objects.all()
     serializer_class = VehicleTypeSerializer
     permission_classes = [IsAuthenticated]
@@ -1232,6 +1284,17 @@ class VehicleTypeViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     filterset_fields = ['active']
     search_fields = ['name', 'description']
     ordering_fields = ['name', 'capacity', 'base_rate']
+
+    def get_queryset(self):
+        from django.db.models import Q
+        user = self.request.user
+        if not user.is_authenticated:
+            return VehicleType.objects.none()
+        if user.is_superuser:
+            return VehicleType.objects.all()
+        return VehicleType.objects.filter(
+            Q(company=None) | Q(company=user.company)
+        )
 
 
 class VehicleLogViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
@@ -2221,7 +2284,7 @@ class PasswordResetRequestView(APIView):
 
                 # Send password reset email
                 try:
-                    from core.services.resend_email import send_password_reset_email
+                    from core.services.email_service import send_password_reset_email
                     send_password_reset_email(email, user.first_name or user.username, code)
                 except Exception as e:
                     import logging
@@ -2275,7 +2338,7 @@ class InviteView(APIView):
         import secrets
         from django.core.cache import cache
         from django.conf import settings
-        from core.services.resend_email import send_invite_email
+        from core.services.email_service import send_invite_email
 
         email = request.data.get('email', '').strip().lower()
         role = request.data.get('role', 'DISPATCHER')
@@ -2390,7 +2453,7 @@ class InviteResendView(APIView):
         import secrets
         from django.core.cache import cache
         from django.conf import settings
-        from core.services.resend_email import send_invite_email
+        from core.services.email_service import send_invite_email
 
         # Get existing invite data
         invite_data = cache.get(f'invite_{token}')
@@ -2536,13 +2599,13 @@ class TestEmailView(APIView):
             )
 
         try:
-            from core.services.resend_email import (
+            from core.services.email_service import (
                 send_welcome_email,
                 send_invite_email,
                 send_password_reset_email,
-                send_invoice_email,
                 send_advance_approved_email,
             )
+            from core.services.email_service import InvoiceEmailService as send_invoice_email
             from core.models import User, Company, Invoice, Load
             from decimal import Decimal
 
