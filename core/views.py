@@ -145,10 +145,26 @@ class LoginView(APIView):
 
 class LogoutView(APIView):
     permission_classes = [IsAuthenticated]
-    
+
     def post(self, request):
         request.user.auth_token.delete()
         return Response({'message': 'Successfully logged out'})
+
+
+class ChangePasswordView(APIView):
+    """Authenticated password change (verifies the current password)."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        current = request.data.get('current_password') or ''
+        new = request.data.get('new_password') or ''
+        if len(new) < 8:
+            return Response({'error': 'New password must be at least 8 characters'}, status=status.HTTP_400_BAD_REQUEST)
+        if not request.user.check_password(current):
+            return Response({'error': 'Current password is incorrect'}, status=status.HTTP_400_BAD_REQUEST)
+        request.user.set_password(new)
+        request.user.save(update_fields=['password'])
+        return Response({'detail': 'Password changed successfully'})
 
 
 class UserProfileView(APIView):
@@ -2324,6 +2340,7 @@ class InviteView(APIView):
 
     def get(self, request):
         """List pending invites (PENDING users) for the admin's company."""
+        from django.core.cache import cache
         company = resolve_user_company(request.user)
         pending = User.objects.filter(company=company, status='PENDING').order_by('-created_at')
         return Response([
@@ -2333,6 +2350,8 @@ class InviteView(APIView):
                 'role': u.role,
                 'status': u.status,
                 'created_at': u.created_at,
+                # Token kept in a reverse cache index so resend/revoke work from the list.
+                'token': cache.get(f'invite_user_{u.id}'),
             }
             for u in pending
         ])
@@ -2387,6 +2406,8 @@ class InviteView(APIView):
             },
             timeout=7 * 24 * 60 * 60  # 7 days
         )
+        # Reverse index so the pending-invites list can surface the token for resend/revoke.
+        cache.set(f'invite_user_{user.id}', token, timeout=7 * 24 * 60 * 60)
 
         # Send invite email (best-effort: a missing/unconfigured provider must not
         # 500 the whole invite — the pending user is already created).

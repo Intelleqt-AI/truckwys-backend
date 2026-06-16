@@ -215,11 +215,24 @@ class ExpenseSerializer(serializers.ModelSerializer):
     vehicle_info = serializers.CharField(source='vehicle.__str__', read_only=True)
     driver_name = serializers.CharField(source='driver.user.username', read_only=True)
     created_by_name = serializers.CharField(source='created_by.username', read_only=True)
-    
+
     class Meta:
         model = Expense
         fields = '__all__'
         read_only_fields = ['id', 'created_at', 'updated_at', 'created_by']
+        extra_kwargs = {'expense_number': {'required': False}}
+
+    def create(self, validated_data):
+        # Auto-generate a unique expense_number if the client didn't supply one.
+        if not validated_data.get('expense_number'):
+            import random
+            from django.utils import timezone
+            ts = timezone.now().strftime('%Y%m%d')
+            num = f"EXP-{ts}-{random.randint(1000, 9999)}"
+            while Expense.objects.filter(expense_number=num).exists():
+                num = f"EXP-{ts}-{random.randint(1000, 9999)}"
+            validated_data['expense_number'] = num
+        return super().create(validated_data)
 
 
 # Settlement Serializer
