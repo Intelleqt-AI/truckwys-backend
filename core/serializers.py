@@ -437,9 +437,10 @@ class IntegrationAPIKeySerializer(serializers.ModelSerializer):
         model = IntegrationAPIKey
         fields = [
             'id', 'name', 'key', 'key_type', 'active',
-            'created_at', 'last_used_at'
+            'created_at', 'last_used_at',
+            'usage_count', 'monthly_quota', 'quota_used',
         ]
-        read_only_fields = ['id', 'key', 'created_at', 'last_used_at']
+        read_only_fields = ['id', 'key', 'created_at', 'last_used_at', 'usage_count', 'quota_used']
 
 
 class ActivityEventSerializer(serializers.ModelSerializer):
