@@ -65,7 +65,7 @@ from .views_risk_api import (
 from .views_invite import (
     InviteCreateView, InviteValidateView, InviteAcceptView
 )
-from .views_ai_insights import DashboardBriefingView, RiskScoreExplainView
+from .views_ai_insights import DashboardBriefingView, RiskScoreExplainView, AgentChatView
 
 router = DefaultRouter()
 router.register(r'users', UserViewSet, basename='user')
@@ -153,6 +153,7 @@ urlpatterns = [
     path('dashboard/finance/', FinanceDashboardView.as_view(), name='finance-dashboard'),
     path('dashboard/kpi/', DashboardKPIView.as_view(), name='dashboard-kpi'),
     path('dashboard/briefing/', DashboardBriefingView.as_view(), name='dashboard-briefing'),
+    path('agent/chat/', AgentChatView.as_view(), name='agent-chat'),
     path('risk/score/<int:pk>/explain/', RiskScoreExplainView.as_view(), name='risk-score-explain'),
     path('dashboard/overview/', DashboardOverviewView.as_view(), name='dashboard-overview'),
     path('dashboard/routes/', RouteAnalyticsView.as_view(), name='route-analytics'),
