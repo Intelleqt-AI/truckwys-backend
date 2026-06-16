@@ -268,7 +268,7 @@ class NotificationSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = Notification
-        fields = ['id', 'title', 'description', 'type', 'unread', 'created_at']
+        fields = ['id', 'title', 'description', 'type', 'unread', 'link', 'created_at']
         read_only_fields = ['id', 'created_at']
 
     def to_representation(self, instance):

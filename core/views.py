@@ -1413,12 +1413,15 @@ class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     def perform_create(self, serializer):
         load = serializer.save(created_by=self.request.user)
         try:
-            from core.ws.broadcast import broadcast_event
-            broadcast_event(
+            from core.services.notify import notify_company
+            notify_company(
                 getattr(load, 'company_id', None),
-                'booking.created',
-                message=f'New booking {load.load_number or load.id} created',
-                data={'load_id': load.id, 'status': load.status},
+                'INFO',
+                'New booking created',
+                f'{load.load_number or ("Load " + str(load.id))}'
+                + (f' · {load.pickup_city} → {load.delivery_city}' if getattr(load, "pickup_city", None) else ''),
+                link=f'/bookings/{load.id}',
+                event='booking.created',
             )
         except Exception:
             pass
@@ -1438,12 +1441,14 @@ class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         load.status = new_status
         load.save()
         try:
-            from core.ws.broadcast import broadcast_event
-            broadcast_event(
+            from core.services.notify import notify_company
+            notify_company(
                 getattr(load, 'company_id', None),
-                'booking.status',
-                message=f'Booking {load.load_number or load.id} → {new_status}',
-                data={'load_id': load.id, 'status': new_status},
+                'INFO',
+                'Booking status updated',
+                f'{load.load_number or ("Load " + str(load.id))} → {new_status}',
+                link=f'/bookings/{load.id}',
+                event='booking.status',
             )
         except Exception:
             pass
