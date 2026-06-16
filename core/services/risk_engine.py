@@ -194,6 +194,23 @@ class RiskEngine:
 
         # Determine tier
         tier = self._get_risk_tier(final_score)
+
+        # A sub-threshold score is a denial — never offer an advance (which would
+        # otherwise compute a negative net). Return an ineligible result that
+        # still reports the real score for transparency.
+        if tier == 'INELIGIBLE':
+            reason = IneligibilityReason(
+                rule='score_below_minimum',
+                description=f'Risk score {final_score} is below the minimum eligibility threshold ({self.MIN_ELIGIBILITY_SCORE})',
+                severity='critical',
+            )
+            denied = self._create_ineligible_result([reason])
+            denied.raw_score = raw_score
+            denied.final_score = final_score
+            denied.pillar_breakdown = pillar_breakdown
+            denied.top_risk_drivers, denied.top_strengths = self._extract_top_factors(pillar_breakdown)
+            return denied
+
         base_fee, max_advance, turnaround = self._get_tier_pricing(tier)
 
         # Calculate fee adjustments
@@ -901,8 +918,8 @@ class RiskEngine:
                 description=f'{self.facility.utilization_percent}% facility utilization (stress signal)'
             ))
 
-        # Perfect repayment record
-        if company_age >= 1:
+        # Perfect repayment record (skip for unsaved/stateless customers)
+        if company_age >= 1 and getattr(self.customer, 'pk', None):
             # Check if no returned payments or disputes in last 12 months
             recent_paid = Invoice.objects.filter(
                 customer=self.customer,
@@ -953,13 +970,22 @@ class RiskEngine:
                 description=f'High facility utilization ({self.facility.utilization_percent}%)'
             ))
 
-        # Perfect repayment history (discount)
-        if self._get_company_age_years() >= 1:
-            adjustments.append(FeeAdjustment(
-                type='perfect_repayment_history',
-                amount_percent=-0.25,
-                description='Perfect repayment history (12mo)'
-            ))
+        # Clean repayment history discount — based on REAL debtor behaviour:
+        # several settled invoices and no currently-overdue or disputed invoices
+        # for this customer over the last 12 months.
+        try:
+            since = timezone.now() - timedelta(days=365)
+            cust_inv = Invoice.objects.filter(customer=self.customer, created_at__gte=since)
+            paid_count = cust_inv.filter(status='PAID').count()
+            bad_count = cust_inv.filter(status__in=['OVERDUE', 'DISPUTED']).count()
+            if paid_count >= 3 and bad_count == 0:
+                adjustments.append(FeeAdjustment(
+                    type='clean_repayment_history',
+                    amount_percent=-0.25,
+                    description=f'Clean repayment history ({paid_count} settled, 0 overdue/disputed)'
+                ))
+        except Exception:
+            pass
 
         return adjustments
 
@@ -1096,6 +1122,10 @@ class RiskEngine:
 
     def _get_outstanding_invoices_ratio(self) -> float:
         """Get outstanding invoices / monthly turnover ratio."""
+        # Stateless scoring (external API) passes unsaved customers — no platform
+        # history to query, so use a neutral mid ratio.
+        if not getattr(self.customer, 'pk', None):
+            return 1.5
         # Outstanding
         outstanding = Invoice.objects.filter(
             customer=self.customer,
@@ -1113,8 +1143,34 @@ class RiskEngine:
         return float(outstanding) / float(monthly)
 
     def _get_platform_avg_days_to_pay(self) -> float:
-        """Get average days to pay for this customer."""
-        return float(getattr(self.customer, 'avg_days_to_pay', 30))
+        """Average days-to-pay for this debtor, computed from REAL paid invoices.
+
+        Uses the customer's actual settlement history (paid_at − issue_date) over
+        the last 24 months. Falls back to the stored avg_days_to_pay attribute,
+        then to 30, when there is no settlement history yet.
+        """
+        try:
+            since = timezone.now() - timedelta(days=730)
+            paid = Invoice.objects.filter(
+                customer=self.customer,
+                status='PAID',
+                paid_at__isnull=False,
+                issue_date__isnull=False,
+                paid_at__gte=since,
+            ).values_list('issue_date', 'paid_at')
+
+            days = []
+            for issue_date, paid_at in paid:
+                pd = paid_at.date() if hasattr(paid_at, 'date') else paid_at
+                delta = (pd - issue_date).days
+                if 0 <= delta < 365:
+                    days.append(delta)
+
+            if days:
+                return round(sum(days) / len(days), 1)
+        except Exception:
+            pass
+        return float(getattr(self.customer, 'avg_days_to_pay', 30) or 30)
 
     def _get_operator_avg_invoice_amount(self) -> Decimal:
         """Get operator's average invoice amount."""

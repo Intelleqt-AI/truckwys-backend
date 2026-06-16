@@ -40,15 +40,45 @@ class LenderRateThrottle(SimpleRateThrottle):
 
 
 # ---------------------------------------------------------------------------
-# API Key Model (simple, in-memory seed for demo)
+# API Key registry — loaded from the environment, NEVER hardcoded in source.
 # ---------------------------------------------------------------------------
+import os
+import json
+from django.conf import settings
 
-DEMO_API_KEYS = {
-    'LENDER-KEY-2026-TRUCKWYS-DEMO': 'Capital Connect SA (Demo)',
-    'LENDER-KEY-2026-ABSA-BUSINESS': 'ABSA Business Finance',
-    'LENDER-KEY-2026-INVESTEC-CORP': 'Investec Corporate Finance',
-    'LENDER-KEY-2026-NEDBANK-TRADE': 'Nedbank Trade Finance',
-}
+
+def _load_lender_api_keys() -> dict:
+    """Lender API keys come from the LENDER_API_KEYS env var.
+
+    Accepted formats:
+      - JSON object: {"KEY1": "Lender One", "KEY2": "Lender Two"}
+      - CSV pairs:   "KEY1:Lender One,KEY2:Lender Two"
+
+    In production (DEBUG=False) an unset/empty var means the lender API is
+    effectively closed — no keys, no access. A single throwaway demo key is
+    provided ONLY in local development (DEBUG=True) so the sandbox is testable.
+    """
+    raw = os.environ.get('LENDER_API_KEYS', '').strip()
+    keys: dict = {}
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                keys = {str(k): str(v) for k, v in parsed.items()}
+        except (ValueError, TypeError):
+            for pair in raw.split(','):
+                if ':' in pair:
+                    k, name = pair.split(':', 1)
+                    if k.strip():
+                        keys[k.strip()] = name.strip() or 'Lender'
+    if not keys and getattr(settings, 'DEBUG', False):
+        # Local-dev sandbox key only. Not present when DEBUG=False.
+        keys = {'LENDER-KEY-DEV-SANDBOX': 'Sandbox Lender (dev only)'}
+    return keys
+
+
+# Resolved once at import. Real keys are supplied via env per deployment.
+DEMO_API_KEYS = _load_lender_api_keys()
 
 
 class LenderUser:

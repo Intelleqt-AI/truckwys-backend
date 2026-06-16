@@ -824,7 +824,16 @@ class QuoteBenchmarkView(APIView):
                     'error': 'origin, destination, and vehicle_type are required'
                 }, status=status.HTTP_400_BAD_REQUEST)
 
-            # Query accepted quotes on this lane
+            # Cross-platform anonymized benchmark first (pools won quotes across
+            # ALL operators, k-anonymity enforced so no single operator's pricing
+            # is exposed). Falls back to own-company data, then hardcoded estimates.
+            from core.services.lane_benchmark import compute_lane_benchmark
+            platform = compute_lane_benchmark(origin, destination, vehicle_type)
+            if not platform.get('available'):
+                # Retry at lane level (all vehicle types) before falling back.
+                platform = compute_lane_benchmark(origin, destination)
+
+            # Query this operator's own accepted quotes on this lane (fallback layer)
             lane_quotes = Quote.objects.filter(
                 company=request.user.company,
                 origin__iexact=origin,
@@ -835,6 +844,8 @@ class QuoteBenchmarkView(APIView):
             )
 
             data_points = lane_quotes.count()
+            source = 'company'
+            distinct_operators = None
 
             # Fallback to hardcoded SA market averages
             SA_MARKET_BENCHMARKS = {
@@ -847,8 +858,17 @@ class QuoteBenchmarkView(APIView):
 
             lane_key = (origin, destination, vehicle_type)
 
-            if data_points >= 10:
-                # Use real data
+            if platform.get('available'):
+                # Real cross-platform benchmark (preferred)
+                market_avg_rate = round(platform['market_avg_rate'])
+                market_range_low = round(platform.get('p25') or platform['market_avg_rate'])
+                market_range_high = round(platform.get('p75') or platform['market_avg_rate'])
+                data_points = platform['sample_size']
+                distinct_operators = platform.get('distinct_operators')
+                confidence = 'high'
+                source = 'platform'
+            elif data_points >= 10:
+                # Use this operator's own real data
                 stats = lane_quotes.aggregate(
                     avg_price=Avg('total_amount'),
                     min_price=Min('total_amount'),
@@ -858,6 +878,7 @@ class QuoteBenchmarkView(APIView):
                 market_range_low = int(stats['min_price'] or 0)
                 market_range_high = int(stats['max_price'] or 0)
                 confidence = 'high'
+                source = 'company'
             elif lane_key in SA_MARKET_BENCHMARKS:
                 # Fallback to hardcoded
                 benchmark = SA_MARKET_BENCHMARKS[lane_key]
@@ -865,6 +886,7 @@ class QuoteBenchmarkView(APIView):
                 market_range_low = benchmark['low']
                 market_range_high = benchmark['high']
                 confidence = 'medium' if data_points >= 5 else 'low'
+                source = 'estimate'
             else:
                 # No data available
                 return Response({
@@ -900,6 +922,8 @@ class QuoteBenchmarkView(APIView):
                 'market_range_high': market_range_high,
                 'data_points': data_points,
                 'confidence': confidence,
+                'source': source,
+                'distinct_operators': distinct_operators,
                 'your_rate': your_rate,
                 'your_vs_market_pct': round(your_vs_market_pct, 1),
                 'recommendation': recommendation,

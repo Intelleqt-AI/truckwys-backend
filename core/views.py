@@ -17,6 +17,7 @@ from rest_framework import viewsets, status, filters
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.authtoken.models import Token
@@ -70,6 +71,9 @@ from .serializers import (
 
 class RegisterView(APIView):
     permission_classes = [AllowAny]
+    # Throttle signups to blunt automated account creation (5/min, see settings).
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
 
     def post(self, request):
         serializer = UserSerializer(data=request.data)
@@ -169,7 +173,11 @@ class ResendVerificationView(APIView):
 
 class LoginView(APIView):
     permission_classes = [AllowAny]
-    
+    # Attach the 'login' scope (5/min) so credential brute-force is actually
+    # bounded — previously this rate was defined but never wired to a view.
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
+
     def post(self, request):
         identifier = request.data.get('username') or request.data.get('email')
         password = request.data.get('password')

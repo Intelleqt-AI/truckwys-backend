@@ -13,6 +13,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.views import APIView
 from django.db.models import Q, Count, Sum
+from django.db import transaction
 from django.utils import timezone
 from decimal import Decimal
 from typing import Dict, Any
@@ -198,11 +199,26 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
         Body: { "invoice_id": 1 }
         Process: check eligibility → calculate risk score → create advance request
         """
+        # IDEMPOTENCY (pre-validation): a retry/double-click for an invoice that
+        # already has an active advance returns that advance (200) instead of a
+        # 400 — so callers can safely retry. Runs before the serializer, which
+        # would otherwise reject the duplicate outright.
+        raw_invoice_id = request.data.get('invoice_id')
+        if raw_invoice_id:
+            existing = AdvanceRequest.objects.filter(
+                invoice_id=raw_invoice_id,
+                status__in=['REQUESTED', 'SCORING', 'APPROVED', 'DISBURSED'],
+            ).order_by('-requested_at').first()
+            if existing:
+                return Response(AdvanceRequestSerializer(existing).data, status=status.HTTP_200_OK)
+
         serializer = AdvanceRequestCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
         invoice_id = serializer.validated_data['invoice_id']
-        invoice = Invoice.objects.get(id=invoice_id)
+        invoice = Invoice.objects.filter(id=invoice_id).first()
+        if not invoice:
+            return Response({'error': 'Invoice not found'}, status=status.HTTP_404_NOT_FOUND)
 
         # Get facility for the OPERATOR (logged-in user's company)
         user = request.user
@@ -220,6 +236,15 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
                 {'error': 'No active facility found for this company'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+        # IDEMPOTENCY: if an active advance already exists for this invoice,
+        # return it instead of creating a duplicate (handles retries/double-clicks).
+        existing = AdvanceRequest.objects.filter(
+            invoice=invoice,
+            status__in=['REQUESTED', 'SCORING', 'APPROVED', 'DISBURSED'],
+        ).order_by('-requested_at').first()
+        if existing:
+            return Response(AdvanceRequestSerializer(existing).data, status=status.HTTP_200_OK)
 
         # Calculate risk score
         engine = RiskEngine(invoice=invoice, facility=facility)
@@ -242,18 +267,40 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
         # Create risk score record
         risk_score = engine.create_risk_score_record(result)
 
-        # Create advance request
-        advance_request = AdvanceRequest.objects.create(
-            invoice=invoice,
-            facility=facility,
-            risk_score=risk_score,
-            amount=invoice.total_amount,
-            fee_percent=result.final_fee_percent,
-            fee_amount=result.fee_amount,
-            net_amount=result.net_advance,
-            status='REQUESTED',
-            requested_at=timezone.now(),
-        )
+        # Atomically lock the facility row, re-check capacity under the lock to
+        # prevent concurrent requests double-spending the facility limit, and
+        # guard against a racing duplicate advance for the same invoice.
+        try:
+            with transaction.atomic():
+                locked_facility = Facility.objects.select_for_update().get(pk=facility.pk)
+
+                race_dupe = AdvanceRequest.objects.select_for_update().filter(
+                    invoice=invoice,
+                    status__in=['REQUESTED', 'SCORING', 'APPROVED', 'DISBURSED'],
+                ).first()
+                if race_dupe:
+                    return Response(AdvanceRequestSerializer(race_dupe).data, status=status.HTTP_200_OK)
+
+                if locked_facility.available < invoice.total_amount:
+                    return Response(
+                        {'error': 'Advance would exceed available facility limit',
+                         'available': float(locked_facility.available)},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+                advance_request = AdvanceRequest.objects.create(
+                    invoice=invoice,
+                    facility=locked_facility,
+                    risk_score=risk_score,
+                    amount=invoice.total_amount,
+                    fee_percent=result.final_fee_percent,
+                    fee_amount=result.fee_amount,
+                    net_amount=result.net_advance,
+                    status='REQUESTED',
+                    requested_at=timezone.now(),
+                )
+        except Exception as exc:
+            return Response({'error': f'Could not create advance: {exc}'}, status=status.HTTP_400_BAD_REQUEST)
 
         response_serializer = AdvanceRequestSerializer(advance_request)
         return Response(response_serializer.data, status=status.HTTP_201_CREATED)
