@@ -127,9 +127,13 @@ class LoginView(APIView):
         user = authenticate(username=identifier, password=password)
         if not user and identifier:
             from .models import User
-            match = User.objects.filter(email__iexact=identifier).first()
-            if match:
-                user = authenticate(username=match.username, password=password)
+            # Try every account with this email (emails aren't unique) and use
+            # whichever password actually authenticates.
+            for match in User.objects.filter(email__iexact=identifier):
+                candidate = authenticate(username=match.username, password=password)
+                if candidate:
+                    user = candidate
+                    break
 
         if user:
             token, created = Token.objects.get_or_create(user=user)
