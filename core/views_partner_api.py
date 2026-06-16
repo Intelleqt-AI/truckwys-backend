@@ -263,11 +263,18 @@ class PartnerPortfolioSummaryView(APIView):
                 'percentage': round(float(percentage), 2)
             })
 
+        # Realised default rate from recorded outcomes (not a placeholder).
+        from core.models import PaymentOutcome
+        outcomes_total = PaymentOutcome.objects.exclude(invoice__isnull=True).count()
+        defaults_total = PaymentOutcome.objects.filter(defaulted=True, invoice__isnull=False).count()
+        default_rate = round(defaults_total / outcomes_total, 4) if outcomes_total else None
+
         return Response({
             'total_exposure': float(total_exposure),
             'invoice_count': invoices.count(),
             'avg_risk_score': round(float(avg_score), 2),
-            'default_rate': 0.02,  # TODO: Calculate actual default rate
+            'default_rate': default_rate,
+            'default_rate_basis': outcomes_total,  # sample size; null rate = no settled outcomes yet
             'tier_distribution': tier_distribution,
             'concentration': concentration_list
         })

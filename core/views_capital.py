@@ -458,6 +458,15 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
                 advance.notes = serializer.validated_data['notes']
                 advance.save()
 
+            # Flywheel: record the realised outcome for ML retraining.
+            try:
+                from core.services.outcome_capture import capture_settlement_outcome
+                capture_settlement_outcome(advance)
+            except Exception:
+                pass
+            _notify_advance(advance, 'SUCCESS', 'Advance settled',
+                            f'{_inv_no(advance)} settled')
+
             response_serializer = AdvanceRequestSerializer(advance)
             return Response(response_serializer.data)
 

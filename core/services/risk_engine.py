@@ -23,6 +23,7 @@ RISK TIERS → PRICING:
 - <40 (INELIGIBLE): Denied
 """
 
+import os
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Dict, List, Tuple, Optional
@@ -127,8 +128,10 @@ class RiskEngine:
     Calculates comprehensive risk scores for invoice factoring decisions.
     """
 
-    # ML/Hybrid scoring weight (0.0 = rules only, 1.0 = ML only)
-    ML_WEIGHT = 0.0  # Start at 0, increase as data accumulates
+    # ML/Hybrid scoring weight (0.0 = rules only, 1.0 = ML only). Ramp it up via
+    # the RISK_ML_WEIGHT env var as a validated model proves out on real outcomes —
+    # the ML blend only engages when BOTH a trained model exists AND this is > 0.
+    ML_WEIGHT = float(os.environ.get('RISK_ML_WEIGHT', '0') or 0)
 
     # Tier thresholds
     TIER_PRIME_MIN = 85
