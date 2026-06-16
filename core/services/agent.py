@@ -58,7 +58,7 @@ def build_agent_context(company) -> dict:
     vehicle_counts = {row['status']: row['n'] for row in vehicles.values('status').annotate(n=Count('id'))}
 
     # Capital / fast-pay eligibility (mirror the real engine count, cheaply)
-    eligible_count, eligible_value = _capital_summary(company)
+    eligible_count, eligible_value, top_eligible = _capital_summary(company)
 
     top_overdue = [
         {
@@ -101,18 +101,19 @@ def build_agent_context(company) -> dict:
         "capital": {
             "eligible_invoices": eligible_count,
             "eligible_value": eligible_value,
+            "top_eligible": top_eligible,
         },
         "top_customers_by_outstanding": top_customers,
     }
 
 
 def _capital_summary(company):
-    """Cheap eligible-invoice summary for the agent context (best-effort)."""
+    """Eligible-invoice summary + the single best advanceable invoice (best-effort)."""
     from core.models import Invoice, Facility
     try:
         facility = Facility.objects.filter(company=company, status='ACTIVE').first()
         if not facility:
-            return 0, 0.0
+            return 0, 0.0, None
         from core.services.risk_engine import RiskEngine
         candidates = Invoice.objects.filter(
             company=company, status__in=['SENT', 'OVERDUE']
@@ -121,6 +122,7 @@ def _capital_summary(company):
         ).select_related('customer', 'trip', 'load')[:25]
         count = 0
         value = Decimal('0')
+        eligible = []
         for inv in candidates:
             try:
                 res = RiskEngine(invoice=inv, facility=facility).calculate_risk_score()
@@ -129,7 +131,15 @@ def _capital_summary(company):
             if res.is_eligible:
                 count += 1
                 value += Decimal(str(res.net_advance))
-        return count, _money(value)
+                eligible.append({
+                    'invoice_id': inv.id,
+                    'invoice_number': inv.invoice_number,
+                    'customer': inv.customer.name if inv.customer else '—',
+                    'net_payout': _money(res.net_advance),
+                    'tier': res.risk_tier,
+                })
+        eligible.sort(key=lambda x: x['net_payout'], reverse=True)
+        return count, _money(value), (eligible[0] if eligible else None)
     except Exception as exc:
         logger.warning("capital summary failed for agent: %s", exc)
         return 0, 0.0
@@ -210,10 +220,17 @@ def _fallback_reply(ctx: dict, user_text: str) -> str:
 
     if any(w in t for w in ["advance", "fast pay", "capital", "factor"]):
         if cap["eligible_invoices"]:
-            return (
+            top = cap.get("top_eligible")
+            msg = (
                 f"{cap['eligible_invoices']} invoice(s) are eligible for fast pay right now, "
-                f"worth about {fmt(cap['eligible_value'])} in net advances. Open Fast Pay to request."
+                f"worth about {fmt(cap['eligible_value'])} in net advances."
             )
+            if top:
+                msg += (
+                    f" The best is {top['invoice_number']} ({top['customer']}) at "
+                    f"R{top['net_payout']:,.0f} net — I can request that advance for you now."
+                )
+            return msg
         return "No invoices are currently eligible for fast pay (they need a delivered load with proof of delivery)."
 
     if any(w in t for w in ["quote", "pipeline", "pricing"]):
@@ -234,14 +251,40 @@ def _fallback_reply(ctx: dict, user_text: str) -> str:
     )
 
 
+def _propose_action(ctx: dict, user_text: str):
+    """Detect an intent the copilot can ACT on, and return a confirmable action.
+
+    Currently supports requesting a fast-pay advance on the best eligible invoice.
+    The action is a proposal — the UI must confirm before the endpoint is called.
+    """
+    t = (user_text or "").lower()
+    wants_advance = any(w in t for w in [
+        "advance", "fast pay", "fast-pay", "factor", "finance this", "get cash", "draw down", "request advance",
+    ])
+    top = (ctx.get("capital") or {}).get("top_eligible")
+    if wants_advance and top:
+        return {
+            "type": "request_advance",
+            "method": "POST",
+            "endpoint": "api/v1/advances/",
+            "body": {"invoice_id": top["invoice_id"]},
+            "label": f"Request advance on {top['invoice_number']}",
+            "detail": f"Net payout R{top['net_payout']:,.0f} · {top['customer']} · {top['tier']} tier",
+            "confirm_text": "Request advance",
+            "success_text": f"Advance requested on {top['invoice_number']} — R{top['net_payout']:,.0f} net.",
+        }
+    return None
+
+
 def agent_respond(company, messages: list) -> dict:
-    """Return {reply, source, ai_available, actions, context}. Never raises.
+    """Return {reply, source, ai_available, actions, proposed_action}. Never raises.
 
     messages: [{"role": "user"|"assistant", "content": str}, ...]
     """
     ctx = build_agent_context(company)
     last_user = next((m.get("content", "") for m in reversed(messages or []) if m.get("role") == "user"), "")
     actions = _suggest_actions(last_user)
+    proposed_action = _propose_action(ctx, last_user)
 
     if not _llm_enabled():
         return {
@@ -249,6 +292,7 @@ def agent_respond(company, messages: list) -> dict:
             "source": "rules",
             "ai_available": False,
             "actions": actions,
+            "proposed_action": proposed_action,
         }
 
     try:
@@ -276,7 +320,7 @@ def agent_respond(company, messages: list) -> dict:
             messages=convo,
         )
         reply = next((b.text for b in response.content if b.type == "text"), "").strip()
-        return {"reply": reply, "source": "llm", "ai_available": True, "actions": actions}
+        return {"reply": reply, "source": "llm", "ai_available": True, "actions": actions, "proposed_action": proposed_action}
     except Exception as exc:
         logger.warning("agent LLM failed, using fallback: %s", exc)
         return {
@@ -284,4 +328,5 @@ def agent_respond(company, messages: list) -> dict:
             "source": "rules",
             "ai_available": False,
             "actions": actions,
+            "proposed_action": proposed_action,
         }

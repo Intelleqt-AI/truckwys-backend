@@ -448,11 +448,20 @@ class AIChatQuoteView(APIView):
                     extracted['vehicle_type'] = val
                     break
 
-            # Cargo description
-            cargo_match = re.search(r'(?:of\s+)?([a-zA-Z\s]+?)\s+(?:from|to\s+\w)', message, re.IGNORECASE)
+            # Cargo description — the noun AFTER "of" (e.g. "20 tons of steel from JHB"
+            # -> "steel"; "of palletised goods to ..." -> "palletised goods").
+            cargo_match = (
+                re.search(r'\bof\s+([a-zA-Z][a-zA-Z\s]*?)\s+(?:from|to|on|for|by|via)\b', message, re.IGNORECASE)
+                or re.search(r'\bof\s+([a-zA-Z][a-zA-Z\s]*?)\s*[,.]', message, re.IGNORECASE)
+                or re.search(r'\bof\s+([a-zA-Z][a-zA-Z\s]*?)$', message.strip(), re.IGNORECASE)
+            )
             if cargo_match:
                 desc = cargo_match.group(1).strip()
-                if len(desc) > 3 and desc.lower() not in ['move', 'transport', 'ship', 'send', 'deliver', 'take']:
+                # Drop a leading unit word if it slipped in ("tonnes of frozen fish").
+                desc = re.sub(r'^(tons?|tonnes?|kgs?|kilograms?|pallets?|units?|loads?|crates?)\s+',
+                              '', desc, flags=re.IGNORECASE).strip()
+                stop = {'move', 'transport', 'ship', 'send', 'deliver', 'take', 'need', 'i'}
+                if len(desc) > 2 and desc.lower() not in stop:
                     extracted['cargo_description'] = desc
 
             # Merge with current fields
