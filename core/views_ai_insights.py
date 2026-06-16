@@ -33,9 +33,42 @@ class AgentChatView(APIView):
         if not isinstance(messages, list):
             return Response({'error': 'messages must be a list'}, status=status.HTTP_400_BAD_REQUEST)
         try:
-            return Response(agent_respond(company, messages))
+            result = agent_respond(company, messages)
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # Persist this turn so the conversation survives navigation/refresh/device.
+        try:
+            from core.models import CopilotMessage
+            last_user = next((m.get('content') for m in reversed(messages)
+                              if isinstance(m, dict) and m.get('role') == 'user'), None)
+            if last_user:
+                CopilotMessage.objects.create(user=request.user, role='user', content=str(last_user)[:8000])
+            reply = result.get('reply')
+            if reply:
+                CopilotMessage.objects.create(user=request.user, role='assistant', content=str(reply)[:8000])
+        except Exception:
+            pass
+
+        return Response(result)
+
+
+class CopilotHistoryView(APIView):
+    """GET/DELETE /api/v1/agent/history/ — the user's persisted Copilot thread."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from core.models import CopilotMessage
+        msgs = CopilotMessage.objects.filter(user=request.user).order_by('created_at')[:200]
+        return Response({'messages': [
+            {'role': m.role, 'content': m.content, 'created_at': m.created_at.isoformat()}
+            for m in msgs
+        ]})
+
+    def delete(self, request):
+        from core.models import CopilotMessage
+        CopilotMessage.objects.filter(user=request.user).delete()
+        return Response({'cleared': True})
 
 
 class DashboardBriefingView(APIView):
