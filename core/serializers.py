@@ -55,6 +55,15 @@ class CustomerSerializer(serializers.ModelSerializer):
         model = Customer
         fields = '__all__'
         read_only_fields = ['id', 'created_at', 'updated_at']
+        # Address details are optional on quick-add (directory). They can be
+        # filled in later from the full customer record.
+        extra_kwargs = {
+            'address': {'required': False, 'allow_blank': True, 'default': ''},
+            'state': {'required': False, 'allow_blank': True, 'default': ''},
+            'zip_code': {'required': False, 'allow_blank': True, 'default': ''},
+            'city': {'required': False, 'allow_blank': True, 'default': ''},
+            'phone': {'required': False, 'allow_blank': True, 'default': ''},
+        }
 
 
 # Driver Serializer
@@ -142,6 +151,11 @@ class VehicleTypeSerializer(serializers.ModelSerializer):
         model = VehicleType
         fields = '__all__'
         read_only_fields = ['id', 'created_at', 'updated_at']
+        # Optional on quick-add; sensible defaults keep the directory add simple.
+        extra_kwargs = {
+            'max_distance': {'required': False, 'default': 0},
+            'description': {'required': False, 'allow_blank': True, 'default': ''},
+        }
 
 
 # VehicleLog Serializer
