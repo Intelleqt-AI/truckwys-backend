@@ -520,7 +520,8 @@ class FleetAPIKeyAuthentication(BaseAuthentication):
     """Authenticate fleet TMS systems via X-API-Key header."""
 
     def authenticate(self, request):
-        key = request.META.get('HTTP_X_API_KEY') or request.GET.get('api_key')
+        # Header-only — never accept the key via query string.
+        key = request.META.get('HTTP_X_API_KEY')
         if not key:
             return None  # Not an API key request — try other auth
 

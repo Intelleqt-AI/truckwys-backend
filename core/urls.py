@@ -10,7 +10,7 @@ from .views import (
     VehicleViewSet, VehicleTypeViewSet, VehicleLogViewSet, LoadViewSet,
     QuoteViewSet, InvoiceViewSet, PaymentViewSet,
     ExpenseViewSet, SettlementViewSet, NotificationViewSet, WebhookViewSet,
-    RegisterView, LoginView, LogoutView, UserProfileView,
+    RegisterView, LoginView, LogoutView, ChangePasswordView, UserProfileView, SessionsView,
     FleetOverviewView, VehicleInsightsView, VehicleIntelligenceFeedView, VehicleActionView,
     DriverOverviewView, DriverPerformanceLeaderboardView,
     QuotesPipelineOverviewView, NotificationSettingsView,
@@ -18,6 +18,12 @@ from .views import (
     TestEmailView, InviteView, InviteTokenView, InviteResendView,
     PublicQuoteView, PublicQuoteRespondView,
     EmailVerifyView, ResendVerificationView,
+)
+from .views_ai_quote import (
+    AIChatQuoteView, AIQuoteSuggestionView, AIVoiceQuoteView,
+    FuelPriceCurrentView, FuelPriceSurchargeCheckView,
+    QuoteBenchmarkView, QuoteFuelAlertView, QuoteModelStatsView,
+    QuoteOutcomeView, QuoteWinProbabilityView, RevenueGuardView
 )
 from .views_finance import (
     InvoiceFinanceViewSet, PaymentFinanceViewSet, ExpenseFinanceViewSet,
@@ -59,13 +65,7 @@ from .views_risk_api import (
 from .views_invite import (
     InviteCreateView, InviteValidateView, InviteAcceptView
 )
-from .views_ai_quote import (
-    FuelPriceCurrentView, FuelPriceSurchargeCheckView,
-    AIQuoteSuggestionView, RevenueGuardView,
-    AIChatQuoteView, AIVoiceQuoteView,
-    QuoteOutcomeView, QuoteFuelAlertView,
-    QuoteModelStatsView, QuoteBenchmarkView, QuoteWinProbabilityView,
-)
+from .views_ai_insights import DashboardBriefingView, RiskScoreExplainView
 
 router = DefaultRouter()
 router.register(r'users', UserViewSet, basename='user')
@@ -110,12 +110,21 @@ urlpatterns = [
     path('auth/register/', RegisterView.as_view(), name='register'),
     path('auth/login/', LoginView.as_view(), name='login'),
     path('auth/logout/', LogoutView.as_view(), name='logout'),
+    path('auth/change-password/', ChangePasswordView.as_view(), name='change-password'),
+    # Billing (PayFast) — views were imported but never routed
+    path('billing/status/', BillingStatusView.as_view(), name='billing-status'),
+    path('billing/history/', BillingHistoryView.as_view(), name='billing-history'),
+    path('billing/subscribe/', SubscribeView.as_view(), name='billing-subscribe'),
+    path('billing/cancel/', CancelSubscriptionView.as_view(), name='billing-cancel'),
+    path('billing/itn/', PayFastITNView.as_view(), name='billing-itn'),
     path('auth/me/', UserProfileView.as_view(), name='user-profile'),
+    path('auth/sessions/', SessionsView.as_view(), name='auth-sessions'),
     path('auth/password-reset/', PasswordResetRequestView.as_view(), name='password-reset'),
     path('auth/password-reset/confirm/', PasswordResetConfirmView.as_view(), name='password-reset-confirm'),
     path('auth/verify-email/', EmailVerifyView.as_view(), name='verify-email'),
     path('auth/resend-verification/', ResendVerificationView.as_view(), name='resend-verification'),
     path('auth/invite/', InviteView.as_view(), name='auth-invite'),
+    path('auth/invite/<str:token>/accept/', InviteTokenView.as_view(), name='auth-invite-accept'),
     path('auth/invite/<str:token>/', InviteTokenView.as_view(), name='auth-invite-detail'),
     path('auth/invite/<str:token>/resend/', InviteResendView.as_view(), name='auth-invite-resend'),
     path('auth/invite/<str:token>/accept/', InviteAcceptView.as_view(), name='auth-invite-accept'),
@@ -143,6 +152,8 @@ urlpatterns = [
     # Finance Dashboard endpoints (NEW - Phase 2)
     path('dashboard/finance/', FinanceDashboardView.as_view(), name='finance-dashboard'),
     path('dashboard/kpi/', DashboardKPIView.as_view(), name='dashboard-kpi'),
+    path('dashboard/briefing/', DashboardBriefingView.as_view(), name='dashboard-briefing'),
+    path('risk/score/<int:pk>/explain/', RiskScoreExplainView.as_view(), name='risk-score-explain'),
     path('dashboard/overview/', DashboardOverviewView.as_view(), name='dashboard-overview'),
     path('dashboard/routes/', RouteAnalyticsView.as_view(), name='route-analytics'),
     path('dashboard/customer-health/', CustomerHealthView.as_view(), name='customer-health'),

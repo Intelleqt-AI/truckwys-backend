@@ -3,6 +3,7 @@ AI Quote & Revenue Guard API endpoints for Phase 2 desktop quoting.
 Sprint 1: AI Quoting Engine Upgrade with feedback loop, fuel alerts, win probability.
 """
 
+import logging
 from datetime import date, timedelta
 from decimal import Decimal
 from django.utils import timezone
@@ -15,6 +16,8 @@ from rest_framework import status
 from core.models import Quote, QuoteOutcome, FuelPrice, Customer, Invoice
 from core.services.fuel_price import fetch_fuel_prices
 from core.services.quote_ml import QuoteMLModel
+
+logger = logging.getLogger(__name__)
 
 
 class FuelPriceCurrentView(APIView):
@@ -332,6 +335,29 @@ class AIChatQuoteView(APIView):
     """POST /api/v1/ai/chat-quote/ — conversational quote extraction."""
     permission_classes = [IsAuthenticated]
 
+    @staticmethod
+    def _fallback_reply(merged):
+        """Build a friendly reply from the fields captured so far."""
+        missing = []
+        if not merged.get('pickup_location'):
+            missing.append('pickup location')
+        if not merged.get('delivery_location'):
+            missing.append('delivery location')
+        if not merged.get('cargo_description'):
+            missing.append('cargo type')
+        if not merged.get('weight'):
+            missing.append('weight')
+
+        if not missing:
+            return (
+                f"Got it — {merged.get('cargo_description', 'your cargo')} from "
+                f"{merged.get('pickup_location')} to {merged.get('delivery_location')}, "
+                f"{merged.get('weight', 0) / 1000:.0f} tons. Ready to calculate your quote."
+            )
+        if len(missing) <= 2:
+            return f"Almost there. Just need the {' and '.join(missing)} to complete the quote."
+        return f"Thanks! I still need the {', '.join(missing[:-1])} and {missing[-1]} to build your quote."
+
     def post(self, request):
         """
         Extract quote fields from natural language message.
@@ -341,6 +367,26 @@ class AIChatQuoteView(APIView):
         try:
             message = request.data.get('message', '')
             current_fields = request.data.get('current_fields', {})
+            history = request.data.get('history', [])
+
+            # Primary path: Claude-backed natural-language extraction.
+            # Falls through to the regex extractor below when the LLM is
+            # not configured or the call fails, so the endpoint never breaks.
+            from core.services import llm_quote
+            if llm_quote.is_enabled():
+                try:
+                    extracted, reply = llm_quote.extract(message, history, current_fields)
+                    merged = {**current_fields, **extracted}
+                    if not reply:
+                        reply = self._fallback_reply(merged)
+                    return Response({
+                        'success': True,
+                        'reply': reply,
+                        'extracted_fields': extracted,
+                        'source': 'llm',
+                    })
+                except Exception as exc:
+                    logger.warning('LLM quote extraction failed, using regex fallback: %s', exc)
 
             # Extract fields using regex patterns
             extracted = {}
@@ -580,32 +626,38 @@ class QuoteModelStatsView(APIView):
                 outcome__in=['accepted', 'rejected']
             ).count()
 
-            # Load model metadata if available
-            from core.services.quote_ml import QuoteMLModel
+            # Report ONLY what is real. A model exists when its metadata file has
+            # been written by a successful train(); otherwise we are honestly untrained.
+            from core.services.quote_ml import QuoteMLModel, ML_AVAILABLE
+
+            metadata = {}
             try:
                 model = QuoteMLModel()
-                metadata = model.metadata if hasattr(model, 'metadata') else {}
-                accuracy_r2 = metadata.get('r2_score', 0.72)
-                last_trained = metadata.get('trained_at', None)
-                model_version = metadata.get('version', '1.0.0')
-            except:
-                accuracy_r2 = 0.72
-                last_trained = None
-                model_version = '1.0.0'
+                metadata = getattr(model, 'metadata', {}) or {}
+            except Exception:
+                metadata = {}
 
-            # Assume synthetic count is 50k (hardcoded baseline)
-            synthetic_count = 50000
-            training_data_count = synthetic_count + real_quotes_count
+            # QuoteMLModel.train() writes 'training_date' + 'sample_count' + 'metrics'
+            last_trained = metadata.get('training_date') or metadata.get('trained_at')
+            trained = bool(last_trained)
+            metrics = metadata.get('metrics', {}) if isinstance(metadata, dict) else {}
 
             return Response({
                 'success': True,
-                'training_data_count': training_data_count,
+                'ml_available': bool(ML_AVAILABLE),
+                'trained': trained,
                 'real_quotes_count': real_quotes_count,
-                'synthetic_count': synthetic_count,
+                'training_sample_count': metadata.get('sample_count'),
                 'last_trained': last_trained,
-                'accuracy_r2': accuracy_r2,
-                'model_version': model_version,
-                'last_retrain_command': 'Sunday 02:00 UTC (weekly)',
+                'accuracy_r2': metrics.get('r2'),
+                'metrics': metrics or None,
+                'model_version': metadata.get('version'),
+                'message': (
+                    'Model trained.' if trained
+                    else ('ML libraries not installed — quoting model unavailable.'
+                          if not ML_AVAILABLE
+                          else 'Model not yet trained — run the retrain command.')
+                ),
             })
         except Exception as e:
             return Response({

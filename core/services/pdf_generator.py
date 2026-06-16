@@ -240,12 +240,19 @@ class InvoicePDFGenerator:
 
         # Line items
         line_items = self.invoice.line_items or []
+
+        def _num(v):
+            try:
+                return float(v or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
         for item in line_items:
             data.append([
                 item.get('description', ''),
                 str(item.get('quantity', 1)),
-                f"R {item.get('unit_price', 0):,.2f}",
-                f"R {item.get('amount', 0):,.2f}",
+                f"R {_num(item.get('unit_price')):,.2f}",
+                f"R {_num(item.get('amount')):,.2f}",
             ])
 
         # If no line items, show basic freight charge

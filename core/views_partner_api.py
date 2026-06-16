@@ -8,11 +8,40 @@
 
 """Partner/Capital API endpoints for external lender and partner integration."""
 
+import ipaddress
+import socket
+from urllib.parse import urlparse
+
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework import viewsets
 from rest_framework.decorators import action
+from rest_framework.permissions import IsAuthenticated
+
+
+def _is_safe_webhook_url(url: str) -> bool:
+    """Reject non-HTTPS and any URL whose host resolves to a private/loopback/
+    link-local/metadata address — basic SSRF protection for partner-supplied URLs."""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    if parsed.scheme != 'https' or not parsed.hostname:
+        return False
+    try:
+        infos = socket.getaddrinfo(parsed.hostname, None)
+    except socket.gaierror:
+        return False
+    for info in infos:
+        addr = info[4][0]
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            return False
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+            return False
+    return True
 from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiExample
 from drf_spectacular.types import OpenApiTypes
 from django.db.models import Count, Avg, Sum, Q
@@ -27,7 +56,7 @@ class PartnerRiskAssessmentView(APIView):
     """Full risk assessment for a specific invoice."""
 
     authentication_classes = [APIKeyAuthentication]
-    permission_classes = []
+    permission_classes = [IsAuthenticated]
 
     @extend_schema(
         tags=['Partner API'],
@@ -92,7 +121,7 @@ class PartnerRiskAssessmentView(APIView):
         try:
             risk_score = RiskScore.objects.filter(
                 invoice=invoice,
-                is_expired=False
+                expires_at__gt=timezone.now()
             ).latest('calculated_at')
         except RiskScore.DoesNotExist:
             return Response(
@@ -151,7 +180,7 @@ class PartnerPortfolioSummaryView(APIView):
     """Portfolio metrics for partner."""
 
     authentication_classes = [APIKeyAuthentication]
-    permission_classes = []
+    permission_classes = [IsAuthenticated]
 
     @extend_schema(
         tags=['Partner API'],
@@ -248,7 +277,7 @@ class PartnerEligibleInvoicesView(APIView):
     """List eligible invoices with pre-computed scores."""
 
     authentication_classes = [APIKeyAuthentication]
-    permission_classes = []
+    permission_classes = [IsAuthenticated]
 
     @extend_schema(
         tags=['Partner API'],
@@ -349,7 +378,7 @@ class PartnerWebhookSubscriptionViewSet(viewsets.ViewSet):
     """Manage webhook subscriptions for partners."""
 
     authentication_classes = [APIKeyAuthentication]
-    permission_classes = []
+    permission_classes = [IsAuthenticated]
 
     @extend_schema(
         tags=['Partner API'],
@@ -396,6 +425,12 @@ class PartnerWebhookSubscriptionViewSet(viewsets.ViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        if not _is_safe_webhook_url(webhook_url):
+            return Response(
+                {'error': 'webhook_url must be an https URL to a public host'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         # Get partner name from authenticated user
         partner_name = request.user.partner_name if hasattr(request.user, 'partner_name') else 'Unknown Partner'
 
@@ -425,16 +460,23 @@ class PartnerWebhookSubscriptionViewSet(viewsets.ViewSet):
         }
     )
     def destroy(self, request, pk=None):
-        """Delete webhook subscription."""
+        """Delete webhook subscription (only the caller's own)."""
         try:
             subscription = WebhookSubscription.objects.get(id=pk)
-            subscription.delete()
-            return Response(status=status.HTTP_204_NO_CONTENT)
         except WebhookSubscription.DoesNotExist:
             return Response(
                 {'error': 'Subscription not found'},
                 status=status.HTTP_404_NOT_FOUND
             )
+        # Ownership: request.auth is the WebhookSubscription tied to the API key.
+        caller = getattr(request, 'auth', None)
+        if caller is None or getattr(caller, 'id', None) != subscription.id:
+            return Response(
+                {'error': 'Subscription not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        subscription.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     @extend_schema(
         tags=['Partner API'],

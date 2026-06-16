@@ -222,13 +222,13 @@ class RiskScore(models.Model):
             str: Risk tier
         """
         if score >= 85:
-            return 'EXCELLENT'
+            return 'PRIME'
         elif score >= 70:
-            return 'GOOD'
+            return 'STANDARD'
         elif score >= 55:
-            return 'FAIR'
-        elif score >= 40:
             return 'ELEVATED'
+        elif score >= 40:
+            return 'HIGH'
         else:
             return 'INELIGIBLE'
 
@@ -244,11 +244,16 @@ class RiskScore(models.Model):
             tuple: (min_fee_percent, max_fee_percent)
         """
         fee_ranges = {
+            # Canonical 7-pillar tiers
+            'PRIME': (Decimal('2.0'), Decimal('2.5')),
+            'STANDARD': (Decimal('2.5'), Decimal('3.0')),
+            'ELEVATED': (Decimal('3.5'), Decimal('4.0')),
+            'HIGH': (Decimal('4.0'), Decimal('4.5')),
+            'INELIGIBLE': (Decimal('0.0'), Decimal('0.0')),
+            # Deprecated aliases kept for backward compatibility
             'EXCELLENT': (Decimal('2.0'), Decimal('2.5')),
             'GOOD': (Decimal('2.5'), Decimal('3.0')),
             'FAIR': (Decimal('3.0'), Decimal('3.5')),
-            'ELEVATED': (Decimal('3.5'), Decimal('4.0')),
-            'INELIGIBLE': (Decimal('0.0'), Decimal('0.0')),
         }
         return fee_ranges.get(tier, (Decimal('0.0'), Decimal('0.0')))
 

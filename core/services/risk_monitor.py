@@ -83,7 +83,7 @@ class RiskMonitor:
 
                 # Calculate new risk score
                 # Note: Requires a Facility - we'll use the company's primary facility
-                facility = customer.company.facilities.filter(is_active=True).first() if customer.company else None
+                facility = customer.company.facilities.filter(status='ACTIVE').first() if customer.company else None
                 if not facility:
                     continue
 
@@ -152,7 +152,7 @@ class RiskMonitor:
 
             if avg_amount > 0:
                 # Calculate z-score approximation
-                historical_amounts = list(customer_invoices.values_list('total_amount', flat=True))
+                historical_amounts = [float(a) for a in customer_invoices.values_list('total_amount', flat=True)]
                 if len(historical_amounts) >= 3:
                     import statistics
                     mean = statistics.mean(historical_amounts)
