@@ -73,11 +73,12 @@ class CreditBureauService:
         # Cache the result
         cache.set(cache_key, score_data, self.CACHE_TTL)
 
-        # Update customer record
-        customer.update_credit_score(
-            score=score_data['credit_score'],
-            source=score_data['source']
-        )
+        # Persist only a real score (never a no-data placeholder)
+        if score_data.get('credit_score') is not None:
+            customer.update_credit_score(
+                score=score_data['credit_score'],
+                source=score_data['source'],
+            )
 
         return {
             **score_data,
@@ -131,20 +132,23 @@ class CreditBureauService:
         #     }
         # }
 
-        # Stubbed response - generate mock score based on customer data
-        mock_score = self._generate_mock_score(customer)
-
+        # Live bureau via the provider-agnostic adapter. Returns an HONEST
+        # no-data result (credit_score=None) when no provider is configured —
+        # we never fabricate a debtor score.
+        from core.integrations.bureau_adapter import lookup_customer
+        result = lookup_customer(customer)
         return {
             'customer_id': customer.id,
             'customer_name': customer.name,
-            'credit_score': mock_score,
-            'source': 'TRUCKWYS',  # Internal scoring (stub)
+            'credit_score': result.score,
+            'source': result.source,
             'updated_at': timezone.now(),
             'details': {
-                'rating': self._score_to_rating(mock_score),
-                'risk_class': self._score_to_risk_class(mock_score),
-                'note': 'This is a stubbed score. Connect to D&B for real credit data.',
-            }
+                'rating': result.rating or (self._score_to_rating(result.score) if result.score is not None else ''),
+                'risk_class': result.risk_class,
+                'available': result.available,
+                'note': result.note or 'Live bureau score.',
+            },
         }
 
     def _generate_mock_score(self, customer: Customer) -> int:

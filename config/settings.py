@@ -13,6 +13,7 @@ for _key in (
     'ANTHROPIC_API_KEY', 'OPENAI_API_KEY',
     'CLAUDE_AGENT_MODEL', 'CLAUDE_INSIGHTS_MODEL', 'CLAUDE_QUOTE_MODEL',
     'LENDER_API_KEYS', 'TOMTOM_API_KEY', 'REDIS_URL',
+    'CREDIT_BUREAU_PROVIDER', 'CREDIT_BUREAU_API_KEY', 'CREDIT_BUREAU_BASE_URL',
 ):
     _val = config(_key, default='')
     if _val and not os.environ.get(_key):

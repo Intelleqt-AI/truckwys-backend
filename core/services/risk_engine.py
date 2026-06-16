@@ -570,20 +570,22 @@ class RiskEngine:
         score = 0
         sub_factors = []
 
-        # Credit score (0-30 points)
-        if self.customer.credit_score:
-            if self.customer.credit_score >= 80:
+        # Credit score (0-30 points) — manual override, else live bureau, else no-data
+        credit_score, credit_source = self._resolve_credit_score()
+        if credit_score is not None:
+            src = f' · {credit_source}' if credit_source and credit_source != 'MANUAL' else ''
+            if credit_score >= 80:
                 score += 30
-                sub_factors.append({'factor': 'Credit Score', 'impact': 30, 'description': f'Excellent credit ({self.customer.credit_score})'})
-            elif self.customer.credit_score >= 70:
+                sub_factors.append({'factor': 'Credit Score', 'impact': 30, 'description': f'Excellent credit ({credit_score}{src})'})
+            elif credit_score >= 70:
                 score += 22
-                sub_factors.append({'factor': 'Credit Score', 'impact': 22, 'description': f'Good credit ({self.customer.credit_score})'})
-            elif self.customer.credit_score >= 50:
+                sub_factors.append({'factor': 'Credit Score', 'impact': 22, 'description': f'Good credit ({credit_score}{src})'})
+            elif credit_score >= 50:
                 score += 12
-                sub_factors.append({'factor': 'Credit Score', 'impact': 12, 'description': f'Fair credit ({self.customer.credit_score})'})
+                sub_factors.append({'factor': 'Credit Score', 'impact': 12, 'description': f'Fair credit ({credit_score}{src})'})
             else:
                 score += 3
-                sub_factors.append({'factor': 'Credit Score', 'impact': 3, 'description': f'Poor credit ({self.customer.credit_score})'})
+                sub_factors.append({'factor': 'Credit Score', 'impact': 3, 'description': f'Poor credit ({credit_score}{src})'})
         else:
             score += 15
             sub_factors.append({'factor': 'Credit Score', 'impact': 15, 'description': 'No bureau data (using platform history)'})
@@ -1141,6 +1143,41 @@ class RiskEngine:
         ).aggregate(total=Sum('total_amount'))['total'] or Decimal('1.0')
 
         return float(outstanding) / float(monthly)
+
+    def _resolve_credit_score(self):
+        """Return (score, source) for the debtor.
+
+        Priority: manual override on the customer record → live credit bureau
+        (when a provider is configured, cached 24h for saved customers) → no data.
+        Returns (None, None) when there's no score from any source — the engine
+        then falls back to platform payment behaviour, never a fabricated score.
+        """
+        manual = getattr(self.customer, 'credit_score', None)
+        if manual:
+            return int(manual), (getattr(self.customer, 'credit_score_source', 'MANUAL') or 'MANUAL')
+
+        try:
+            from core.integrations.bureau_adapter import is_configured, lookup_customer
+            if not is_configured():
+                return None, None
+            cache_key = None
+            cust_pk = getattr(self.customer, 'pk', None)
+            if cust_pk:
+                from django.core.cache import cache
+                cache_key = f'bureau_score:{cust_pk}'
+                cached = cache.get(cache_key)
+                if cached is not None:
+                    return cached.get('score'), cached.get('source')
+            result = lookup_customer(self.customer)
+            payload = {'score': result.score, 'source': result.source} if result.available else None
+            if cache_key and payload:
+                from django.core.cache import cache
+                cache.set(cache_key, payload, 60 * 60 * 24)
+            if result.available and result.score is not None:
+                return int(result.score), result.source
+        except Exception:
+            pass
+        return None, None
 
     def _get_platform_avg_days_to_pay(self) -> float:
         """Average days-to-pay for this debtor, computed from REAL paid invoices.
