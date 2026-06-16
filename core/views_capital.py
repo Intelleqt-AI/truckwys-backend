@@ -409,14 +409,28 @@ class CapitalDashboardViewSet(viewsets.ViewSet):
 
         user = request.user
 
-        # Get company
+        # Get company. Staff/admin may target any company via ?company_id=,
+        # otherwise fall back to their own company association.
         if user.is_staff:
-            return Response(
-                {'error': 'Admin users must specify a company_id parameter'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        company = user.company
+            company_id = request.GET.get('company_id')
+            if company_id:
+                company = Company.objects.filter(id=company_id).first()
+                if not company:
+                    return Response(
+                        {'error': f'Company {company_id} not found'},
+                        status=status.HTTP_404_NOT_FOUND
+                    )
+            else:
+                company = getattr(user, 'company', None)
+                if not company:
+                    company = Company.objects.order_by('id').first()
+                if not company:
+                    return Response(
+                        {'error': 'No company found; specify a company_id parameter'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+        else:
+            company = user.company
 
         # Get facility data
         facility = Facility.objects.filter(company=company, status='ACTIVE').first()

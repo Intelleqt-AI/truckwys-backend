@@ -7,6 +7,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = config('SECRET_KEY', default='django-insecure-dev-key-change-in-production')
 DEBUG = config('DEBUG', default=False, cast=bool)
 
+# Fail fast: never run in production on the insecure dev SECRET_KEY.
+if not DEBUG and SECRET_KEY == 'django-insecure-dev-key-change-in-production':
+    from django.core.exceptions import ImproperlyConfigured
+    raise ImproperlyConfigured('SECRET_KEY must be set via environment when DEBUG=False.')
+
 # ALLOWED_HOSTS from environment (CSV)
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,*.ngrok.io', cast=lambda v: [s.strip() for s in v.split(',')])
 
@@ -104,7 +109,11 @@ REST_FRAMEWORK = {
         'rest_framework.authentication.SessionAuthentication',
     ],
     'DEFAULT_PERMISSION_CLASSES': [
-        'rest_framework.permissions.AllowAny',  # Changed for development
+        # Secure by default: views must opt in to public access with
+        # permission_classes = [AllowAny]. All genuinely public endpoints
+        # (login, register, password reset, public/client quote, invite,
+        # PayFast ITN, partner/lender API key auth) already do.
+        'rest_framework.permissions.IsAuthenticated',
     ],
     'DEFAULT_FILTER_BACKENDS': [
         'django_filters.rest_framework.DjangoFilterBackend',
@@ -120,6 +129,7 @@ REST_FRAMEWORK = {
         'anon': '20/minute',
         'user': '60/minute',
         'login': '5/minute',  # Stricter rate for login/signup
+        'lender': '120/minute',  # Per-API-key cap for the lender API
     }
 }
 
@@ -134,7 +144,7 @@ SPECTACULAR_SETTINGS = {
 
 CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', default='http://localhost:3000,http://localhost:3701,http://localhost:3702', cast=lambda v: [s.strip() for s in v.split(',')])
 CORS_ALLOW_CREDENTIALS = True
-CORS_ALLOW_ALL_ORIGINS = config('CORS_ALLOW_ALL_ORIGINS', default=True, cast=bool)  # True for dev, False for prod
+CORS_ALLOW_ALL_ORIGINS = config('CORS_ALLOW_ALL_ORIGINS', default=False, cast=bool)  # Safe default; opt in per-env
 
 # Add these for better CORS handling
 CORS_ALLOW_HEADERS = [
@@ -185,5 +195,5 @@ PAYFAST_PASSPHRASE = config('PAYFAST_PASSPHRASE', default='')
 PAYFAST_SANDBOX = config('PAYFAST_SANDBOX', default=True, cast=bool)
 
 # ControlFleet Integration Configuration
-CONTROLFLEET_WEBHOOK_KEY = config('CONTROLFLEET_WEBHOOK_KEY', default='changeme')
+CONTROLFLEET_WEBHOOK_KEY = config('CONTROLFLEET_WEBHOOK_KEY', default='')
 CONTROLFLEET_API_KEY = config('CONTROLFLEET_API_KEY', default='')

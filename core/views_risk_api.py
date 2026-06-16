@@ -44,7 +44,7 @@ class RiskAssessmentView(APIView):
             # Get facility (use company's active facility)
             facility = None
             if invoice.company:
-                facility = invoice.company.facilities.filter(is_active=True).first()
+                facility = invoice.company.facilities.filter(status='ACTIVE').first()
 
             if not facility:
                 return Response(

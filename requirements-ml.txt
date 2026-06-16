@@ -1,0 +1,13 @@
+# Optional ML stack for the quoting & risk models.
+# Kept out of the base requirements.txt so a missing native toolchain
+# (e.g. on Python 3.14 without OpenMP/cmake) never breaks the core install.
+# The ML endpoints gate honestly when these are absent
+# (/api/v1/quotes/model-stats/ reports trained:false, ml_available:false).
+#
+# Install on a host that supports them with:
+#   pip install -r requirements.txt -r requirements-ml.txt
+# then train via:  python manage.py retrain_quote_model
+lightgbm>=4.0.0
+scikit-learn>=1.3.0
+joblib>=1.3.0
+pandas>=2.0.0

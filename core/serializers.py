@@ -9,17 +9,43 @@ from .models import (
 class UserSerializer(serializers.ModelSerializer):
     name = serializers.CharField(source='get_full_name', read_only=True)
     last_active = serializers.DateTimeField(source='last_login', read_only=True)
-    
+    # Declared as CharField (not the model ChoiceField) so we can normalise the
+    # UI's lower-case role values to the model's upper-case choices.
+    role = serializers.CharField(required=False)
+
+    def validate_role(self, value):
+        if not isinstance(value, str):
+            return value
+        normalized = value.upper()
+        valid = {c[0] for c in User.ROLE_CHOICES}
+        if normalized not in valid:
+            raise serializers.ValidationError(f'"{value}" is not a valid role.')
+        return normalized
+
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'name', 'job_title',
+        fields = ['id', 'username', 'email', 'password', 'first_name', 'last_name', 'name', 'job_title',
                   'role', 'status', 'phone', 'address', 'timezone', 'language', 'date_format',
                   'notification_settings', 'avatar', 'last_active', 'is_active', 'created_at', 'updated_at']
         read_only_fields = ['id', 'created_at', 'updated_at', 'last_active']
-        extra_kwargs = {'password': {'write_only': True}}
+        extra_kwargs = {'password': {'write_only': True, 'required': False}}
 
     def create(self, validated_data):
+        # Without this, password was silently dropped, leaving every API-created
+        # user (e.g. drivers) unable to log in.
+        password = validated_data.pop('password', None)
         user = User.objects.create_user(**validated_data)
+        if password:
+            user.set_password(password)
+            user.save(update_fields=['password'])
+        return user
+
+    def update(self, instance, validated_data):
+        password = validated_data.pop('password', None)
+        user = super().update(instance, validated_data)
+        if password:
+            user.set_password(password)
+            user.save(update_fields=['password'])
         return user
 
 

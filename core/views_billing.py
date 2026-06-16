@@ -6,6 +6,9 @@
 # - PayFastITNView: Public webhook (AllowAny) - exempt from company filtering ✓
 
 """Billing views for PayFast subscription management."""
+import logging
+from decimal import Decimal, InvalidOperation
+
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
@@ -16,8 +19,12 @@ from .models import BillingTransaction
 from .serializers_billing import (
     BillingTransactionSerializer, BillingStatusSerializer, SubscribeSerializer
 )
-from .services.payfast import build_payment_data, validate_itn, PLAN_PRICING
+from .services.payfast import (
+    build_payment_data, validate_itn, confirm_payment_with_payfast, PLAN_PRICING
+)
 from django.conf import settings
+
+logger = logging.getLogger(__name__)
 
 
 def _get_notify_url(request):
@@ -134,8 +141,15 @@ class PayFastITNView(APIView):
         post_data = request.POST.dict()
         source_ip = request.META.get('REMOTE_ADDR', '')
 
+        # 1. Verify the ITN signature (and source IP in production).
         if not validate_itn(post_data, source_ip):
             return Response({'detail': 'Invalid signature.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # 2. Server-to-server confirmation: PayFast must echo this ITN as VALID.
+        #    This defeats forged/replayed payloads that happen to carry a valid signature.
+        if not confirm_payment_with_payfast(post_data):
+            logger.warning("PayFast ITN failed server-to-server confirmation: %s", post_data.get('m_payment_id'))
+            return Response({'detail': 'Unconfirmed.'}, status=status.HTTP_400_BAD_REQUEST)
 
         payment_status = post_data.get('payment_status', '')
         m_payment_id = post_data.get('m_payment_id', '')
@@ -143,6 +157,35 @@ class PayFastITNView(APIView):
         token = post_data.get('token', '')
         company_id = post_data.get('custom_str1', '')
         plan = post_data.get('custom_str2', '')
+
+        txn = BillingTransaction.objects.filter(payment_id=m_payment_id).first()
+
+        # 3. Idempotency: a transaction we've already completed is never re-processed.
+        #    Acknowledge with 200 so PayFast stops retrying.
+        if txn and txn.status == 'complete':
+            return Response(status=status.HTTP_200_OK)
+
+        # 4. Amount verification: the gross paid must equal the plan's price.
+        #    Without this, a tampered ITN could grant a paid plan for any amount.
+        if payment_status == 'COMPLETE':
+            expected_amount = PLAN_PRICING.get(plan, {}).get('amount')
+            try:
+                amount_gross = Decimal(str(post_data.get('amount_gross', '0')))
+            except (InvalidOperation, TypeError):
+                amount_gross = Decimal('0')
+
+            if expected_amount is None or amount_gross != expected_amount:
+                logger.warning(
+                    "PayFast ITN amount/plan mismatch: plan=%r gross=%s expected=%s",
+                    plan, amount_gross, expected_amount,
+                )
+                BillingTransaction.objects.filter(payment_id=m_payment_id).update(
+                    payfast_payment_id=pf_payment_id,
+                    status='failed',
+                    payment_status=payment_status,
+                    raw_itn_data=post_data,
+                )
+                return Response({'detail': 'Amount mismatch.'}, status=status.HTTP_400_BAD_REQUEST)
 
         # Update billing transaction
         BillingTransaction.objects.filter(payment_id=m_payment_id).update(
@@ -152,7 +195,7 @@ class PayFastITNView(APIView):
             raw_itn_data=post_data,
         )
 
-        # Update company subscription on successful payment
+        # Update company subscription on verified successful payment
         if payment_status == 'COMPLETE' and company_id:
             from .models import Company
             try:

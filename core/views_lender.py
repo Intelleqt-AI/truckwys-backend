@@ -24,6 +24,19 @@ from rest_framework import status
 from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.throttling import SimpleRateThrottle
+
+
+class LenderRateThrottle(SimpleRateThrottle):
+    """Per-API-key rate limit for the lender API. The default UserRateThrottle
+    no-ops here because LenderUser.pk is None, so throttle on the key itself."""
+    scope = 'lender'
+
+    def get_cache_key(self, request, view):
+        key = request.META.get('HTTP_X_API_KEY')
+        if not key:
+            return None
+        return self.cache_format % {'scope': self.scope, 'ident': key}
 
 
 # ---------------------------------------------------------------------------
@@ -58,7 +71,9 @@ class LenderAPIKeyAuthentication(BaseAuthentication):
     """Authenticate lenders via X-API-Key header."""
 
     def authenticate(self, request):
-        key = request.META.get('HTTP_X_API_KEY') or request.GET.get('api_key')
+        # Header-only — never accept the key via query string (it would leak into
+        # access logs, proxies, and browser history).
+        key = request.META.get('HTTP_X_API_KEY')
         if not key:
             return None  # Not an API key request — try other auth
         lender_name = DEMO_API_KEYS.get(key)
@@ -74,6 +89,7 @@ class LenderAPIKeyAuthentication(BaseAuthentication):
 class LenderBaseView(APIView):
     authentication_classes = [LenderAPIKeyAuthentication]
     permission_classes = [IsAuthenticated]
+    throttle_classes = [LenderRateThrottle]
 
     def _require_api_key(self, request):
         """Returns error response if not authenticated via API key, else None."""

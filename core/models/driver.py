@@ -3,6 +3,7 @@ from django.conf import settings
 
 class Driver(models.Model):
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='driver_profile')
+    company = models.ForeignKey("Company", on_delete=models.CASCADE, null=True, blank=True, related_name="drivers")
     license_number = models.CharField(max_length=100, unique=True)
     license_expiry = models.DateField()
     license_state = models.CharField(max_length=50)

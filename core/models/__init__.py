@@ -23,6 +23,8 @@ from .activity_event import ActivityEvent
 from .webhook_subscription import WebhookSubscription
 from .billing import BillingTransaction
 from .invite_token import InviteToken
+from .fuel_price import FuelPrice
+from .toll_plaza import TollPlaza
 
 __all__ = [
     'User',
@@ -52,4 +54,6 @@ __all__ = [
     'WebhookSubscription',
     'BillingTransaction',
     'InviteToken',
+    'FuelPrice',
+    'TollPlaza',
 ]
