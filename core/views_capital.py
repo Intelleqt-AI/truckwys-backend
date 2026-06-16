@@ -302,6 +302,18 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
         except Exception as exc:
             return Response({'error': f'Could not create advance: {exc}'}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Real-time push to the operator's other open sessions/devices.
+        try:
+            from core.ws.broadcast import broadcast_event
+            broadcast_event(
+                getattr(facility, 'company_id', None),
+                'advance.created',
+                message=f'Advance requested on {invoice.invoice_number} — R{float(result.net_advance):,.0f} net',
+                data={'advance_id': advance_request.id, 'invoice_id': invoice.id, 'net_amount': float(result.net_advance)},
+            )
+        except Exception:
+            pass
+
         response_serializer = AdvanceRequestSerializer(advance_request)
         return Response(response_serializer.data, status=status.HTTP_201_CREATED)
 

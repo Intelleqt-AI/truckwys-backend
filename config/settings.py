@@ -1,8 +1,22 @@
+import os
 from pathlib import Path
 from decouple import config
 import dj_database_url
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Bridge .env (read by python-decouple) into os.environ so code that reads keys
+# via os.environ.get(...) — the AI/LLM/voice services — picks them up from .env
+# without needing real shell exports. Drop ANTHROPIC_API_KEY / OPENAI_API_KEY
+# into a .env file and the Copilot, quote parser and voice transcription go live.
+for _key in (
+    'ANTHROPIC_API_KEY', 'OPENAI_API_KEY',
+    'CLAUDE_AGENT_MODEL', 'CLAUDE_INSIGHTS_MODEL', 'CLAUDE_QUOTE_MODEL',
+    'LENDER_API_KEYS', 'TOMTOM_API_KEY', 'REDIS_URL',
+):
+    _val = config(_key, default='')
+    if _val and not os.environ.get(_key):
+        os.environ[_key] = str(_val)
 
 SECRET_KEY = config('SECRET_KEY', default='django-insecure-dev-key-change-in-production')
 DEBUG = config('DEBUG', default=False, cast=bool)
@@ -16,12 +30,14 @@ if not DEBUG and SECRET_KEY == 'django-insecure-dev-key-change-in-production':
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,*.ngrok.io', cast=lambda v: [s.strip() for s in v.split(',')])
 
 INSTALLED_APPS = [
+    'daphne',  # must be first — provides the ASGI-aware runserver for WebSockets
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'channels',
     'rest_framework',
     'rest_framework.authtoken',
     'drf_spectacular',
@@ -29,6 +45,19 @@ INSTALLED_APPS = [
     'django_filters',
     'core',
 ]
+
+# Channels / WebSockets
+ASGI_APPLICATION = 'config.asgi.application'
+# Redis channel layer — works across threads/processes (the in-memory layer can't
+# bridge a sync HTTP view to a WS consumer). Falls back to in-memory only if no
+# REDIS_URL is set AND Redis is unreachable (degrades to no cross-thread push).
+_REDIS_URL = os.environ.get('REDIS_URL', 'redis://127.0.0.1:6379/0')
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels_redis.core.RedisChannelLayer',
+        'CONFIG': {'hosts': [_REDIS_URL]},
+    }
+}
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',

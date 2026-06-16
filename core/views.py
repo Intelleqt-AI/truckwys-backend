@@ -1411,22 +1411,42 @@ class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     ordering_fields = ['created_at', 'pickup_date', 'delivery_date']
 
     def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
+        load = serializer.save(created_by=self.request.user)
+        try:
+            from core.ws.broadcast import broadcast_event
+            broadcast_event(
+                getattr(load, 'company_id', None),
+                'booking.created',
+                message=f'New booking {load.load_number or load.id} created',
+                data={'load_id': load.id, 'status': load.status},
+            )
+        except Exception:
+            pass
 
     @action(detail=True, methods=['patch'])
     def update_status(self, request, pk=None):
         """Update load status"""
         load = self.get_object()
         new_status = request.data.get('status')
-        
+
         if new_status not in dict(Load.STATUS_CHOICES).keys():
             return Response(
                 {'error': 'Invalid status'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         load.status = new_status
         load.save()
+        try:
+            from core.ws.broadcast import broadcast_event
+            broadcast_event(
+                getattr(load, 'company_id', None),
+                'booking.status',
+                message=f'Booking {load.load_number or load.id} → {new_status}',
+                data={'load_id': load.id, 'status': new_status},
+            )
+        except Exception:
+            pass
         serializer = self.get_serializer(load)
         return Response(serializer.data)
 
