@@ -1,0 +1,60 @@
+# Production-shaped local stack: Postgres + Redis + web + Celery worker.
+# Run:  docker compose up --build
+# (Mirrors the AWS target: RDS Postgres + ElastiCache Redis + App Runner/ECS.)
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: truckwys
+      POSTGRES_USER: truckwys
+      POSTGRES_PASSWORD: truckwys
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U truckwys"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  web:
+    build: .
+    command: ["web"]
+    environment:
+      SECRET_KEY: "local-compose-secret-change-me"
+      DEBUG: "True"
+      DATABASE_URL: "postgresql://truckwys:truckwys@db:5432/truckwys"
+      REDIS_URL: "redis://redis:6379/0"
+      ALLOWED_HOSTS: "localhost,127.0.0.1"
+      CORS_ALLOW_ALL_ORIGINS: "True"
+      # ANTHROPIC_API_KEY, TOMTOM_API_KEY, RESEND_API_KEY, PAYFAST_* go here in real use
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  worker:
+    build: .
+    command: ["worker"]
+    environment:
+      SECRET_KEY: "local-compose-secret-change-me"
+      DEBUG: "True"
+      DATABASE_URL: "postgresql://truckwys:truckwys@db:5432/truckwys"
+      REDIS_URL: "redis://redis:6379/0"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+volumes:
+  pgdata:

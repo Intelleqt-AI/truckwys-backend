@@ -1,0 +1,33 @@
+# AWS App Runner config (image-based deploys are recommended — see DEPLOY.md).
+# This file documents the runtime contract; for ECR image deploys App Runner
+# uses the Dockerfile's ENTRYPOINT/CMD and the env/secrets below.
+version: 1.0
+runtime: docker
+build:
+  commands:
+    build:
+      - echo "Built via Dockerfile"
+run:
+  runtime-version: latest
+  command: ./docker-entrypoint.sh web
+  network:
+    port: 8000
+  env:
+    - name: DEBUG
+      value: "False"
+    - name: ALLOWED_HOSTS
+      value: "api.truckwys.co.za,.awsapprunner.com"
+    - name: CORS_ALLOWED_ORIGINS
+      value: "https://app.truckwys.co.za"
+    - name: FRONTEND_URL
+      value: "https://app.truckwys.co.za"
+  # SECRET_KEY, DATABASE_URL, REDIS_URL, ANTHROPIC_API_KEY, TOMTOM_API_KEY,
+  # RESEND_API_KEY, PAYFAST_* should be wired from AWS Secrets Manager
+  # (App Runner: configure as "Secrets" referencing Secrets Manager ARNs).
+  secrets:
+    - name: SECRET_KEY
+      value-from: "arn:aws:secretsmanager:af-south-1:ACCOUNT_ID:secret:truckwys/SECRET_KEY"
+    - name: DATABASE_URL
+      value-from: "arn:aws:secretsmanager:af-south-1:ACCOUNT_ID:secret:truckwys/DATABASE_URL"
+    - name: ANTHROPIC_API_KEY
+      value-from: "arn:aws:secretsmanager:af-south-1:ACCOUNT_ID:secret:truckwys/ANTHROPIC_API_KEY"
