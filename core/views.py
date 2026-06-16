@@ -173,10 +173,41 @@ class ChangePasswordView(APIView):
 
 class UserProfileView(APIView):
     permission_classes = [IsAuthenticated]
-    
+
     def get(self, request):
         serializer = UserSerializer(request.user)
         return Response(serializer.data)
+
+
+class SessionsView(APIView):
+    """Active sessions for the authenticated user.
+
+    We use DRF token auth (one token per user), so we surface the current
+    session derived from the live request. Returns a list the Security
+    Settings panel can render directly.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        ua = request.META.get('HTTP_USER_AGENT', '') or ''
+        device = 'This device'
+        low = ua.lower()
+        if 'iphone' in low or 'android' in low or 'mobile' in low:
+            device = 'Mobile device'
+        elif 'mac' in low:
+            device = 'Mac'
+        elif 'windows' in low:
+            device = 'Windows PC'
+        ip = request.META.get('HTTP_X_FORWARDED_FOR', '') or request.META.get('REMOTE_ADDR', '') or ''
+        ip = ip.split(',')[0].strip()
+        last_login = getattr(request.user, 'last_login', None)
+        return Response([{
+            'id': 'current',
+            'device': device,
+            'location': ip or 'Unknown',
+            'time': last_login.isoformat() if last_login else 'Now',
+            'current': True,
+        }])
     
     def patch(self, request):
         serializer = UserSerializer(request.user, data=request.data, partial=True)

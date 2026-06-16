@@ -571,45 +571,51 @@ class CapitalEligibleInvoicesView(APIView):
     permission_classes = [IsAuthenticated]  # Using Token auth in practice
 
     def get(self, request):
-        # Get invoices eligible for advance
+        user = request.user
+
+        # Resolve the operator's active facility (advances are scored against it).
+        # Without a facility, no invoice is advanceable — return an empty, honest list.
+        company = getattr(user, 'company', None)
+        if user.is_staff:
+            facility = Facility.objects.filter(status='ACTIVE').first()
+        else:
+            facility = Facility.objects.filter(
+                company=company, status='ACTIVE'
+            ).first() if company else None
+
+        # Candidate invoices: this company's SENT/OVERDUE invoices with no active advance.
         eligible_statuses = ['SENT', 'OVERDUE']
-        invoices = Invoice.objects.filter(
+        candidates = Invoice.objects.filter(
             status__in=eligible_statuses,
-            early_pay_eligible=True,
-        ).select_related('customer', 'load').exclude(
+        ).select_related('customer', 'load', 'trip').exclude(
             advance_requests__status__in=['REQUESTED', 'SCORING', 'APPROVED', 'DISBURSED']
         )
-
-        if not invoices.exists():
-            # Fallback: any SENT invoices without active advances
-            invoices = Invoice.objects.filter(
-                status__in=eligible_statuses
-            ).select_related('customer', 'load').exclude(
-                advance_requests__status__in=['REQUESTED', 'SCORING', 'APPROVED', 'DISBURSED']
-            )
+        if company is not None:
+            candidates = candidates.filter(company=company)
+        candidates = candidates.order_by('-issue_date')[:50]
 
         result = []
         total_face_value = Decimal('0.00')
         total_net_payout = Decimal('0.00')
 
-        for inv in invoices:
-            # Get risk score for this customer
-            risk = RiskScore.objects.filter(customer=inv.customer).order_by('-calculated_at').first()
-            tier = risk.tier if risk else 'FAIR'
-            score = risk.total_score if risk else 55
+        for inv in candidates:
+            if not facility:
+                continue
+            # Run the SAME risk engine used at advance creation so this list only
+            # contains invoices that will actually be accepted (POD on file, score OK).
+            try:
+                engine = RiskEngine(invoice=inv, facility=facility)
+                res = engine.calculate_risk_score()
+            except Exception:
+                continue
+            if not res.is_eligible:
+                continue
 
-            # Calculate fee based on tier
-            fee_map = {
-                'EXCELLENT': 2.0,
-                'GOOD': 2.5,
-                'FAIR': 3.0,
-                'ELEVATED': 3.5,
-                'INELIGIBLE': 0.0,
-            }
-            fee_rate = fee_map.get(tier, 3.0)
             amount = Decimal(str(inv.total_amount))
-            fee_amount = (amount * Decimal(str(fee_rate)) / Decimal('100')).quantize(Decimal('0.01'))
-            net_payout = amount - fee_amount
+            fee_amount = Decimal(str(res.fee_amount))
+            net_payout = Decimal(str(res.net_advance))
+            fee_rate = float(res.final_fee_percent)
+            tier = res.risk_tier
 
             total_face_value += amount
             total_net_payout += net_payout
@@ -629,9 +635,9 @@ class CapitalEligibleInvoicesView(APIView):
                 'issue_date': inv.issue_date.isoformat() if inv.issue_date else None,
                 'due_date': inv.due_date.isoformat() if inv.due_date else None,
                 'age_days': age_days,
-                'risk_score': score,
+                'risk_score': float(res.final_score),
                 'risk_tier': tier,
-                'tier': tier.lower(),  # Frontend compatibility
+                'tier': str(tier).lower(),  # Frontend compatibility
                 'fee_rate_pct': fee_rate,
                 'fee_amount_zar': float(fee_amount),
                 'net_payout_zar': float(net_payout),
