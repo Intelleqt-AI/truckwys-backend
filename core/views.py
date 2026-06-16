@@ -1411,20 +1411,9 @@ class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     ordering_fields = ['created_at', 'pickup_date', 'delivery_date']
 
     def perform_create(self, serializer):
-        load = serializer.save(created_by=self.request.user)
-        try:
-            from core.services.notify import notify_company
-            notify_company(
-                getattr(load, 'company_id', None),
-                'INFO',
-                'New booking created',
-                f'{load.load_number or ("Load " + str(load.id))}'
-                + (f' · {load.pickup_city} → {load.delivery_city}' if getattr(load, "pickup_city", None) else ''),
-                link=f'/bookings/{load.id}',
-                event='booking.created',
-            )
-        except Exception:
-            pass
+        # Creation notification is raised by the Load post_save signal
+        # (notify_company), which covers all creation paths, not just this view.
+        serializer.save(created_by=self.request.user)
 
     @action(detail=True, methods=['patch'])
     def update_status(self, request, pk=None):

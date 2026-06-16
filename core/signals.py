@@ -27,21 +27,25 @@ def load_saved(sender, instance, created, **kwargs):
             metadata={'load_number': instance.load_number, 'status': instance.status}
         )
 
-        # Create notification for new load
-        user = None
-        if instance.company:
-            user = User.objects.filter(company=instance.company, role='ADMIN', status='ACTIVE').first()
-        elif instance.created_by:
-            user = instance.created_by
-
-        if user:
-            Notification.objects.create(
-                user=user,
-                type='INFO',
-                title="New Load Created",
-                message=f"Load {instance.load_number} for {instance.customer.name}",
-                link=f"/loads/{instance.id}"
-            )
+        # Notify the whole company (persist + live WebSocket push), with a valid
+        # deep-link to the bookings detail route.
+        from core.services.notify import notify_company
+        cust = instance.customer.name if getattr(instance, 'customer', None) else ''
+        route = (f'{instance.pickup_city} → {instance.delivery_city}'
+                 if getattr(instance, 'pickup_city', None) else '')
+        detail = f"{instance.load_number or ('Load ' + str(instance.id))}"
+        if cust:
+            detail += f' · {cust}'
+        elif route:
+            detail += f' · {route}'
+        notify_company(
+            getattr(instance, 'company_id', None),
+            'INFO',
+            'New booking created',
+            detail,
+            link=f'/bookings/{instance.id}',
+            event='booking.created',
+        )
     else:
         # Fire load.status_changed event
         dispatch_webhook('load.status_changed', data)
