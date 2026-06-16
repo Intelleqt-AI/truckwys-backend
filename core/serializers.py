@@ -99,6 +99,8 @@ class VehicleSerializer(serializers.ModelSerializer):
     revenue_generated = serializers.SerializerMethodField()
     total_trips = serializers.SerializerMethodField()
     utilisation_rate = serializers.SerializerMethodField()
+    type = serializers.CharField(max_length=50, required=False, default='TRUCK')
+    vin = serializers.CharField(max_length=100, required=False, allow_blank=True, default='')
 
     class Meta:
         model = Vehicle

@@ -1,7 +1,6 @@
 """
-Email Service for sending invoice emails with PDF attachments.
-
-Sends professional HTML emails to customers with invoice PDFs attached.
+Email Service for sending invoice emails with PDF attachments,
+and transactional auth emails (verification, etc.) via Django SMTP.
 """
 
 from typing import Optional
@@ -13,6 +12,319 @@ from django.utils import timezone
 import os
 
 from core.models import Invoice, Company
+
+
+def send_verification_email(email: str, code: str, first_name: str) -> bool:
+    """Send email verification OTP via Django SMTP backend."""
+    subject = "Verify your TruckWys account"
+    text_content = f"Hi {first_name},\n\nYour TruckWys verification code is: {code}\n\nThis code expires in 10 minutes."
+    html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Verify your TruckWys account</title>
+</head>
+<body style="margin:0;padding:0;background:#0F172A;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0F172A;padding:48px 16px;">
+    <tr><td align="center">
+      <table width="500" cellpadding="0" cellspacing="0" style="background:#1E293B;border-radius:12px;overflow:hidden;border:1px solid #334155;">
+
+        <!-- Header -->
+        <tr><td style="background:#0F172A;padding:28px 36px;border-bottom:1px solid #334155;">
+          <table width="100%" cellpadding="0" cellspacing="0">
+            <tr>
+              <td>
+                <img src="{settings.FRONTEND_URL}/brand/truckwys-logo-transparent.png"
+                     alt="TruckWys" width="140" height="auto"
+                     style="display:block;border:0;max-height:40px;width:auto;" />
+              </td>
+              <td align="right">
+                <div style="font-size:11px;color:#475569;font-family:monospace;letter-spacing:0.08em;">EMAIL VERIFICATION</div>
+              </td>
+            </tr>
+          </table>
+        </td></tr>
+
+        <!-- Body -->
+        <tr><td style="padding:36px;">
+
+          <p style="margin:0 0 6px;font-size:22px;font-weight:600;color:#F8FAFC;text-align:center;">Verify your email</p>
+          <p style="margin:0 0 32px;font-size:14px;color:#94A3B8;line-height:1.6;text-align:center;">
+            Hi <strong style="color:#F8FAFC;">{first_name}</strong>, enter the code below to activate your TruckWys account.
+          </p>
+
+          <!-- OTP Box -->
+          <div style="background:#0F172A;border:1px solid #38BDF8;border-radius:8px;padding:28px 24px;text-align:center;margin-bottom:28px;">
+            <div style="font-size:11px;color:#64748B;letter-spacing:0.12em;font-family:monospace;margin-bottom:12px;">YOUR VERIFICATION CODE</div>
+            <div style="font-size:42px;font-weight:700;letter-spacing:0.22em;color:#38BDF8;font-family:monospace;">{code}</div>
+            <div style="margin-top:14px;display:inline-block;background:#1E3A4A;border:1px solid #334155;border-radius:4px;padding:4px 12px;">
+              <span style="font-size:11px;color:#64748B;font-family:monospace;letter-spacing:0.08em;">Expires in 10 minutes</span>
+            </div>
+          </div>
+
+          <!-- Steps info -->
+          <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:24px;">
+            <tr>
+              <td style="background:#0F172A;border:1px solid #334155;border-radius:6px;padding:14px 16px;">
+                <table width="100%" cellpadding="0" cellspacing="0">
+                  <tr>
+                    <td width="28" style="font-size:13px;color:#38BDF8;vertical-align:top;padding-top:1px;font-family:monospace;">01</td>
+                    <td style="font-size:13px;color:#94A3B8;line-height:1.5;">Account created — one step left</td>
+                  </tr>
+                  <tr><td colspan="2" style="height:8px;"></td></tr>
+                  <tr>
+                    <td width="28" style="font-size:13px;color:#38BDF8;vertical-align:top;padding-top:1px;font-family:monospace;">02</td>
+                    <td style="font-size:13px;color:#94A3B8;line-height:1.5;">Enter the 6-digit code on the verification page</td>
+                  </tr>
+                  <tr><td colspan="2" style="height:8px;"></td></tr>
+                  <tr>
+                    <td width="28" style="font-size:13px;color:#38BDF8;vertical-align:top;padding-top:1px;font-family:monospace;">03</td>
+                    <td style="font-size:13px;color:#94A3B8;line-height:1.5;">Start managing your fleet with TruckWys</td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+          </table>
+
+          <p style="margin:0;font-size:12px;color:#475569;line-height:1.7;text-align:center;">
+            If you didn't sign up for TruckWys, ignore this email — your address won't be used.
+          </p>
+        </td></tr>
+
+        <!-- Footer -->
+        <tr><td style="padding:20px 36px 24px;border-top:1px solid #334155;background:#0F172A;">
+          <p style="margin:0;font-size:11px;color:#334155;text-align:center;letter-spacing:0.04em;">
+            TruckWys &nbsp;&bull;&nbsp; Road Freight Intelligence &nbsp;&bull;&nbsp; South Africa
+          </p>
+          <p style="margin:6px 0 0;font-size:10px;color:#1E293B;text-align:center;font-family:monospace;letter-spacing:0.06em;">
+            DO NOT REPLY TO THIS EMAIL
+          </p>
+        </td></tr>
+
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+    try:
+        msg = EmailMultiAlternatives(
+            subject=subject,
+            body=text_content,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            to=[email],
+        )
+        msg.attach_alternative(html_content, "text/html")
+        msg.send(fail_silently=False)
+        return True
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Failed to send verification email to {email}: {e}")
+        return False
+
+
+def send_password_reset_email(email: str, first_name: str, reset_code: str) -> bool:
+    """Send password reset OTP via Django SMTP backend."""
+    import logging
+    subject = "Your TruckWys password reset code"
+    text_content = (
+        f"Hi {first_name},\n\n"
+        f"Your TruckWys password reset code is: {reset_code}\n\n"
+        f"This code expires in 1 hour. If you didn't request this, ignore this email."
+    )
+    html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reset your TruckWys password</title>
+</head>
+<body style="margin:0;padding:0;background:#0F172A;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0F172A;padding:48px 16px;">
+    <tr><td align="center">
+      <table width="500" cellpadding="0" cellspacing="0" style="background:#1E293B;border-radius:12px;overflow:hidden;border:1px solid #334155;">
+
+        <!-- Header -->
+        <tr><td style="background:#0F172A;padding:28px 36px;border-bottom:1px solid #334155;">
+          <table width="100%" cellpadding="0" cellspacing="0"><tr>
+            <td>
+              <img src="{settings.FRONTEND_URL}/brand/truckwys-logo-transparent.png"
+                   alt="TruckWys" width="140" style="display:block;border:0;max-height:40px;width:auto;" />
+            </td>
+            <td align="right">
+              <div style="font-size:11px;color:#475569;font-family:monospace;letter-spacing:0.08em;">PASSWORD RESET</div>
+            </td>
+          </tr></table>
+        </td></tr>
+
+        <!-- Body -->
+        <tr><td style="padding:36px;">
+          <p style="margin:0 0 6px;font-size:22px;font-weight:600;color:#F8FAFC;text-align:center;">Reset your password</p>
+          <p style="margin:0 0 32px;font-size:14px;color:#94A3B8;line-height:1.6;text-align:center;">
+            Hi <strong style="color:#F8FAFC;">{first_name}</strong>, use the code below to reset your TruckWys password.
+          </p>
+
+          <!-- OTP Box -->
+          <div style="background:#0F172A;border:1px solid #F59E0B;border-radius:8px;padding:28px 24px;text-align:center;margin-bottom:28px;">
+            <div style="font-size:11px;color:#64748B;letter-spacing:0.12em;font-family:monospace;margin-bottom:12px;">YOUR RESET CODE</div>
+            <div style="font-size:42px;font-weight:700;letter-spacing:0.22em;color:#F59E0B;font-family:monospace;">{reset_code}</div>
+            <div style="margin-top:14px;display:inline-block;background:#2D1F00;border:1px solid #334155;border-radius:4px;padding:4px 12px;">
+              <span style="font-size:11px;color:#64748B;font-family:monospace;letter-spacing:0.08em;">Expires in 1 hour</span>
+            </div>
+          </div>
+
+          <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:24px;">
+            <tr><td style="background:#0F172A;border:1px solid #334155;border-radius:6px;padding:14px 16px;">
+              <table width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td width="28" style="font-size:13px;color:#F59E0B;vertical-align:top;padding-top:1px;font-family:monospace;">01</td>
+                  <td style="font-size:13px;color:#94A3B8;line-height:1.5;">Enter this code on the password reset page</td>
+                </tr>
+                <tr><td colspan="2" style="height:8px;"></td></tr>
+                <tr>
+                  <td width="28" style="font-size:13px;color:#F59E0B;vertical-align:top;padding-top:1px;font-family:monospace;">02</td>
+                  <td style="font-size:13px;color:#94A3B8;line-height:1.5;">Set your new password</td>
+                </tr>
+              </table>
+            </td></tr>
+          </table>
+
+          <p style="margin:0;font-size:12px;color:#475569;line-height:1.7;text-align:center;">
+            If you didn't request a password reset, ignore this email — your password won't change.
+          </p>
+        </td></tr>
+
+        <!-- Footer -->
+        <tr><td style="padding:20px 36px 24px;border-top:1px solid #334155;background:#0F172A;">
+          <p style="margin:0;font-size:11px;color:#334155;text-align:center;letter-spacing:0.04em;">
+            TruckWys &nbsp;&bull;&nbsp; Road Freight Intelligence &nbsp;&bull;&nbsp; South Africa
+          </p>
+          <p style="margin:6px 0 0;font-size:10px;color:#1E293B;text-align:center;font-family:monospace;letter-spacing:0.06em;">
+            DO NOT REPLY TO THIS EMAIL
+          </p>
+        </td></tr>
+
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+    try:
+        msg = EmailMultiAlternatives(
+            subject=subject,
+            body=text_content,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            to=[email],
+        )
+        msg.attach_alternative(html_content, "text/html")
+        msg.send(fail_silently=False)
+        return True
+    except Exception as e:
+        logging.getLogger(__name__).error(f"Failed to send password reset email to {email}: {e}")
+        return False
+
+
+def send_invite_email(invite_email: str, invited_by_name: str, company_name: str, invite_url: str, role: str) -> bool:
+    """Send team invitation email via Django SMTP backend."""
+    import logging
+    role_display = role.replace('_', ' ').title()
+    subject = f"You've been invited to join {company_name} on TruckWys"
+    text_content = (
+        f"Hi,\n\n"
+        f"{invited_by_name} has invited you to join {company_name} on TruckWys as {role_display}.\n\n"
+        f"Accept your invitation: {invite_url}\n\n"
+        f"This invitation expires in 7 days."
+    )
+    html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>You're invited to TruckWys</title>
+</head>
+<body style="margin:0;padding:0;background:#0F172A;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0F172A;padding:48px 16px;">
+    <tr><td align="center">
+      <table width="500" cellpadding="0" cellspacing="0" style="background:#1E293B;border-radius:12px;overflow:hidden;border:1px solid #334155;">
+
+        <!-- Header -->
+        <tr><td style="background:#0F172A;padding:28px 36px;border-bottom:1px solid #334155;">
+          <table width="100%" cellpadding="0" cellspacing="0"><tr>
+            <td>
+              <img src="{settings.FRONTEND_URL}/brand/truckwys-logo-transparent.png"
+                   alt="TruckWys" width="140" style="display:block;border:0;max-height:40px;width:auto;" />
+            </td>
+            <td align="right">
+              <div style="font-size:11px;color:#475569;font-family:monospace;letter-spacing:0.08em;">TEAM INVITATION</div>
+            </td>
+          </tr></table>
+        </td></tr>
+
+        <!-- Body -->
+        <tr><td style="padding:36px;">
+          <p style="margin:0 0 6px;font-size:22px;font-weight:600;color:#F8FAFC;text-align:center;">You're invited</p>
+          <p style="margin:0 0 28px;font-size:14px;color:#94A3B8;line-height:1.6;text-align:center;">
+            <strong style="color:#F8FAFC;">{invited_by_name}</strong> has invited you to join
+            <strong style="color:#F8FAFC;">{company_name}</strong> on TruckWys as <strong style="color:#38BDF8;">{role_display}</strong>.
+          </p>
+
+          <div style="text-align:center;margin-bottom:28px;">
+            <a href="{invite_url}"
+               style="display:inline-block;background:#38BDF8;color:#0F172A;text-decoration:none;padding:14px 36px;border-radius:6px;font-weight:700;font-size:14px;letter-spacing:0.04em;">
+              ACCEPT INVITATION
+            </a>
+          </div>
+
+          <div style="background:#0F172A;border:1px solid #334155;border-radius:6px;padding:14px 16px;margin-bottom:24px;">
+            <p style="margin:0;font-size:13px;color:#64748B;line-height:1.6;">
+              This invitation expires in <strong style="color:#F8FAFC;">7 days</strong>.
+              If you didn't expect this invitation, you can safely ignore this email.
+            </p>
+          </div>
+
+          <p style="margin:0;font-size:12px;color:#475569;line-height:1.7;text-align:center;">
+            TruckWys is South Africa's road freight intelligence platform — AI-powered quoting, fleet management, and instant invoice financing.
+          </p>
+        </td></tr>
+
+        <!-- Footer -->
+        <tr><td style="padding:20px 36px 24px;border-top:1px solid #334155;background:#0F172A;">
+          <p style="margin:0;font-size:11px;color:#334155;text-align:center;letter-spacing:0.04em;">
+            TruckWys &nbsp;&bull;&nbsp; Road Freight Intelligence &nbsp;&bull;&nbsp; South Africa
+          </p>
+          <p style="margin:6px 0 0;font-size:10px;color:#1E293B;text-align:center;font-family:monospace;letter-spacing:0.06em;">
+            DO NOT REPLY TO THIS EMAIL
+          </p>
+        </td></tr>
+
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+    try:
+        msg = EmailMultiAlternatives(
+            subject=subject,
+            body=text_content,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            to=[invite_email],
+        )
+        msg.attach_alternative(html_content, "text/html")
+        msg.send(fail_silently=False)
+        return True
+    except Exception as e:
+        logging.getLogger(__name__).error(f"Failed to send invite email to {invite_email}: {e}")
+        return False
+
+
+def send_welcome_email(email: str, first_name: str) -> bool:
+    """Stub — welcome email via SMTP."""
+    return True
+
+
+def send_advance_approved_email(email: str, first_name: str, amount, reference: str) -> bool:
+    """Stub — advance approved email via SMTP."""
+    return True
 
 
 class InvoiceEmailService:

@@ -16,7 +16,8 @@ from .views import (
     QuotesPipelineOverviewView, NotificationSettingsView,
     CompanyProfileView, CompanyLogoUploadView, DashboardOverviewView, ActivityEventViewSet,
     TestEmailView, InviteView, InviteTokenView, InviteResendView,
-    PublicQuoteView, PublicQuoteRespondView
+    PublicQuoteView, PublicQuoteRespondView,
+    EmailVerifyView, ResendVerificationView,
 )
 from .views_ai_quote import (
     AIChatQuoteView, AIQuoteSuggestionView, AIVoiceQuoteView,
@@ -120,10 +121,13 @@ urlpatterns = [
     path('auth/sessions/', SessionsView.as_view(), name='auth-sessions'),
     path('auth/password-reset/', PasswordResetRequestView.as_view(), name='password-reset'),
     path('auth/password-reset/confirm/', PasswordResetConfirmView.as_view(), name='password-reset-confirm'),
+    path('auth/verify-email/', EmailVerifyView.as_view(), name='verify-email'),
+    path('auth/resend-verification/', ResendVerificationView.as_view(), name='resend-verification'),
     path('auth/invite/', InviteView.as_view(), name='auth-invite'),
     path('auth/invite/<str:token>/accept/', InviteTokenView.as_view(), name='auth-invite-accept'),
     path('auth/invite/<str:token>/', InviteTokenView.as_view(), name='auth-invite-detail'),
     path('auth/invite/<str:token>/resend/', InviteResendView.as_view(), name='auth-invite-resend'),
+    path('auth/invite/<str:token>/accept/', InviteAcceptView.as_view(), name='auth-invite-accept'),
     
     # Fleet/Vehicle specific endpoints (must come before router to avoid conflicts)
     path('fleet/overview/', FleetOverviewView.as_view(), name='fleet-overview'),
