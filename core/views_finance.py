@@ -911,11 +911,26 @@ class FinanceDashboardView(APIView):
                 }
             }
 
+        # Always-on rolling 30-day vs prior-30-day deltas for the Overview cards
+        # (real numbers, no more hardcoded "+12.5% vs avg").
+        _r30 = today - timedelta(days=30)
+        _r60 = today - timedelta(days=60)
+        rev_last30 = Invoice.objects.filter(paid_at__gte=aware_start(_r30), paid_at__lte=aware_end(today), status='PAID').aggregate(t=Sum('total_amount'))['t'] or Decimal('0.00')
+        rev_prev30 = Invoice.objects.filter(paid_at__gte=aware_start(_r60), paid_at__lt=aware_start(_r30), status='PAID').aggregate(t=Sum('total_amount'))['t'] or Decimal('0.00')
+        exp_last30 = Expense.objects.filter(expense_date__gte=_r30, expense_date__lte=today, status='APPROVED').aggregate(t=Sum('amount'))['t'] or Decimal('0.00')
+        exp_prev30 = Expense.objects.filter(expense_date__gte=_r60, expense_date__lt=_r30, status='APPROVED').aggregate(t=Sum('amount'))['t'] or Decimal('0.00')
+        revenue_change_pct = round(float((rev_last30 - rev_prev30) / rev_prev30 * 100), 1) if rev_prev30 > 0 else None
+        _m_last30 = float((rev_last30 - exp_last30) / rev_last30 * 100) if rev_last30 > 0 else None
+        _m_prev30 = float((rev_prev30 - exp_prev30) / rev_prev30 * 100) if rev_prev30 > 0 else None
+        margin_change_pts = round(_m_last30 - _m_prev30, 1) if (_m_last30 is not None and _m_prev30 is not None) else None
+
         response_data = {
             'revenue_period': float(revenue_period),
             'expenses_period': float(expenses_period),
             'net_margin_period': float(net_margin_period),
             'net_margin_percent_period': net_margin_percent_period,
+            'revenue_change_pct': revenue_change_pct,
+            'margin_change_pts': margin_change_pts,
             'from_date': from_date.isoformat(),
             'to_date': to_date.isoformat(),
             'revenue_mtd': float(revenue_mtd),
