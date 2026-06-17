@@ -1527,3 +1527,22 @@ class ReportsExportView(APIView):
             ])
 
         return response
+
+
+class BillingAuditView(APIView):
+    """GET /api/v1/billing/audit/ — carrier-side billing & short-pay audit.
+
+    Finds money the operator hasn't billed, billed short, or hasn't collected.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from core.views import resolve_user_company
+        from core.services.billing_audit import audit_billing
+        company = resolve_user_company(request.user)
+        if company is None:
+            return Response({'error': 'No company associated with this account'}, status=400)
+        try:
+            return Response(audit_billing(company))
+        except Exception as e:
+            return Response({'error': str(e)}, status=500)

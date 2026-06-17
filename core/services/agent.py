@@ -60,6 +60,17 @@ def build_agent_context(company) -> dict:
     # Capital / fast-pay eligibility (mirror the real engine count, cheaply)
     eligible_count, eligible_value, top_eligible = _capital_summary(company)
 
+    # Billing & short-pay audit (carrier-side): money unbilled / underbilled / owed.
+    billing = {}
+    try:
+        from core.services.billing_audit import audit_billing
+        audit = audit_billing(company)
+        billing = audit.get('summary', {})
+        billing['top_unbilled'] = audit.get('unbilled', [])[:3]
+        billing['top_shortpaid'] = audit.get('shortpaid', [])[:3]
+    except Exception as exc:
+        logger.warning('billing audit for agent failed: %s', exc)
+
     top_overdue = [
         {
             "invoice": inv.invoice_number,
@@ -103,6 +114,7 @@ def build_agent_context(company) -> dict:
             "eligible_value": eligible_value,
             "top_eligible": top_eligible,
         },
+        "billing_audit": billing,
         "top_customers_by_outstanding": top_customers,
     }
 
@@ -166,7 +178,7 @@ def _suggest_actions(text: str) -> list:
         keys += ["quotes", "new_quote"]
     if any(w in t for w in ["booking", "load", "shipment", "trip"]):
         keys.append("bookings")
-    if any(w in t for w in ["invoice", "overdue", "outstanding", "collect", "debtor", "cash"]):
+    if any(w in t for w in ["invoice", "overdue", "outstanding", "collect", "debtor", "cash", "bill", "unbilled", "short pay", "owed", "recover", "audit"]):
         keys.append("invoices")
     if any(w in t for w in ["advance", "fast pay", "capital", "factor", "finance"]):
         keys.append("capital")
@@ -238,6 +250,21 @@ def _fallback_reply(ctx: dict, user_text: str) -> str:
         parts = ", ".join(f"{v} {k.lower()}" for k, v in by.items()) or "none yet"
         return f"Your pipeline has {quotes['total']} quotes ({parts}). I can open the board or start a new quote."
 
+    if any(w in t for w in ["bill", "unbilled", "short pay", "short-pay", "underbilled", "recover", "owed", "uninvoiced", "audit"]):
+        b = ctx.get("billing_audit") or {}
+        rec = b.get("total_recoverable", 0)
+        if not rec:
+            return "Your billing looks clean — nothing unbilled, underbilled or short-paid that I can see."
+        bits = []
+        if b.get("unbilled_value"):
+            bits.append(f"{fmt(b['unbilled_value'])} in {b.get('unbilled_count', 0)} delivered load(s) not yet invoiced")
+        if b.get("underbilled_value"):
+            bits.append(f"{fmt(b['underbilled_value'])} under-billed vs the load value")
+        if b.get("shortpaid_value"):
+            bits.append(f"{fmt(b['shortpaid_value'])} owed across {b.get('shortpaid_count', 0)} short-paid/outstanding invoice(s)")
+        return (f"I found {fmt(rec)} of recoverable cash: " + "; ".join(bits)
+                + ". Open Invoices to bill and chase it.")
+
     if any(w in t for w in ["fleet", "vehicle", "truck", "driver"]):
         by = fleet["by_status"]
         parts = ", ".join(f"{v} {k.replace('_',' ').lower()}" for k, v in by.items()) or "none"
@@ -272,6 +299,25 @@ def _propose_action(ctx: dict, user_text: str):
             "detail": f"Net payout R{top['net_payout']:,.0f} · {top['customer']} · {top['tier']} tier",
             "confirm_text": "Request advance",
             "success_text": f"Advance requested on {top['invoice_number']} — R{top['net_payout']:,.0f} net.",
+        }
+
+    # Billing/collections: chase the most overdue short-paid invoice.
+    wants_chase = any(w in t for w in [
+        "chase", "remind", "reminder", "collect", "short pay", "short-pay", "owed", "recover", "billing",
+    ])
+    shortpaid = ((ctx.get("billing_audit") or {}).get("top_shortpaid") or [])
+    if wants_chase and shortpaid:
+        inv = shortpaid[0]
+        return {
+            "type": "send_reminder",
+            "method": "POST",
+            "endpoint": f"api/v1/invoices/{inv['invoice_id']}/send_reminder/",
+            "body": {},
+            "label": f"Send payment reminder for {inv['invoice_number']}",
+            "detail": f"R{inv['balance']:,.0f} owed · {inv['customer']}"
+                      + (f" · {inv['days_overdue']} days overdue" if inv.get('days_overdue') else ""),
+            "confirm_text": "Send reminder",
+            "success_text": f"Payment reminder sent for {inv['invoice_number']} (R{inv['balance']:,.0f}).",
         }
     return None
 

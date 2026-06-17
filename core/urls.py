@@ -28,7 +28,7 @@ from .views_ai_quote import (
 from .views_finance import (
     InvoiceFinanceViewSet, PaymentFinanceViewSet, ExpenseFinanceViewSet,
     TripCostView, FinanceDashboardView, RouteAnalyticsView, DashboardKPIView,
-    CustomerHealthView, ReportsExportView
+    CustomerHealthView, ReportsExportView, BillingAuditView
 )
 from .views_capital import (
     FacilityViewSet, RiskScoreViewSet, AdvanceRequestViewSet,
@@ -153,6 +153,7 @@ urlpatterns = [
 
     # Finance Dashboard endpoints (NEW - Phase 2)
     path('dashboard/finance/', FinanceDashboardView.as_view(), name='finance-dashboard'),
+    path('billing/audit/', BillingAuditView.as_view(), name='billing-audit'),
     path('dashboard/kpi/', DashboardKPIView.as_view(), name='dashboard-kpi'),
     path('dashboard/briefing/', DashboardBriefingView.as_view(), name='dashboard-briefing'),
     path('agent/chat/', AgentChatView.as_view(), name='agent-chat'),
