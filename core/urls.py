@@ -65,7 +65,7 @@ from .views_risk_api import (
 from .views_invite import (
     InviteCreateView, InviteValidateView, InviteAcceptView
 )
-from .views_ai_insights import DashboardBriefingView, RiskScoreExplainView, AgentChatView, CopilotHistoryView
+from .views_ai_insights import DashboardBriefingView, RiskScoreExplainView, AgentChatView, CopilotConversationsView, CopilotConversationDetailView
 from .views_quote_optimize import AIPriceOptimizeView
 from .views_risk_score_api import RiskUnderwriteView
 
@@ -156,7 +156,8 @@ urlpatterns = [
     path('dashboard/kpi/', DashboardKPIView.as_view(), name='dashboard-kpi'),
     path('dashboard/briefing/', DashboardBriefingView.as_view(), name='dashboard-briefing'),
     path('agent/chat/', AgentChatView.as_view(), name='agent-chat'),
-    path('agent/history/', CopilotHistoryView.as_view(), name='agent-history'),
+    path('agent/conversations/', CopilotConversationsView.as_view(), name='agent-conversations'),
+    path('agent/conversations/<int:pk>/', CopilotConversationDetailView.as_view(), name='agent-conversation-detail'),
     path('quotes/optimize/', AIPriceOptimizeView.as_view(), name='quote-optimize'),
     path('risk/underwrite/', RiskUnderwriteView.as_view(), name='risk-underwrite'),
     path('risk/score/<int:pk>/explain/', RiskScoreExplainView.as_view(), name='risk-score-explain'),
