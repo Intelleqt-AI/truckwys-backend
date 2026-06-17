@@ -38,11 +38,16 @@ class XeroClient:
         """
         self.company = company
 
-        # Get Xero credentials from settings
-        # TODO: Set these in environment variables
+        # Xero app credentials come from the environment (settings bridges .env).
+        # Drop XERO_CLIENT_ID / XERO_CLIENT_SECRET into .env to take the integration live.
         self.client_id = getattr(settings, 'XERO_CLIENT_ID', '')
         self.client_secret = getattr(settings, 'XERO_CLIENT_SECRET', '')
         self.redirect_uri = getattr(settings, 'XERO_REDIRECT_URI', 'http://localhost:8000/api/v1/integrations/xero/callback/')
+
+    @property
+    def is_configured(self) -> bool:
+        """True once a real Xero app's client id + secret are present in the env."""
+        return bool(self.client_id and self.client_secret)
 
     def get_authorization_url(self, state: Optional[str] = None) -> str:
         """
@@ -263,42 +268,105 @@ class XeroClient:
 
     def sync_payments(self) -> List[Dict[str, Any]]:
         """
-        Pull payments from Xero and match to TruckWys invoices.
+        Pull payments from Xero and reconcile them against TruckWys invoices.
+
+        For each Xero payment that maps to one of this company's invoices we record
+        a Payment row (idempotently, keyed on the Xero PaymentID) and recompute the
+        invoice's paid_amount from the sum of its payments — so the invoice balance
+        and status (PARTIALLY_PAID / PAID) reflect Xero reality and the billing
+        short-pay agent stops chasing money that's actually arrived.
 
         Returns:
-            List of synced payment records
+            List of per-payment reconciliation results.
         """
+        from decimal import Decimal
+        from django.db.models import Sum
+        from core.models import Payment
+
         # Get payments from Xero (last 90 days)
         from_date = (timezone.now() - timedelta(days=90)).strftime('%Y-%m-%d')
         endpoint = f'/Payments?where=Date>=DateTime({from_date})'
 
         response = self._make_request('GET', endpoint)
 
-        synced_payments = []
+        synced_payments: List[Dict[str, Any]] = []
 
         for xero_payment in response.get('Payments', []):
-            # Try to match by invoice number
-            invoice_number = xero_payment.get('Invoice', {}).get('InvoiceNumber')
+            # Xero marks reversed payments DELETED — skip them.
+            if (xero_payment.get('Status') or '').upper() == 'DELETED':
+                continue
 
-            if invoice_number:
-                try:
-                    invoice = Invoice.objects.get(invoice_number=invoice_number)
+            invoice_number = (xero_payment.get('Invoice') or {}).get('InvoiceNumber')
+            if not invoice_number:
+                continue
 
-                    # Create or update payment in TruckWys
-                    # TODO: Implement payment creation logic
-                    synced_payments.append({
-                        'invoice_number': invoice_number,
-                        'amount': xero_payment.get('Amount'),
-                        'date': xero_payment.get('Date'),
-                        'status': 'synced',
-                    })
-                except Invoice.DoesNotExist:
-                    synced_payments.append({
-                        'invoice_number': invoice_number,
-                        'status': 'not_found',
-                    })
+            amount = xero_payment.get('Amount') or 0
+            raw_date = (xero_payment.get('Date') or '')[:10]  # 'YYYY-MM-DD'
+            xero_id = xero_payment.get('PaymentID') or ''
+
+            # Scope strictly to THIS company's invoices (multi-tenant safe).
+            try:
+                invoice = Invoice.objects.get(
+                    invoice_number=invoice_number, company=self.company
+                )
+            except Invoice.DoesNotExist:
+                synced_payments.append({'invoice_number': invoice_number, 'status': 'not_found'})
+                continue
+            except Invoice.MultipleObjectsReturned:
+                invoice = Invoice.objects.filter(
+                    invoice_number=invoice_number, company=self.company
+                ).first()
+
+            # Payment FK to customer is non-null — can't record without one.
+            if not invoice.customer:
+                synced_payments.append({'invoice_number': invoice_number, 'status': 'no_customer'})
+                continue
+
+            # Idempotency: never double-record the same Xero payment.
+            ref = f'XERO:{xero_id}' if xero_id else f'XERO:{invoice_number}:{raw_date}:{amount}'
+            if Payment.objects.filter(invoice=invoice, reference_number=ref).exists():
+                synced_payments.append({
+                    'invoice_number': invoice_number,
+                    'amount': float(amount),
+                    'status': 'already_synced',
+                })
+                continue
+
+            Payment.objects.create(
+                company=self.company,
+                payment_number=self._unique_payment_number(),
+                invoice=invoice,
+                customer=invoice.customer,
+                amount=Decimal(str(amount)),
+                payment_date=raw_date or timezone.now().date(),
+                payment_method='EFT',
+                reference_number=ref,
+                notes='Imported from Xero',
+            )
+
+            # Recompute paid_amount from all payments; invoice.save() recalcs balance + status.
+            total_paid = invoice.payments.aggregate(s=Sum('amount'))['s'] or Decimal('0')
+            invoice.paid_amount = total_paid
+            invoice.save()
+
+            synced_payments.append({
+                'invoice_number': invoice_number,
+                'amount': float(amount),
+                'date': raw_date,
+                'status': 'recorded',
+            })
 
         return synced_payments
+
+    def _unique_payment_number(self) -> str:
+        """Generate a collision-free payment number for a Xero-imported payment."""
+        import random
+        from core.models import Payment
+        ts = timezone.now().strftime('%Y%m%d')
+        num = f'XPAY-{ts}-{random.randint(1000, 9999)}'
+        while Payment.objects.filter(payment_number=num).exists():
+            num = f'XPAY-{ts}-{random.randint(1000, 9999)}'
+        return num
 
     def sync_contacts(self) -> Dict[str, Any]:
         """

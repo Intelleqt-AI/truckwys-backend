@@ -31,6 +31,14 @@ if not DEBUG and SECRET_KEY == 'django-insecure-dev-key-change-in-production':
 # ALLOWED_HOSTS from environment (CSV)
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,*.ngrok.io', cast=lambda v: [s.strip() for s in v.split(',')])
 
+# Xero accounting integration (OAuth 2.0). The integration goes live the moment a
+# real Xero app's client id/secret are dropped into .env — until then the connect
+# flow reports "not configured" honestly instead of bouncing to a broken OAuth screen.
+XERO_CLIENT_ID = config('XERO_CLIENT_ID', default='')
+XERO_CLIENT_SECRET = config('XERO_CLIENT_SECRET', default='')
+XERO_REDIRECT_URI = config('XERO_REDIRECT_URI', default='http://localhost:8000/api/v1/integrations/xero/callback/')
+FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:3701')
+
 INSTALLED_APPS = [
     'daphne',  # must be first — provides the ASGI-aware runserver for WebSockets
     'django.contrib.admin',

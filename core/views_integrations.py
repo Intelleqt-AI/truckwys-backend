@@ -37,81 +37,77 @@ from datetime import datetime, date
 from django.utils import timezone
 
 
+from django.core import signing
+
+_XERO_STATE_SALT = 'xero-oauth-state'
+
+
+def _user_company(request):
+    """The logged-in user's own company (multi-tenant safe)."""
+    from core.views import resolve_user_company
+    return resolve_user_company(request.user)
+
+
+def _frontend_redirect(outcome: str):
+    """Bounce the OAuth popup/tab back to the in-app Xero settings page."""
+    base = getattr(settings, 'FRONTEND_URL', '') or 'http://localhost:3701'
+    return redirect(f'{base.rstrip("/")}/settings/integrations/xero?xero={outcome}')
+
+
 class XeroConnectView(APIView):
     """
-    Initiate Xero OAuth connection.
+    Begin Xero OAuth. Returns the authorization URL for the frontend to redirect to.
     GET /api/v1/integrations/xero/connect/
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        # Get company (assuming single company per deployment)
-        company = Company.objects.first()
-        if not company:
-            return Response(
-                {'error': 'Company not found. Please create company profile first.'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-
-        # Initialize Xero client
+        company = _user_company(request)
         xero_client = XeroClient(company)
 
-        # Generate authorization URL
-        auth_url = xero_client.get_authorization_url()
+        if not xero_client.is_configured:
+            return Response(
+                {'error': 'Xero is not configured on this server. Add XERO_CLIENT_ID '
+                          'and XERO_CLIENT_SECRET to the backend environment to enable it.',
+                 'configured': False},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
 
-        # Redirect to Xero OAuth
-        return redirect(auth_url)
+        # Signed state carries the company id (the callback is public/unauthenticated)
+        # and doubles as CSRF protection — an attacker can't forge a valid value.
+        state = signing.dumps({'company_id': company.id}, salt=_XERO_STATE_SALT)
+        return Response({'auth_url': xero_client.get_authorization_url(state=state)},
+                        status=status.HTTP_200_OK)
 
 
 class XeroCallbackView(APIView):
     """
-    Handle Xero OAuth callback.
-    GET /api/v1/integrations/xero/callback/?code=...
+    Handle Xero OAuth callback, then redirect back into the app.
+    GET /api/v1/integrations/xero/callback/?code=...&state=...
     """
     permission_classes = []  # Public endpoint for OAuth callback
 
     def get(self, request):
         code = request.GET.get('code')
+        state = request.GET.get('state', '')
         error = request.GET.get('error')
 
-        if error:
-            return Response(
-                {'error': f'Xero authorization failed: {error}'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        if error or not code:
+            return _frontend_redirect('error')
 
-        if not code:
-            return Response(
-                {'error': 'No authorization code provided'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        # Get company
-        company = Company.objects.first()
-        if not company:
-            return Response(
-                {'error': 'Company not found'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-
-        # Initialize Xero client and exchange code for tokens
-        xero_client = XeroClient(company)
+        # Resolve which company this callback belongs to from the signed state.
+        try:
+            payload = signing.loads(state, salt=_XERO_STATE_SALT, max_age=600)
+            company = Company.objects.get(id=payload['company_id'])
+        except (signing.BadSignature, signing.SignatureExpired, Company.DoesNotExist, KeyError):
+            return _frontend_redirect('error')
 
         try:
-            token_data = xero_client.handle_callback(code)
+            XeroClient(company).handle_callback(code)
+        except Exception:
+            return _frontend_redirect('error')
 
-            return Response({
-                'success': True,
-                'message': 'Xero connected successfully',
-                'connected_at': company.xero_connected_at,
-                'tenant_id': company.xero_tenant_id,
-            }, status=status.HTTP_200_OK)
-
-        except Exception as e:
-            return Response(
-                {'error': f'Failed to connect Xero: {str(e)}'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+        return _frontend_redirect('connected')
 
 
 class XeroDisconnectView(APIView):
@@ -122,81 +118,58 @@ class XeroDisconnectView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        company = Company.objects.first()
-        if not company:
-            return Response(
-                {'error': 'Company not found'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-
-        xero_client = XeroClient(company)
-        xero_client.disconnect()
-
-        return Response({
-            'success': True,
-            'message': 'Xero disconnected successfully',
-        }, status=status.HTTP_200_OK)
+        company = _user_company(request)
+        XeroClient(company).disconnect()
+        return Response({'success': True, 'message': 'Xero disconnected successfully'},
+                        status=status.HTTP_200_OK)
 
 
 class XeroStatusView(APIView):
     """
-    Get Xero connection status.
+    Get Xero connection status for the current user's company.
     GET /api/v1/integrations/xero/status/
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        company = Company.objects.first()
-        if not company:
-            return Response(
-                {'error': 'Company not found'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-
+        company = _user_company(request)
         xero_client = XeroClient(company)
 
         return Response({
-            'connected': xero_client.is_connected,
-            'connected_at': company.xero_connected_at,
+            'configured': xero_client.is_configured,
+            'is_connected': xero_client.is_connected,
+            'connected': xero_client.is_connected,  # legacy alias
             'tenant_id': company.xero_tenant_id,
+            'tenant_name': company.xero_tenant_id,  # Xero exposes only the id we persist
+            'connected_since': company.xero_connected_at,
+            'connected_at': company.xero_connected_at,  # legacy alias
             'token_expires_at': company.xero_token_expires_at,
+            'last_invoice_sync': company.xero_last_invoice_sync,
+            'last_payment_sync': company.xero_last_payment_sync,
         }, status=status.HTTP_200_OK)
 
 
 class XeroSyncInvoicesView(APIView):
     """
-    Push pending invoices to Xero.
+    Push this company's outstanding invoices to Xero.
     POST /api/v1/integrations/xero/sync-invoices/
     """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        company = Company.objects.first()
-        if not company:
-            return Response(
-                {'error': 'Company not found'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-
+        company = _user_company(request)
         xero_client = XeroClient(company)
 
         if not xero_client.is_connected:
-            return Response(
-                {'error': 'Xero not connected. Please connect first.'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({'error': 'Xero not connected. Please connect first.'},
+                            status=status.HTTP_400_BAD_REQUEST)
 
-        # Get invoices to sync (SENT or VIEWED status, not cancelled)
         invoices_to_sync = Invoice.objects.filter(
-            status__in=['SENT', 'VIEWED', 'OVERDUE']
+            company=company,
+            status__in=['SENT', 'VIEWED', 'OVERDUE'],
         ).exclude(status='CANCELLED')
 
-        results = {
-            'total': invoices_to_sync.count(),
-            'success': 0,
-            'failed': 0,
-            'errors': [],
-        }
+        results = {'total': invoices_to_sync.count(), 'success': 0, 'failed': 0, 'errors': []}
 
         for invoice in invoices_to_sync:
             try:
@@ -204,51 +177,69 @@ class XeroSyncInvoicesView(APIView):
                 results['success'] += 1
             except Exception as e:
                 results['failed'] += 1
-                results['errors'].append({
-                    'invoice': invoice.invoice_number,
-                    'error': str(e),
-                })
+                results['errors'].append({'invoice': invoice.invoice_number, 'error': str(e)})
+
+        company.xero_last_invoice_sync = timezone.now()
+        company.save(update_fields=['xero_last_invoice_sync'])
 
         return Response(results, status=status.HTTP_200_OK)
 
 
 class XeroSyncPaymentsView(APIView):
     """
-    Pull payments from Xero.
+    Pull payments from Xero and reconcile them against this company's invoices.
     POST /api/v1/integrations/xero/sync-payments/
     """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        company = Company.objects.first()
-        if not company:
-            return Response(
-                {'error': 'Company not found'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-
+        company = _user_company(request)
         xero_client = XeroClient(company)
 
         if not xero_client.is_connected:
-            return Response(
-                {'error': 'Xero not connected. Please connect first.'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({'error': 'Xero not connected. Please connect first.'},
+                            status=status.HTTP_400_BAD_REQUEST)
 
         try:
             synced_payments = xero_client.sync_payments()
-
-            return Response({
-                'success': True,
-                'payments': synced_payments,
-                'total': len(synced_payments),
-            }, status=status.HTTP_200_OK)
-
         except Exception as e:
-            return Response(
-                {'error': f'Failed to sync payments: {str(e)}'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+            return Response({'error': f'Failed to sync payments: {str(e)}'},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        company.xero_last_payment_sync = timezone.now()
+        company.save(update_fields=['xero_last_payment_sync'])
+
+        recorded = sum(1 for p in synced_payments if p.get('status') == 'recorded')
+        return Response({
+            'success': True,
+            'payments': synced_payments,
+            'total': len(synced_payments),
+            'recorded': recorded,
+        }, status=status.HTTP_200_OK)
+
+
+class XeroSyncLogView(APIView):
+    """
+    Recent Xero sync activity (derived from the last-sync timestamps).
+    GET /api/v1/integrations/xero/sync-log/
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        company = _user_company(request)
+        logs = []
+        if company.xero_last_invoice_sync:
+            logs.append({
+                'id': 1, 'sync_type': 'invoice', 'status': 'success',
+                'timestamp': company.xero_last_invoice_sync, 'records_synced': None,
+            })
+        if company.xero_last_payment_sync:
+            logs.append({
+                'id': 2, 'sync_type': 'payment', 'status': 'success',
+                'timestamp': company.xero_last_payment_sync, 'records_synced': None,
+            })
+        logs.sort(key=lambda x: x['timestamp'], reverse=True)
+        return Response(logs, status=status.HTTP_200_OK)
 
 
 class FleetImportTripsView(APIView):
