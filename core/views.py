@@ -1600,6 +1600,18 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         
         quote.status = new_status
         quote.save()
+        if new_status in ('ACCEPTED', 'IT'):
+            try:
+                from core.services.notify import notify_company
+                notify_company(
+                    getattr(quote, 'company_id', None),
+                    'SUCCESS', 'Quote accepted',
+                    f'{getattr(quote, "quote_number", None) or ("Quote " + str(quote.id))}'
+                    + (f' · {quote.customer.name}' if getattr(quote, 'customer', None) else ''),
+                    link=f'/quotes/{quote.id}', event='quote.accepted',
+                )
+            except Exception:
+                pass
         serializer = self.get_serializer(quote)
         return Response(serializer.data)
 
