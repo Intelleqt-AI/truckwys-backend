@@ -1546,3 +1546,39 @@ class BillingAuditView(APIView):
             return Response(audit_billing(company))
         except Exception as e:
             return Response({'error': str(e)}, status=500)
+
+
+class MarginByLaneView(APIView):
+    """GET /api/v1/reports/margin-by-lane/ — true margin aggregated by route."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from core.views import resolve_user_company
+        from core.services.reports import margin_by_lane
+        company = resolve_user_company(request.user)
+        if company is None:
+            return Response({'error': 'No company associated with this account'}, status=400)
+        try:
+            limit = int(request.query_params.get('limit', 25))
+        except (TypeError, ValueError):
+            limit = 25
+        try:
+            return Response(margin_by_lane(company, limit=limit))
+        except Exception as e:
+            return Response({'error': str(e)}, status=500)
+
+
+class FastPaySavingsView(APIView):
+    """GET /api/v1/reports/fastpay-savings/ — value delivered by the advance programme."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from core.views import resolve_user_company
+        from core.services.reports import fastpay_value
+        company = resolve_user_company(request.user)
+        if company is None:
+            return Response({'error': 'No company associated with this account'}, status=400)
+        try:
+            return Response(fastpay_value(company))
+        except Exception as e:
+            return Response({'error': str(e)}, status=500)
