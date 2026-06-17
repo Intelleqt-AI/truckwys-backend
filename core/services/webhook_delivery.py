@@ -113,11 +113,12 @@ class WebhookDeliveryService:
         Returns:
             Dictionary with 'success' and 'failed' counts
         """
-        # Find all active subscriptions for this event type
-        subscriptions = WebhookSubscription.objects.filter(
-            is_active=True,
-            events__contains=[event_type]
-        )
+        # Find all active subscriptions for this event type. Filter membership in
+        # Python so this works on SQLite too (JSONField __contains is Postgres-only).
+        subscriptions = [
+            s for s in WebhookSubscription.objects.filter(is_active=True)
+            if event_type in (s.events or [])
+        ]
 
         success_count = 0
         failed_count = 0

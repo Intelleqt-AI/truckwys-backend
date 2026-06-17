@@ -1,6 +1,11 @@
 # TruckWys Backend
 
-TruckWys is a backend system for managing logistics operations, including users, vehicles, loads, invoices, payments, and more. This project is built using Django and Django REST Framework.
+> **New here? Read [`HANDOVER.md`](./HANDOVER.md)** — the full engineering handover
+> (what TruckWys is, the flow, the AI, integrations, go-live config + cron, and how to run it).
+
+TruckWys is a finance + data + AI backend for South African road-freight **carriers** —
+fast-pay/factoring, AI quoting & risk scoring, collections, and financial intelligence.
+It complements fleet-management/TMS software (no ops/routing). Built on Django + DRF.
 
 ## Models
 

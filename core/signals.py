@@ -27,21 +27,25 @@ def load_saved(sender, instance, created, **kwargs):
             metadata={'load_number': instance.load_number, 'status': instance.status}
         )
 
-        # Create notification for new load
-        user = None
-        if instance.company:
-            user = User.objects.filter(company=instance.company, role='ADMIN', status='ACTIVE').first()
-        elif instance.created_by:
-            user = instance.created_by
-
-        if user:
-            Notification.objects.create(
-                user=user,
-                type='INFO',
-                title="New Load Created",
-                message=f"Load {instance.load_number} for {instance.customer.name}",
-                link=f"/loads/{instance.id}"
-            )
+        # Notify the whole company (persist + live WebSocket push), with a valid
+        # deep-link to the bookings detail route.
+        from core.services.notify import notify_company
+        cust = instance.customer.name if getattr(instance, 'customer', None) else ''
+        route = (f'{instance.pickup_city} → {instance.delivery_city}'
+                 if getattr(instance, 'pickup_city', None) else '')
+        detail = f"{instance.load_number or ('Load ' + str(instance.id))}"
+        if cust:
+            detail += f' · {cust}'
+        elif route:
+            detail += f' · {route}'
+        notify_company(
+            getattr(instance, 'company_id', None),
+            'INFO',
+            'New booking created',
+            detail,
+            link=f'/bookings/{instance.id}',
+            event='booking.created',
+        )
     else:
         # Fire load.status_changed event
         dispatch_webhook('load.status_changed', data)
@@ -58,6 +62,37 @@ def load_saved(sender, instance, created, **kwargs):
         # Fire specific events for certain statuses
         if instance.status == 'DELIVERED':
             dispatch_webhook('load.delivered', data)
+            _auto_invoice_on_delivery(instance)
+
+
+def _auto_invoice_on_delivery(load):
+    """Delivered → raise the invoice automatically and surface fast-pay.
+
+    This is the spine of the carrier-finance flow: the moment a load is
+    delivered, its receivable exists and becomes advance-eligible — no manual
+    'convert to invoice' click. Guarded by AUTO_INVOICE_ON_DELIVERY and wrapped
+    so a failure here can never block the load save.
+    """
+    from django.conf import settings
+    if not getattr(settings, 'AUTO_INVOICE_ON_DELIVERY', True):
+        return
+    try:
+        from core.services.invoicing import create_invoice_for_load
+        invoice, created = create_invoice_for_load(load, mark_sent=True)
+        if not (invoice and created):
+            return
+        from core.services.notify import notify_company
+        notify_company(
+            getattr(load, 'company_id', None),
+            'SUCCESS',
+            'Invoice auto-raised on delivery',
+            f'{invoice.invoice_number} · R{float(invoice.total_amount):,.0f} · ready for fast-pay',
+            link=f'/finance/invoices/{invoice.id}',
+            event='invoice.auto_created',
+        )
+    except Exception as exc:  # never break the delivery save
+        import logging
+        logging.getLogger(__name__).warning('auto-invoice on delivery failed: %s', exc)
 
 
 @receiver(post_save, sender='core.Invoice')

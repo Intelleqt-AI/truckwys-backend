@@ -448,11 +448,20 @@ class AIChatQuoteView(APIView):
                     extracted['vehicle_type'] = val
                     break
 
-            # Cargo description
-            cargo_match = re.search(r'(?:of\s+)?([a-zA-Z\s]+?)\s+(?:from|to\s+\w)', message, re.IGNORECASE)
+            # Cargo description — the noun AFTER "of" (e.g. "20 tons of steel from JHB"
+            # -> "steel"; "of palletised goods to ..." -> "palletised goods").
+            cargo_match = (
+                re.search(r'\bof\s+([a-zA-Z][a-zA-Z\s]*?)\s+(?:from|to|on|for|by|via)\b', message, re.IGNORECASE)
+                or re.search(r'\bof\s+([a-zA-Z][a-zA-Z\s]*?)\s*[,.]', message, re.IGNORECASE)
+                or re.search(r'\bof\s+([a-zA-Z][a-zA-Z\s]*?)$', message.strip(), re.IGNORECASE)
+            )
             if cargo_match:
                 desc = cargo_match.group(1).strip()
-                if len(desc) > 3 and desc.lower() not in ['move', 'transport', 'ship', 'send', 'deliver', 'take']:
+                # Drop a leading unit word if it slipped in ("tonnes of frozen fish").
+                desc = re.sub(r'^(tons?|tonnes?|kgs?|kilograms?|pallets?|units?|loads?|crates?)\s+',
+                              '', desc, flags=re.IGNORECASE).strip()
+                stop = {'move', 'transport', 'ship', 'send', 'deliver', 'take', 'need', 'i'}
+                if len(desc) > 2 and desc.lower() not in stop:
                     extracted['cargo_description'] = desc
 
             # Merge with current fields
@@ -607,6 +616,14 @@ class QuoteOutcomeView(APIView):
             fuel_price=quote.fuel_price_at_creation,
         )
 
+        # Close the ML flywheel: a fresh outcome may be enough to (re)train the
+        # win-probability model. Fire-and-forget so it never delays the response.
+        try:
+            from core.services.quote_training import maybe_retrain_win_model_async
+            maybe_retrain_win_model_async()
+        except Exception:
+            pass
+
         return Response({
             'success': True,
             'id': quote.id,
@@ -642,6 +659,14 @@ class QuoteModelStatsView(APIView):
             trained = bool(last_trained)
             metrics = metadata.get('metrics', {}) if isinstance(metadata, dict) else {}
 
+            # Win-probability model status — this is the one that drives the
+            # profit sweet-spot curve, and it learns on the installed sklearn stack.
+            try:
+                from core.services.quote_training import win_model_status
+                win = win_model_status()
+            except Exception:
+                win = None
+
             return Response({
                 'success': True,
                 'ml_available': bool(ML_AVAILABLE),
@@ -652,6 +677,7 @@ class QuoteModelStatsView(APIView):
                 'accuracy_r2': metrics.get('r2'),
                 'metrics': metrics or None,
                 'model_version': metadata.get('version'),
+                'win_model': win,
                 'message': (
                     'Model trained.' if trained
                     else ('ML libraries not installed — quoting model unavailable.'
@@ -824,7 +850,16 @@ class QuoteBenchmarkView(APIView):
                     'error': 'origin, destination, and vehicle_type are required'
                 }, status=status.HTTP_400_BAD_REQUEST)
 
-            # Query accepted quotes on this lane
+            # Cross-platform anonymized benchmark first (pools won quotes across
+            # ALL operators, k-anonymity enforced so no single operator's pricing
+            # is exposed). Falls back to own-company data, then hardcoded estimates.
+            from core.services.lane_benchmark import compute_lane_benchmark
+            platform = compute_lane_benchmark(origin, destination, vehicle_type)
+            if not platform.get('available'):
+                # Retry at lane level (all vehicle types) before falling back.
+                platform = compute_lane_benchmark(origin, destination)
+
+            # Query this operator's own accepted quotes on this lane (fallback layer)
             lane_quotes = Quote.objects.filter(
                 company=request.user.company,
                 origin__iexact=origin,
@@ -835,6 +870,8 @@ class QuoteBenchmarkView(APIView):
             )
 
             data_points = lane_quotes.count()
+            source = 'company'
+            distinct_operators = None
 
             # Fallback to hardcoded SA market averages
             SA_MARKET_BENCHMARKS = {
@@ -847,8 +884,17 @@ class QuoteBenchmarkView(APIView):
 
             lane_key = (origin, destination, vehicle_type)
 
-            if data_points >= 10:
-                # Use real data
+            if platform.get('available'):
+                # Real cross-platform benchmark (preferred)
+                market_avg_rate = round(platform['market_avg_rate'])
+                market_range_low = round(platform.get('p25') or platform['market_avg_rate'])
+                market_range_high = round(platform.get('p75') or platform['market_avg_rate'])
+                data_points = platform['sample_size']
+                distinct_operators = platform.get('distinct_operators')
+                confidence = 'high'
+                source = 'platform'
+            elif data_points >= 10:
+                # Use this operator's own real data
                 stats = lane_quotes.aggregate(
                     avg_price=Avg('total_amount'),
                     min_price=Min('total_amount'),
@@ -858,6 +904,7 @@ class QuoteBenchmarkView(APIView):
                 market_range_low = int(stats['min_price'] or 0)
                 market_range_high = int(stats['max_price'] or 0)
                 confidence = 'high'
+                source = 'company'
             elif lane_key in SA_MARKET_BENCHMARKS:
                 # Fallback to hardcoded
                 benchmark = SA_MARKET_BENCHMARKS[lane_key]
@@ -865,6 +912,7 @@ class QuoteBenchmarkView(APIView):
                 market_range_low = benchmark['low']
                 market_range_high = benchmark['high']
                 confidence = 'medium' if data_points >= 5 else 'low'
+                source = 'estimate'
             else:
                 # No data available
                 return Response({
@@ -900,6 +948,8 @@ class QuoteBenchmarkView(APIView):
                 'market_range_high': market_range_high,
                 'data_points': data_points,
                 'confidence': confidence,
+                'source': source,
+                'distinct_operators': distinct_operators,
                 'your_rate': your_rate,
                 'your_vs_market_pct': round(your_vs_market_pct, 1),
                 'recommendation': recommendation,

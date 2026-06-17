@@ -1,8 +1,24 @@
+import os
 from pathlib import Path
 from decouple import config
 import dj_database_url
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Bridge .env (read by python-decouple) into os.environ so code that reads keys
+# via os.environ.get(...) — the AI/LLM/voice services — picks them up from .env
+# without needing real shell exports. Drop ANTHROPIC_API_KEY / OPENAI_API_KEY
+# into a .env file and the Copilot, quote parser and voice transcription go live.
+for _key in (
+    'ANTHROPIC_API_KEY', 'OPENAI_API_KEY',
+    'CLAUDE_AGENT_MODEL', 'CLAUDE_INSIGHTS_MODEL', 'CLAUDE_QUOTE_MODEL',
+    'LENDER_API_KEYS', 'TOMTOM_API_KEY', 'REDIS_URL',
+    'CREDIT_BUREAU_PROVIDER', 'CREDIT_BUREAU_API_KEY', 'CREDIT_BUREAU_BASE_URL',
+    'RISK_ML_WEIGHT',
+):
+    _val = config(_key, default='')
+    if _val and not os.environ.get(_key):
+        os.environ[_key] = str(_val)
 
 SECRET_KEY = config('SECRET_KEY', default='django-insecure-dev-key-change-in-production')
 DEBUG = config('DEBUG', default=False, cast=bool)
@@ -15,13 +31,33 @@ if not DEBUG and SECRET_KEY == 'django-insecure-dev-key-change-in-production':
 # ALLOWED_HOSTS from environment (CSV)
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,*.ngrok.io', cast=lambda v: [s.strip() for s in v.split(',')])
 
+# Xero accounting integration (OAuth 2.0). The integration goes live the moment a
+# real Xero app's client id/secret are dropped into .env — until then the connect
+# flow reports "not configured" honestly instead of bouncing to a broken OAuth screen.
+XERO_CLIENT_ID = config('XERO_CLIENT_ID', default='')
+XERO_CLIENT_SECRET = config('XERO_CLIENT_SECRET', default='')
+XERO_REDIRECT_URI = config('XERO_REDIRECT_URI', default='http://localhost:8000/api/v1/integrations/xero/callback/')
+FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:3701')
+
+# Encryption key for secrets at rest (Xero OAuth tokens). A urlsafe-base64 32-byte
+# Fernet key (python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())").
+# If unset, a stable key is derived from SECRET_KEY. Set a dedicated key in production
+# so rotating SECRET_KEY doesn't invalidate stored tokens.
+FIELD_ENCRYPTION_KEY = config('FIELD_ENCRYPTION_KEY', default='')
+
+# Carrier-finance spine: when a load is delivered, auto-raise its invoice (SENT)
+# so the receivable exists and becomes fast-pay eligible with no manual step.
+AUTO_INVOICE_ON_DELIVERY = config('AUTO_INVOICE_ON_DELIVERY', default=True, cast=bool)
+
 INSTALLED_APPS = [
+    'daphne',  # must be first — provides the ASGI-aware runserver for WebSockets
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'channels',
     'rest_framework',
     'rest_framework.authtoken',
     'drf_spectacular',
@@ -29,6 +65,19 @@ INSTALLED_APPS = [
     'django_filters',
     'core',
 ]
+
+# Channels / WebSockets
+ASGI_APPLICATION = 'config.asgi.application'
+# Redis channel layer — works across threads/processes (the in-memory layer can't
+# bridge a sync HTTP view to a WS consumer). Falls back to in-memory only if no
+# REDIS_URL is set AND Redis is unreachable (degrades to no cross-thread push).
+_REDIS_URL = os.environ.get('REDIS_URL', 'redis://127.0.0.1:6379/0')
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels_redis.core.RedisChannelLayer',
+        'CONFIG': {'hosts': [_REDIS_URL]},
+    }
+}
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',

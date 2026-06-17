@@ -4,9 +4,11 @@ import csv
 import os
 import tempfile
 from pathlib import Path
-from unittest import mock
+from unittest import mock, skipUnless
 
 from django.test import TestCase, override_settings
+
+from core.services.quote_ml import ML_AVAILABLE
 
 
 # ---------------------------------------------------------------------------
@@ -162,8 +164,13 @@ class GenerateQuoteTrainingDataTests(TestCase):
 # QuoteMLModel tests
 # ---------------------------------------------------------------------------
 
+@skipUnless(ML_AVAILABLE, "LightGBM/pandas not installed — quote margin model unavailable")
 class QuoteMLModelTests(TestCase):
-    """Tests for the QuoteMLModel service class."""
+    """Tests for the QuoteMLModel service class.
+
+    Skipped (not failed) when the optional LightGBM margin-model stack isn't
+    installed — the win-probability model and everything else run on sklearn.
+    """
 
     def test_import_succeeds_or_skips(self):
         """QuoteMLModel import works when lightgbm installed, else graceful skip."""

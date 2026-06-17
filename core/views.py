@@ -17,6 +17,7 @@ from rest_framework import viewsets, status, filters
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.authtoken.models import Token
@@ -70,6 +71,9 @@ from .serializers import (
 
 class RegisterView(APIView):
     permission_classes = [AllowAny]
+    # Throttle signups to blunt automated account creation (5/min, see settings).
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
 
     def post(self, request):
         serializer = UserSerializer(data=request.data)
@@ -169,7 +173,11 @@ class ResendVerificationView(APIView):
 
 class LoginView(APIView):
     permission_classes = [AllowAny]
-    
+    # Attach the 'login' scope (5/min) so credential brute-force is actually
+    # bounded — previously this rate was defined but never wired to a view.
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
+
     def post(self, request):
         identifier = request.data.get('username') or request.data.get('email')
         password = request.data.get('password')
@@ -1403,6 +1411,8 @@ class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     ordering_fields = ['created_at', 'pickup_date', 'delivery_date']
 
     def perform_create(self, serializer):
+        # Creation notification is raised by the Load post_save signal
+        # (notify_company), which covers all creation paths, not just this view.
         serializer.save(created_by=self.request.user)
 
     @action(detail=True, methods=['patch'])
@@ -1410,15 +1420,27 @@ class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         """Update load status"""
         load = self.get_object()
         new_status = request.data.get('status')
-        
+
         if new_status not in dict(Load.STATUS_CHOICES).keys():
             return Response(
                 {'error': 'Invalid status'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         load.status = new_status
         load.save()
+        try:
+            from core.services.notify import notify_company
+            notify_company(
+                getattr(load, 'company_id', None),
+                'INFO',
+                'Booking status updated',
+                f'{load.load_number or ("Load " + str(load.id))} → {new_status}',
+                link=f'/bookings/{load.id}',
+                event='booking.status',
+            )
+        except Exception:
+            pass
         serializer = self.get_serializer(load)
         return Response(serializer.data)
 
@@ -1445,11 +1467,13 @@ class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def convert_to_invoice(self, request, pk=None):
-        """Convert a delivered load to an invoice (one-click)."""
+        """Convert a delivered load to an invoice (one-click).
+
+        Shares core.services.invoicing.create_invoice_for_load with the
+        automatic delivery → invoice flow, so they can never drift.
+        """
         from core.models.invoice import Invoice
-        from datetime import date, timedelta
-        from decimal import Decimal
-        import random
+        from core.services.invoicing import create_invoice_for_load
 
         load = self.get_object()
 
@@ -1461,38 +1485,14 @@ class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
                 'invoice_number': existing.invoice_number,
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        today = date.today()
-        rand = random.randint(10000, 99999)
-        inv_number = f'INV-{today.strftime("%Y%m%d")}-{rand:05d}'
-        while Invoice.objects.filter(invoice_number=inv_number).exists():
-            rand = random.randint(10000, 99999)
-            inv_number = f'INV-{today.strftime("%Y%m%d")}-{rand:05d}'
-
-        subtotal = load.total_amount
-        vat = (subtotal * Decimal('0.15')).quantize(Decimal('0.01'))
-        total = subtotal + vat
-
-        invoice = Invoice.objects.create(
-            invoice_number=inv_number,
+        invoice, created = create_invoice_for_load(
+            load,
             company=getattr(load, 'company', None) or getattr(request.user, 'company', None),
-            customer=load.customer,
-            load=load,
-            issue_date=today,
-            due_date=today + timedelta(days=30),
-            subtotal=subtotal,
-            vat_amount=vat,
-            tax_amount=vat,
-            total_amount=total,
-            paid_amount=Decimal('0'),
-            balance=total,
-            status='DRAFT',
-            payment_terms='NET30',
-            notes=f'Auto-generated from Load {load.load_number}',
-            early_pay_eligible=True,
         )
-
-        load.status = 'INVOICED'
-        load.save()
+        if not invoice:
+            return Response({
+                'error': 'Load cannot be invoiced (needs a customer and a positive amount)',
+            }, status=status.HTTP_400_BAD_REQUEST)
 
         return Response({
             'message': 'Invoice created successfully',
@@ -1578,6 +1578,18 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         
         quote.status = new_status
         quote.save()
+        if new_status in ('ACCEPTED', 'IT'):
+            try:
+                from core.services.notify import notify_company
+                notify_company(
+                    getattr(quote, 'company_id', None),
+                    'SUCCESS', 'Quote accepted',
+                    f'{getattr(quote, "quote_number", None) or ("Quote " + str(quote.id))}'
+                    + (f' · {quote.customer.name}' if getattr(quote, 'customer', None) else ''),
+                    link=f'/quotes/{quote.id}', event='quote.accepted',
+                )
+            except Exception:
+                pass
         serializer = self.get_serializer(quote)
         return Response(serializer.data)
 

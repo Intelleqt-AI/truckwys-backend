@@ -37,81 +37,77 @@ from datetime import datetime, date
 from django.utils import timezone
 
 
+from django.core import signing
+
+_XERO_STATE_SALT = 'xero-oauth-state'
+
+
+def _user_company(request):
+    """The logged-in user's own company (multi-tenant safe)."""
+    from core.views import resolve_user_company
+    return resolve_user_company(request.user)
+
+
+def _frontend_redirect(outcome: str):
+    """Bounce the OAuth popup/tab back to the in-app Xero settings page."""
+    base = getattr(settings, 'FRONTEND_URL', '') or 'http://localhost:3701'
+    return redirect(f'{base.rstrip("/")}/settings/integrations/xero?xero={outcome}')
+
+
 class XeroConnectView(APIView):
     """
-    Initiate Xero OAuth connection.
+    Begin Xero OAuth. Returns the authorization URL for the frontend to redirect to.
     GET /api/v1/integrations/xero/connect/
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        # Get company (assuming single company per deployment)
-        company = Company.objects.first()
-        if not company:
-            return Response(
-                {'error': 'Company not found. Please create company profile first.'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-
-        # Initialize Xero client
+        company = _user_company(request)
         xero_client = XeroClient(company)
 
-        # Generate authorization URL
-        auth_url = xero_client.get_authorization_url()
+        if not xero_client.is_configured:
+            return Response(
+                {'error': 'Xero is not configured on this server. Add XERO_CLIENT_ID '
+                          'and XERO_CLIENT_SECRET to the backend environment to enable it.',
+                 'configured': False},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
 
-        # Redirect to Xero OAuth
-        return redirect(auth_url)
+        # Signed state carries the company id (the callback is public/unauthenticated)
+        # and doubles as CSRF protection — an attacker can't forge a valid value.
+        state = signing.dumps({'company_id': company.id}, salt=_XERO_STATE_SALT)
+        return Response({'auth_url': xero_client.get_authorization_url(state=state)},
+                        status=status.HTTP_200_OK)
 
 
 class XeroCallbackView(APIView):
     """
-    Handle Xero OAuth callback.
-    GET /api/v1/integrations/xero/callback/?code=...
+    Handle Xero OAuth callback, then redirect back into the app.
+    GET /api/v1/integrations/xero/callback/?code=...&state=...
     """
     permission_classes = []  # Public endpoint for OAuth callback
 
     def get(self, request):
         code = request.GET.get('code')
+        state = request.GET.get('state', '')
         error = request.GET.get('error')
 
-        if error:
-            return Response(
-                {'error': f'Xero authorization failed: {error}'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        if error or not code:
+            return _frontend_redirect('error')
 
-        if not code:
-            return Response(
-                {'error': 'No authorization code provided'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        # Get company
-        company = Company.objects.first()
-        if not company:
-            return Response(
-                {'error': 'Company not found'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-
-        # Initialize Xero client and exchange code for tokens
-        xero_client = XeroClient(company)
+        # Resolve which company this callback belongs to from the signed state.
+        try:
+            payload = signing.loads(state, salt=_XERO_STATE_SALT, max_age=600)
+            company = Company.objects.get(id=payload['company_id'])
+        except (signing.BadSignature, signing.SignatureExpired, Company.DoesNotExist, KeyError):
+            return _frontend_redirect('error')
 
         try:
-            token_data = xero_client.handle_callback(code)
+            XeroClient(company).handle_callback(code)
+        except Exception:
+            return _frontend_redirect('error')
 
-            return Response({
-                'success': True,
-                'message': 'Xero connected successfully',
-                'connected_at': company.xero_connected_at,
-                'tenant_id': company.xero_tenant_id,
-            }, status=status.HTTP_200_OK)
-
-        except Exception as e:
-            return Response(
-                {'error': f'Failed to connect Xero: {str(e)}'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+        return _frontend_redirect('connected')
 
 
 class XeroDisconnectView(APIView):
@@ -122,81 +118,58 @@ class XeroDisconnectView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        company = Company.objects.first()
-        if not company:
-            return Response(
-                {'error': 'Company not found'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-
-        xero_client = XeroClient(company)
-        xero_client.disconnect()
-
-        return Response({
-            'success': True,
-            'message': 'Xero disconnected successfully',
-        }, status=status.HTTP_200_OK)
+        company = _user_company(request)
+        XeroClient(company).disconnect()
+        return Response({'success': True, 'message': 'Xero disconnected successfully'},
+                        status=status.HTTP_200_OK)
 
 
 class XeroStatusView(APIView):
     """
-    Get Xero connection status.
+    Get Xero connection status for the current user's company.
     GET /api/v1/integrations/xero/status/
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        company = Company.objects.first()
-        if not company:
-            return Response(
-                {'error': 'Company not found'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-
+        company = _user_company(request)
         xero_client = XeroClient(company)
 
         return Response({
-            'connected': xero_client.is_connected,
-            'connected_at': company.xero_connected_at,
+            'configured': xero_client.is_configured,
+            'is_connected': xero_client.is_connected,
+            'connected': xero_client.is_connected,  # legacy alias
             'tenant_id': company.xero_tenant_id,
+            'tenant_name': company.xero_tenant_id,  # Xero exposes only the id we persist
+            'connected_since': company.xero_connected_at,
+            'connected_at': company.xero_connected_at,  # legacy alias
             'token_expires_at': company.xero_token_expires_at,
+            'last_invoice_sync': company.xero_last_invoice_sync,
+            'last_payment_sync': company.xero_last_payment_sync,
         }, status=status.HTTP_200_OK)
 
 
 class XeroSyncInvoicesView(APIView):
     """
-    Push pending invoices to Xero.
+    Push this company's outstanding invoices to Xero.
     POST /api/v1/integrations/xero/sync-invoices/
     """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        company = Company.objects.first()
-        if not company:
-            return Response(
-                {'error': 'Company not found'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-
+        company = _user_company(request)
         xero_client = XeroClient(company)
 
         if not xero_client.is_connected:
-            return Response(
-                {'error': 'Xero not connected. Please connect first.'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({'error': 'Xero not connected. Please connect first.'},
+                            status=status.HTTP_400_BAD_REQUEST)
 
-        # Get invoices to sync (SENT or VIEWED status, not cancelled)
         invoices_to_sync = Invoice.objects.filter(
-            status__in=['SENT', 'VIEWED', 'OVERDUE']
+            company=company,
+            status__in=['SENT', 'VIEWED', 'OVERDUE'],
         ).exclude(status='CANCELLED')
 
-        results = {
-            'total': invoices_to_sync.count(),
-            'success': 0,
-            'failed': 0,
-            'errors': [],
-        }
+        results = {'total': invoices_to_sync.count(), 'success': 0, 'failed': 0, 'errors': []}
 
         for invoice in invoices_to_sync:
             try:
@@ -204,51 +177,69 @@ class XeroSyncInvoicesView(APIView):
                 results['success'] += 1
             except Exception as e:
                 results['failed'] += 1
-                results['errors'].append({
-                    'invoice': invoice.invoice_number,
-                    'error': str(e),
-                })
+                results['errors'].append({'invoice': invoice.invoice_number, 'error': str(e)})
+
+        company.xero_last_invoice_sync = timezone.now()
+        company.save(update_fields=['xero_last_invoice_sync'])
 
         return Response(results, status=status.HTTP_200_OK)
 
 
 class XeroSyncPaymentsView(APIView):
     """
-    Pull payments from Xero.
+    Pull payments from Xero and reconcile them against this company's invoices.
     POST /api/v1/integrations/xero/sync-payments/
     """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        company = Company.objects.first()
-        if not company:
-            return Response(
-                {'error': 'Company not found'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-
+        company = _user_company(request)
         xero_client = XeroClient(company)
 
         if not xero_client.is_connected:
-            return Response(
-                {'error': 'Xero not connected. Please connect first.'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({'error': 'Xero not connected. Please connect first.'},
+                            status=status.HTTP_400_BAD_REQUEST)
 
         try:
             synced_payments = xero_client.sync_payments()
-
-            return Response({
-                'success': True,
-                'payments': synced_payments,
-                'total': len(synced_payments),
-            }, status=status.HTTP_200_OK)
-
         except Exception as e:
-            return Response(
-                {'error': f'Failed to sync payments: {str(e)}'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+            return Response({'error': f'Failed to sync payments: {str(e)}'},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        company.xero_last_payment_sync = timezone.now()
+        company.save(update_fields=['xero_last_payment_sync'])
+
+        recorded = sum(1 for p in synced_payments if p.get('status') == 'recorded')
+        return Response({
+            'success': True,
+            'payments': synced_payments,
+            'total': len(synced_payments),
+            'recorded': recorded,
+        }, status=status.HTTP_200_OK)
+
+
+class XeroSyncLogView(APIView):
+    """
+    Recent Xero sync activity (derived from the last-sync timestamps).
+    GET /api/v1/integrations/xero/sync-log/
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        company = _user_company(request)
+        logs = []
+        if company.xero_last_invoice_sync:
+            logs.append({
+                'id': 1, 'sync_type': 'invoice', 'status': 'success',
+                'timestamp': company.xero_last_invoice_sync, 'records_synced': None,
+            })
+        if company.xero_last_payment_sync:
+            logs.append({
+                'id': 2, 'sync_type': 'payment', 'status': 'success',
+                'timestamp': company.xero_last_payment_sync, 'records_synced': None,
+            })
+        logs.sort(key=lambda x: x['timestamp'], reverse=True)
+        return Response(logs, status=status.HTTP_200_OK)
 
 
 class FleetImportTripsView(APIView):
@@ -517,7 +508,11 @@ FLEET_DEMO_API_KEYS = {
 
 
 class FleetAPIKeyAuthentication(BaseAuthentication):
-    """Authenticate fleet TMS systems via X-API-Key header."""
+    """Authenticate fleet TMS systems via X-API-Key header.
+
+    Resolves real IntegrationAPIKey records (metered, quota-enforced, operator-scoped).
+    The hardcoded demo keys remain only as a DEBUG convenience for local testing.
+    """
 
     def authenticate(self, request):
         # Header-only — never accept the key via query string.
@@ -525,13 +520,24 @@ class FleetAPIKeyAuthentication(BaseAuthentication):
         if not key:
             return None  # Not an API key request — try other auth
 
-        # TODO Sprint C3: Replace with IntegrationAPIKey.objects.filter(key=key, key_type='FLEET_TMS', active=True)
-        fleet_name = FLEET_DEMO_API_KEYS.get(key)
-        if not fleet_name:
-            raise AuthenticationFailed('Invalid API key.')
+        key_obj = IntegrationAPIKey.objects.filter(
+            key=key, active=True
+        ).select_related('operator').first()
+        if key_obj:
+            if key_obj.is_over_quota():
+                raise AuthenticationFailed('Monthly API quota exceeded.')
+            key_obj.record_call()
+            operator = key_obj.operator
+            request.integration_key = key_obj
+            return (operator, key_obj)
 
-        # Return a pseudo-user tuple
-        return ({'api_key': key, 'fleet_name': fleet_name}, key)
+        # DEBUG-only fallback so local integration tests keep working.
+        if getattr(settings, 'DEBUG', False):
+            fleet_name = FLEET_DEMO_API_KEYS.get(key)
+            if fleet_name:
+                return ({'api_key': key, 'fleet_name': fleet_name}, key)
+
+        raise AuthenticationFailed('Invalid API key.')
 
     def authenticate_header(self, request):
         return 'X-API-Key'
@@ -824,6 +830,68 @@ class FleetTripBulkSyncView(APIView):
         return Response(results, status=status.HTTP_200_OK)
 
 
+def _parse_dt(value):
+    """Best-effort parse of an ISO datetime/date string; None on failure."""
+    if not value:
+        return None
+    from django.utils.dateparse import parse_datetime, parse_date
+    try:
+        dt = parse_datetime(value)
+        if dt:
+            return dt
+        d = parse_date(value)
+        if d:
+            return datetime(d.year, d.month, d.day)
+    except Exception:
+        return None
+    return None
+
+
+def _tms_import_customer(company, rec):
+    """Resolve (or create) the customer for an inbound TMS booking."""
+    email = (rec.get('customer_email') or '').strip().lower()
+    name = (rec.get('customer_name') or '').strip()
+    base = {'company': company, 'phone': '', 'address': '', 'city': '',
+            'state': '', 'zip_code': ''}
+    if email:
+        cust, _ = Customer.objects.get_or_create(
+            email=email, defaults={'name': name or email, **base})
+        return cust
+    placeholder = f'tms-import+{company.id if company else 0}@truckwys.local'
+    cust, _ = Customer.objects.get_or_create(
+        email=placeholder, defaults={'name': 'External TMS Import', **base})
+    return cust
+
+
+def _create_load_from_tms(company, rec, ext_id):
+    """Create a real Load from an inbound TMS trip record."""
+    import random
+    origin = rec.get('origin') or ''
+    dest = rec.get('destination') or ''
+    rate = Decimal(str(rec.get('rate') or rec.get('amount') or 0))
+
+    num = f'LOAD-{timezone.now().strftime("%Y%m%d")}-{random.randint(1000, 9999)}'
+    while Load.objects.filter(load_number=num).exists():
+        num = f'LOAD-{timezone.now().strftime("%Y%m%d")}-{random.randint(1000, 9999)}'
+
+    return Load.objects.create(
+        company=company,
+        load_number=num,
+        customer=_tms_import_customer(company, rec),
+        pickup_location=origin, pickup_city=origin, pickup_state='', pickup_zip='',
+        pickup_date=_parse_dt(rec.get('pickup_date')) or timezone.now(),
+        delivery_location=dest, delivery_city=dest, delivery_state='', delivery_zip='',
+        delivery_date=_parse_dt(rec.get('delivery_date')) or (timezone.now() + timedelta(days=2)),
+        cargo_description=rec.get('cargo_description', ''),
+        weight=Decimal(str(rec.get('weight') or 0)),
+        distance=Decimal(str(rec.get('distance') or 0)),
+        rate=rate,
+        total_amount=rate,
+        status='PENDING',
+        notes=f'ext_id:{ext_id}' if ext_id else 'imported via API',
+    )
+
+
 class TripSyncView(APIView):
     """
     Inbound trip sync endpoint for external TMS systems.
@@ -845,38 +913,48 @@ class TripSyncView(APIView):
     permission_classes = []
 
     def post(self, request):
-        # Validate API key
+        # Validate + meter the API key against real IntegrationAPIKey records.
         api_key = request.headers.get('X-API-Key', '')
-        if not IntegrationAPIKey.objects.filter(key=api_key, is_active=True).exists():
+        key_obj = IntegrationAPIKey.objects.filter(
+            key=api_key, active=True
+        ).select_related('operator').first()
+        if not key_obj:
             return Response({'error': 'Invalid or missing API key'}, status=401)
+        if key_obj.is_over_quota():
+            return Response({'error': 'Monthly API quota exceeded'}, status=429)
+        key_obj.record_call()
+
+        company = getattr(getattr(key_obj, 'operator', None), 'company', None)
 
         records = request.data if isinstance(request.data, list) else request.data.get('trips', [])
         if len(records) > 500:
             return Response({'error': 'Max 500 records per request'}, status=400)
 
-        created, skipped, errors = 0, 0, []
+        created, skipped, errors, created_ids = 0, 0, [], []
         for i, rec in enumerate(records):
             try:
                 ext_id = rec.get('external_id')
-                required = ['origin', 'destination']
-                missing = [f for f in required if not rec.get(f)]
+                missing = [f for f in ('origin', 'destination') if not rec.get(f)]
                 if missing:
                     errors.append({'index': i, 'error': f'Missing fields: {missing}'})
                     continue
-                if ext_id and Load.objects.filter(notes__icontains=f'ext_id:{ext_id}').exists():
-                    skipped += 1
-                    continue
-                Load.objects.create(
-                    origin=rec['origin'],
-                    destination=rec['destination'],
-                    cargo_description=rec.get('cargo_description', ''),
-                    weight=rec.get('weight', 0),
-                    distance=rec.get('distance', 0),
-                    status='SCHEDULED',
-                    notes=f'ext_id:{ext_id}' if ext_id else 'imported via API',
-                )
+
+                # Idempotency: dedupe on external_id within this company.
+                if ext_id:
+                    dup = Load.objects.filter(notes__icontains=f'ext_id:{ext_id}')
+                    if company is not None:
+                        dup = dup.filter(company=company)
+                    if dup.exists():
+                        skipped += 1
+                        continue
+
+                load = _create_load_from_tms(company, rec, ext_id)
                 created += 1
+                created_ids.append(load.id)
             except Exception as e:
                 errors.append({'index': i, 'error': str(e)})
 
-        return Response({'created': created, 'skipped': skipped, 'errors': errors, 'total': len(records)})
+        return Response({
+            'created': created, 'skipped': skipped, 'errors': errors,
+            'total': len(records), 'load_ids': created_ids,
+        })

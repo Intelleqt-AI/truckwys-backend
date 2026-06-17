@@ -116,6 +116,16 @@ class Company(models.Model):
         blank=True,
         help_text='When the current Xero access token expires'
     )
+    xero_last_invoice_sync = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text='Last time invoices were pushed to Xero'
+    )
+    xero_last_payment_sync = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text='Last time payments were pulled from Xero'
+    )
 
     # Billing / subscription fields
     subscription_plan = models.CharField(
