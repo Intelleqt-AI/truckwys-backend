@@ -616,6 +616,14 @@ class QuoteOutcomeView(APIView):
             fuel_price=quote.fuel_price_at_creation,
         )
 
+        # Close the ML flywheel: a fresh outcome may be enough to (re)train the
+        # win-probability model. Fire-and-forget so it never delays the response.
+        try:
+            from core.services.quote_training import maybe_retrain_win_model_async
+            maybe_retrain_win_model_async()
+        except Exception:
+            pass
+
         return Response({
             'success': True,
             'id': quote.id,
@@ -651,6 +659,14 @@ class QuoteModelStatsView(APIView):
             trained = bool(last_trained)
             metrics = metadata.get('metrics', {}) if isinstance(metadata, dict) else {}
 
+            # Win-probability model status — this is the one that drives the
+            # profit sweet-spot curve, and it learns on the installed sklearn stack.
+            try:
+                from core.services.quote_training import win_model_status
+                win = win_model_status()
+            except Exception:
+                win = None
+
             return Response({
                 'success': True,
                 'ml_available': bool(ML_AVAILABLE),
@@ -661,6 +677,7 @@ class QuoteModelStatsView(APIView):
                 'accuracy_r2': metrics.get('r2'),
                 'metrics': metrics or None,
                 'model_version': metadata.get('version'),
+                'win_model': win,
                 'message': (
                     'Model trained.' if trained
                     else ('ML libraries not installed — quoting model unavailable.'
