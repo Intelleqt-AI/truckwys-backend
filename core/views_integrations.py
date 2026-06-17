@@ -508,7 +508,11 @@ FLEET_DEMO_API_KEYS = {
 
 
 class FleetAPIKeyAuthentication(BaseAuthentication):
-    """Authenticate fleet TMS systems via X-API-Key header."""
+    """Authenticate fleet TMS systems via X-API-Key header.
+
+    Resolves real IntegrationAPIKey records (metered, quota-enforced, operator-scoped).
+    The hardcoded demo keys remain only as a DEBUG convenience for local testing.
+    """
 
     def authenticate(self, request):
         # Header-only — never accept the key via query string.
@@ -516,13 +520,24 @@ class FleetAPIKeyAuthentication(BaseAuthentication):
         if not key:
             return None  # Not an API key request — try other auth
 
-        # TODO Sprint C3: Replace with IntegrationAPIKey.objects.filter(key=key, key_type='FLEET_TMS', active=True)
-        fleet_name = FLEET_DEMO_API_KEYS.get(key)
-        if not fleet_name:
-            raise AuthenticationFailed('Invalid API key.')
+        key_obj = IntegrationAPIKey.objects.filter(
+            key=key, active=True
+        ).select_related('operator').first()
+        if key_obj:
+            if key_obj.is_over_quota():
+                raise AuthenticationFailed('Monthly API quota exceeded.')
+            key_obj.record_call()
+            operator = key_obj.operator
+            request.integration_key = key_obj
+            return (operator, key_obj)
 
-        # Return a pseudo-user tuple
-        return ({'api_key': key, 'fleet_name': fleet_name}, key)
+        # DEBUG-only fallback so local integration tests keep working.
+        if getattr(settings, 'DEBUG', False):
+            fleet_name = FLEET_DEMO_API_KEYS.get(key)
+            if fleet_name:
+                return ({'api_key': key, 'fleet_name': fleet_name}, key)
+
+        raise AuthenticationFailed('Invalid API key.')
 
     def authenticate_header(self, request):
         return 'X-API-Key'
@@ -815,6 +830,68 @@ class FleetTripBulkSyncView(APIView):
         return Response(results, status=status.HTTP_200_OK)
 
 
+def _parse_dt(value):
+    """Best-effort parse of an ISO datetime/date string; None on failure."""
+    if not value:
+        return None
+    from django.utils.dateparse import parse_datetime, parse_date
+    try:
+        dt = parse_datetime(value)
+        if dt:
+            return dt
+        d = parse_date(value)
+        if d:
+            return datetime(d.year, d.month, d.day)
+    except Exception:
+        return None
+    return None
+
+
+def _tms_import_customer(company, rec):
+    """Resolve (or create) the customer for an inbound TMS booking."""
+    email = (rec.get('customer_email') or '').strip().lower()
+    name = (rec.get('customer_name') or '').strip()
+    base = {'company': company, 'phone': '', 'address': '', 'city': '',
+            'state': '', 'zip_code': ''}
+    if email:
+        cust, _ = Customer.objects.get_or_create(
+            email=email, defaults={'name': name or email, **base})
+        return cust
+    placeholder = f'tms-import+{company.id if company else 0}@truckwys.local'
+    cust, _ = Customer.objects.get_or_create(
+        email=placeholder, defaults={'name': 'External TMS Import', **base})
+    return cust
+
+
+def _create_load_from_tms(company, rec, ext_id):
+    """Create a real Load from an inbound TMS trip record."""
+    import random
+    origin = rec.get('origin') or ''
+    dest = rec.get('destination') or ''
+    rate = Decimal(str(rec.get('rate') or rec.get('amount') or 0))
+
+    num = f'LOAD-{timezone.now().strftime("%Y%m%d")}-{random.randint(1000, 9999)}'
+    while Load.objects.filter(load_number=num).exists():
+        num = f'LOAD-{timezone.now().strftime("%Y%m%d")}-{random.randint(1000, 9999)}'
+
+    return Load.objects.create(
+        company=company,
+        load_number=num,
+        customer=_tms_import_customer(company, rec),
+        pickup_location=origin, pickup_city=origin, pickup_state='', pickup_zip='',
+        pickup_date=_parse_dt(rec.get('pickup_date')) or timezone.now(),
+        delivery_location=dest, delivery_city=dest, delivery_state='', delivery_zip='',
+        delivery_date=_parse_dt(rec.get('delivery_date')) or (timezone.now() + timedelta(days=2)),
+        cargo_description=rec.get('cargo_description', ''),
+        weight=Decimal(str(rec.get('weight') or 0)),
+        distance=Decimal(str(rec.get('distance') or 0)),
+        rate=rate,
+        total_amount=rate,
+        status='PENDING',
+        notes=f'ext_id:{ext_id}' if ext_id else 'imported via API',
+    )
+
+
 class TripSyncView(APIView):
     """
     Inbound trip sync endpoint for external TMS systems.
@@ -836,38 +913,48 @@ class TripSyncView(APIView):
     permission_classes = []
 
     def post(self, request):
-        # Validate API key
+        # Validate + meter the API key against real IntegrationAPIKey records.
         api_key = request.headers.get('X-API-Key', '')
-        if not IntegrationAPIKey.objects.filter(key=api_key, is_active=True).exists():
+        key_obj = IntegrationAPIKey.objects.filter(
+            key=api_key, active=True
+        ).select_related('operator').first()
+        if not key_obj:
             return Response({'error': 'Invalid or missing API key'}, status=401)
+        if key_obj.is_over_quota():
+            return Response({'error': 'Monthly API quota exceeded'}, status=429)
+        key_obj.record_call()
+
+        company = getattr(getattr(key_obj, 'operator', None), 'company', None)
 
         records = request.data if isinstance(request.data, list) else request.data.get('trips', [])
         if len(records) > 500:
             return Response({'error': 'Max 500 records per request'}, status=400)
 
-        created, skipped, errors = 0, 0, []
+        created, skipped, errors, created_ids = 0, 0, [], []
         for i, rec in enumerate(records):
             try:
                 ext_id = rec.get('external_id')
-                required = ['origin', 'destination']
-                missing = [f for f in required if not rec.get(f)]
+                missing = [f for f in ('origin', 'destination') if not rec.get(f)]
                 if missing:
                     errors.append({'index': i, 'error': f'Missing fields: {missing}'})
                     continue
-                if ext_id and Load.objects.filter(notes__icontains=f'ext_id:{ext_id}').exists():
-                    skipped += 1
-                    continue
-                Load.objects.create(
-                    origin=rec['origin'],
-                    destination=rec['destination'],
-                    cargo_description=rec.get('cargo_description', ''),
-                    weight=rec.get('weight', 0),
-                    distance=rec.get('distance', 0),
-                    status='SCHEDULED',
-                    notes=f'ext_id:{ext_id}' if ext_id else 'imported via API',
-                )
+
+                # Idempotency: dedupe on external_id within this company.
+                if ext_id:
+                    dup = Load.objects.filter(notes__icontains=f'ext_id:{ext_id}')
+                    if company is not None:
+                        dup = dup.filter(company=company)
+                    if dup.exists():
+                        skipped += 1
+                        continue
+
+                load = _create_load_from_tms(company, rec, ext_id)
                 created += 1
+                created_ids.append(load.id)
             except Exception as e:
                 errors.append({'index': i, 'error': str(e)})
 
-        return Response({'created': created, 'skipped': skipped, 'errors': errors, 'total': len(records)})
+        return Response({
+            'created': created, 'skipped': skipped, 'errors': errors,
+            'total': len(records), 'load_ids': created_ids,
+        })
