@@ -99,9 +99,10 @@ class XeroClient:
         # Get tenant ID (organization)
         tenant_id = self._get_tenant_id(token_data['access_token'])
 
-        # Store tokens in company
-        self.company.xero_access_token = token_data['access_token']
-        self.company.xero_refresh_token = token_data['refresh_token']
+        # Store tokens encrypted at rest (decrypted only in-memory when used).
+        from core.utils.crypto import encrypt_secret
+        self.company.xero_access_token = encrypt_secret(token_data['access_token'])
+        self.company.xero_refresh_token = encrypt_secret(token_data['refresh_token'])
         self.company.xero_tenant_id = tenant_id
         self.company.xero_connected_at = timezone.now()
         self.company.xero_token_expires_at = timezone.now() + timedelta(seconds=token_data.get('expires_in', 1800))
@@ -147,9 +148,10 @@ class XeroClient:
         if not self.company.xero_refresh_token:
             raise ValueError("No refresh token available")
 
+        from core.utils.crypto import encrypt_secret, decrypt_secret
         data = {
             'grant_type': 'refresh_token',
-            'refresh_token': self.company.xero_refresh_token,
+            'refresh_token': decrypt_secret(self.company.xero_refresh_token),
         }
 
         response = requests.post(
@@ -161,9 +163,9 @@ class XeroClient:
 
         token_data = response.json()
 
-        # Update stored tokens
-        self.company.xero_access_token = token_data['access_token']
-        self.company.xero_refresh_token = token_data['refresh_token']
+        # Update stored tokens (encrypted at rest)
+        self.company.xero_access_token = encrypt_secret(token_data['access_token'])
+        self.company.xero_refresh_token = encrypt_secret(token_data['refresh_token'])
         self.company.xero_token_expires_at = timezone.now() + timedelta(seconds=token_data.get('expires_in', 1800))
         self.company.save()
 
@@ -182,7 +184,8 @@ class XeroClient:
             if self.company.xero_token_expires_at <= expires_soon:
                 self.refresh_token()
 
-        return self.company.xero_access_token
+        from core.utils.crypto import decrypt_secret
+        return decrypt_secret(self.company.xero_access_token)
 
     def _make_request(self, method: str, endpoint: str, data: Optional[Dict] = None) -> Dict[str, Any]:
         """

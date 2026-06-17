@@ -39,6 +39,12 @@ XERO_CLIENT_SECRET = config('XERO_CLIENT_SECRET', default='')
 XERO_REDIRECT_URI = config('XERO_REDIRECT_URI', default='http://localhost:8000/api/v1/integrations/xero/callback/')
 FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:3701')
 
+# Encryption key for secrets at rest (Xero OAuth tokens). A urlsafe-base64 32-byte
+# Fernet key (python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())").
+# If unset, a stable key is derived from SECRET_KEY. Set a dedicated key in production
+# so rotating SECRET_KEY doesn't invalidate stored tokens.
+FIELD_ENCRYPTION_KEY = config('FIELD_ENCRYPTION_KEY', default='')
+
 # Carrier-finance spine: when a load is delivered, auto-raise its invoice (SENT)
 # so the receivable exists and becomes fast-pay eligible with no manual step.
 AUTO_INVOICE_ON_DELIVERY = config('AUTO_INVOICE_ON_DELIVERY', default=True, cast=bool)
