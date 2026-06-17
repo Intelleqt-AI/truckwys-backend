@@ -155,21 +155,42 @@ class InvoiceFinanceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def send_reminder(self, request, pk=None):
-        """Send a payment reminder for this invoice."""
+        """Send a real escalating payment reminder for this invoice."""
+        from core.services.collections import send_payment_reminder
+
         invoice = self.get_object()
-        if invoice.status not in ('SENT', 'OVERDUE'):
+        if invoice.status not in ('SENT', 'VIEWED', 'OVERDUE', 'PARTIALLY_PAID'):
             return Response(
-                {'error': 'Reminders can only be sent for SENT or OVERDUE invoices'},
+                {'error': 'Reminders can only be sent for outstanding invoices'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+        result = send_payment_reminder(invoice, company=getattr(invoice, 'company', None))
+        if not result['sent']:
+            return Response(
+                {'success': False, 'error': result['reason'], 'invoice_number': invoice.invoice_number},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE if 'not configured' in result['reason']
+                else status.HTTP_400_BAD_REQUEST
+            )
+
         customer_name = invoice.customer.name if invoice.customer else 'customer'
-        # TODO: send via Resend when mail.truckwys.com DNS propagates
         return Response({
             'success': True,
-            'message': f'Payment reminder sent to {customer_name}',
+            'message': f"{result['tone'].capitalize()} payment reminder sent to {customer_name}",
             'invoice_number': invoice.invoice_number,
-            'amount': float(invoice.total_amount),
+            'amount': float(invoice.balance or invoice.total_amount),
+            'tone': result['tone'],
+            'reminder_count': result['reminder_count'],
         })
+
+    @action(detail=False, methods=['post'], url_path='run-dunning')
+    def run_dunning(self, request):
+        """Sweep this company's overdue/short-paid invoices and send due reminders."""
+        from core.services.collections import run_dunning
+        from core.views import resolve_user_company
+        company = resolve_user_company(request.user)
+        summary = run_dunning(company)
+        return Response({'success': True, **summary})
 
     @action(detail=False, methods=['post'])
     def batch_generate(self, request):

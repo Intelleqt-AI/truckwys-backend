@@ -119,6 +119,15 @@ class Invoice(models.Model):
         blank=True,
         help_text='When the invoice was fully paid'
     )
+    last_reminder_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text='When the last payment reminder was sent (collections/dunning)'
+    )
+    reminder_count = models.IntegerField(
+        default=0,
+        help_text='How many payment reminders have been sent for this invoice'
+    )
 
     # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)

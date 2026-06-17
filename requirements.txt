@@ -22,3 +22,6 @@ channels>=4.0,<5
 daphne>=4.0
 channels_redis>=4.2
 openai>=1.30
+
+# Transactional email (invoices, payment reminders / dunning)
+resend>=2.0
