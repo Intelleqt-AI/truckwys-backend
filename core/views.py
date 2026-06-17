@@ -1467,11 +1467,13 @@ class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def convert_to_invoice(self, request, pk=None):
-        """Convert a delivered load to an invoice (one-click)."""
+        """Convert a delivered load to an invoice (one-click).
+
+        Shares core.services.invoicing.create_invoice_for_load with the
+        automatic delivery → invoice flow, so they can never drift.
+        """
         from core.models.invoice import Invoice
-        from datetime import date, timedelta
-        from decimal import Decimal
-        import random
+        from core.services.invoicing import create_invoice_for_load
 
         load = self.get_object()
 
@@ -1483,38 +1485,14 @@ class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
                 'invoice_number': existing.invoice_number,
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        today = date.today()
-        rand = random.randint(10000, 99999)
-        inv_number = f'INV-{today.strftime("%Y%m%d")}-{rand:05d}'
-        while Invoice.objects.filter(invoice_number=inv_number).exists():
-            rand = random.randint(10000, 99999)
-            inv_number = f'INV-{today.strftime("%Y%m%d")}-{rand:05d}'
-
-        subtotal = load.total_amount
-        vat = (subtotal * Decimal('0.15')).quantize(Decimal('0.01'))
-        total = subtotal + vat
-
-        invoice = Invoice.objects.create(
-            invoice_number=inv_number,
+        invoice, created = create_invoice_for_load(
+            load,
             company=getattr(load, 'company', None) or getattr(request.user, 'company', None),
-            customer=load.customer,
-            load=load,
-            issue_date=today,
-            due_date=today + timedelta(days=30),
-            subtotal=subtotal,
-            vat_amount=vat,
-            tax_amount=vat,
-            total_amount=total,
-            paid_amount=Decimal('0'),
-            balance=total,
-            status='DRAFT',
-            payment_terms='NET30',
-            notes=f'Auto-generated from Load {load.load_number}',
-            early_pay_eligible=True,
         )
-
-        load.status = 'INVOICED'
-        load.save()
+        if not invoice:
+            return Response({
+                'error': 'Load cannot be invoiced (needs a customer and a positive amount)',
+            }, status=status.HTTP_400_BAD_REQUEST)
 
         return Response({
             'message': 'Invoice created successfully',

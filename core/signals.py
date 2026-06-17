@@ -62,6 +62,37 @@ def load_saved(sender, instance, created, **kwargs):
         # Fire specific events for certain statuses
         if instance.status == 'DELIVERED':
             dispatch_webhook('load.delivered', data)
+            _auto_invoice_on_delivery(instance)
+
+
+def _auto_invoice_on_delivery(load):
+    """Delivered → raise the invoice automatically and surface fast-pay.
+
+    This is the spine of the carrier-finance flow: the moment a load is
+    delivered, its receivable exists and becomes advance-eligible — no manual
+    'convert to invoice' click. Guarded by AUTO_INVOICE_ON_DELIVERY and wrapped
+    so a failure here can never block the load save.
+    """
+    from django.conf import settings
+    if not getattr(settings, 'AUTO_INVOICE_ON_DELIVERY', True):
+        return
+    try:
+        from core.services.invoicing import create_invoice_for_load
+        invoice, created = create_invoice_for_load(load, mark_sent=True)
+        if not (invoice and created):
+            return
+        from core.services.notify import notify_company
+        notify_company(
+            getattr(load, 'company_id', None),
+            'SUCCESS',
+            'Invoice auto-raised on delivery',
+            f'{invoice.invoice_number} · R{float(invoice.total_amount):,.0f} · ready for fast-pay',
+            link=f'/finance/invoices/{invoice.id}',
+            event='invoice.auto_created',
+        )
+    except Exception as exc:  # never break the delivery save
+        import logging
+        logging.getLogger(__name__).warning('auto-invoice on delivery failed: %s', exc)
 
 
 @receiver(post_save, sender='core.Invoice')

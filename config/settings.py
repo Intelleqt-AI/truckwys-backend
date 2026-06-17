@@ -39,6 +39,10 @@ XERO_CLIENT_SECRET = config('XERO_CLIENT_SECRET', default='')
 XERO_REDIRECT_URI = config('XERO_REDIRECT_URI', default='http://localhost:8000/api/v1/integrations/xero/callback/')
 FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:3701')
 
+# Carrier-finance spine: when a load is delivered, auto-raise its invoice (SENT)
+# so the receivable exists and becomes fast-pay eligible with no manual step.
+AUTO_INVOICE_ON_DELIVERY = config('AUTO_INVOICE_ON_DELIVERY', default=True, cast=bool)
+
 INSTALLED_APPS = [
     'daphne',  # must be first — provides the ASGI-aware runserver for WebSockets
     'django.contrib.admin',
