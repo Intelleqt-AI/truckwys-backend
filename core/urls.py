@@ -10,17 +10,26 @@ from .views import (
     VehicleViewSet, VehicleTypeViewSet, VehicleLogViewSet, LoadViewSet,
     QuoteViewSet, InvoiceViewSet, PaymentViewSet,
     ExpenseViewSet, SettlementViewSet, NotificationViewSet, WebhookViewSet,
-    RegisterView, LoginView, LogoutView, UserProfileView,
+    RegisterView, LoginView, LogoutView, ChangePasswordView, UserProfileView, SessionsView,
     FleetOverviewView, VehicleInsightsView, VehicleIntelligenceFeedView, VehicleActionView,
     DriverOverviewView, DriverPerformanceLeaderboardView,
     QuotesPipelineOverviewView, NotificationSettingsView,
     CompanyProfileView, CompanyLogoUploadView, DashboardOverviewView, ActivityEventViewSet,
-    TestEmailView, InviteView, InviteTokenView, InviteResendView
+    TestEmailView, InviteView, InviteTokenView, InviteResendView,
+    PublicQuoteView, PublicQuoteRespondView,
+    EmailVerifyView, ResendVerificationView,
+)
+from .views_ai_quote import (
+    AIChatQuoteView, AIQuoteSuggestionView, AIVoiceQuoteView,
+    FuelPriceCurrentView, FuelPriceSurchargeCheckView,
+    QuoteBenchmarkView, QuoteFuelAlertView, QuoteModelStatsView,
+    QuoteOutcomeView, QuoteWinProbabilityView, RevenueGuardView
 )
 from .views_finance import (
     InvoiceFinanceViewSet, PaymentFinanceViewSet, ExpenseFinanceViewSet,
     TripCostView, FinanceDashboardView, RouteAnalyticsView, DashboardKPIView,
-    CustomerHealthView, ReportsExportView
+    CustomerHealthView, ReportsExportView, BillingAuditView,
+    MarginByLaneView, FastPaySavingsView
 )
 from .views_capital import (
     FacilityViewSet, RiskScoreViewSet, AdvanceRequestViewSet,
@@ -31,7 +40,7 @@ from .views_partner import (
 )
 from .views_integrations import (
     XeroConnectView, XeroCallbackView, XeroDisconnectView, XeroStatusView,
-    XeroSyncInvoicesView, XeroSyncPaymentsView, FleetImportTripsView,
+    XeroSyncInvoicesView, XeroSyncPaymentsView, XeroSyncLogView, FleetImportTripsView,
     CreditLookupView, DashboardInsightsView, CashFlowForecastView,
     FleetTripSyncView, FleetTripBulkSyncView, TripSyncView
 )
@@ -57,6 +66,9 @@ from .views_risk_api import (
 from .views_invite import (
     InviteCreateView, InviteValidateView, InviteAcceptView
 )
+from .views_ai_insights import DashboardBriefingView, RiskScoreExplainView, AgentChatView, CopilotConversationsView, CopilotConversationDetailView
+from .views_quote_optimize import AIPriceOptimizeView
+from .views_risk_score_api import RiskUnderwriteView
 
 router = DefaultRouter()
 router.register(r'users', UserViewSet, basename='user')
@@ -101,12 +113,24 @@ urlpatterns = [
     path('auth/register/', RegisterView.as_view(), name='register'),
     path('auth/login/', LoginView.as_view(), name='login'),
     path('auth/logout/', LogoutView.as_view(), name='logout'),
+    path('auth/change-password/', ChangePasswordView.as_view(), name='change-password'),
+    # Billing (PayFast) — views were imported but never routed
+    path('billing/status/', BillingStatusView.as_view(), name='billing-status'),
+    path('billing/history/', BillingHistoryView.as_view(), name='billing-history'),
+    path('billing/subscribe/', SubscribeView.as_view(), name='billing-subscribe'),
+    path('billing/cancel/', CancelSubscriptionView.as_view(), name='billing-cancel'),
+    path('billing/itn/', PayFastITNView.as_view(), name='billing-itn'),
     path('auth/me/', UserProfileView.as_view(), name='user-profile'),
+    path('auth/sessions/', SessionsView.as_view(), name='auth-sessions'),
     path('auth/password-reset/', PasswordResetRequestView.as_view(), name='password-reset'),
     path('auth/password-reset/confirm/', PasswordResetConfirmView.as_view(), name='password-reset-confirm'),
+    path('auth/verify-email/', EmailVerifyView.as_view(), name='verify-email'),
+    path('auth/resend-verification/', ResendVerificationView.as_view(), name='resend-verification'),
     path('auth/invite/', InviteView.as_view(), name='auth-invite'),
+    path('auth/invite/<str:token>/accept/', InviteTokenView.as_view(), name='auth-invite-accept'),
     path('auth/invite/<str:token>/', InviteTokenView.as_view(), name='auth-invite-detail'),
     path('auth/invite/<str:token>/resend/', InviteResendView.as_view(), name='auth-invite-resend'),
+    path('auth/invite/<str:token>/accept/', InviteAcceptView.as_view(), name='auth-invite-accept'),
     
     # Fleet/Vehicle specific endpoints (must come before router to avoid conflicts)
     path('fleet/overview/', FleetOverviewView.as_view(), name='fleet-overview'),
@@ -130,11 +154,21 @@ urlpatterns = [
 
     # Finance Dashboard endpoints (NEW - Phase 2)
     path('dashboard/finance/', FinanceDashboardView.as_view(), name='finance-dashboard'),
+    path('billing/audit/', BillingAuditView.as_view(), name='billing-audit'),
     path('dashboard/kpi/', DashboardKPIView.as_view(), name='dashboard-kpi'),
+    path('dashboard/briefing/', DashboardBriefingView.as_view(), name='dashboard-briefing'),
+    path('agent/chat/', AgentChatView.as_view(), name='agent-chat'),
+    path('agent/conversations/', CopilotConversationsView.as_view(), name='agent-conversations'),
+    path('agent/conversations/<int:pk>/', CopilotConversationDetailView.as_view(), name='agent-conversation-detail'),
+    path('quotes/optimize/', AIPriceOptimizeView.as_view(), name='quote-optimize'),
+    path('risk/underwrite/', RiskUnderwriteView.as_view(), name='risk-underwrite'),
+    path('risk/score/<int:pk>/explain/', RiskScoreExplainView.as_view(), name='risk-score-explain'),
     path('dashboard/overview/', DashboardOverviewView.as_view(), name='dashboard-overview'),
     path('dashboard/routes/', RouteAnalyticsView.as_view(), name='route-analytics'),
     path('dashboard/customer-health/', CustomerHealthView.as_view(), name='customer-health'),
     path('reports/export/', ReportsExportView.as_view(), name='reports-export'),
+    path('reports/margin-by-lane/', MarginByLaneView.as_view(), name='reports-margin-by-lane'),
+    path('reports/fastpay-savings/', FastPaySavingsView.as_view(), name='reports-fastpay-savings'),
     path('trips/<int:trip_id>/costs/', TripCostView.as_view(), name='trip-costs'),
 
     # Intelligence & Cash Flow endpoints (NEW - Phase 4)
@@ -152,6 +186,7 @@ urlpatterns = [
     path('integrations/xero/status/', XeroStatusView.as_view(), name='xero-status'),
     path('integrations/xero/sync-invoices/', XeroSyncInvoicesView.as_view(), name='xero-sync-invoices'),
     path('integrations/xero/sync-payments/', XeroSyncPaymentsView.as_view(), name='xero-sync-payments'),
+    path('integrations/xero/sync-log/', XeroSyncLogView.as_view(), name='xero-sync-log'),
 
     # Fleet Integration endpoints (NEW - Phase 4)
     path('integrations/fleet/import-trips/', FleetImportTripsView.as_view(), name='fleet-import-trips'),

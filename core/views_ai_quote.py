@@ -3,6 +3,7 @@ AI Quote & Revenue Guard API endpoints for Phase 2 desktop quoting.
 Sprint 1: AI Quoting Engine Upgrade with feedback loop, fuel alerts, win probability.
 """
 
+import logging
 from datetime import date, timedelta
 from decimal import Decimal
 from django.utils import timezone
@@ -15,6 +16,8 @@ from rest_framework import status
 from core.models import Quote, QuoteOutcome, FuelPrice, Customer, Invoice
 from core.services.fuel_price import fetch_fuel_prices
 from core.services.quote_ml import QuoteMLModel
+
+logger = logging.getLogger(__name__)
 
 
 class FuelPriceCurrentView(APIView):
@@ -332,6 +335,29 @@ class AIChatQuoteView(APIView):
     """POST /api/v1/ai/chat-quote/ — conversational quote extraction."""
     permission_classes = [IsAuthenticated]
 
+    @staticmethod
+    def _fallback_reply(merged):
+        """Build a friendly reply from the fields captured so far."""
+        missing = []
+        if not merged.get('pickup_location'):
+            missing.append('pickup location')
+        if not merged.get('delivery_location'):
+            missing.append('delivery location')
+        if not merged.get('cargo_description'):
+            missing.append('cargo type')
+        if not merged.get('weight'):
+            missing.append('weight')
+
+        if not missing:
+            return (
+                f"Got it — {merged.get('cargo_description', 'your cargo')} from "
+                f"{merged.get('pickup_location')} to {merged.get('delivery_location')}, "
+                f"{merged.get('weight', 0) / 1000:.0f} tons. Ready to calculate your quote."
+            )
+        if len(missing) <= 2:
+            return f"Almost there. Just need the {' and '.join(missing)} to complete the quote."
+        return f"Thanks! I still need the {', '.join(missing[:-1])} and {missing[-1]} to build your quote."
+
     def post(self, request):
         """
         Extract quote fields from natural language message.
@@ -341,6 +367,26 @@ class AIChatQuoteView(APIView):
         try:
             message = request.data.get('message', '')
             current_fields = request.data.get('current_fields', {})
+            history = request.data.get('history', [])
+
+            # Primary path: Claude-backed natural-language extraction.
+            # Falls through to the regex extractor below when the LLM is
+            # not configured or the call fails, so the endpoint never breaks.
+            from core.services import llm_quote
+            if llm_quote.is_enabled():
+                try:
+                    extracted, reply = llm_quote.extract(message, history, current_fields)
+                    merged = {**current_fields, **extracted}
+                    if not reply:
+                        reply = self._fallback_reply(merged)
+                    return Response({
+                        'success': True,
+                        'reply': reply,
+                        'extracted_fields': extracted,
+                        'source': 'llm',
+                    })
+                except Exception as exc:
+                    logger.warning('LLM quote extraction failed, using regex fallback: %s', exc)
 
             # Extract fields using regex patterns
             extracted = {}
@@ -402,11 +448,20 @@ class AIChatQuoteView(APIView):
                     extracted['vehicle_type'] = val
                     break
 
-            # Cargo description
-            cargo_match = re.search(r'(?:of\s+)?([a-zA-Z\s]+?)\s+(?:from|to\s+\w)', message, re.IGNORECASE)
+            # Cargo description — the noun AFTER "of" (e.g. "20 tons of steel from JHB"
+            # -> "steel"; "of palletised goods to ..." -> "palletised goods").
+            cargo_match = (
+                re.search(r'\bof\s+([a-zA-Z][a-zA-Z\s]*?)\s+(?:from|to|on|for|by|via)\b', message, re.IGNORECASE)
+                or re.search(r'\bof\s+([a-zA-Z][a-zA-Z\s]*?)\s*[,.]', message, re.IGNORECASE)
+                or re.search(r'\bof\s+([a-zA-Z][a-zA-Z\s]*?)$', message.strip(), re.IGNORECASE)
+            )
             if cargo_match:
                 desc = cargo_match.group(1).strip()
-                if len(desc) > 3 and desc.lower() not in ['move', 'transport', 'ship', 'send', 'deliver', 'take']:
+                # Drop a leading unit word if it slipped in ("tonnes of frozen fish").
+                desc = re.sub(r'^(tons?|tonnes?|kgs?|kilograms?|pallets?|units?|loads?|crates?)\s+',
+                              '', desc, flags=re.IGNORECASE).strip()
+                stop = {'move', 'transport', 'ship', 'send', 'deliver', 'take', 'need', 'i'}
+                if len(desc) > 2 and desc.lower() not in stop:
                     extracted['cargo_description'] = desc
 
             # Merge with current fields
@@ -561,6 +616,14 @@ class QuoteOutcomeView(APIView):
             fuel_price=quote.fuel_price_at_creation,
         )
 
+        # Close the ML flywheel: a fresh outcome may be enough to (re)train the
+        # win-probability model. Fire-and-forget so it never delays the response.
+        try:
+            from core.services.quote_training import maybe_retrain_win_model_async
+            maybe_retrain_win_model_async()
+        except Exception:
+            pass
+
         return Response({
             'success': True,
             'id': quote.id,
@@ -580,32 +643,47 @@ class QuoteModelStatsView(APIView):
                 outcome__in=['accepted', 'rejected']
             ).count()
 
-            # Load model metadata if available
-            from core.services.quote_ml import QuoteMLModel
+            # Report ONLY what is real. A model exists when its metadata file has
+            # been written by a successful train(); otherwise we are honestly untrained.
+            from core.services.quote_ml import QuoteMLModel, ML_AVAILABLE
+
+            metadata = {}
             try:
                 model = QuoteMLModel()
-                metadata = model.metadata if hasattr(model, 'metadata') else {}
-                accuracy_r2 = metadata.get('r2_score', 0.72)
-                last_trained = metadata.get('trained_at', None)
-                model_version = metadata.get('version', '1.0.0')
-            except:
-                accuracy_r2 = 0.72
-                last_trained = None
-                model_version = '1.0.0'
+                metadata = getattr(model, 'metadata', {}) or {}
+            except Exception:
+                metadata = {}
 
-            # Assume synthetic count is 50k (hardcoded baseline)
-            synthetic_count = 50000
-            training_data_count = synthetic_count + real_quotes_count
+            # QuoteMLModel.train() writes 'training_date' + 'sample_count' + 'metrics'
+            last_trained = metadata.get('training_date') or metadata.get('trained_at')
+            trained = bool(last_trained)
+            metrics = metadata.get('metrics', {}) if isinstance(metadata, dict) else {}
+
+            # Win-probability model status — this is the one that drives the
+            # profit sweet-spot curve, and it learns on the installed sklearn stack.
+            try:
+                from core.services.quote_training import win_model_status
+                win = win_model_status()
+            except Exception:
+                win = None
 
             return Response({
                 'success': True,
-                'training_data_count': training_data_count,
+                'ml_available': bool(ML_AVAILABLE),
+                'trained': trained,
                 'real_quotes_count': real_quotes_count,
-                'synthetic_count': synthetic_count,
+                'training_sample_count': metadata.get('sample_count'),
                 'last_trained': last_trained,
-                'accuracy_r2': accuracy_r2,
-                'model_version': model_version,
-                'last_retrain_command': 'Sunday 02:00 UTC (weekly)',
+                'accuracy_r2': metrics.get('r2'),
+                'metrics': metrics or None,
+                'model_version': metadata.get('version'),
+                'win_model': win,
+                'message': (
+                    'Model trained.' if trained
+                    else ('ML libraries not installed — quoting model unavailable.'
+                          if not ML_AVAILABLE
+                          else 'Model not yet trained — run the retrain command.')
+                ),
             })
         except Exception as e:
             return Response({
@@ -772,7 +850,16 @@ class QuoteBenchmarkView(APIView):
                     'error': 'origin, destination, and vehicle_type are required'
                 }, status=status.HTTP_400_BAD_REQUEST)
 
-            # Query accepted quotes on this lane
+            # Cross-platform anonymized benchmark first (pools won quotes across
+            # ALL operators, k-anonymity enforced so no single operator's pricing
+            # is exposed). Falls back to own-company data, then hardcoded estimates.
+            from core.services.lane_benchmark import compute_lane_benchmark
+            platform = compute_lane_benchmark(origin, destination, vehicle_type)
+            if not platform.get('available'):
+                # Retry at lane level (all vehicle types) before falling back.
+                platform = compute_lane_benchmark(origin, destination)
+
+            # Query this operator's own accepted quotes on this lane (fallback layer)
             lane_quotes = Quote.objects.filter(
                 company=request.user.company,
                 origin__iexact=origin,
@@ -783,6 +870,8 @@ class QuoteBenchmarkView(APIView):
             )
 
             data_points = lane_quotes.count()
+            source = 'company'
+            distinct_operators = None
 
             # Fallback to hardcoded SA market averages
             SA_MARKET_BENCHMARKS = {
@@ -795,8 +884,17 @@ class QuoteBenchmarkView(APIView):
 
             lane_key = (origin, destination, vehicle_type)
 
-            if data_points >= 10:
-                # Use real data
+            if platform.get('available'):
+                # Real cross-platform benchmark (preferred)
+                market_avg_rate = round(platform['market_avg_rate'])
+                market_range_low = round(platform.get('p25') or platform['market_avg_rate'])
+                market_range_high = round(platform.get('p75') or platform['market_avg_rate'])
+                data_points = platform['sample_size']
+                distinct_operators = platform.get('distinct_operators')
+                confidence = 'high'
+                source = 'platform'
+            elif data_points >= 10:
+                # Use this operator's own real data
                 stats = lane_quotes.aggregate(
                     avg_price=Avg('total_amount'),
                     min_price=Min('total_amount'),
@@ -806,6 +904,7 @@ class QuoteBenchmarkView(APIView):
                 market_range_low = int(stats['min_price'] or 0)
                 market_range_high = int(stats['max_price'] or 0)
                 confidence = 'high'
+                source = 'company'
             elif lane_key in SA_MARKET_BENCHMARKS:
                 # Fallback to hardcoded
                 benchmark = SA_MARKET_BENCHMARKS[lane_key]
@@ -813,6 +912,7 @@ class QuoteBenchmarkView(APIView):
                 market_range_low = benchmark['low']
                 market_range_high = benchmark['high']
                 confidence = 'medium' if data_points >= 5 else 'low'
+                source = 'estimate'
             else:
                 # No data available
                 return Response({
@@ -848,6 +948,8 @@ class QuoteBenchmarkView(APIView):
                 'market_range_high': market_range_high,
                 'data_points': data_points,
                 'confidence': confidence,
+                'source': source,
+                'distinct_operators': distinct_operators,
                 'your_rate': your_rate,
                 'your_vs_market_pct': round(your_vs_market_pct, 1),
                 'recommendation': recommendation,

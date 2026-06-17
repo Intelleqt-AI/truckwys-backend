@@ -17,12 +17,14 @@ from rest_framework import viewsets, status, filters
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.authtoken.models import Token
 from django.contrib.auth import authenticate
 from django_filters.rest_framework import DjangoFilterBackend
 from django.utils import timezone
+from decouple import config
 
 
 class CompanyFilterMixin:
@@ -69,6 +71,9 @@ from .serializers import (
 
 class RegisterView(APIView):
     permission_classes = [AllowAny]
+    # Throttle signups to blunt automated account creation (5/min, see settings).
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
 
     def post(self, request):
         serializer = UserSerializer(data=request.data)
@@ -81,7 +86,8 @@ class RegisterView(APIView):
             from core.models import Company, Facility
             company = Company.objects.create(company_name=company_name)
             user.company = company
-            user.role = 'ADMIN'  # Explicitly set role to admin for company owner
+            user.role = 'ADMIN'
+            user.is_active = False  # Require email verification before login
             user.save()
 
             # Create a default Facility for the company
@@ -92,32 +98,103 @@ class RegisterView(APIView):
                 status='ACTIVE'
             )
 
-            # Send welcome email
+            # Seed default vehicle types so the add-vehicle picker isn't empty
+            from core.services.company_setup import seed_default_vehicle_types
+            seed_default_vehicle_types(company)
+
+            # Generate OTP and send verification email via SMTP
+            import random
+            from django.core.cache import cache
+            otp_code = str(random.randint(100000, 999999))
+            cache.set(f'email_verify_{user.email}', otp_code, timeout=600)
             try:
-                from core.services.resend_email import send_welcome_email
-                login_url = "https://app.truckwys.co.za/login"
-                send_welcome_email(user, company_name, login_url)
+                from core.services.email_service import send_verification_email
+                send_verification_email(user.email, otp_code, user.first_name or user.username)
             except Exception as e:
                 import logging
-                logger = logging.getLogger(__name__)
-                logger.error(f"Failed to send welcome email to {user.email}: {str(e)}")
+                logging.getLogger(__name__).error(f"Failed to send verification email to {user.email}: {e}")
 
-            token, created = Token.objects.get_or_create(user=user)
             return Response({
-                'token': token.key,
-                'user': UserSerializer(user).data
+                'message': 'Account created. Please check your email for a verification code.',
+                'email': user.email,
             }, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+class EmailVerifyView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        import logging
+        from django.core.cache import cache
+        email = request.data.get('email', '').strip().lower()
+        code = request.data.get('code', '').strip()
+        if not email or not code:
+            return Response({'detail': 'email and code are required.'}, status=status.HTTP_400_BAD_REQUEST)
+        cached_code = cache.get(f'email_verify_{email}')
+        if not cached_code or str(cached_code) != str(code):
+            return Response({'detail': 'Invalid or expired verification code.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+        user.is_active = True
+        user.save()
+        cache.delete(f'email_verify_{email}')
+        token, _ = Token.objects.get_or_create(user=user)
+        return Response({'token': token.key, 'user': UserSerializer(user).data})
+
+
+class ResendVerificationView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        import random
+        from django.core.cache import cache
+        email = request.data.get('email', '').strip().lower()
+        if not email:
+            return Response({'detail': 'email is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            user = User.objects.get(email=email)
+            if user.is_active:
+                return Response({'detail': 'Account is already verified.'}, status=status.HTTP_400_BAD_REQUEST)
+        except User.DoesNotExist:
+            return Response({'detail': 'If an account exists, a verification email has been sent.'})
+        otp_code = str(random.randint(100000, 999999))
+        cache.set(f'email_verify_{email}', otp_code, timeout=600)
+        try:
+            from core.services.email_service import send_verification_email
+            send_verification_email(email, otp_code, user.first_name or user.username)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Failed to resend verification email to {email}: {e}")
+        return Response({'detail': 'If an account exists, a verification email has been sent.'})
+
+
 class LoginView(APIView):
     permission_classes = [AllowAny]
-    
+    # Attach the 'login' scope (5/min) so credential brute-force is actually
+    # bounded — previously this rate was defined but never wired to a view.
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
+
     def post(self, request):
-        username = request.data.get('username')
+        identifier = request.data.get('username') or request.data.get('email')
         password = request.data.get('password')
-        
-        user = authenticate(username=username, password=password)
+
+        # Authenticate by username first, then fall back to email lookup so the
+        # login form (which asks for an email) and username-based accounts both work.
+        user = authenticate(username=identifier, password=password)
+        if not user and identifier:
+            from .models import User
+            # Try every account with this email (emails aren't unique) and use
+            # whichever password actually authenticates.
+            for match in User.objects.filter(email__iexact=identifier):
+                candidate = authenticate(username=match.username, password=password)
+                if candidate:
+                    user = candidate
+                    break
+
         if user:
             token, created = Token.objects.get_or_create(user=user)
             return Response({
@@ -132,18 +209,65 @@ class LoginView(APIView):
 
 class LogoutView(APIView):
     permission_classes = [IsAuthenticated]
-    
+
     def post(self, request):
         request.user.auth_token.delete()
         return Response({'message': 'Successfully logged out'})
 
 
+class ChangePasswordView(APIView):
+    """Authenticated password change (verifies the current password)."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        current = request.data.get('current_password') or ''
+        new = request.data.get('new_password') or ''
+        if len(new) < 8:
+            return Response({'error': 'New password must be at least 8 characters'}, status=status.HTTP_400_BAD_REQUEST)
+        if not request.user.check_password(current):
+            return Response({'error': 'Current password is incorrect'}, status=status.HTTP_400_BAD_REQUEST)
+        request.user.set_password(new)
+        request.user.save(update_fields=['password'])
+        return Response({'detail': 'Password changed successfully'})
+
+
 class UserProfileView(APIView):
     permission_classes = [IsAuthenticated]
-    
+
     def get(self, request):
         serializer = UserSerializer(request.user)
         return Response(serializer.data)
+
+
+class SessionsView(APIView):
+    """Active sessions for the authenticated user.
+
+    We use DRF token auth (one token per user), so we surface the current
+    session derived from the live request. Returns a list the Security
+    Settings panel can render directly.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        ua = request.META.get('HTTP_USER_AGENT', '') or ''
+        device = 'This device'
+        low = ua.lower()
+        if 'iphone' in low or 'android' in low or 'mobile' in low:
+            device = 'Mobile device'
+        elif 'mac' in low:
+            device = 'Mac'
+        elif 'windows' in low:
+            device = 'Windows PC'
+        ip = request.META.get('HTTP_X_FORWARDED_FOR', '') or request.META.get('REMOTE_ADDR', '') or ''
+        ip = ip.split(',')[0].strip()
+        last_login = getattr(request.user, 'last_login', None)
+        return Response([{
+            'id': 'current',
+            'device': device,
+            'location': ip or 'Unknown',
+            'time': last_login.isoformat() if last_login else 'Now',
+            'current': True,
+        }])
     
     def patch(self, request):
         serializer = UserSerializer(request.user, data=request.data, partial=True)
@@ -192,16 +316,30 @@ class IsAdmin(IsAuthenticated):
         return super().has_permission(request, view) and hasattr(request.user, 'role') and request.user.role == 'ADMIN'
 
 
+def resolve_user_company(user):
+    """Return the user's own Company, creating+binding one if they have none yet
+    (legacy/seed accounts). This replaces the old global Company id=1 singleton so
+    each tenant reads/writes ONLY their own company record."""
+    company = getattr(user, 'company', None)
+    if company:
+        return company
+    company = Company.objects.create(
+        company_name=f"{(user.first_name or user.username)}'s Company",
+        address={},
+        contact={},
+    )
+    user.company = company
+    user.save(update_fields=['company'])
+    from core.services.company_setup import seed_default_vehicle_types
+    seed_default_vehicle_types(company)
+    return company
+
+
 class CompanyProfileView(APIView):
     permission_classes = [IsAdmin]
-    
+
     def get_object(self):
-        obj, created = Company.objects.get_or_create(id=1, defaults={
-            "company_name": "My Company",
-            "address": {},
-            "contact": {}
-        })
-        return obj
+        return resolve_user_company(self.request.user)
 
     def get(self, request):
         company = self.get_object()
@@ -234,7 +372,7 @@ class CompanyLogoUploadView(APIView):
     permission_classes = [IsAdmin]
     
     def post(self, request):
-        company = Company.objects.get_or_create(id=1)[0]
+        company = resolve_user_company(request.user)
         if 'logo' not in request.FILES:
             return Response({'error': 'No logo file provided'}, status=status.HTTP_400_BAD_REQUEST)
             
@@ -1070,13 +1208,18 @@ class UserViewSet(viewsets.ModelViewSet):
             return qs.filter(company=user.company)
         return qs
 
+    def perform_create(self, serializer):
+        """Bind newly-created users to the creating admin's company (multi-tenancy)."""
+        company = resolve_user_company(self.request.user)
+        serializer.save(company=company)
+
     @action(detail=False, methods=['post'])
     def invite(self, request):
         """Invite a new user to the organization"""
         import secrets
         from django.core.cache import cache
         from django.conf import settings
-        from core.services.resend_email import send_invite_email
+        from core.services.email_service import send_invite_email
 
         email = request.data.get('email', '').strip().lower()
         role = request.data.get('role', 'DISPATCHER')
@@ -1224,7 +1367,7 @@ class VehicleViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         return Response(serializer.data)
 
 
-class VehicleTypeViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
+class VehicleTypeViewSet(viewsets.ModelViewSet):
     queryset = VehicleType.objects.all()
     serializer_class = VehicleTypeSerializer
     permission_classes = [IsAuthenticated]
@@ -1232,6 +1375,17 @@ class VehicleTypeViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     filterset_fields = ['active']
     search_fields = ['name', 'description']
     ordering_fields = ['name', 'capacity', 'base_rate']
+
+    def get_queryset(self):
+        from django.db.models import Q
+        user = self.request.user
+        if not user.is_authenticated:
+            return VehicleType.objects.none()
+        if user.is_superuser:
+            return VehicleType.objects.all()
+        return VehicleType.objects.filter(
+            Q(company=None) | Q(company=user.company)
+        )
 
 
 class VehicleLogViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
@@ -1257,6 +1411,8 @@ class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     ordering_fields = ['created_at', 'pickup_date', 'delivery_date']
 
     def perform_create(self, serializer):
+        # Creation notification is raised by the Load post_save signal
+        # (notify_company), which covers all creation paths, not just this view.
         serializer.save(created_by=self.request.user)
 
     @action(detail=True, methods=['patch'])
@@ -1264,15 +1420,27 @@ class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         """Update load status"""
         load = self.get_object()
         new_status = request.data.get('status')
-        
+
         if new_status not in dict(Load.STATUS_CHOICES).keys():
             return Response(
                 {'error': 'Invalid status'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         load.status = new_status
         load.save()
+        try:
+            from core.services.notify import notify_company
+            notify_company(
+                getattr(load, 'company_id', None),
+                'INFO',
+                'Booking status updated',
+                f'{load.load_number or ("Load " + str(load.id))} → {new_status}',
+                link=f'/bookings/{load.id}',
+                event='booking.status',
+            )
+        except Exception:
+            pass
         serializer = self.get_serializer(load)
         return Response(serializer.data)
 
@@ -1299,11 +1467,13 @@ class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def convert_to_invoice(self, request, pk=None):
-        """Convert a delivered load to an invoice (one-click)."""
+        """Convert a delivered load to an invoice (one-click).
+
+        Shares core.services.invoicing.create_invoice_for_load with the
+        automatic delivery → invoice flow, so they can never drift.
+        """
         from core.models.invoice import Invoice
-        from datetime import date, timedelta
-        from decimal import Decimal
-        import random
+        from core.services.invoicing import create_invoice_for_load
 
         load = self.get_object()
 
@@ -1315,37 +1485,14 @@ class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
                 'invoice_number': existing.invoice_number,
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        today = date.today()
-        rand = random.randint(10000, 99999)
-        inv_number = f'INV-{today.strftime("%Y%m%d")}-{rand:05d}'
-        while Invoice.objects.filter(invoice_number=inv_number).exists():
-            rand = random.randint(10000, 99999)
-            inv_number = f'INV-{today.strftime("%Y%m%d")}-{rand:05d}'
-
-        subtotal = load.total_amount
-        vat = (subtotal * Decimal('0.15')).quantize(Decimal('0.01'))
-        total = subtotal + vat
-
-        invoice = Invoice.objects.create(
-            invoice_number=inv_number,
-            customer=load.customer,
-            load=load,
-            issue_date=today,
-            due_date=today + timedelta(days=30),
-            subtotal=subtotal,
-            vat_amount=vat,
-            tax_amount=vat,
-            total_amount=total,
-            paid_amount=Decimal('0'),
-            balance=total,
-            status='DRAFT',
-            payment_terms='NET30',
-            notes=f'Auto-generated from Load {load.load_number}',
-            early_pay_eligible=True,
+        invoice, created = create_invoice_for_load(
+            load,
+            company=getattr(load, 'company', None) or getattr(request.user, 'company', None),
         )
-
-        load.status = 'INVOICED'
-        load.save()
+        if not invoice:
+            return Response({
+                'error': 'Load cannot be invoiced (needs a customer and a positive amount)',
+            }, status=status.HTTP_400_BAD_REQUEST)
 
         return Response({
             'message': 'Invoice created successfully',
@@ -1398,7 +1545,24 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
             while Quote.objects.filter(quote_number=quote_number).exists():
                 rand = random.randint(1000, 9999)
                 quote_number = f'QT-{ts}-{rand}'
-        serializer.save(created_by=self.request.user, quote_number=quote_number)
+
+        save_kwargs = {'created_by': self.request.user, 'quote_number': quote_number}
+        company = getattr(self.request.user, 'company', None)
+        if company:
+            save_kwargs['company'] = company
+
+        # Snapshot the diesel price at quote creation so the fuel-surcharge /
+        # fuel-alert loop can later measure real margin erosion since the quote.
+        try:
+            from core.services.fuel_price import fetch_fuel_prices
+            fp = fetch_fuel_prices()
+            diesel = getattr(fp, 'diesel_inland', None)
+            if diesel is not None:
+                save_kwargs['fuel_price_at_creation'] = diesel
+        except Exception:
+            pass
+
+        serializer.save(**save_kwargs)
 
     @action(detail=True, methods=['patch'])
     def update_status(self, request, pk=None):
@@ -1414,6 +1578,18 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         
         quote.status = new_status
         quote.save()
+        if new_status in ('ACCEPTED', 'IT'):
+            try:
+                from core.services.notify import notify_company
+                notify_company(
+                    getattr(quote, 'company_id', None),
+                    'SUCCESS', 'Quote accepted',
+                    f'{getattr(quote, "quote_number", None) or ("Quote " + str(quote.id))}'
+                    + (f' · {quote.customer.name}' if getattr(quote, 'customer', None) else ''),
+                    link=f'/quotes/{quote.id}', event='quote.accepted',
+                )
+            except Exception:
+                pass
         serializer = self.get_serializer(quote)
         return Response(serializer.data)
 
@@ -1435,9 +1611,10 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         while Load.objects.filter(load_number=load_number).exists():
             load_number = f'LOAD-{timezone.now().strftime("%Y%m%d")}-{random.randint(1000, 9999)}'
 
-        # Create load from quote
+        # Create load from quote (stamp the company so it's tenant-scoped/visible)
         load = Load.objects.create(
             load_number=load_number,
+            company=getattr(quote, 'company', None) or getattr(request.user, 'company', None),
             customer=quote.customer,
             quote=quote,
             pickup_location=quote.pickup_location,
@@ -1857,7 +2034,7 @@ class RouteCalculatorView(APIView):
     """POST /api/v1/route/calculate/ — TomTom routing with fuel/toll calc + cross-border costs"""
     permission_classes = [IsAuthenticated]
 
-    TOMTOM_API_KEY = 'YTeWrKe8YSDqWkgs7D7QCMv1Ic4V6BHb'
+    TOMTOM_API_KEY = config('TOMTOM_API_KEY', default='')
     FUEL_RATE = 0.35        # litres/km
     TOLL_ZAR_KM = 0.95      # ZAR/km (SA tolls only)
 
@@ -2221,7 +2398,7 @@ class PasswordResetRequestView(APIView):
 
                 # Send password reset email
                 try:
-                    from core.services.resend_email import send_password_reset_email
+                    from core.services.email_service import send_password_reset_email
                     send_password_reset_email(email, user.first_name or user.username, code)
                 except Exception as e:
                     import logging
@@ -2268,17 +2445,39 @@ class PasswordResetConfirmView(APIView):
 
 
 class InviteView(APIView):
-    """Create user invitation and send invite email."""
-    permission_classes = [IsAuthenticated]
+    """Create user invitation, and list pending invites for the company."""
+    permission_classes = [IsAdmin]
+
+    def get(self, request):
+        """List pending invites (PENDING users) for the admin's company."""
+        from django.core.cache import cache
+        company = resolve_user_company(request.user)
+        pending = User.objects.filter(company=company, status='PENDING').order_by('-created_at')
+        return Response([
+            {
+                'id': u.id,
+                'email': u.email,
+                'role': u.role,
+                'status': u.status,
+                'created_at': u.created_at,
+                # Token kept in a reverse cache index so resend/revoke work from the list.
+                'token': cache.get(f'invite_user_{u.id}'),
+            }
+            for u in pending
+        ])
 
     def post(self, request):
         import secrets
         from django.core.cache import cache
         from django.conf import settings
-        from core.services.resend_email import send_invite_email
+        from core.services.email_service import send_invite_email
 
         email = request.data.get('email', '').strip().lower()
-        role = request.data.get('role', 'DISPATCHER')
+        role = (request.data.get('role') or 'DISPATCHER').upper()
+
+        valid_roles = {c[0] for c in User.ROLE_CHOICES}
+        if role not in valid_roles:
+            role = 'DISPATCHER'
 
         if not email:
             return Response({'error': 'Email is required'}, status=status.HTTP_400_BAD_REQUEST)
@@ -2286,6 +2485,8 @@ class InviteView(APIView):
         # Check if user already exists
         if User.objects.filter(email=email).exists():
             return Response({'error': 'User with this email already exists'}, status=status.HTTP_400_BAD_REQUEST)
+
+        company = resolve_user_company(request.user)
 
         # Generate secure token
         token = secrets.token_urlsafe(32)
@@ -2296,10 +2497,12 @@ class InviteView(APIView):
             email=email,
             status='PENDING',
             role=role,
-            company=request.user.company
+            company=company,
         )
         user.set_unusable_password()  # No password until they accept invite
         user.save()
+
+        invited_by_name = request.user.get_full_name() or request.user.username
 
         # Store invite data in cache (7 days)
         cache.set(
@@ -2307,26 +2510,31 @@ class InviteView(APIView):
             {
                 'email': email,
                 'role': role,
-                'company_id': request.user.company.id if request.user.company else None,
-                'user_id': user.id
+                'company_id': company.id,
+                'company_name': company.company_name,
+                'invited_by': invited_by_name,
+                'user_id': user.id,
             },
             timeout=7 * 24 * 60 * 60  # 7 days
         )
+        # Reverse index so the pending-invites list can surface the token for resend/revoke.
+        cache.set(f'invite_user_{user.id}', token, timeout=7 * 24 * 60 * 60)
 
-        # Send invite email
+        # Send invite email (best-effort: a missing/unconfigured provider must not
+        # 500 the whole invite — the pending user is already created).
         try:
+            from core.services.resend_email import send_invite_email
             invite_url = f"{settings.FRONTEND_URL}/invite/{token}"
-            invited_by_name = request.user.get_full_name() or request.user.username
-            company_name = request.user.company.company_name if request.user.company else "TruckWys"
-
+            company_name = company.company_name
             send_invite_email(email, invited_by_name, company_name, invite_url, role)
         except Exception as e:
             import logging
-            logger = logging.getLogger(__name__)
-            logger.error(f"Failed to send invite email to {email}: {str(e)}")
-            # Still return success - user was created
+            logging.getLogger(__name__).warning(f"Invite email not sent to {email}: {e}")
 
-        return Response({'success': True, 'message': 'Invite sent'}, status=status.HTTP_201_CREATED)
+        return Response(
+            {'success': True, 'message': 'Invite sent', 'token': token},
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class InviteTokenView(APIView):
@@ -2344,8 +2552,23 @@ class InviteTokenView(APIView):
         return Response({
             'valid': True,
             'email': invite_data.get('email'),
-            'role': invite_data.get('role')
+            'role': invite_data.get('role'),
+            'company_name': invite_data.get('company_name'),
+            'inviter_name': invite_data.get('invited_by'),
         })
+
+    def delete(self, request, token):
+        """Revoke a pending invite (admin only)."""
+        from django.core.cache import cache
+        if not getattr(request.user, 'is_authenticated', False) or not (
+            getattr(request.user, 'is_staff', False) or getattr(request.user, 'role', None) in ('ADMIN', 'MANAGER')
+        ):
+            return Response({'error': 'Admin access required'}, status=status.HTTP_403_FORBIDDEN)
+        invite_data = cache.get(f'invite_{token}')
+        if invite_data:
+            User.objects.filter(id=invite_data.get('user_id'), status='PENDING').delete()
+            cache.delete(f'invite_{token}')
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     def post(self, request, token):
         """Accept invite and set password."""
@@ -2390,7 +2613,7 @@ class InviteResendView(APIView):
         import secrets
         from django.core.cache import cache
         from django.conf import settings
-        from core.services.resend_email import send_invite_email
+        from core.services.email_service import send_invite_email
 
         # Get existing invite data
         invite_data = cache.get(f'invite_{token}')
@@ -2410,8 +2633,10 @@ class InviteResendView(APIView):
         # Delete old token
         cache.delete(f'invite_{token}')
 
-        # Resend invite email
+        # Resend invite email (best-effort — a missing/unconfigured provider must
+        # not fail the resend; the token has already been regenerated).
         try:
+            from core.services.resend_email import send_invite_email
             invite_url = f"{settings.FRONTEND_URL}/invite/{new_token}"
             invited_by_name = request.user.get_full_name() or request.user.username
             company_name = request.user.company.company_name if request.user.company else "TruckWys"
@@ -2425,9 +2650,7 @@ class InviteResendView(APIView):
             )
         except Exception as e:
             import logging
-            logger = logging.getLogger(__name__)
-            logger.error(f"Failed to resend invite email: {str(e)}")
-            return Response({'error': 'Failed to send invite email'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            logging.getLogger(__name__).warning(f"Invite email not resent: {e}")
 
         return Response({'success': True, 'message': 'Invite resent', 'token': new_token}, status=status.HTTP_200_OK)
 
@@ -2536,13 +2759,13 @@ class TestEmailView(APIView):
             )
 
         try:
-            from core.services.resend_email import (
+            from core.services.email_service import (
                 send_welcome_email,
                 send_invite_email,
                 send_password_reset_email,
-                send_invoice_email,
                 send_advance_approved_email,
             )
+            from core.services.email_service import InvoiceEmailService as send_invoice_email
             from core.models import User, Company, Invoice, Load
             from decimal import Decimal
 

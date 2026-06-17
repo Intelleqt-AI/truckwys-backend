@@ -13,6 +13,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.views import APIView
 from django.db.models import Q, Count, Sum
+from django.db import transaction
 from django.utils import timezone
 from decimal import Decimal
 from typing import Dict, Any
@@ -37,6 +38,23 @@ from core.serializers_capital import (
     SettleAdvanceSerializer,
 )
 from core.services.risk_engine import RiskEngine
+
+
+def _inv_no(advance):
+    """Invoice number for an advance, defensively."""
+    inv = getattr(advance, 'invoice', None)
+    return getattr(inv, 'invoice_number', None) or f'Advance #{advance.id}'
+
+
+def _notify_advance(advance, ntype, title, message):
+    """Persist + live-push a notification for an advance lifecycle change."""
+    try:
+        from core.services.notify import notify_company
+        company_id = getattr(getattr(advance, 'facility', None), 'company_id', None)
+        notify_company(company_id, ntype, title, message,
+                       link=f'/capital/advances/{advance.id}', event='advance.status')
+    except Exception:
+        pass
 
 
 class FacilityViewSet(viewsets.ModelViewSet):
@@ -198,11 +216,26 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
         Body: { "invoice_id": 1 }
         Process: check eligibility → calculate risk score → create advance request
         """
+        # IDEMPOTENCY (pre-validation): a retry/double-click for an invoice that
+        # already has an active advance returns that advance (200) instead of a
+        # 400 — so callers can safely retry. Runs before the serializer, which
+        # would otherwise reject the duplicate outright.
+        raw_invoice_id = request.data.get('invoice_id')
+        if raw_invoice_id:
+            existing = AdvanceRequest.objects.filter(
+                invoice_id=raw_invoice_id,
+                status__in=['REQUESTED', 'SCORING', 'APPROVED', 'DISBURSED'],
+            ).order_by('-requested_at').first()
+            if existing:
+                return Response(AdvanceRequestSerializer(existing).data, status=status.HTTP_200_OK)
+
         serializer = AdvanceRequestCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
         invoice_id = serializer.validated_data['invoice_id']
-        invoice = Invoice.objects.get(id=invoice_id)
+        invoice = Invoice.objects.filter(id=invoice_id).first()
+        if not invoice:
+            return Response({'error': 'Invoice not found'}, status=status.HTTP_404_NOT_FOUND)
 
         # Get facility for the OPERATOR (logged-in user's company)
         user = request.user
@@ -220,6 +253,15 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
                 {'error': 'No active facility found for this company'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+        # IDEMPOTENCY: if an active advance already exists for this invoice,
+        # return it instead of creating a duplicate (handles retries/double-clicks).
+        existing = AdvanceRequest.objects.filter(
+            invoice=invoice,
+            status__in=['REQUESTED', 'SCORING', 'APPROVED', 'DISBURSED'],
+        ).order_by('-requested_at').first()
+        if existing:
+            return Response(AdvanceRequestSerializer(existing).data, status=status.HTTP_200_OK)
 
         # Calculate risk score
         engine = RiskEngine(invoice=invoice, facility=facility)
@@ -242,18 +284,54 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
         # Create risk score record
         risk_score = engine.create_risk_score_record(result)
 
-        # Create advance request
-        advance_request = AdvanceRequest.objects.create(
-            invoice=invoice,
-            facility=facility,
-            risk_score=risk_score,
-            amount=invoice.total_amount,
-            fee_percent=result.final_fee_percent,
-            fee_amount=result.fee_amount,
-            net_amount=result.net_advance,
-            status='REQUESTED',
-            requested_at=timezone.now(),
-        )
+        # Atomically lock the facility row, re-check capacity under the lock to
+        # prevent concurrent requests double-spending the facility limit, and
+        # guard against a racing duplicate advance for the same invoice.
+        try:
+            with transaction.atomic():
+                locked_facility = Facility.objects.select_for_update().get(pk=facility.pk)
+
+                race_dupe = AdvanceRequest.objects.select_for_update().filter(
+                    invoice=invoice,
+                    status__in=['REQUESTED', 'SCORING', 'APPROVED', 'DISBURSED'],
+                ).first()
+                if race_dupe:
+                    return Response(AdvanceRequestSerializer(race_dupe).data, status=status.HTTP_200_OK)
+
+                if locked_facility.available < invoice.total_amount:
+                    return Response(
+                        {'error': 'Advance would exceed available facility limit',
+                         'available': float(locked_facility.available)},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+                advance_request = AdvanceRequest.objects.create(
+                    invoice=invoice,
+                    facility=locked_facility,
+                    risk_score=risk_score,
+                    amount=invoice.total_amount,
+                    fee_percent=result.final_fee_percent,
+                    fee_amount=result.fee_amount,
+                    net_amount=result.net_advance,
+                    status='REQUESTED',
+                    requested_at=timezone.now(),
+                )
+        except Exception as exc:
+            return Response({'error': f'Could not create advance: {exc}'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Persist a notification + live-push to the operator's open sessions.
+        try:
+            from core.services.notify import notify_company
+            notify_company(
+                getattr(facility, 'company_id', None),
+                'SUCCESS',
+                'Advance requested',
+                f'{invoice.invoice_number} — R{float(result.net_advance):,.0f} net ({result.risk_tier} tier)',
+                link=f'/capital/advances/{advance_request.id}',
+                event='advance.created',
+            )
+        except Exception:
+            pass
 
         response_serializer = AdvanceRequestSerializer(advance_request)
         return Response(response_serializer.data, status=status.HTTP_201_CREATED)
@@ -279,6 +357,8 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
                 advance.notes = serializer.validated_data['notes']
                 advance.save()
 
+            _notify_advance(advance, 'SUCCESS', 'Advance approved',
+                            f'{_inv_no(advance)} approved — R{float(advance.net_amount):,.0f} to be disbursed')
             response_serializer = AdvanceRequestSerializer(advance)
             return Response(response_serializer.data)
 
@@ -311,6 +391,8 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
                 advance.notes = serializer.validated_data['notes']
                 advance.save()
 
+            _notify_advance(advance, 'WARNING', 'Advance declined',
+                            f'{_inv_no(advance)} declined: {reason}')
             response_serializer = AdvanceRequestSerializer(advance)
             return Response(response_serializer.data)
 
@@ -342,6 +424,8 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
                 advance.notes = serializer.validated_data['notes']
                 advance.save()
 
+            _notify_advance(advance, 'SUCCESS', 'Advance disbursed',
+                            f'{_inv_no(advance)} — R{float(advance.net_amount):,.0f} paid out')
             response_serializer = AdvanceRequestSerializer(advance)
             return Response(response_serializer.data)
 
@@ -373,6 +457,15 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
             if serializer.validated_data.get('notes'):
                 advance.notes = serializer.validated_data['notes']
                 advance.save()
+
+            # Flywheel: record the realised outcome for ML retraining.
+            try:
+                from core.services.outcome_capture import capture_settlement_outcome
+                capture_settlement_outcome(advance)
+            except Exception:
+                pass
+            _notify_advance(advance, 'SUCCESS', 'Advance settled',
+                            f'{_inv_no(advance)} settled')
 
             response_serializer = AdvanceRequestSerializer(advance)
             return Response(response_serializer.data)
@@ -409,14 +502,28 @@ class CapitalDashboardViewSet(viewsets.ViewSet):
 
         user = request.user
 
-        # Get company
+        # Get company. Staff/admin may target any company via ?company_id=,
+        # otherwise fall back to their own company association.
         if user.is_staff:
-            return Response(
-                {'error': 'Admin users must specify a company_id parameter'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        company = user.company
+            company_id = request.GET.get('company_id')
+            if company_id:
+                company = Company.objects.filter(id=company_id).first()
+                if not company:
+                    return Response(
+                        {'error': f'Company {company_id} not found'},
+                        status=status.HTTP_404_NOT_FOUND
+                    )
+            else:
+                company = getattr(user, 'company', None)
+                if not company:
+                    company = Company.objects.order_by('id').first()
+                if not company:
+                    return Response(
+                        {'error': 'No company found; specify a company_id parameter'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+        else:
+            company = user.company
 
         # Get facility data
         facility = Facility.objects.filter(company=company, status='ACTIVE').first()
@@ -557,45 +664,51 @@ class CapitalEligibleInvoicesView(APIView):
     permission_classes = [IsAuthenticated]  # Using Token auth in practice
 
     def get(self, request):
-        # Get invoices eligible for advance
+        user = request.user
+
+        # Resolve the operator's active facility (advances are scored against it).
+        # Without a facility, no invoice is advanceable — return an empty, honest list.
+        company = getattr(user, 'company', None)
+        if user.is_staff:
+            facility = Facility.objects.filter(status='ACTIVE').first()
+        else:
+            facility = Facility.objects.filter(
+                company=company, status='ACTIVE'
+            ).first() if company else None
+
+        # Candidate invoices: this company's SENT/OVERDUE invoices with no active advance.
         eligible_statuses = ['SENT', 'OVERDUE']
-        invoices = Invoice.objects.filter(
+        candidates = Invoice.objects.filter(
             status__in=eligible_statuses,
-            early_pay_eligible=True,
-        ).select_related('customer', 'load').exclude(
+        ).select_related('customer', 'load', 'trip').exclude(
             advance_requests__status__in=['REQUESTED', 'SCORING', 'APPROVED', 'DISBURSED']
         )
-
-        if not invoices.exists():
-            # Fallback: any SENT invoices without active advances
-            invoices = Invoice.objects.filter(
-                status__in=eligible_statuses
-            ).select_related('customer', 'load').exclude(
-                advance_requests__status__in=['REQUESTED', 'SCORING', 'APPROVED', 'DISBURSED']
-            )
+        if company is not None:
+            candidates = candidates.filter(company=company)
+        candidates = candidates.order_by('-issue_date')[:50]
 
         result = []
         total_face_value = Decimal('0.00')
         total_net_payout = Decimal('0.00')
 
-        for inv in invoices:
-            # Get risk score for this customer
-            risk = RiskScore.objects.filter(customer=inv.customer).order_by('-calculated_at').first()
-            tier = risk.tier if risk else 'FAIR'
-            score = risk.total_score if risk else 55
+        for inv in candidates:
+            if not facility:
+                continue
+            # Run the SAME risk engine used at advance creation so this list only
+            # contains invoices that will actually be accepted (POD on file, score OK).
+            try:
+                engine = RiskEngine(invoice=inv, facility=facility)
+                res = engine.calculate_risk_score()
+            except Exception:
+                continue
+            if not res.is_eligible:
+                continue
 
-            # Calculate fee based on tier
-            fee_map = {
-                'EXCELLENT': 2.0,
-                'GOOD': 2.5,
-                'FAIR': 3.0,
-                'ELEVATED': 3.5,
-                'INELIGIBLE': 0.0,
-            }
-            fee_rate = fee_map.get(tier, 3.0)
             amount = Decimal(str(inv.total_amount))
-            fee_amount = (amount * Decimal(str(fee_rate)) / Decimal('100')).quantize(Decimal('0.01'))
-            net_payout = amount - fee_amount
+            fee_amount = Decimal(str(res.fee_amount))
+            net_payout = Decimal(str(res.net_advance))
+            fee_rate = float(res.final_fee_percent)
+            tier = res.risk_tier
 
             total_face_value += amount
             total_net_payout += net_payout
@@ -615,9 +728,9 @@ class CapitalEligibleInvoicesView(APIView):
                 'issue_date': inv.issue_date.isoformat() if inv.issue_date else None,
                 'due_date': inv.due_date.isoformat() if inv.due_date else None,
                 'age_days': age_days,
-                'risk_score': score,
+                'risk_score': float(res.final_score),
                 'risk_tier': tier,
-                'tier': tier.lower(),  # Frontend compatibility
+                'tier': str(tier).lower(),  # Frontend compatibility
                 'fee_rate_pct': fee_rate,
                 'fee_amount_zar': float(fee_amount),
                 'net_payout_zar': float(net_payout),

@@ -23,6 +23,7 @@ RISK TIERS → PRICING:
 - <40 (INELIGIBLE): Denied
 """
 
+import os
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Dict, List, Tuple, Optional
@@ -127,8 +128,10 @@ class RiskEngine:
     Calculates comprehensive risk scores for invoice factoring decisions.
     """
 
-    # ML/Hybrid scoring weight (0.0 = rules only, 1.0 = ML only)
-    ML_WEIGHT = 0.0  # Start at 0, increase as data accumulates
+    # ML/Hybrid scoring weight (0.0 = rules only, 1.0 = ML only). Ramp it up via
+    # the RISK_ML_WEIGHT env var as a validated model proves out on real outcomes —
+    # the ML blend only engages when BOTH a trained model exists AND this is > 0.
+    ML_WEIGHT = float(os.environ.get('RISK_ML_WEIGHT', '0') or 0)
 
     # Tier thresholds
     TIER_PRIME_MIN = 85
@@ -194,6 +197,23 @@ class RiskEngine:
 
         # Determine tier
         tier = self._get_risk_tier(final_score)
+
+        # A sub-threshold score is a denial — never offer an advance (which would
+        # otherwise compute a negative net). Return an ineligible result that
+        # still reports the real score for transparency.
+        if tier == 'INELIGIBLE':
+            reason = IneligibilityReason(
+                rule='score_below_minimum',
+                description=f'Risk score {final_score} is below the minimum eligibility threshold ({self.MIN_ELIGIBILITY_SCORE})',
+                severity='critical',
+            )
+            denied = self._create_ineligible_result([reason])
+            denied.raw_score = raw_score
+            denied.final_score = final_score
+            denied.pillar_breakdown = pillar_breakdown
+            denied.top_risk_drivers, denied.top_strengths = self._extract_top_factors(pillar_breakdown)
+            return denied
+
         base_fee, max_advance, turnaround = self._get_tier_pricing(tier)
 
         # Calculate fee adjustments
@@ -553,20 +573,22 @@ class RiskEngine:
         score = 0
         sub_factors = []
 
-        # Credit score (0-30 points)
-        if self.customer.credit_score:
-            if self.customer.credit_score >= 80:
+        # Credit score (0-30 points) — manual override, else live bureau, else no-data
+        credit_score, credit_source = self._resolve_credit_score()
+        if credit_score is not None:
+            src = f' · {credit_source}' if credit_source and credit_source != 'MANUAL' else ''
+            if credit_score >= 80:
                 score += 30
-                sub_factors.append({'factor': 'Credit Score', 'impact': 30, 'description': f'Excellent credit ({self.customer.credit_score})'})
-            elif self.customer.credit_score >= 70:
+                sub_factors.append({'factor': 'Credit Score', 'impact': 30, 'description': f'Excellent credit ({credit_score}{src})'})
+            elif credit_score >= 70:
                 score += 22
-                sub_factors.append({'factor': 'Credit Score', 'impact': 22, 'description': f'Good credit ({self.customer.credit_score})'})
-            elif self.customer.credit_score >= 50:
+                sub_factors.append({'factor': 'Credit Score', 'impact': 22, 'description': f'Good credit ({credit_score}{src})'})
+            elif credit_score >= 50:
                 score += 12
-                sub_factors.append({'factor': 'Credit Score', 'impact': 12, 'description': f'Fair credit ({self.customer.credit_score})'})
+                sub_factors.append({'factor': 'Credit Score', 'impact': 12, 'description': f'Fair credit ({credit_score}{src})'})
             else:
                 score += 3
-                sub_factors.append({'factor': 'Credit Score', 'impact': 3, 'description': f'Poor credit ({self.customer.credit_score})'})
+                sub_factors.append({'factor': 'Credit Score', 'impact': 3, 'description': f'Poor credit ({credit_score}{src})'})
         else:
             score += 15
             sub_factors.append({'factor': 'Credit Score', 'impact': 15, 'description': 'No bureau data (using platform history)'})
@@ -901,8 +923,8 @@ class RiskEngine:
                 description=f'{self.facility.utilization_percent}% facility utilization (stress signal)'
             ))
 
-        # Perfect repayment record
-        if company_age >= 1:
+        # Perfect repayment record (skip for unsaved/stateless customers)
+        if company_age >= 1 and getattr(self.customer, 'pk', None):
             # Check if no returned payments or disputes in last 12 months
             recent_paid = Invoice.objects.filter(
                 customer=self.customer,
@@ -953,13 +975,22 @@ class RiskEngine:
                 description=f'High facility utilization ({self.facility.utilization_percent}%)'
             ))
 
-        # Perfect repayment history (discount)
-        if self._get_company_age_years() >= 1:
-            adjustments.append(FeeAdjustment(
-                type='perfect_repayment_history',
-                amount_percent=-0.25,
-                description='Perfect repayment history (12mo)'
-            ))
+        # Clean repayment history discount — based on REAL debtor behaviour:
+        # several settled invoices and no currently-overdue or disputed invoices
+        # for this customer over the last 12 months.
+        try:
+            since = timezone.now() - timedelta(days=365)
+            cust_inv = Invoice.objects.filter(customer=self.customer, created_at__gte=since)
+            paid_count = cust_inv.filter(status='PAID').count()
+            bad_count = cust_inv.filter(status__in=['OVERDUE', 'DISPUTED']).count()
+            if paid_count >= 3 and bad_count == 0:
+                adjustments.append(FeeAdjustment(
+                    type='clean_repayment_history',
+                    amount_percent=-0.25,
+                    description=f'Clean repayment history ({paid_count} settled, 0 overdue/disputed)'
+                ))
+        except Exception:
+            pass
 
         return adjustments
 
@@ -1096,6 +1127,10 @@ class RiskEngine:
 
     def _get_outstanding_invoices_ratio(self) -> float:
         """Get outstanding invoices / monthly turnover ratio."""
+        # Stateless scoring (external API) passes unsaved customers — no platform
+        # history to query, so use a neutral mid ratio.
+        if not getattr(self.customer, 'pk', None):
+            return 1.5
         # Outstanding
         outstanding = Invoice.objects.filter(
             customer=self.customer,
@@ -1112,9 +1147,70 @@ class RiskEngine:
 
         return float(outstanding) / float(monthly)
 
+    def _resolve_credit_score(self):
+        """Return (score, source) for the debtor.
+
+        Priority: manual override on the customer record → live credit bureau
+        (when a provider is configured, cached 24h for saved customers) → no data.
+        Returns (None, None) when there's no score from any source — the engine
+        then falls back to platform payment behaviour, never a fabricated score.
+        """
+        manual = getattr(self.customer, 'credit_score', None)
+        if manual:
+            return int(manual), (getattr(self.customer, 'credit_score_source', 'MANUAL') or 'MANUAL')
+
+        try:
+            from core.integrations.bureau_adapter import is_configured, lookup_customer
+            if not is_configured():
+                return None, None
+            cache_key = None
+            cust_pk = getattr(self.customer, 'pk', None)
+            if cust_pk:
+                from django.core.cache import cache
+                cache_key = f'bureau_score:{cust_pk}'
+                cached = cache.get(cache_key)
+                if cached is not None:
+                    return cached.get('score'), cached.get('source')
+            result = lookup_customer(self.customer)
+            payload = {'score': result.score, 'source': result.source} if result.available else None
+            if cache_key and payload:
+                from django.core.cache import cache
+                cache.set(cache_key, payload, 60 * 60 * 24)
+            if result.available and result.score is not None:
+                return int(result.score), result.source
+        except Exception:
+            pass
+        return None, None
+
     def _get_platform_avg_days_to_pay(self) -> float:
-        """Get average days to pay for this customer."""
-        return float(getattr(self.customer, 'avg_days_to_pay', 30))
+        """Average days-to-pay for this debtor, computed from REAL paid invoices.
+
+        Uses the customer's actual settlement history (paid_at − issue_date) over
+        the last 24 months. Falls back to the stored avg_days_to_pay attribute,
+        then to 30, when there is no settlement history yet.
+        """
+        try:
+            since = timezone.now() - timedelta(days=730)
+            paid = Invoice.objects.filter(
+                customer=self.customer,
+                status='PAID',
+                paid_at__isnull=False,
+                issue_date__isnull=False,
+                paid_at__gte=since,
+            ).values_list('issue_date', 'paid_at')
+
+            days = []
+            for issue_date, paid_at in paid:
+                pd = paid_at.date() if hasattr(paid_at, 'date') else paid_at
+                delta = (pd - issue_date).days
+                if 0 <= delta < 365:
+                    days.append(delta)
+
+            if days:
+                return round(sum(days) / len(days), 1)
+        except Exception:
+            pass
+        return float(getattr(self.customer, 'avg_days_to_pay', 30) or 30)
 
     def _get_operator_avg_invoice_amount(self) -> Decimal:
         """Get operator's average invoice amount."""

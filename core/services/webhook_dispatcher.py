@@ -16,13 +16,20 @@ def dispatch_webhook(event_type: str, data: Dict[str, Any]) -> None:
     """
     from core.models import Webhook
 
-    # Find all active webhooks subscribed to this event
+    # Partner WebhookSubscriptions are the productised outbound path (HMAC-signed,
+    # retried). Deliver to those first — this is what external integrators register.
+    try:
+        from core.services.webhook_delivery import WebhookDeliveryService
+        WebhookDeliveryService.deliver_to_all(event_type, data)
+    except Exception as exc:
+        print(f"Partner webhook delivery error for {event_type}: {exc}")
+
+    # Legacy Webhook model (best-effort; JSONField __contains is unsupported on SQLite).
     try:
         hooks = Webhook.objects.filter(active=True, events__contains=event_type)
         if not hooks.exists():
             return
     except Exception:
-        # SQLite doesn't support __contains on JSONField, skip webhooks
         return
 
     # Prepare payload

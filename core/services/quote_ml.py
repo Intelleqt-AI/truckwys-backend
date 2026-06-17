@@ -2,6 +2,7 @@
 
 import csv
 import json
+import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime
@@ -11,15 +12,32 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 from django.conf import settings
 
-# ML imports — installed separately
+logger = logging.getLogger(__name__)
+
+# joblib (model persistence) ships with sklearn — import it ungated so the
+# win-probability model can load/save even when the heavier margin stack is absent.
 try:
     import joblib
+except Exception:
+    joblib = None
+
+# Margin-model stack (LightGBM). Heavy; gates the margin regressor only.
+try:
     import lightgbm as lgb
     from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
     from sklearn.model_selection import train_test_split
     ML_AVAILABLE = True
 except ImportError:
     ML_AVAILABLE = False
+
+# Win-probability stack — only sklearn (logistic regression) + joblib, which are
+# present even without LightGBM/pandas. Decoupled so the win model can actually
+# learn from QuoteOutcome data and the sweet-spot curve stops being a heuristic.
+try:
+    from sklearn.linear_model import LogisticRegression as _WinLR  # noqa: F401
+    WIN_ML_AVAILABLE = joblib is not None
+except Exception:
+    WIN_ML_AVAILABLE = False
 
 
 # Feature names in the exact order expected by the model
@@ -384,8 +402,9 @@ class WinProbabilityModel:
     METADATA_PATH = MODEL_DIR / 'win_probability_metadata.json'
 
     def __init__(self):
-        if not ML_AVAILABLE:
-            raise ImportError("ML libraries not available")
+        # Only needs sklearn + joblib (not the LightGBM margin stack).
+        if not WIN_ML_AVAILABLE:
+            raise ImportError("Win-probability ML libraries (sklearn/joblib) not available")
 
         self.model = None
         self.metadata = {}

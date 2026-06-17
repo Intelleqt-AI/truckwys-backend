@@ -155,21 +155,42 @@ class InvoiceFinanceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def send_reminder(self, request, pk=None):
-        """Send a payment reminder for this invoice."""
+        """Send a real escalating payment reminder for this invoice."""
+        from core.services.collections import send_payment_reminder
+
         invoice = self.get_object()
-        if invoice.status not in ('SENT', 'OVERDUE'):
+        if invoice.status not in ('SENT', 'VIEWED', 'OVERDUE', 'PARTIALLY_PAID'):
             return Response(
-                {'error': 'Reminders can only be sent for SENT or OVERDUE invoices'},
+                {'error': 'Reminders can only be sent for outstanding invoices'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+        result = send_payment_reminder(invoice, company=getattr(invoice, 'company', None))
+        if not result['sent']:
+            return Response(
+                {'success': False, 'error': result['reason'], 'invoice_number': invoice.invoice_number},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE if 'not configured' in result['reason']
+                else status.HTTP_400_BAD_REQUEST
+            )
+
         customer_name = invoice.customer.name if invoice.customer else 'customer'
-        # TODO: send via Resend when mail.truckwys.com DNS propagates
         return Response({
             'success': True,
-            'message': f'Payment reminder sent to {customer_name}',
+            'message': f"{result['tone'].capitalize()} payment reminder sent to {customer_name}",
             'invoice_number': invoice.invoice_number,
-            'amount': float(invoice.total_amount),
+            'amount': float(invoice.balance or invoice.total_amount),
+            'tone': result['tone'],
+            'reminder_count': result['reminder_count'],
         })
+
+    @action(detail=False, methods=['post'], url_path='run-dunning')
+    def run_dunning(self, request):
+        """Sweep this company's overdue/short-paid invoices and send due reminders."""
+        from core.services.collections import run_dunning
+        from core.views import resolve_user_company
+        company = resolve_user_company(request.user)
+        summary = run_dunning(company)
+        return Response({'success': True, **summary})
 
     @action(detail=False, methods=['post'])
     def batch_generate(self, request):
@@ -407,47 +428,56 @@ class PaymentFinanceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         - Payment amount doesn't exceed invoice balance
         - Updates invoice status
         """
+        import random
+        from django.db import transaction
+
         invoice_id = request.data.get('invoice')
         amount = Decimal(str(request.data.get('amount', '0')))
 
-        try:
-            invoice = Invoice.objects.get(id=invoice_id)
-        except Invoice.DoesNotExist:
-            return Response(
-                {'error': 'Invoice not found'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-
-        # Validate amount
         if amount <= 0:
             return Response(
                 {'error': 'Payment amount must be greater than zero'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        if amount > invoice.balance:
-            return Response(
-                {'error': f'Payment amount (R {amount}) exceeds invoice balance (R {invoice.balance})'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        # Lock the invoice row so two concurrent payments can't both pass the
+        # balance check and overpay.
+        with transaction.atomic():
+            try:
+                invoice = Invoice.objects.select_for_update().get(id=invoice_id)
+            except Invoice.DoesNotExist:
+                return Response({'error': 'Invoice not found'}, status=status.HTTP_404_NOT_FOUND)
 
-        # Create payment
-        response = super().create(request, *args, **kwargs)
+            if amount > invoice.balance:
+                return Response(
+                    {'error': f'Payment amount (R {amount}) exceeds invoice balance (R {invoice.balance})'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
 
-        if response.status_code == status.HTTP_201_CREATED:
-            # Update invoice
+            # Fill in what the client shouldn't have to: customer (from the
+            # invoice), an auto payment_number, and accept the UI's 'reference'.
+            data = {k: v for k, v in request.data.items()}
+            data['invoice'] = invoice.id
+            data.setdefault('customer', invoice.customer_id)
+            if not data.get('payment_number'):
+                data['payment_number'] = f"PAY-{timezone.now():%Y%m%d}-{random.randint(1000, 9999)}"
+            if data.get('reference') and not data.get('reference_number'):
+                data['reference_number'] = data['reference']
+
+            serializer = self.get_serializer(data=data)
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+
             invoice.paid_amount += amount
             invoice.balance -= amount
-
             if invoice.balance == 0:
                 invoice.status = 'PAID'
                 invoice.paid_at = timezone.now()
             elif invoice.paid_amount > 0:
                 invoice.status = 'PARTIALLY_PAID'
-
             invoice.save()
 
-        return response
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
 class ExpenseFinanceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
@@ -902,11 +932,26 @@ class FinanceDashboardView(APIView):
                 }
             }
 
+        # Always-on rolling 30-day vs prior-30-day deltas for the Overview cards
+        # (real numbers, no more hardcoded "+12.5% vs avg").
+        _r30 = today - timedelta(days=30)
+        _r60 = today - timedelta(days=60)
+        rev_last30 = Invoice.objects.filter(paid_at__gte=aware_start(_r30), paid_at__lte=aware_end(today), status='PAID').aggregate(t=Sum('total_amount'))['t'] or Decimal('0.00')
+        rev_prev30 = Invoice.objects.filter(paid_at__gte=aware_start(_r60), paid_at__lt=aware_start(_r30), status='PAID').aggregate(t=Sum('total_amount'))['t'] or Decimal('0.00')
+        exp_last30 = Expense.objects.filter(expense_date__gte=_r30, expense_date__lte=today, status='APPROVED').aggregate(t=Sum('amount'))['t'] or Decimal('0.00')
+        exp_prev30 = Expense.objects.filter(expense_date__gte=_r60, expense_date__lt=_r30, status='APPROVED').aggregate(t=Sum('amount'))['t'] or Decimal('0.00')
+        revenue_change_pct = round(float((rev_last30 - rev_prev30) / rev_prev30 * 100), 1) if rev_prev30 > 0 else None
+        _m_last30 = float((rev_last30 - exp_last30) / rev_last30 * 100) if rev_last30 > 0 else None
+        _m_prev30 = float((rev_prev30 - exp_prev30) / rev_prev30 * 100) if rev_prev30 > 0 else None
+        margin_change_pts = round(_m_last30 - _m_prev30, 1) if (_m_last30 is not None and _m_prev30 is not None) else None
+
         response_data = {
             'revenue_period': float(revenue_period),
             'expenses_period': float(expenses_period),
             'net_margin_period': float(net_margin_period),
             'net_margin_percent_period': net_margin_percent_period,
+            'revenue_change_pct': revenue_change_pct,
+            'margin_change_pts': margin_change_pts,
             'from_date': from_date.isoformat(),
             'to_date': to_date.isoformat(),
             'revenue_mtd': float(revenue_mtd),
@@ -1503,3 +1548,58 @@ class ReportsExportView(APIView):
             ])
 
         return response
+
+
+class BillingAuditView(APIView):
+    """GET /api/v1/billing/audit/ — carrier-side billing & short-pay audit.
+
+    Finds money the operator hasn't billed, billed short, or hasn't collected.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from core.views import resolve_user_company
+        from core.services.billing_audit import audit_billing
+        company = resolve_user_company(request.user)
+        if company is None:
+            return Response({'error': 'No company associated with this account'}, status=400)
+        try:
+            return Response(audit_billing(company))
+        except Exception as e:
+            return Response({'error': str(e)}, status=500)
+
+
+class MarginByLaneView(APIView):
+    """GET /api/v1/reports/margin-by-lane/ — true margin aggregated by route."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from core.views import resolve_user_company
+        from core.services.reports import margin_by_lane
+        company = resolve_user_company(request.user)
+        if company is None:
+            return Response({'error': 'No company associated with this account'}, status=400)
+        try:
+            limit = int(request.query_params.get('limit', 25))
+        except (TypeError, ValueError):
+            limit = 25
+        try:
+            return Response(margin_by_lane(company, limit=limit))
+        except Exception as e:
+            return Response({'error': str(e)}, status=500)
+
+
+class FastPaySavingsView(APIView):
+    """GET /api/v1/reports/fastpay-savings/ — value delivered by the advance programme."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from core.views import resolve_user_company
+        from core.services.reports import fastpay_value
+        company = resolve_user_company(request.user)
+        if company is None:
+            return Response({'error': 'No company associated with this account'}, status=400)
+        try:
+            return Response(fastpay_value(company))
+        except Exception as e:
+            return Response({'error': str(e)}, status=500)

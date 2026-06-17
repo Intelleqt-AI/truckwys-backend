@@ -10,7 +10,9 @@ import numpy as np
 
 from django.conf import settings
 
-# ML imports - will be installed separately
+# ML imports. sklearn + joblib are the hard requirement; xgboost/shap are
+# optional accelerators. We use sklearn's GradientBoostingClassifier so the
+# pipeline runs anywhere sklearn installs (no OpenMP/native deps needed).
 try:
     import joblib
     from sklearn.model_selection import train_test_split
@@ -19,11 +21,16 @@ try:
         recall_score, f1_score, confusion_matrix
     )
     from sklearn.preprocessing import StandardScaler
-    import xgboost as xgb
-    import shap
+    from sklearn.ensemble import GradientBoostingClassifier
     ML_AVAILABLE = True
 except ImportError:
     ML_AVAILABLE = False
+
+try:
+    import shap
+    SHAP_AVAILABLE = True
+except ImportError:
+    SHAP_AVAILABLE = False
 
 
 @dataclass
@@ -109,8 +116,8 @@ class RiskMLPipeline:
                         self.metadata = json.load(f)
                         self.feature_names = self.metadata.get('feature_names', [])
 
-                # Initialize SHAP explainer for the loaded model
-                if self.model is not None:
+                # Initialise SHAP explainer for the loaded model (when available)
+                if self.model is not None and SHAP_AVAILABLE:
                     self.explainer = shap.TreeExplainer(self.model)
 
                 return True
@@ -202,16 +209,13 @@ class RiskMLPipeline:
         X_train_scaled = self.scaler.fit_transform(X_train)
         X_test_scaled = self.scaler.transform(X_test)
 
-        # Train XGBoost model
-        self.model = xgb.XGBClassifier(
+        # Train a gradient-boosting classifier (sklearn — no native deps).
+        self.model = GradientBoostingClassifier(
             n_estimators=100,
-            max_depth=6,
+            max_depth=3,
             learning_rate=0.1,
             subsample=0.8,
-            colsample_bytree=0.8,
             random_state=random_state,
-            eval_metric='auc',
-            use_label_encoder=False,
         )
 
         self.model.fit(X_train_scaled, y_train)
@@ -242,8 +246,9 @@ class RiskMLPipeline:
             'metrics': metrics,
         }
 
-        # Initialize SHAP explainer
-        self.explainer = shap.TreeExplainer(self.model)
+        # Initialise SHAP explainer when available (else we fall back to the
+        # model's own feature_importances_ in explain()).
+        self.explainer = shap.TreeExplainer(self.model) if SHAP_AVAILABLE else None
 
         # Save model
         self._save_model()

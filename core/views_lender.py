@@ -24,18 +24,61 @@ from rest_framework import status
 from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.throttling import SimpleRateThrottle
+
+
+class LenderRateThrottle(SimpleRateThrottle):
+    """Per-API-key rate limit for the lender API. The default UserRateThrottle
+    no-ops here because LenderUser.pk is None, so throttle on the key itself."""
+    scope = 'lender'
+
+    def get_cache_key(self, request, view):
+        key = request.META.get('HTTP_X_API_KEY')
+        if not key:
+            return None
+        return self.cache_format % {'scope': self.scope, 'ident': key}
 
 
 # ---------------------------------------------------------------------------
-# API Key Model (simple, in-memory seed for demo)
+# API Key registry — loaded from the environment, NEVER hardcoded in source.
 # ---------------------------------------------------------------------------
+import os
+import json
+from django.conf import settings
 
-DEMO_API_KEYS = {
-    'LENDER-KEY-2026-TRUCKWYS-DEMO': 'Capital Connect SA (Demo)',
-    'LENDER-KEY-2026-ABSA-BUSINESS': 'ABSA Business Finance',
-    'LENDER-KEY-2026-INVESTEC-CORP': 'Investec Corporate Finance',
-    'LENDER-KEY-2026-NEDBANK-TRADE': 'Nedbank Trade Finance',
-}
+
+def _load_lender_api_keys() -> dict:
+    """Lender API keys come from the LENDER_API_KEYS env var.
+
+    Accepted formats:
+      - JSON object: {"KEY1": "Lender One", "KEY2": "Lender Two"}
+      - CSV pairs:   "KEY1:Lender One,KEY2:Lender Two"
+
+    In production (DEBUG=False) an unset/empty var means the lender API is
+    effectively closed — no keys, no access. A single throwaway demo key is
+    provided ONLY in local development (DEBUG=True) so the sandbox is testable.
+    """
+    raw = os.environ.get('LENDER_API_KEYS', '').strip()
+    keys: dict = {}
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                keys = {str(k): str(v) for k, v in parsed.items()}
+        except (ValueError, TypeError):
+            for pair in raw.split(','):
+                if ':' in pair:
+                    k, name = pair.split(':', 1)
+                    if k.strip():
+                        keys[k.strip()] = name.strip() or 'Lender'
+    if not keys and getattr(settings, 'DEBUG', False):
+        # Local-dev sandbox key only. Not present when DEBUG=False.
+        keys = {'LENDER-KEY-DEV-SANDBOX': 'Sandbox Lender (dev only)'}
+    return keys
+
+
+# Resolved once at import. Real keys are supplied via env per deployment.
+DEMO_API_KEYS = _load_lender_api_keys()
 
 
 class LenderUser:
@@ -58,7 +101,9 @@ class LenderAPIKeyAuthentication(BaseAuthentication):
     """Authenticate lenders via X-API-Key header."""
 
     def authenticate(self, request):
-        key = request.META.get('HTTP_X_API_KEY') or request.GET.get('api_key')
+        # Header-only — never accept the key via query string (it would leak into
+        # access logs, proxies, and browser history).
+        key = request.META.get('HTTP_X_API_KEY')
         if not key:
             return None  # Not an API key request — try other auth
         lender_name = DEMO_API_KEYS.get(key)
@@ -74,6 +119,7 @@ class LenderAPIKeyAuthentication(BaseAuthentication):
 class LenderBaseView(APIView):
     authentication_classes = [LenderAPIKeyAuthentication]
     permission_classes = [IsAuthenticated]
+    throttle_classes = [LenderRateThrottle]
 
     def _require_api_key(self, request):
         """Returns error response if not authenticated via API key, else None."""

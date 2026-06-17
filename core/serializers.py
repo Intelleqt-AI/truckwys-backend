@@ -9,17 +9,43 @@ from .models import (
 class UserSerializer(serializers.ModelSerializer):
     name = serializers.CharField(source='get_full_name', read_only=True)
     last_active = serializers.DateTimeField(source='last_login', read_only=True)
-    
+    # Declared as CharField (not the model ChoiceField) so we can normalise the
+    # UI's lower-case role values to the model's upper-case choices.
+    role = serializers.CharField(required=False)
+
+    def validate_role(self, value):
+        if not isinstance(value, str):
+            return value
+        normalized = value.upper()
+        valid = {c[0] for c in User.ROLE_CHOICES}
+        if normalized not in valid:
+            raise serializers.ValidationError(f'"{value}" is not a valid role.')
+        return normalized
+
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'name', 'job_title',
+        fields = ['id', 'username', 'email', 'password', 'first_name', 'last_name', 'name', 'job_title',
                   'role', 'status', 'phone', 'address', 'timezone', 'language', 'date_format',
                   'notification_settings', 'avatar', 'last_active', 'is_active', 'created_at', 'updated_at']
         read_only_fields = ['id', 'created_at', 'updated_at', 'last_active']
-        extra_kwargs = {'password': {'write_only': True}}
+        extra_kwargs = {'password': {'write_only': True, 'required': False}}
 
     def create(self, validated_data):
+        # Without this, password was silently dropped, leaving every API-created
+        # user (e.g. drivers) unable to log in.
+        password = validated_data.pop('password', None)
         user = User.objects.create_user(**validated_data)
+        if password:
+            user.set_password(password)
+            user.save(update_fields=['password'])
+        return user
+
+    def update(self, instance, validated_data):
+        password = validated_data.pop('password', None)
+        user = super().update(instance, validated_data)
+        if password:
+            user.set_password(password)
+            user.save(update_fields=['password'])
         return user
 
 
@@ -29,6 +55,15 @@ class CustomerSerializer(serializers.ModelSerializer):
         model = Customer
         fields = '__all__'
         read_only_fields = ['id', 'created_at', 'updated_at']
+        # Address details are optional on quick-add (directory). They can be
+        # filled in later from the full customer record.
+        extra_kwargs = {
+            'address': {'required': False, 'allow_blank': True, 'default': ''},
+            'state': {'required': False, 'allow_blank': True, 'default': ''},
+            'zip_code': {'required': False, 'allow_blank': True, 'default': ''},
+            'city': {'required': False, 'allow_blank': True, 'default': ''},
+            'phone': {'required': False, 'allow_blank': True, 'default': ''},
+        }
 
 
 # Driver Serializer
@@ -73,6 +108,8 @@ class VehicleSerializer(serializers.ModelSerializer):
     revenue_generated = serializers.SerializerMethodField()
     total_trips = serializers.SerializerMethodField()
     utilisation_rate = serializers.SerializerMethodField()
+    type = serializers.CharField(max_length=50, required=False, default='TRUCK')
+    vin = serializers.CharField(max_length=100, required=False, allow_blank=True, default='')
 
     class Meta:
         model = Vehicle
@@ -114,6 +151,11 @@ class VehicleTypeSerializer(serializers.ModelSerializer):
         model = VehicleType
         fields = '__all__'
         read_only_fields = ['id', 'created_at', 'updated_at']
+        # Optional on quick-add; sensible defaults keep the directory add simple.
+        extra_kwargs = {
+            'max_distance': {'required': False, 'default': 0},
+            'description': {'required': False, 'allow_blank': True, 'default': ''},
+        }
 
 
 # VehicleLog Serializer
@@ -189,11 +231,24 @@ class ExpenseSerializer(serializers.ModelSerializer):
     vehicle_info = serializers.CharField(source='vehicle.__str__', read_only=True)
     driver_name = serializers.CharField(source='driver.user.username', read_only=True)
     created_by_name = serializers.CharField(source='created_by.username', read_only=True)
-    
+
     class Meta:
         model = Expense
         fields = '__all__'
         read_only_fields = ['id', 'created_at', 'updated_at', 'created_by']
+        extra_kwargs = {'expense_number': {'required': False}}
+
+    def create(self, validated_data):
+        # Auto-generate a unique expense_number if the client didn't supply one.
+        if not validated_data.get('expense_number'):
+            import random
+            from django.utils import timezone
+            ts = timezone.now().strftime('%Y%m%d')
+            num = f"EXP-{ts}-{random.randint(1000, 9999)}"
+            while Expense.objects.filter(expense_number=num).exists():
+                num = f"EXP-{ts}-{random.randint(1000, 9999)}"
+            validated_data['expense_number'] = num
+        return super().create(validated_data)
 
 
 # Settlement Serializer
@@ -213,7 +268,7 @@ class NotificationSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = Notification
-        fields = ['id', 'title', 'description', 'type', 'unread', 'created_at']
+        fields = ['id', 'title', 'description', 'type', 'unread', 'link', 'created_at']
         read_only_fields = ['id', 'created_at']
 
     def to_representation(self, instance):
@@ -382,9 +437,10 @@ class IntegrationAPIKeySerializer(serializers.ModelSerializer):
         model = IntegrationAPIKey
         fields = [
             'id', 'name', 'key', 'key_type', 'active',
-            'created_at', 'last_used_at'
+            'created_at', 'last_used_at',
+            'usage_count', 'monthly_quota', 'quota_used',
         ]
-        read_only_fields = ['id', 'key', 'created_at', 'last_used_at']
+        read_only_fields = ['id', 'key', 'created_at', 'last_used_at', 'usage_count', 'quota_used']
 
 
 class ActivityEventSerializer(serializers.ModelSerializer):

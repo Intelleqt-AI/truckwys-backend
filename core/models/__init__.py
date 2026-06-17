@@ -20,9 +20,12 @@ from .audit_log import AuditLog
 from .webhook import Webhook
 from .integration_api_key import IntegrationAPIKey
 from .activity_event import ActivityEvent
+from .copilot_message import CopilotMessage, CopilotConversation
 from .webhook_subscription import WebhookSubscription
 from .billing import BillingTransaction
 from .invite_token import InviteToken
+from .fuel_price import FuelPrice
+from .toll_plaza import TollPlaza
 
 __all__ = [
     'User',
@@ -48,8 +51,12 @@ __all__ = [
     'AuditLog',
     'Webhook',
     'IntegrationAPIKey',
+    'CopilotMessage',
+    'CopilotConversation',
     'ActivityEvent',
     'WebhookSubscription',
     'BillingTransaction',
     'InviteToken',
+    'FuelPrice',
+    'TollPlaza',
 ]

@@ -205,6 +205,18 @@ class PartnerAdvanceViewSet(viewsets.ReadOnlyModelViewSet):
             )
 
 
+class IsPartnerOrStaff(BasePermission):
+    """Only partner/lender accounts or internal staff may read cross-operator data.
+    A normal carrier (operator) token must NOT be able to enumerate other companies."""
+
+    def has_permission(self, request, view):
+        u = getattr(request, 'user', None)
+        return bool(
+            u and u.is_authenticated
+            and (getattr(u, 'is_staff', False) or getattr(u, 'role', None) == 'PARTNER')
+        )
+
+
 class PartnerOperatorViewSet(viewsets.ViewSet):
     """
     Partner API for viewing fleet operator profiles.
@@ -213,7 +225,7 @@ class PartnerOperatorViewSet(viewsets.ViewSet):
     retrieve: GET /api/v1/partner/operators/{company_id}/ - Get operator profile
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsPartnerOrStaff]
 
     def list(self, request):
         """List all companies as operator summaries."""
@@ -318,7 +330,7 @@ class PartnerRiskScoreViewSet(viewsets.ReadOnlyModelViewSet):
     """
 
     serializer_class = RiskScoreSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsPartnerOrStaff]
 
     def get_queryset(self):
         """Partners can view all risk scores."""

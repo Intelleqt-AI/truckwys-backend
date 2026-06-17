@@ -376,6 +376,53 @@ def send_invoice_email(invoice, company, pdf_bytes=None):
     return resend.Emails.send(params)
 
 
+def send_payment_reminder_email(invoice, company, tone='gentle', days_overdue=0):
+    """Send an escalating payment reminder for an outstanding invoice.
+
+    tone: 'gentle' (not yet/just overdue), 'firm' (overdue), 'final' (well overdue).
+    """
+    amount = invoice.balance if getattr(invoice, 'balance', None) else invoice.total_amount
+    amount_formatted = f"R {amount:,.2f}"
+    invoice_number = invoice.invoice_number
+    due_date = invoice.due_date.strftime('%d %B %Y') if invoice.due_date else 'on receipt'
+    company_name = getattr(company, 'name', None) or getattr(company, 'company_name', 'TruckWys')
+
+    if tone == 'final':
+        heading = 'Final notice: payment overdue'
+        lead = (f"This is a final reminder that invoice <strong>{invoice_number}</strong> for "
+                f"{amount_formatted} is now {days_overdue} days overdue. Please settle it "
+                f"immediately to avoid further action.")
+    elif tone == 'firm':
+        heading = 'Payment overdue'
+        lead = (f"Invoice <strong>{invoice_number}</strong> for {amount_formatted} was due on "
+                f"{due_date} and is now {days_overdue} days overdue. Please arrange payment.")
+    else:
+        heading = 'Payment reminder'
+        lead = (f"A friendly reminder that invoice <strong>{invoice_number}</strong> for "
+                f"{amount_formatted} is due on {due_date}. We'd appreciate prompt payment.")
+
+    body_content = f"""
+        <h2>{heading}</h2>
+        <p>{lead}</p>
+        <table class="table">
+            <tr><th>Invoice</th><td><strong>{invoice_number}</strong></td></tr>
+            <tr><th>Due date</th><td>{due_date}</td></tr>
+            <tr><th>Amount outstanding</th><td class="amount-highlight">{amount_formatted}</td></tr>
+        </table>
+        <a href="https://app.truckwys.co.za/invoices/{invoice.id}" class="cta-button">View &amp; pay invoice</a>
+        <p>If payment has already been made, please disregard this notice. Thank you for your business.</p>
+        <p>{company_name}</p>
+    """
+
+    params = {
+        "from": settings.EMAIL_FROM,
+        "to": [invoice.customer.email],
+        "subject": f"{heading}: invoice {invoice_number} — {amount_formatted}",
+        "html": _get_base_template(body_content),
+    }
+    return resend.Emails.send(params)
+
+
 def send_advance_approved_email(user, amount, invoice_number):
     """
     Send advance approval confirmation email.
