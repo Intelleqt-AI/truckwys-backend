@@ -36,6 +36,16 @@ TRUCK_TYPE_TO_CLASS: dict[str, int] = {
     'interlink':   5,
 }
 
+# Frontend vehicle_type → toll truck type (also used by cross_border service)
+VEHICLE_TO_TOLL_TYPE_LOOKUP: dict[str, str] = {
+    'Flatbed':      'combination',
+    'Tautliner':    'combination',
+    'Refrigerated': 'combination',
+    'Tanker':       'combination',
+    'Danger Load':  'combination',
+    'Box Truck':    'heavy',
+}
+
 # ---------------------------------------------------------------------------
 # Route detection — maps keyword sets to route codes.
 # Each inner set must be fully covered by the combined origin+destination

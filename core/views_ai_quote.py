@@ -77,13 +77,6 @@ class AIQuoteSuggestionView(APIView):
         Returns AI suggestion or 503 if model not trained.
         """
         try:
-            model = QuoteMLModel()
-            if not model.is_trained():
-                return Response({
-                    'success': False,
-                    'error': 'AI model training — try again later',
-                }, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-
             data = request.data
             actual_cost = float(data.get('actual_cost', 0))
             if actual_cost <= 0:
@@ -91,6 +84,28 @@ class AIQuoteSuggestionView(APIView):
                     'success': False,
                     'error': 'actual_cost must be > 0',
                 }, status=status.HTTP_400_BAD_REQUEST)
+
+            model = QuoteMLModel()
+            if not model.is_trained():
+                # Rule-based fallback: SA trucking industry standard margins
+                # 15–18% for standard loads, adjusted for distance
+                distance_km = float(data.get('distance_km', 0))
+                margin = 0.18 if distance_km > 500 else 0.15
+                suggested_price = round(actual_cost * (1 + margin), 2)
+                return Response({
+                    'success': True,
+                    'suggested_price': suggested_price,
+                    'margin_pct': round(margin * 100, 1),
+                    'confidence': 0.55,
+                    'margin_range': {'lower': 10.0, 'upper': 22.0},
+                    'top_features': [
+                        {'feature': 'distance_km', 'importance': 0.4},
+                        {'feature': 'fuel_cost', 'importance': 0.3},
+                        {'feature': 'toll_cost', 'importance': 0.2},
+                    ],
+                    'source': 'rule_based',
+                    'note': 'Rule-based estimate (ML model not yet trained)',
+                })
 
             # Build feature dict — fill in defaults for missing features
             features = {
@@ -234,19 +249,25 @@ class RevenueGuardView(APIView):
             margin = (quote_price - total_cost) / quote_price
             margin_pct = margin * 100
 
+            # Read thresholds from company settings (fall back to defaults if no company)
+            company = getattr(request.user, 'company', None)
+            at_risk_threshold = float(company.margin_at_risk_pct) if company else 5.0
+            caution_threshold = float(company.margin_caution_pct) if company else 12.0
+            target_margin = float(company.margin_target_pct) if company else 10.0
+
             # Initialize explanations and suggestions
             explanations = []
             suggestions = []
 
             # Risk thresholds
-            if margin_pct < 5:
+            if margin_pct < at_risk_threshold:
                 risk_level = 'AT_RISK'
                 color = 'danger'
-                explanations.append(f"Margin is below 8% safety threshold ({margin_pct:.1f}%)")
-            elif margin_pct < 12:
+                explanations.append(f"Margin is below {at_risk_threshold:.0f}% safety threshold ({margin_pct:.1f}%)")
+            elif margin_pct < caution_threshold:
                 risk_level = 'CAUTION'
                 color = 'warning'
-                explanations.append(f"Margin is below 12% — limited buffer for unexpected costs ({margin_pct:.1f}%)")
+                explanations.append(f"Margin is below {caution_threshold:.0f}% — limited buffer for unexpected costs ({margin_pct:.1f}%)")
             else:
                 risk_level = 'SAFE'
                 color = 'success'
@@ -301,9 +322,10 @@ class RevenueGuardView(APIView):
                     pass
 
             # Price adjustment suggestion
-            if margin_pct < 5:
-                increase_needed = total_cost * 0.10 / (1 - 0.10) - quote_price
-                suggestions.append(f"Current margin is {margin_pct:.1f}%. Consider increasing price by R{int(increase_needed)} to reach 10% margin")
+            if margin_pct < at_risk_threshold:
+                t = target_margin / 100
+                increase_needed = total_cost * t / (1 - t) - quote_price
+                suggestions.append(f"Current margin is {margin_pct:.1f}%. Consider increasing price by R{int(increase_needed)} to reach {target_margin:.0f}% margin")
 
             # Margin floor calculation
             margin_floor = int(total_cost)

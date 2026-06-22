@@ -4,6 +4,8 @@ from .models import (
     Customer, Invoice, Payment, Expense, Notification, Settlement, Company,
     Trip, Facility, RiskScore, AdvanceRequest, AuditLog, FuelPrice, TollPlaza
 )
+from .models.border_crossing_fee import BorderCrossingFee
+from .models.country_transit_rate import CountryTransitRate
 
 @admin.register(User)
 class UserAdmin(admin.ModelAdmin):
@@ -143,3 +145,19 @@ class TollPlazaAdmin(admin.ModelAdmin):
     list_filter = ['route', 'is_active', 'tariff_year']
     search_fields = ['name', 'direction']
     readonly_fields = ['created_at', 'updated_at']
+
+
+@admin.register(BorderCrossingFee)
+class BorderCrossingFeeAdmin(admin.ModelAdmin):
+    list_display = ['from_country', 'to_country', 'fee_zar', 'notes', 'is_active', 'updated_at']
+    list_filter = ['is_active', 'from_country']
+    search_fields = ['from_country', 'to_country', 'notes']
+    readonly_fields = ['updated_at']
+
+
+@admin.register(CountryTransitRate)
+class CountryTransitRateAdmin(admin.ModelAdmin):
+    list_display = ['country_code', 'country_name', 'weighbridge_fee_zar', 'toll_rate_per_km', 'sa_border_distance_km', 'is_active', 'updated_at']
+    list_filter = ['is_active']
+    search_fields = ['country_code', 'country_name']
+    readonly_fields = ['updated_at']
