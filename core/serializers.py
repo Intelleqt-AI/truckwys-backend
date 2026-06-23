@@ -72,6 +72,7 @@ class DriverSerializer(serializers.ModelSerializer):
     revenue_generated = serializers.SerializerMethodField()
     total_trips = serializers.SerializerMethodField()
     avg_revenue_per_trip = serializers.SerializerMethodField()
+    assigned_vehicle = serializers.SerializerMethodField()
 
     class Meta:
         model = Driver
@@ -80,9 +81,9 @@ class DriverSerializer(serializers.ModelSerializer):
             'license_state', 'medical_card_expiry', 'hire_date', 'status',
             'emergency_contact', 'emergency_phone', 'violation_count',
             'accident_history', 'experience_years', 'created_at', 'updated_at',
-            'revenue_generated', 'total_trips', 'avg_revenue_per_trip'
+            'revenue_generated', 'total_trips', 'avg_revenue_per_trip', 'assigned_vehicle'
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at', 'revenue_generated', 'total_trips', 'avg_revenue_per_trip']
+        read_only_fields = ['id', 'created_at', 'updated_at', 'revenue_generated', 'total_trips', 'avg_revenue_per_trip', 'assigned_vehicle']
 
     def get_revenue_generated(self, obj):
         """Calculate total revenue from all delivered loads for this driver."""
@@ -95,10 +96,18 @@ class DriverSerializer(serializers.ModelSerializer):
         return obj.loads.filter(status='DELIVERED').count()
 
     def get_avg_revenue_per_trip(self, obj):
-        """Calculate average revenue per trip for this driver."""
         from django.db.models import Avg
         avg = obj.loads.filter(status='DELIVERED').aggregate(avg=Avg('total_amount'))['avg']
         return float(avg) if avg else 0.0
+
+    def get_assigned_vehicle(self, obj):
+        vehicle = obj.vehicles.first()
+        if not vehicle:
+            return None
+        parts = [vehicle.plate or vehicle.registration]
+        if vehicle.make or vehicle.model:
+            parts.append(f"{vehicle.make or ''} {vehicle.model or ''}".strip())
+        return ' — '.join(filter(None, parts))
 
 
 # Vehicle Serializer
@@ -197,11 +206,25 @@ class QuoteSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source='customer.name', read_only=True)
     created_by_name = serializers.CharField(source='created_by.username', read_only=True)
     quote_number = serializers.CharField(required=False, allow_blank=True)
-    
+    vehicle_display = serializers.SerializerMethodField()
+    driver_display = serializers.SerializerMethodField()
+
     class Meta:
         model = Quote
         fields = '__all__'
         read_only_fields = ['id', 'created_at', 'updated_at', 'created_by']
+
+    def get_vehicle_display(self, obj):
+        if obj.vehicle:
+            return f"{obj.vehicle.make} {obj.vehicle.model} ({obj.vehicle.plate})"
+        return None
+
+    def get_driver_display(self, obj):
+        if obj.driver:
+            u = obj.driver.user
+            name = f"{u.first_name} {u.last_name}".strip() or u.username
+            return name
+        return None
 
 
 # Invoice Serializer
@@ -285,9 +308,15 @@ class CompanySerializer(serializers.ModelSerializer):
     class Meta:
         model = Company
         fields = [
-            'company_name', 'registration_number', 'vat_number', 
-            'industry', 'website', 'description', 'logo_url', 
-            'address', 'contact'
+            'company_name', 'registration_number', 'vat_number',
+            'industry', 'website', 'description', 'logo_url',
+            'address', 'contact',
+            'default_base_rate_per_km', 'weight_surcharge_threshold_kg',
+            'weight_surcharge_pct', 'default_sla_hours',
+            'default_quote_validity_days', 'allow_cross_border',
+            'fuel_price_per_litre',
+            'margin_at_risk_pct', 'margin_caution_pct', 'margin_target_pct',
+            'default_toll_rate_per_km',
         ]
     
     def get_logo_url(self, obj):

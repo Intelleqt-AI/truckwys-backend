@@ -26,6 +26,8 @@ from .billing import BillingTransaction
 from .invite_token import InviteToken
 from .fuel_price import FuelPrice
 from .toll_plaza import TollPlaza
+from .border_crossing_fee import BorderCrossingFee
+from .country_transit_rate import CountryTransitRate
 
 __all__ = [
     'User',
@@ -59,4 +61,6 @@ __all__ = [
     'InviteToken',
     'FuelPrice',
     'TollPlaza',
+    'BorderCrossingFee',
+    'CountryTransitRate',
 ]

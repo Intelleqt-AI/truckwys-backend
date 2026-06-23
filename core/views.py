@@ -1308,7 +1308,11 @@ class DriverViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     serializer_class = DriverSerializer
     permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = ['status', 'license_state']
+    filterset_fields = {
+        'status': ['exact'],
+        'license_state': ['exact'],
+        'vehicles__id': ['exact'],  # filter by assigned vehicle id: ?vehicles__id=5
+    }
     search_fields = ['user__username', 'license_number', 'user__first_name', 'user__last_name']
     ordering_fields = ['created_at', 'hire_date']
 
@@ -1334,7 +1338,12 @@ class VehicleViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     serializer_class = VehicleSerializer
     permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = ['status', 'type', 'fuel_type']
+    filterset_fields = {
+        'status': ['exact'],
+        'type': ['exact'],
+        'fuel_type': ['exact'],
+        'vehicle_type__name': ['exact', 'icontains'],
+    }
     search_fields = ['vin', 'plate', 'make', 'model']
     ordering_fields = ['created_at', 'make', 'model', 'year']
 
@@ -1829,6 +1838,15 @@ class PublicQuoteView(APIView):
                 'weight': str(quote.weight),
                 'distance': str(quote.distance) if quote.distance else None,
                 'vehicle_type': quote.vehicle_type,
+                'vehicle_display': (
+                    f"{quote.vehicle.make} {quote.vehicle.model} ({quote.vehicle.plate})"
+                    if quote.vehicle else None
+                ),
+                'driver_display': (
+                    (f"{quote.driver.user.first_name} {quote.driver.user.last_name}".strip()
+                     or quote.driver.user.username)
+                    if quote.driver else None
+                ),
                 'base_rate': str(quote.base_rate),
                 'fuel_surcharge': str(quote.fuel_surcharge),
                 'toll_charges': str(quote.toll_charges),
@@ -2035,12 +2053,34 @@ class RouteCalculatorView(APIView):
     permission_classes = [IsAuthenticated]
 
     TOMTOM_API_KEY = config('TOMTOM_API_KEY', default='')
-    FUEL_RATE = 0.35        # litres/km
-    TOLL_ZAR_KM = 0.95      # ZAR/km (SA tolls only)
+    FUEL_RATE_FALLBACK = 0.35   # litres/km — used only when vehicle_type is unrecognised
+    TOLL_ZAR_KM_FALLBACK = 0.95 # ZAR/km — used only when no SANRAL route is matched
+
+    # Per-vehicle-type diesel consumption (litres/km). Mirrors frontend FUEL_CONSUMPTION.
+    FUEL_CONSUMPTION_BY_TYPE: dict = {
+        'Flatbed':      0.32,
+        'Tautliner':    0.35,
+        'Refrigerated': 0.38,
+        'Box Truck':    0.30,
+        'Tanker':       0.40,
+        'Danger Load':  0.36,
+    }
+
+    # Maps frontend vehicle_type → SANRAL truck class used by toll_calculator.
+    # Box Truck = 2-axle rigid (Class 3/heavy); everything else is a semi/combination.
+    VEHICLE_TO_TOLL_TYPE: dict = {
+        'Flatbed':      'combination',
+        'Tautliner':    'combination',
+        'Refrigerated': 'combination',
+        'Tanker':       'combination',
+        'Danger Load':  'combination',
+        'Box Truck':    'heavy',
+    }
 
     def post(self, request):
-        from core.services.cross_border import detect_countries, calculate_cross_border_costs, get_cross_border_warnings
+        from core.services.cross_border import detect_countries, calculate_cross_border_costs, calculate_sa_tolls_for_cross_border, get_cross_border_warnings
         from core.services.fuel_price import fetch_fuel_prices
+        from core.services.toll_calculator import calculate_tolls
 
         data = request.data
         origin = data.get('origin', '')
@@ -2049,8 +2089,8 @@ class RouteCalculatorView(APIView):
         origin_lon = data.get('origin_lon')
         dest_lat = data.get('dest_lat')
         dest_lon = data.get('dest_lon')
-        weight_kg = int(data.get('weight_kg', 20000))
-        vehicle_type = data.get('vehicle_type', 'truck')
+        weight_kg = int(data.get('weight_kg') or data.get('weight') or 20000)
+        vehicle_type = data.get('vehicle_type', 'Flatbed')
 
         # Geocode if no coords
         if origin_lat and origin_lon:
@@ -2083,18 +2123,58 @@ class RouteCalculatorView(APIView):
             fuel_price_obj = fetch_fuel_prices()
             diesel_price = float(fuel_price_obj.diesel_inland)
         except Exception:
-            diesel_price = 21.7  # Fallback
+            # Fall back to company's configured fuel price, then static default
+            try:
+                company = getattr(request.user, 'company', None)
+                diesel_price = float(company.fuel_price_per_litre) if company and company.fuel_price_per_litre else 21.7
+            except Exception:
+                diesel_price = 21.7
 
-        # Fuel cost
-        fuel_litres = round(distance_km * self.FUEL_RATE, 2)
+        # Fuel cost — vehicle-specific consumption rate (DB first, dict fallback)
+        try:
+            from core.models import VehicleType as VehicleTypeModel
+            vt_obj = VehicleTypeModel.objects.filter(name=vehicle_type).first()
+            fuel_rate = float(vt_obj.fuel_consumption_l_per_100km) / 100 if vt_obj and vt_obj.fuel_consumption_l_per_100km else None
+        except Exception:
+            fuel_rate = None
+        fuel_rate = fuel_rate or self.FUEL_CONSUMPTION_BY_TYPE.get(vehicle_type, self.FUEL_RATE_FALLBACK)
+        fuel_litres = round(distance_km * fuel_rate, 2)
         fuel_zar = round(fuel_litres * diesel_price, 2)
 
+        # Use resolved labels for country detection (fix 1)
+        origin_label = o.get('label', origin)
+        dest_label   = d.get('label', destination)
+
         # Detect cross-border route
-        countries = detect_countries(origin, destination)
+        countries    = detect_countries(origin_label, dest_label)
         cross_border = countries is not None and len(countries) > 1
 
-        # SA tolls (only if domestic or SA portion)
-        toll_zar = round(distance_km * self.TOLL_ZAR_KM, 2) if not cross_border else 0
+        # Toll cost
+        toll_breakdown   = []
+        toll_routes_used = []
+
+        if not cross_border:
+            # Domestic: query SANRAL plaza DB, fall back to flat rate
+            toll_truck_type = self.VEHICLE_TO_TOLL_TYPE.get(vehicle_type, 'combination')
+            try:
+                toll_result = calculate_tolls(origin_label, dest_label, toll_truck_type)
+                if toll_result.total_zar > 0:
+                    toll_zar         = float(toll_result.total_zar)
+                    toll_routes_used = toll_result.routes_used
+                    toll_breakdown   = [
+                        {'plaza': item.plaza_name, 'route': item.route, 'tariff': float(item.tariff)}
+                        for item in toll_result.breakdown
+                    ]
+                else:
+                    toll_zar = round(distance_km * self.TOLL_ZAR_KM_FALLBACK, 2)
+            except Exception:
+                toll_zar = round(distance_km * self.TOLL_ZAR_KM_FALLBACK, 2)
+        else:
+            # Cross-border: charge SA-side SANRAL plazas where data exists (fix 4)
+            sa_toll = calculate_sa_tolls_for_cross_border(countries, vehicle_type)
+            toll_zar         = sa_toll['toll_zar']
+            toll_breakdown   = sa_toll['breakdown']
+            toll_routes_used = [sa_toll['route']] if sa_toll['route'] else []
 
         # Cross-border costs
         additional_costs = {}
@@ -2102,12 +2182,11 @@ class RouteCalculatorView(APIView):
         if cross_border:
             cb_costs = calculate_cross_border_costs(countries, distance_km, vehicle_type)
             additional_costs = {
-                'border_fees': cb_costs['border_fees'],
+                'border_fees':      cb_costs['border_fees'],
                 'weighbridge_fees': cb_costs['weighbridge_fees'],
-                'non_sa_tolls': cb_costs['non_sa_tolls'],
+                'non_sa_tolls':     cb_costs['non_sa_tolls'],
             }
-            warnings = get_cross_border_warnings(countries)
-            # Add non-SA tolls to toll_cost_zar
+            warnings  = get_cross_border_warnings(countries)
             toll_zar += cb_costs['non_sa_tolls']
 
         response_data = {
@@ -2117,7 +2196,11 @@ class RouteCalculatorView(APIView):
             'duration_minutes': int(duration_min),
             'fuel_usage_litres': fuel_litres,
             'fuel_cost_zar': fuel_zar,
+            'fuel_rate_l_per_100km': round(fuel_rate * 100, 1),
             'toll_cost_zar': round(toll_zar, 2),
+            'toll_source': 'sanral' if toll_routes_used else 'estimated',
+            'toll_routes': toll_routes_used,
+            'toll_breakdown': toll_breakdown,
             'total_cost_zar': round(fuel_zar + toll_zar + sum(additional_costs.values()), 2),
             'origin_coords': o,
             'dest_coords': d,
@@ -2195,6 +2278,41 @@ class RouteCalculatorView(APIView):
         dlon = math.radians(lon2 - lon1)
         a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
         return R * 2 * math.asin(math.sqrt(a))
+
+
+class LocationSuggestView(APIView):
+    """GET /api/v1/location/suggest/?q=<query> — TomTom fuzzy search proxy."""
+    permission_classes = [IsAuthenticated]
+    TOMTOM_API_KEY = config('TOMTOM_API_KEY', default='')
+
+    def get(self, request):
+        query = request.query_params.get('q', '').strip()
+        if len(query) < 2:
+            return Response([])
+        if not self.TOMTOM_API_KEY:
+            return Response([])
+        try:
+            r = http_requests.get(
+                f'https://api.tomtom.com/search/2/search/{query}.json',
+                params={'key': self.TOMTOM_API_KEY, 'limit': 5, 'language': 'en-US'},
+                timeout=4,
+            )
+            if r.status_code != 200:
+                return Response([])
+            suggestions = []
+            for result in r.json().get('results', []):
+                addr = result.get('address', {})
+                pos = result.get('position', {})
+                label = addr.get('freeformAddress', '')
+                country = addr.get('country', '')
+                if not label:
+                    continue
+                display = f"{label}, {country}" if country and country not in label else label
+                suggestions.append({'label': display, 'lat': pos.get('lat'), 'lon': pos.get('lon')})
+            return Response(suggestions)
+        except Exception:
+            return Response([])
+
 
 class DashboardOverviewView(APIView):
     """Overview dashboard KPIs in one call"""
