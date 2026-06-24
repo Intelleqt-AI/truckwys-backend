@@ -39,8 +39,9 @@ if not DEBUG and SECRET_KEY == 'django-insecure-dev-key-change-in-production':
         'Set SECRET_KEY in your environment (e.g. Railway Variables) ASAP.'
     )
 
-# ALLOWED_HOSTS from environment (CSV)
-ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,*.ngrok.io', cast=lambda v: [s.strip() for s in v.split(',')])
+# ALLOWED_HOSTS from environment (CSV). The leading-dot entry matches the Railway
+# backend domain and any subdomain (e.g. web-production-143e2.up.railway.app).
+ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,*.ngrok.io,.up.railway.app', cast=lambda v: [s.strip() for s in v.split(',')])
 
 # Xero accounting integration (OAuth 2.0). The integration goes live the moment a
 # real Xero app's client id/secret are dropped into .env — until then the connect
@@ -247,6 +248,20 @@ CSRF_COOKIE_SECURE = not DEBUG  # Only HTTPS in production
 SESSION_COOKIE_SECURE = not DEBUG  # Only HTTPS in production
 SECURE_BROWSER_XSS_FILTER = True
 X_FRAME_OPTIONS = 'DENY'
+
+# Origins trusted for unsafe (POST/PUT/DELETE) requests over HTTPS. Django 4+
+# requires this for the admin login and any session-auth POST from the browser.
+# CSV via env; platform wildcards are a safe default so admin works out of the box.
+CSRF_TRUSTED_ORIGINS = config(
+    'CSRF_TRUSTED_ORIGINS',
+    default='https://*.up.railway.app,https://*.vercel.app',
+    cast=lambda v: [s.strip() for s in v.split(',') if s.strip()],
+)
+
+# Railway terminates TLS at its edge and forwards plain HTTP to the app; trust the
+# forwarded proto so request.is_secure() is correct (required for the Secure
+# session/CSRF cookies above to be sent and for correct HTTPS URL building).
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 # PayFast Billing Configuration
 PAYFAST_MERCHANT_ID = config('PAYFAST_MERCHANT_ID', default='10000100')
