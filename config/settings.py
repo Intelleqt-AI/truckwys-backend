@@ -256,3 +256,20 @@ CELERY_TASK_ALWAYS_EAGER = config('CELERY_TASK_ALWAYS_EAGER', default=False, cas
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
+
+# Nightly vehicle score recomputation (runs at 02:00 every day)
+from celery.schedules import crontab
+CELERY_BEAT_SCHEDULE = {
+    'vehicle-scores-nightly': {
+        'task': 'core.tasks.compute_all_vehicle_scores',
+        'schedule': crontab(hour=2, minute=0),
+    },
+    'driver-scores-nightly': {
+        'task': 'core.tasks.compute_all_driver_scores',
+        'schedule': crontab(hour=2, minute=10),
+    },
+}
+
+# ZAR diesel price used for cost/margin calculations.
+# Update this periodically to match the current pump price.
+FUEL_PRICE_ZAR = 22.50

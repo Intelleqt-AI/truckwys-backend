@@ -1,0 +1,394 @@
+"""
+Vehicle performance score computation tasks.
+
+Scores are derived entirely from real operational data:
+  - Load history (revenue, distance, trip days)
+  - Vehicle maintenance/compliance dates
+  - VehicleLog cost entries
+  - Vehicle type fuel benchmark
+
+Run triggers:
+  1. Immediately when a load is marked DELIVERED or INVOICED (via signal)
+  2. Immediately when a vehicle's maintenance/compliance dates are saved (via signal)
+  3. Nightly at 02:00 for all vehicles (Celery Beat)
+"""
+
+import logging
+from decimal import Decimal
+from datetime import date
+
+from celery import shared_task
+from django.db.models import Sum
+
+logger = logging.getLogger(__name__)
+
+# South African diesel price (ZAR/litre). Override via settings.FUEL_PRICE_ZAR.
+_DEFAULT_FUEL_PRICE = Decimal('22.50')
+
+
+def _fuel_price() -> Decimal:
+    from django.conf import settings
+    return Decimal(str(getattr(settings, 'FUEL_PRICE_ZAR', _DEFAULT_FUEL_PRICE)))
+
+
+# ---------------------------------------------------------------------------
+# Individual score helpers
+# ---------------------------------------------------------------------------
+
+def _maintenance_score(vehicle) -> int:
+    """
+    0-100. Penalises overdue maintenance, expired insurance/registration,
+    and vehicles with no maintenance history.
+    """
+    today = date.today()
+    score = 100
+
+    if vehicle.last_maintenance_date:
+        days_since = (today - vehicle.last_maintenance_date).days
+        if days_since > 180:
+            score -= 40
+        elif days_since > 90:
+            score -= 20
+        elif days_since > 60:
+            score -= 10
+    else:
+        score -= 30  # no recorded maintenance
+
+    if vehicle.next_maintenance_due:
+        days_until = (vehicle.next_maintenance_due - today).days
+        if days_until < 0:
+            score -= 30  # already overdue
+        elif days_until < 14:
+            score -= 15
+        elif days_until < 30:
+            score -= 5
+
+    if vehicle.insurance_expiry:
+        days_until = (vehicle.insurance_expiry - today).days
+        if days_until < 0:
+            score -= 20
+        elif days_until < 30:
+            score -= 10
+
+    if vehicle.registration_expiry:
+        days_until = (vehicle.registration_expiry - today).days
+        if days_until < 0:
+            score -= 20
+        elif days_until < 30:
+            score -= 10
+
+    return max(0, min(100, score))
+
+
+def _uptime(vehicle, loads) -> tuple:
+    """
+    Returns (uptime_score: int 0-100, uptime_percentage: Decimal 0-100).
+    Based on total trip days vs vehicle age in days.
+    """
+    completed = [l for l in loads if l.status in ('DELIVERED', 'INVOICED')]
+
+    if not completed:
+        return 0, Decimal('0.00')
+
+    trip_days = 0
+    for load in completed:
+        if load.pickup_date and load.delivery_date:
+            delta = (load.delivery_date.date() if hasattr(load.delivery_date, 'date') else load.delivery_date) \
+                  - (load.pickup_date.date() if hasattr(load.pickup_date, 'date') else load.pickup_date)
+            trip_days += max(1, delta.days + 1)
+        else:
+            trip_days += 1
+
+    vehicle_age_days = max(30, (date.today() - vehicle.created_at.date()).days)
+    raw_pct = min(100.0, (trip_days / vehicle_age_days) * 100)
+    uptime_pct = Decimal(str(round(raw_pct, 2)))
+
+    # Map percentage to score with a generous curve — heavy trucks aren't
+    # running 100% of days; 40% utilisation is healthy for SA freight.
+    pct = float(uptime_pct)
+    if pct >= 60:
+        score = 90 + min(10, int((pct - 60) / 4))
+    elif pct >= 40:
+        score = 70 + int((pct - 40) * 1.0)
+    elif pct >= 20:
+        score = 45 + int((pct - 20) * 1.25)
+    elif pct >= 5:
+        score = 20 + int((pct - 5) * 1.67)
+    else:
+        score = int(pct * 4)
+
+    return min(100, max(0, score)), uptime_pct
+
+
+def _fuel_efficiency_score(vehicle) -> int:
+    """
+    0-100. Compares vehicle's actual L/km to the vehicle-type benchmark.
+    Lower consumption relative to benchmark = higher score.
+    """
+    actual = float(vehicle.fuel_consumption_per_km or 0)
+
+    benchmark = 0.35  # default L/km for a heavy truck
+    if vehicle.vehicle_type and vehicle.vehicle_type.fuel_consumption_l_per_100km:
+        benchmark = float(vehicle.vehicle_type.fuel_consumption_l_per_100km) / 100
+
+    if actual <= 0 or benchmark <= 0:
+        return 50  # neutral — no data
+
+    ratio = actual / benchmark
+    if ratio <= 0.85:
+        return 100
+    elif ratio <= 0.95:
+        return 88
+    elif ratio <= 1.05:
+        return 75
+    elif ratio <= 1.15:
+        return 60
+    elif ratio <= 1.30:
+        return 45
+    elif ratio <= 1.50:
+        return 30
+    else:
+        return 15
+
+
+def _age_score(vehicle) -> int:
+    """0-100. Newer vehicles score higher."""
+    age = date.today().year - (vehicle.year or date.today().year)
+    if age <= 2:   return 100
+    elif age <= 4: return 88
+    elif age <= 7: return 74
+    elif age <= 10: return 58
+    elif age <= 13: return 42
+    elif age <= 16: return 28
+    else:           return 15
+
+
+def _economics(vehicle, loads) -> tuple:
+    """
+    Returns (cost_per_km: Decimal, margin_per_trip: Decimal).
+
+    cost_per_km  = (fuel cost + recorded maintenance costs) / total km driven
+    margin/trip  = avg(revenue - fuel_cost) per completed trip
+    """
+    from core.models import VehicleLog
+
+    completed = [l for l in loads if l.status in ('DELIVERED', 'INVOICED')]
+    fuel_per_km = vehicle.fuel_consumption_per_km or Decimal('0.35')
+    fp = _fuel_price()
+
+    # Total km from completed loads
+    total_km = sum(Decimal(str(l.distance or 0)) for l in completed)
+
+    # Maintenance / tyre / repair costs logged against this vehicle
+    maint_total = VehicleLog.objects.filter(vehicle=vehicle).aggregate(
+        total=Sum('cost')
+    )['total'] or Decimal('0')
+
+    if total_km > 0:
+        fuel_cost_total = total_km * fuel_per_km * fp
+        cost_per_km = (fuel_cost_total + Decimal(str(maint_total))) / total_km
+    else:
+        # No trips yet — show pure fuel cost per km
+        cost_per_km = fuel_per_km * fp
+
+    if completed:
+        margins = []
+        for load in completed:
+            dist = Decimal(str(load.distance or 0))
+            revenue = Decimal(str(load.total_amount or 0))
+            trip_fuel = dist * fuel_per_km * fp
+            margins.append(revenue - trip_fuel)
+        margin_per_trip = sum(margins) / len(margins)
+    else:
+        margin_per_trip = Decimal('0')
+
+    return round(cost_per_km, 2), round(margin_per_trip, 2)
+
+
+# ---------------------------------------------------------------------------
+# Main task
+# ---------------------------------------------------------------------------
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=60)
+def compute_vehicle_scores(self, vehicle_id: int):
+    """
+    Compute and persist all performance scores for a single vehicle.
+    Safe to call multiple times — always overwrites with fresh values.
+    """
+    from core.models import Vehicle, Load
+
+    try:
+        vehicle = Vehicle.objects.select_related('vehicle_type').get(pk=vehicle_id)
+    except Vehicle.DoesNotExist:
+        logger.warning('compute_vehicle_scores: vehicle %s not found', vehicle_id)
+        return
+
+    try:
+        loads = list(Load.objects.filter(vehicle=vehicle))
+
+        maint = _maintenance_score(vehicle)
+        uptime_score, uptime_pct = _uptime(vehicle, loads)
+        fuel = _fuel_efficiency_score(vehicle)
+        age = _age_score(vehicle)
+        cost_per_km, margin_per_trip = _economics(vehicle, loads)
+
+        # Composite AI health score — weighted average
+        ai_health = round(
+            maint        * 0.35 +
+            uptime_score * 0.25 +
+            fuel         * 0.25 +
+            age          * 0.15
+        )
+
+        Vehicle.objects.filter(pk=vehicle_id).update(
+            maintenance_score=maint,
+            uptime_score=uptime_score,
+            uptime_percentage=uptime_pct,
+            fuel_efficiency_score=fuel,
+            cost_per_km=cost_per_km,
+            margin_per_trip=margin_per_trip,
+            ai_health_score=ai_health,
+        )
+
+        logger.info(
+            'Vehicle %s scored: health=%d maint=%d uptime=%d(%s%%) '
+            'fuel=%d age=%d cost/km=%.2f margin/trip=%.2f',
+            vehicle.plate, ai_health, maint, uptime_score, uptime_pct,
+            fuel, age, cost_per_km, margin_per_trip,
+        )
+
+    except Exception as exc:
+        logger.exception('compute_vehicle_scores failed for vehicle %s', vehicle_id)
+        raise self.retry(exc=exc)
+
+
+# ---------------------------------------------------------------------------
+# Nightly batch task
+# ---------------------------------------------------------------------------
+
+@shared_task
+def compute_all_vehicle_scores():
+    """
+    Nightly Celery Beat task: recompute scores for every vehicle.
+    Fans out one compute_vehicle_scores task per vehicle so they run in parallel.
+    """
+    from core.models import Vehicle
+
+    ids = list(Vehicle.objects.values_list('pk', flat=True))
+    for vid in ids:
+        compute_vehicle_scores.delay(vid)
+
+    logger.info('compute_all_vehicle_scores: queued %d vehicles', len(ids))
+    return len(ids)
+
+
+# ---------------------------------------------------------------------------
+# Driver score helpers
+# ---------------------------------------------------------------------------
+
+def _driver_on_time_rate(loads) -> float:
+    delivered = [l for l in loads if l.status in ('DELIVERED', 'INVOICED')]
+    if not delivered:
+        return 0.0
+    trackable = [l for l in delivered if l.actual_delivered_at]
+    if not trackable:
+        return 0.0
+    on_time = 0
+    for load in trackable:
+        actual = load.actual_delivered_at.date() if hasattr(load.actual_delivered_at, 'date') else load.actual_delivered_at
+        scheduled = load.delivery_date.date() if hasattr(load.delivery_date, 'date') else load.delivery_date
+        if actual <= scheduled:
+            on_time += 1
+    return round((on_time / len(trackable)) * 100, 2)
+
+
+def _driver_safety_score(driver) -> int:
+    score = 100 - (driver.violation_count * 10) - (driver.accident_history * 20)
+    return max(0, min(100, score))
+
+
+def _driver_fuel_efficiency(loads) -> int:
+    scores = [l.vehicle.fuel_efficiency_score for l in loads if l.vehicle and l.vehicle.fuel_efficiency_score]
+    return round(sum(scores) / len(scores)) if scores else 0
+
+
+def _driver_margin_per_trip(loads):
+    from decimal import Decimal
+    fp = _fuel_price()
+    completed = [l for l in loads if l.status in ('DELIVERED', 'INVOICED')]
+    if not completed:
+        return Decimal('0')
+    margins = []
+    for load in completed:
+        revenue = Decimal(str(load.total_amount or 0))
+        dist = Decimal(str(load.distance or 0))
+        fuel_per_km = (load.vehicle.fuel_consumption_per_km if load.vehicle and load.vehicle.fuel_consumption_per_km else Decimal('0.35'))
+        margins.append(revenue - dist * fuel_per_km * fp)
+    return round(sum(margins) / len(margins), 2)
+
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=60)
+def compute_driver_scores(self, driver_id: int):
+    """Compute and persist all performance scores for a single driver."""
+    from core.models import Driver, Load
+    from decimal import Decimal
+    from datetime import date
+
+    try:
+        driver = Driver.objects.get(pk=driver_id)
+    except Driver.DoesNotExist:
+        logger.warning('compute_driver_scores: driver %s not found', driver_id)
+        return
+
+    try:
+        loads = list(Load.objects.filter(driver=driver).select_related('vehicle'))
+        completed = [l for l in loads if l.status in ('DELIVERED', 'INVOICED')]
+
+        total_revenue = sum(Decimal(str(l.total_amount or 0)) for l in completed)
+        total_trips = len(completed)
+        avg_rev = round(total_revenue / total_trips, 2) if total_trips else Decimal('0')
+        total_dist = sum(Decimal(str(l.distance or 0)) for l in completed)
+
+        today = date.today()
+        month_start = today.replace(day=1)
+        trips_this_month = sum(
+            1 for l in completed
+            if l.actual_delivered_at and l.actual_delivered_at.date() >= month_start
+        )
+
+        on_time = _driver_on_time_rate(loads)
+        safety = _driver_safety_score(driver)
+        fuel_eff = _driver_fuel_efficiency(loads)
+        margin = _driver_margin_per_trip(loads)
+        efficiency = round(on_time * 0.5 + safety * 0.3 + fuel_eff * 0.2)
+
+        Driver.objects.filter(pk=driver_id).update(
+            on_time_rate=Decimal(str(on_time)),
+            safety_score=safety,
+            efficiency_score=efficiency,
+            total_distance=round(total_dist, 2),
+            trips_this_month=trips_this_month,
+            revenue_generated=round(total_revenue, 2),
+            avg_revenue_per_trip=avg_rev,
+            margin_per_trip=margin,
+        )
+
+        logger.info(
+            'Driver %s scored: efficiency=%d on_time=%.1f%% safety=%d trips=%d revenue=%.2f',
+            driver_id, efficiency, on_time, safety, total_trips, total_revenue,
+        )
+
+    except Exception as exc:
+        logger.exception('compute_driver_scores failed for driver %s', driver_id)
+        raise self.retry(exc=exc)
+
+
+@shared_task
+def compute_all_driver_scores():
+    """Nightly batch: recompute scores for every driver."""
+    from core.models import Driver
+    ids = list(Driver.objects.values_list('pk', flat=True))
+    for did in ids:
+        compute_driver_scores.delay(did)
+    logger.info('compute_all_driver_scores: queued %d drivers', len(ids))
+    return len(ids)

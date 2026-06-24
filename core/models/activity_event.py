@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models
 
 
@@ -18,6 +19,19 @@ class ActivityEvent(models.Model):
     entity_id = models.IntegerField(null=True, blank=True)
     entity_type = models.CharField(max_length=50, blank=True)
     metadata = models.JSONField(default=dict)
+    company = models.ForeignKey(
+        'core.Company',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='activity_events',
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

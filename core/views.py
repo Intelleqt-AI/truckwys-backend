@@ -103,9 +103,9 @@ class RegisterView(APIView):
             seed_default_vehicle_types(company)
 
             # Generate OTP and send verification email via SMTP
-            import random
+            import secrets
             from django.core.cache import cache
-            otp_code = str(random.randint(100000, 999999))
+            otp_code = str(secrets.randbelow(900000) + 100000)
             cache.set(f'email_verify_{user.email}', otp_code, timeout=600)
             try:
                 from core.services.email_service import send_verification_email
@@ -123,6 +123,8 @@ class RegisterView(APIView):
 
 class EmailVerifyView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
 
     def post(self, request):
         import logging
@@ -147,9 +149,11 @@ class EmailVerifyView(APIView):
 
 class ResendVerificationView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
 
     def post(self, request):
-        import random
+        import secrets
         from django.core.cache import cache
         email = request.data.get('email', '').strip().lower()
         if not email:
@@ -160,7 +164,7 @@ class ResendVerificationView(APIView):
                 return Response({'detail': 'Account is already verified.'}, status=status.HTTP_400_BAD_REQUEST)
         except User.DoesNotExist:
             return Response({'detail': 'If an account exists, a verification email has been sent.'})
-        otp_code = str(random.randint(100000, 999999))
+        otp_code = str(secrets.randbelow(900000) + 100000)
         cache.set(f'email_verify_{email}', otp_code, timeout=600)
         try:
             from core.services.email_service import send_verification_email
@@ -269,12 +273,6 @@ class SessionsView(APIView):
             'current': True,
         }])
     
-    def patch(self, request):
-        serializer = UserSerializer(request.user, data=request.data, partial=True)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 class NotificationSettingsView(APIView):
@@ -379,7 +377,11 @@ class CompanyLogoUploadView(APIView):
         logo_file = request.FILES['logo']
         if logo_file.size > 2 * 1024 * 1024:
             return Response({'error': 'Logo file size exceeds 2MB limit'}, status=status.HTTP_400_BAD_REQUEST)
-            
+
+        ALLOWED_LOGO_TYPES = {'image/jpeg', 'image/png', 'image/gif', 'image/webp'}
+        if logo_file.content_type not in ALLOWED_LOGO_TYPES:
+            return Response({'error': 'Only JPEG, PNG, GIF and WebP images are accepted'}, status=status.HTTP_400_BAD_REQUEST)
+
         company.logo = logo_file
         company.save()
         
@@ -398,20 +400,22 @@ class FleetOverviewView(APIView):
         last_month_start = (current_month_start - timedelta(days=1)).replace(day=1)
         
         # Get all active vehicles
-        active_vehicles = Vehicle.objects.filter(status='AVAILABLE')
+        active_vehicles = Vehicle.objects.filter(status='AVAILABLE', company=request.user.company)
         total_active = active_vehicles.count()
-        
+
         # Last month active vehicles count
         last_month_vehicles = Vehicle.objects.filter(
             created_at__lt=current_month_start,
-            status='AVAILABLE'
+            status='AVAILABLE',
+            company=request.user.company
         ).count()
         vehicle_trend = total_active - last_month_vehicles
         
         # Calculate margins per vehicle (MTD)
         current_month_loads = Load.objects.filter(
             created_at__gte=current_month_start,
-            status__in=['DELIVERED', 'IN_TRANSIT', 'ASSIGNED']
+            status__in=['DELIVERED', 'IN_TRANSIT', 'ASSIGNED'],
+            company=request.user.company
         )
         
         # Average margin per vehicle - convert to float
@@ -425,7 +429,8 @@ class FleetOverviewView(APIView):
         last_month_loads = Load.objects.filter(
             created_at__gte=last_month_start,
             created_at__lt=current_month_start,
-            status__in=['DELIVERED', 'IN_TRANSIT', 'ASSIGNED']
+            status__in=['DELIVERED', 'IN_TRANSIT', 'ASSIGNED'],
+            company=request.user.company
         )
         
         last_month_vehicle_margins = last_month_loads.values('vehicle').annotate(
@@ -438,7 +443,8 @@ class FleetOverviewView(APIView):
         # Fleet Cost per KM
         total_expenses = Expense.objects.filter(
             created_at__gte=current_month_start,
-            vehicle__isnull=False
+            vehicle__isnull=False,
+            company=request.user.company
         ).aggregate(total=Sum('amount'))['total']
         
         total_expenses = float(total_expenses) if total_expenses else 0.0
@@ -446,7 +452,8 @@ class FleetOverviewView(APIView):
         total_distance = Load.objects.filter(
             created_at__gte=current_month_start,
             status='DELIVERED',
-            distance__isnull=False
+            distance__isnull=False,
+            company=request.user.company
         ).aggregate(total=Sum('distance'))['total']
         
         total_distance = float(total_distance) if total_distance else 1.0
@@ -454,19 +461,24 @@ class FleetOverviewView(APIView):
         cost_per_km = total_expenses / total_distance if total_distance > 0 else 22.0
         target_cost_per_km = 20.0
         
-        # AI Health Score calculation
-        # Based on fuel efficiency, uptime, and maintenance
-        fuel_score = 75  # Calculated from fuel expenses vs distance
-        uptime_score = 85  # Calculated from vehicle availability
-        maintenance_score = 78  # Calculated from maintenance frequency
-        ai_health_score = int((fuel_score + uptime_score + maintenance_score) / 3)
+        # AI Health Score — real aggregates from Vehicle model fields
+        vehicle_agg = Vehicle.objects.filter(company=request.user.company).aggregate(
+            avg_health=Avg('ai_health_score'),
+            avg_fuel=Avg('fuel_efficiency_score'),
+            avg_maint=Avg('maintenance_score'),
+        )
+        ai_health_score = round(float(vehicle_agg['avg_health'] or 0))
+        fuel_score = round(float(vehicle_agg['avg_fuel'] or 0))
+        uptime_score = 0  # Not stored per-vehicle; kept for response shape compatibility
+        maintenance_score = round(float(vehicle_agg['avg_maint'] or 0))
         
         # Banner message data
         margin_change = 2.3
         flagged_vehicles = Vehicle.objects.filter(
             Q(next_maintenance_due__lte=now + timedelta(days=30)) |
             Q(insurance_expiry__lte=now + timedelta(days=30)) |
-            Q(registration_expiry__lte=now + timedelta(days=30))
+            Q(registration_expiry__lte=now + timedelta(days=30)),
+            company=request.user.company
         ).count()
         
         return Response({
@@ -544,120 +556,94 @@ class VehicleInsightsView(APIView):
     permission_classes = [IsAuthenticated]
     
     def get(self, request):
-        # Get all vehicles with their associated data
-        vehicles_data = []
-        
-        # Hardcoded data matching the UI exactly (for demo purposes)
-        # In production, this would be calculated from actual database records
-        vehicles = [
-            {
-                'vehicle_id': 'TRK-001',
-                'driver_name': 'John Smith',
-                'status': 'En Route',
-                'status_color': 'success',
-                'margin_per_trip': 'R 8 350,00',
-                'margin_per_trip_raw': 8350.00,
-                'cost_per_km': 'R 21.4',
-                'cost_per_km_raw': 21.4,
-                'uptime': '94.2%',
-                'uptime_raw': 94.2,
-                'ai_score': 87,
-                'ai_score_color': 'green'
-            },
-            {
-                'vehicle_id': 'TRK-007',
-                'driver_name': 'Sarah Jones',
-                'status': 'Idle',
-                'status_color': 'gray',
-                'margin_per_trip': 'R 6 750,00',
-                'margin_per_trip_raw': 6750.00,
-                'cost_per_km': 'R 23.1',
-                'cost_per_km_raw': 23.1,
-                'uptime': '82.5%',
-                'uptime_raw': 82.5,
-                'ai_score': 72,
-                'ai_score_color': 'yellow'
-            },
-            {
-                'vehicle_id': 'TRK-012',
-                'driver_name': 'Mike Johnson',
-                'status': 'En Route',
-                'status_color': 'success',
-                'margin_per_trip': 'R 9 100,00',
-                'margin_per_trip_raw': 9100.00,
-                'cost_per_km': 'R 19.8',
-                'cost_per_km_raw': 19.8,
-                'uptime': '96.8%',
-                'uptime_raw': 96.8,
-                'ai_score': 92,
-                'ai_score_color': 'green'
-            },
-            {
-                'vehicle_id': 'TRK-045',
-                'driver_name': 'Lisa Brown',
-                'status': 'Loading',
-                'status_color': 'warning',
-                'margin_per_trip': 'R 5 200,00',
-                'margin_per_trip_raw': 5200.00,
-                'cost_per_km': 'R 24.5',
-                'cost_per_km_raw': 24.5,
-                'uptime': '78.3%',
-                'uptime_raw': 78.3,
-                'ai_score': 65,
-                'ai_score_color': 'red'
-            },
-            {
-                'vehicle_id': 'TRK-023',
-                'driver_name': 'David Wilson',
-                'status': 'En Route',
-                'status_color': 'success',
-                'margin_per_trip': 'R 7 800,00',
-                'margin_per_trip_raw': 7800.00,
-                'cost_per_km': 'R 20.7',
-                'cost_per_km_raw': 20.7,
-                'uptime': '91.5%',
-                'uptime_raw': 91.5,
-                'ai_score': 81,
-                'ai_score_color': 'yellow'
-            },
-            {
-                'vehicle_id': 'TRK-089',
-                'driver_name': 'Emma Davis',
-                'status': 'Maintenance',
-                'status_color': 'error',
-                'margin_per_trip': 'R 6 400,00',
-                'margin_per_trip_raw': 6400.00,
-                'cost_per_km': 'R 22.3',
-                'cost_per_km_raw': 22.3,
-                'uptime': '85.0%',
-                'uptime_raw': 85.0,
-                'ai_score': 74,
-                'ai_score_color': 'yellow'
+        from django.db.models import Avg
+        company = request.user.company
+
+        vehicles = Vehicle.objects.filter(
+            company=company
+        ).select_related('driver__user', 'vehicle_type').order_by('-ai_health_score')
+
+        data = []
+        for v in vehicles:
+            if v.driver and v.driver.user:
+                u = v.driver.user
+                driver_name = f"{u.first_name} {u.last_name}".strip() or u.username
+            else:
+                driver_name = '—'
+
+            # Map vehicle status to display label and color
+            status_map = {
+                'AVAILABLE': ('Available', 'success'),
+                'IN_USE': ('En Route', 'success'),
+                'MAINTENANCE': ('Maintenance', 'error'),
+                'OUT_OF_SERVICE': ('Out of Service', 'gray'),
             }
-        ]
-        
-        # Table configuration
+            status_label, status_color = status_map.get(v.status, (v.status, 'gray'))
+
+            ai_score = v.ai_health_score or 0
+            if ai_score >= 80:
+                ai_color = 'green'
+            elif ai_score >= 60:
+                ai_color = 'yellow'
+            else:
+                ai_color = 'red'
+
+            margin = float(v.margin_per_trip or 0)
+            cost = float(v.cost_per_km or 0)
+            uptime = float(v.uptime_percentage or 0)
+
+            data.append({
+                'vehicle_id': v.plate,
+                'vehicle_db_id': v.id,
+                'make': v.make,
+                'model': v.model,
+                'driver_name': driver_name,
+                'status': status_label,
+                'status_color': status_color,
+                'margin_per_trip': f'R {margin:,.2f}',
+                'margin_per_trip_raw': margin,
+                'cost_per_km': f'R {cost:.1f}',
+                'cost_per_km_raw': cost,
+                'uptime': f'{uptime:.1f}%',
+                'uptime_raw': float(uptime),
+                'ai_score': ai_score,
+                'ai_score_color': ai_color,
+            })
+
+        # Fleet-level averages for the footer
+        agg = vehicles.aggregate(
+            avg_margin=Avg('margin_per_trip'),
+            avg_cost=Avg('cost_per_km'),
+            avg_health=Avg('ai_health_score'),
+        )
+        top3_margin = sum(v['margin_per_trip_raw'] for v in data[:3])
+        fleet_total_margin = sum(v['margin_per_trip_raw'] for v in data)
+        top3_pct = round((top3_margin / fleet_total_margin * 100)) if fleet_total_margin > 0 else 0
+        underperformers = sum(1 for v in data if v['margin_per_trip_raw'] < 0)
+
+        footer_note = f"Top 3 vehicles generate {top3_pct}% of fleet margin." if top3_pct else ''
+        if underperformers:
+            footer_note += f" {underperformers} vehicle{'s' if underperformers != 1 else ''} with negative margin."
+
         columns = [
-            {'key': 'vehicle_id', 'label': 'Vehicle ↕', 'sortable': True},
+            {'key': 'vehicle_id', 'label': 'Vehicle', 'sortable': True},
             {'key': 'driver_name', 'label': 'Driver', 'sortable': False},
             {'key': 'status', 'label': 'Status', 'sortable': False},
-            {'key': 'margin_per_trip', 'label': 'Margin per Trip ↕', 'sortable': True},
-            {'key': 'cost_per_km', 'label': 'Cost per KM ↕', 'sortable': True},
-            {'key': 'uptime', 'label': 'Uptime ↕', 'sortable': True},
-            {'key': 'ai_score', 'label': 'AI Score ↕', 'sortable': True}
+            {'key': 'margin_per_trip', 'label': 'Margin per Trip', 'sortable': True},
+            {'key': 'cost_per_km', 'label': 'Cost per KM', 'sortable': True},
+            {'key': 'uptime', 'label': 'Uptime', 'sortable': True},
+            {'key': 'ai_score', 'label': 'AI Score', 'sortable': True},
         ]
-        
-        footer_note = "Top 3 vehicles generate 32% of fleet profit. 4 vehicles underperform with negative margins."
-        
+
         return Response({
             'columns': columns,
-            'data': vehicles,
-            'total_count': len(vehicles),
+            'data': data,
+            'total_count': len(data),
             'footer_note': footer_note,
             'view_options': {
                 'current_view': 'by_vehicle',
-                'available_views': ['by_vehicle', 'by_driver']
-            }
+                'available_views': ['by_vehicle', 'by_driver'],
+            },
         })
 
 
@@ -820,76 +806,43 @@ class DriverOverviewView(APIView):
     permission_classes = [IsAuthenticated]
     
     def get(self, request):
-        from datetime import datetime, timedelta
-        from django.db.models import Avg, Count, Q
-        
-        now = datetime.now()
-        current_month_start = now.replace(day=1)
-        last_month_start = (current_month_start - timedelta(days=1)).replace(day=1)
-        
-        # Get all active drivers
-        active_drivers = Driver.objects.filter(status='ACTIVE')
+        from django.db.models import Avg
+
+        active_drivers = Driver.objects.filter(status='ACTIVE', company=request.user.company)
         total_active = active_drivers.count()
-        
-        # Calculate Fleet Avg On-Time %
-        total_loads = Load.objects.filter(
-            created_at__gte=current_month_start,
-            status='DELIVERED'
-        ).count()
-        
-        # Simulate on-time percentage (in production, track actual delivery times)
-        fleet_on_time = 91.5  # Calculate from actual data
-        on_time_trend = 2.3  # vs last month
-        
-        # Calculate Fleet Avg Safety Score
-        drivers_with_loads = Driver.objects.filter(
-            loads__created_at__gte=current_month_start
-        ).distinct()
-        
-        safety_scores = []
-        for driver in drivers_with_loads:
-            base_score = 80 + ((driver.id * 3) % 20)
-            safety_scores.append(base_score)
-        
-        fleet_safety = int(sum(safety_scores) / len(safety_scores)) if safety_scores else 86
-        safety_trend = 4  # points vs baseline
-        
-        # Calculate Fleet Avg Fuel Efficiency
-        fuel_scores = []
-        for driver in drivers_with_loads:
-            recent_load = Load.objects.filter(driver=driver).order_by('-created_at').first()
-            if recent_load and recent_load.vehicle:
-                fuel_scores.append(recent_load.vehicle.fuel_efficiency_score or 75)
-        
-        fleet_fuel = int(sum(fuel_scores) / len(fuel_scores)) if fuel_scores else 82
-        
-        # Calculate Fleet Avg Margin
-        loads_this_month = Load.objects.filter(
-            created_at__gte=current_month_start,
-            status__in=['DELIVERED', 'IN_TRANSIT']
+
+        # Fleet KPIs aggregated from stored computed fields (written by Celery tasks)
+        agg = active_drivers.aggregate(
+            avg_on_time=Avg('on_time_rate'),
+            avg_safety=Avg('safety_score'),
+            avg_efficiency=Avg('efficiency_score'),
+            avg_margin=Avg('margin_per_trip'),
         )
-        
-        if loads_this_month.exists():
-            avg_margin = loads_this_month.aggregate(avg=Avg('total_amount'))['avg']
-            fleet_margin = float(avg_margin) if avg_margin else 20458.33
+
+        fleet_on_time = round(float(agg['avg_on_time'] or 0), 1)
+        fleet_safety = round(float(agg['avg_safety'] or 0))
+        fleet_fuel = round(float(agg['avg_efficiency'] or 0))
+        fleet_margin = round(float(agg['avg_margin'] or 0), 2)
+
+        # Top performer by composite efficiency score
+        top_driver_obj = active_drivers.order_by('-efficiency_score').select_related('user').first()
+        if top_driver_obj:
+            u = top_driver_obj.user
+            top_driver_name = f"{u.first_name} {u.last_name}".strip() or u.username
         else:
-            fleet_margin = 20458.33
-        
-        # Find top performer
-        top_driver = drivers_with_loads.first()
-        if top_driver:
-            top_driver_name = f"{top_driver.user.first_name} {top_driver.user.last_name}"
-        else:
-            top_driver_name = "Mike Johnson"
-        
-        # Count drivers flagged for coaching
-        drivers_needing_coaching = active_drivers.filter(
-            Q(id__in=[d.id for d in active_drivers if ((d.id * 3) % 100) < 70])
-        ).count()
-        
-        if drivers_needing_coaching == 0:
-            drivers_needing_coaching = 2  # At least show some for demo
-        
+            top_driver_name = None
+
+        # Drivers needing coaching: composite efficiency below 60
+        drivers_needing_coaching = active_drivers.filter(efficiency_score__lt=60).count()
+
+        banner_parts = []
+        if top_driver_name:
+            banner_parts.append(f"Top driver: {top_driver_name}.")
+        if drivers_needing_coaching:
+            label = 'driver' if drivers_needing_coaching == 1 else 'drivers'
+            banner_parts.append(f"{drivers_needing_coaching} {label} flagged for coaching.")
+        banner_message = ' '.join(banner_parts) if banner_parts else 'Driver performance data is being computed by background jobs.'
+
         return Response({
             'header': {
                 'title': 'Driver Intelligence Hub',
@@ -901,12 +854,10 @@ class DriverOverviewView(APIView):
                 }
             },
             'banner': {
-                'message': f"Fleet performance improved by +3.8% margin this month. Top driver {top_driver_name} saved R 4 500,00 in fuel costs. {drivers_needing_coaching} drivers flagged for coaching due to idle time increase.",
+                'message': banner_message,
                 'type': 'info',
                 'highlight': {
-                    'margin': '+3.8%',
                     'top_driver': top_driver_name,
-                    'savings': 'R 4 500,00',
                     'flagged': drivers_needing_coaching
                 }
             },
@@ -916,14 +867,6 @@ class DriverOverviewView(APIView):
                     'title': 'Fleet Avg. On-Time %',
                     'value': f'{fleet_on_time}%',
                     'raw_value': fleet_on_time,
-                    'trend': {
-                        'value': on_time_trend,
-                        'label': f'+{on_time_trend}% vs last month',
-                        'direction': 'up',
-                        'type': 'positive',
-                        'icon': 'trending-up',
-                        'color': 'green'
-                    },
                     'icon': 'clock'
                 },
                 {
@@ -931,14 +874,6 @@ class DriverOverviewView(APIView):
                     'title': 'Fleet Avg. Safety',
                     'value': fleet_safety,
                     'raw_value': fleet_safety,
-                    'trend': {
-                        'value': safety_trend,
-                        'label': f'+{safety_trend} points vs baseline',
-                        'direction': 'up',
-                        'type': 'positive',
-                        'icon': 'arrow-up',
-                        'color': 'green'
-                    },
                     'icon': 'shield',
                     'description': 'Safety score'
                 },
@@ -948,7 +883,7 @@ class DriverOverviewView(APIView):
                     'value': fleet_fuel,
                     'raw_value': fleet_fuel,
                     'icon': 'droplet',
-                    'description': 'km/L efficiency score'
+                    'description': 'Efficiency score'
                 },
                 {
                     'id': 'fleet_margin',
@@ -956,7 +891,7 @@ class DriverOverviewView(APIView):
                     'value': f'R {fleet_margin:,.2f}',
                     'raw_value': fleet_margin,
                     'icon': 'dollar-sign',
-                    'description': 'per trip, last 30 days'
+                    'description': 'per trip'
                 }
             ]
         })
@@ -974,8 +909,8 @@ class DriverPerformanceLeaderboardView(APIView):
         # Get filter parameter
         filter_type = request.query_params.get('filter', 'all')  # all, top, coaching, inactive
         
-        # Get all drivers
-        drivers = Driver.objects.all().select_related('user')
+        # Get all drivers scoped to the requesting user's company
+        drivers = Driver.objects.filter(company=request.user.company).select_related('user')
         
         # Apply filters
         if filter_type == 'top':
@@ -1047,8 +982,8 @@ class QuotesPipelineOverviewView(APIView):
         customer_filter = request.query_params.get('customer', 'all')
         lane_filter = request.query_params.get('lane', 'all')
         
-        # Base queryset
-        quotes = Quote.objects.all()
+        # Base queryset — scoped to the requesting user's company
+        quotes = Quote.objects.filter(company=request.user.company)
         
         # Apply filters
         if customer_filter and customer_filter != 'all':
@@ -1210,7 +1145,12 @@ class UserViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         """Bind newly-created users to the creating admin's company (multi-tenancy)."""
+        from core.middleware.plan_limits import check_user_limit
+        from rest_framework.exceptions import PermissionDenied
         company = resolve_user_company(self.request.user)
+        allowed, message = check_user_limit(company)
+        if not allowed:
+            raise PermissionDenied(detail=message)
         serializer.save(company=company)
 
     @action(detail=False, methods=['post'])
@@ -1459,7 +1399,19 @@ class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         load = self.get_object()
         driver_id = request.data.get('driver_id')
         vehicle_id = request.data.get('vehicle_id')
-        
+
+        # Verify driver and vehicle belong to the requesting user's company
+        if driver_id:
+            try:
+                Driver.objects.get(id=driver_id, company=request.user.company)
+            except Driver.DoesNotExist:
+                return Response({'error': 'Driver not found'}, status=status.HTTP_404_NOT_FOUND)
+        if vehicle_id:
+            try:
+                Vehicle.objects.get(id=vehicle_id, company=request.user.company)
+            except Vehicle.DoesNotExist:
+                return Response({'error': 'Vehicle not found'}, status=status.HTTP_404_NOT_FOUND)
+
         try:
             load.driver_id = driver_id
             load.vehicle_id = vehicle_id
@@ -1518,6 +1470,9 @@ class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         file = request.FILES.get('pod_document') or request.FILES.get('file')
         if not file:
             return Response({'error': 'No file provided'}, status=400)
+        ALLOWED_POD_TYPES = {'application/pdf', 'image/jpeg', 'image/png', 'image/webp'}
+        if file.content_type not in ALLOWED_POD_TYPES:
+            return Response({'error': 'Only PDF and image files are accepted'}, status=status.HTTP_400_BAD_REQUEST)
         load.pod_document = file
         load.pod_received_by = request.data.get('received_by', file.name)
         load.pod_signature = f'POD: {file.name} ({file.size} bytes)'
@@ -1543,16 +1498,16 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         from django.utils import timezone
-        import random
+        import secrets
         # Auto-generate quote_number if not provided
         quote_number = self.request.data.get('quote_number')
         if not quote_number:
             ts = timezone.now().strftime('%Y%m%d')
-            rand = random.randint(1000, 9999)
+            rand = secrets.randbelow(9000) + 1000
             quote_number = f'QT-{ts}-{rand}'
             # Ensure uniqueness
             while Quote.objects.filter(quote_number=quote_number).exists():
-                rand = random.randint(1000, 9999)
+                rand = secrets.randbelow(9000) + 1000
                 quote_number = f'QT-{ts}-{rand}'
 
         save_kwargs = {'created_by': self.request.user, 'quote_number': quote_number}
@@ -1605,7 +1560,7 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def convert_to_load(self, request, pk=None):
         """Convert quote to load"""
-        import random
+        import secrets
         quote = self.get_object()
 
         # Check if quote already converted
@@ -1616,9 +1571,9 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
             )
 
         # Auto-generate unique load_number
-        load_number = f'LOAD-{timezone.now().strftime("%Y%m%d")}-{random.randint(1000, 9999)}'
+        load_number = f'LOAD-{timezone.now().strftime("%Y%m%d")}-{secrets.randbelow(9000) + 1000}'
         while Load.objects.filter(load_number=load_number).exists():
-            load_number = f'LOAD-{timezone.now().strftime("%Y%m%d")}-{random.randint(1000, 9999)}'
+            load_number = f'LOAD-{timezone.now().strftime("%Y%m%d")}-{secrets.randbelow(9000) + 1000}'
 
         # Create load from quote (stamp the company so it's tenant-scoped/visible)
         load = Load.objects.create(
@@ -1806,7 +1761,7 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
 
         # Generate share URL
         frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:3701')
-        share_url = f"{frontend_url}/quotes/view/{quote.id}/{quote.token[:8]}"
+        share_url = f"{frontend_url}/quotes/view/{quote.id}/{quote.token}"
 
         return Response({
             'share_url': share_url,
@@ -1822,8 +1777,8 @@ class PublicQuoteView(APIView):
     def get(self, request, quote_id, token):
         try:
             quote = Quote.objects.get(id=quote_id)
-            # Validate token (use first 8 chars for URL, but check full token)
-            if not quote.token or not quote.token.startswith(token):
+            import hmac as _hmac
+            if not quote.token or not _hmac.compare_digest(quote.token, token):
                 return Response(
                     {'error': 'Invalid quote link'},
                     status=status.HTTP_404_NOT_FOUND
@@ -1873,8 +1828,8 @@ class PublicQuoteRespondView(APIView):
     def post(self, request, quote_id, token):
         try:
             quote = Quote.objects.get(id=quote_id)
-            # Validate token
-            if not quote.token or not quote.token.startswith(token):
+            import hmac as _hmac
+            if not quote.token or not _hmac.compare_digest(quote.token, token):
                 return Response(
                     {'error': 'Invalid quote link'},
                     status=status.HTTP_404_NOT_FOUND
@@ -2337,24 +2292,35 @@ class DashboardOverviewView(APIView):
         # Revenue MTD from PAID invoices
         revenue_mtd = Invoice.objects.filter(
             created_at__gte=start_of_month,
-            status='PAID'
+            status='PAID',
+            company=request.user.company
         ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0')
-        
+
         # Outstanding invoices (SENT + OVERDUE)
-        outstanding = Invoice.objects.filter(status__in=['SENT', 'OVERDUE'])
+        outstanding = Invoice.objects.filter(
+            status__in=['SENT', 'OVERDUE'],
+            company=request.user.company
+        )
         outstanding_total = outstanding.aggregate(total=Sum('total_amount'))['total'] or Decimal('0')
         outstanding_count = outstanding.count()
-        
+
         # Active loads (IN_TRANSIT + LOADING)
-        active_loads = Load.objects.filter(status__in=['IN_TRANSIT', 'LOADING']).count()
-        
+        active_loads = Load.objects.filter(
+            status__in=['IN_TRANSIT', 'LOADING'],
+            company=request.user.company
+        ).count()
+
         # Fast pay available (SENT invoices)
-        fast_pay = Invoice.objects.filter(status='SENT').aggregate(
-            total=Sum('total_amount'))['total'] or Decimal('0')
-        
+        fast_pay = Invoice.objects.filter(
+            status='SENT',
+            company=request.user.company
+        ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0')
+
         # Quote pipeline value (DRAFT + SENT)
-        pipeline = Quote.objects.filter(status__in=['DRAFT', 'SENT']).aggregate(
-            total=Sum('total_amount'))['total'] or Decimal('0')
+        pipeline = Quote.objects.filter(
+            status__in=['DRAFT', 'SENT'],
+            company=request.user.company
+        ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0')
         
         return Response({
             'revenue_mtd': float(revenue_mtd),
@@ -2407,7 +2373,7 @@ class DashboardSignalsView(APIView):
         signals = []
 
         # INVOICE_CHASE — overdue invoices
-        overdue = Invoice.objects.filter(status='OVERDUE').select_related('customer')
+        overdue = Invoice.objects.filter(status='OVERDUE', company=request.user.company).select_related('customer')
         for inv in overdue[:3]:
             signals.append({
                 'type': 'CRITICAL',
@@ -2422,7 +2388,7 @@ class DashboardSignalsView(APIView):
 
         # IDLE_FLEET — available vehicles not on a load
         from core.models.vehicle import Vehicle
-        idle_vehicles = Vehicle.objects.filter(status='AVAILABLE')
+        idle_vehicles = Vehicle.objects.filter(status='AVAILABLE', company=request.user.company)
         if idle_vehicles.count() >= 2:
             names = ', '.join([v.plate or v.make for v in idle_vehicles[:3]])
             signals.append({
@@ -2437,7 +2403,7 @@ class DashboardSignalsView(APIView):
             })
 
         # FAST_PAY — eligible invoices
-        eligible = Invoice.objects.filter(status='SENT', early_pay_eligible=True)
+        eligible = Invoice.objects.filter(status='SENT', early_pay_eligible=True, company=request.user.company)
         if eligible.exists():
             total = eligible.aggregate(t=Sum('total_amount'))['t'] or 0
             signals.append({
@@ -2452,7 +2418,7 @@ class DashboardSignalsView(APIView):
             })
         else:
             # Show all sent invoices as potential fast pay
-            sent = Invoice.objects.filter(status='SENT')
+            sent = Invoice.objects.filter(status='SENT', company=request.user.company)
             if sent.exists():
                 total = sent.aggregate(t=Sum('total_amount'))['t'] or 0
                 signals.append({
@@ -2470,7 +2436,8 @@ class DashboardSignalsView(APIView):
         recent_loads = Load.objects.filter(
             status='DELIVERED',
             created_at__gte=from_date,
-            created_at__lte=to_date
+            created_at__lte=to_date,
+            company=request.user.company
         ).select_related('customer')
         low_margin = [l for l in recent_loads if float(l.fuel_surcharge or 0) > float(l.total_amount or 1) * 0.15]
         if low_margin:
@@ -2486,7 +2453,7 @@ class DashboardSignalsView(APIView):
             })
 
         # Active loads update
-        active = Load.objects.filter(status='IN_TRANSIT').count()
+        active = Load.objects.filter(status='IN_TRANSIT', company=request.user.company).count()
         if active > 0:
             signals.append({
                 'type': 'INFO',
@@ -2508,6 +2475,8 @@ class DashboardSignalsView(APIView):
 class PasswordResetRequestView(APIView):
     """Request a password reset code."""
     permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
 
     def post(self, request):
         from django.contrib.auth import get_user_model
@@ -2520,8 +2489,8 @@ class PasswordResetRequestView(APIView):
         try:
             user = User.objects.filter(email__iexact=email).first()
             if user:
-                import random
-                code = str(random.randint(100000, 999999))
+                import secrets
+                code = str(secrets.randbelow(900000) + 100000)
                 # Store in cache/session — use Django cache
                 from django.core.cache import cache
                 cache.set(f'pwd_reset_{email}', code, timeout=3600)  # 1hr
@@ -2543,6 +2512,8 @@ class PasswordResetRequestView(APIView):
 class PasswordResetConfirmView(APIView):
     """Confirm a password reset with code."""
     permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
 
     def post(self, request):
         from django.contrib.auth import get_user_model
@@ -2560,7 +2531,8 @@ class PasswordResetConfirmView(APIView):
             return Response({'detail': 'Password must be at least 8 characters.'}, status=400)
 
         stored_code = cache.get(f'pwd_reset_{email}')
-        if not stored_code or stored_code != code:
+        import hmac as _hmac
+        if not stored_code or not _hmac.compare_digest(str(stored_code), str(code)):
             return Response({'code': ['Invalid or expired reset code.']}, status=400)
 
         user = User.objects.filter(email__iexact=email).first()
@@ -2617,6 +2589,12 @@ class InviteView(APIView):
             return Response({'error': 'User with this email already exists'}, status=status.HTTP_400_BAD_REQUEST)
 
         company = resolve_user_company(request.user)
+
+        # Enforce per-plan user limit before creating a new user
+        from core.middleware.plan_limits import check_user_limit
+        allowed, message = check_user_limit(company)
+        if not allowed:
+            return Response({'error': message}, status=status.HTTP_402_PAYMENT_REQUIRED)
 
         # Generate secure token
         token = secrets.token_urlsafe(32)
@@ -2859,7 +2837,9 @@ class ActivityEventViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = ActivityEventSerializer
 
     def get_queryset(self):
-        return ActivityEvent.objects.all()[:50]
+        return ActivityEvent.objects.filter(
+            company=self.request.user.company
+        ).order_by('-created_at')[:50]
 
 
 class TestEmailView(APIView):

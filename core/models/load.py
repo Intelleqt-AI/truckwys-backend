@@ -45,6 +45,7 @@ class Load(models.Model):
     total_amount = models.DecimalField(max_digits=10, decimal_places=2)
     
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='PENDING')
+    actual_delivered_at = models.DateTimeField(null=True, blank=True, help_text='Timestamp when load was marked DELIVERED')
     notes = models.TextField(blank=True)
     
     pod_signature = models.TextField(blank=True)  # Proof of delivery signature

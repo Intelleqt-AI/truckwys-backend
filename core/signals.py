@@ -24,6 +24,7 @@ def load_saved(sender, instance, created, **kwargs):
             description=f'{instance.pickup_city} → {instance.delivery_city}',
             entity_id=instance.id,
             entity_type='Load',
+            company=instance.company,
             metadata={'load_number': instance.load_number, 'status': instance.status}
         )
 
@@ -56,6 +57,7 @@ def load_saved(sender, instance, created, **kwargs):
             description=f'Status: {instance.get_status_display()}',
             entity_id=instance.id,
             entity_type='Load',
+            company=instance.company,
             metadata={'load_number': instance.load_number, 'status': instance.status}
         )
 
@@ -63,6 +65,21 @@ def load_saved(sender, instance, created, **kwargs):
         if instance.status == 'DELIVERED':
             dispatch_webhook('load.delivered', data)
             _auto_invoice_on_delivery(instance)
+            # Stamp actual delivery time (used for on-time rate computation)
+            if not instance.actual_delivered_at:
+                from django.utils import timezone
+                Load.objects.filter(pk=instance.pk).update(actual_delivered_at=timezone.now())
+
+        # Recompute vehicle + driver scores whenever a load is completed
+        if instance.status in ('DELIVERED', 'INVOICED'):
+            try:
+                from core.tasks import compute_vehicle_scores, compute_driver_scores
+                if instance.vehicle_id:
+                    compute_vehicle_scores.delay(instance.vehicle_id)
+                if instance.driver_id:
+                    compute_driver_scores.delay(instance.driver_id)
+            except Exception:
+                pass  # never block the load save
 
 
 def _auto_invoice_on_delivery(load):
@@ -114,6 +131,7 @@ def invoice_saved(sender, instance, created, **kwargs):
             description=f'Customer: {instance.customer.name if instance.customer else "N/A"} - Amount: R{amount}',
             entity_id=instance.id,
             entity_type='Invoice',
+            company=getattr(instance, 'company', None),
             metadata={'invoice_number': instance.invoice_number, 'status': instance.status, 'amount': str(amount)}
         )
     elif instance.status == 'PAID':
@@ -128,6 +146,7 @@ def invoice_saved(sender, instance, created, **kwargs):
             description=f'Payment received for R{amount}',
             entity_id=instance.id,
             entity_type='Invoice',
+            company=getattr(instance, 'company', None),
             metadata={'invoice_number': instance.invoice_number, 'status': instance.status, 'amount': str(amount)}
         )
 
@@ -169,6 +188,7 @@ def quote_saved(sender, instance, created, **kwargs):
             description=f'{origin} → {destination}',
             entity_id=instance.id,
             entity_type='Quote',
+            company=getattr(instance, 'company', None),
             metadata={'quote_number': instance.quote_number, 'status': instance.status}
         )
 
@@ -188,6 +208,7 @@ def quote_saved(sender, instance, created, **kwargs):
             description=f'Customer accepted quote for R{instance.total_amount}',
             entity_id=instance.id,
             entity_type='Quote',
+            company=getattr(instance, 'company', None),
             metadata={'quote_number': instance.quote_number, 'status': instance.status}
         )
 
@@ -227,6 +248,7 @@ def advance_saved(sender, instance, created, **kwargs):
             description=f'Amount: R{instance.amount} - Invoice: {instance.invoice.invoice_number if instance.invoice else "N/A"}',
             entity_id=instance.id,
             entity_type='AdvanceRequest',
+            company=getattr(instance, 'company', None) or getattr(instance.invoice, 'company', None) if instance.invoice else None,
             metadata={'amount': str(instance.amount), 'status': instance.status}
         )
 
@@ -247,6 +269,7 @@ def advance_saved(sender, instance, created, **kwargs):
             description=f'Amount: R{instance.amount} - Net: R{instance.net_amount}',
             entity_id=instance.id,
             entity_type='AdvanceRequest',
+            company=getattr(instance, 'company', None) or getattr(instance.invoice, 'company', None) if instance.invoice else None,
             metadata={'amount': str(instance.amount), 'status': instance.status}
         )
 
@@ -280,6 +303,7 @@ def advance_saved(sender, instance, created, **kwargs):
             description=f'Funds disbursed: R{instance.net_amount}',
             entity_id=instance.id,
             entity_type='AdvanceRequest',
+            company=getattr(instance, 'company', None) or getattr(instance.invoice, 'company', None) if instance.invoice else None,
             metadata={'amount': str(instance.amount), 'status': instance.status}
         )
 
@@ -395,6 +419,16 @@ def audit_advance_delete(sender, instance, **kwargs):
 
 
 @receiver(post_save, sender='core.Vehicle')
+def vehicle_scores_on_save(sender, instance, created, **kwargs):
+    """Recompute scores whenever a vehicle record is saved (maintenance dates, fuel etc. may have changed)."""
+    try:
+        from core.tasks import compute_vehicle_scores
+        compute_vehicle_scores.delay(instance.pk)
+    except Exception:
+        pass  # never block the vehicle save
+
+
+@receiver(post_save, sender='core.Vehicle')
 def audit_vehicle_save(sender, instance, created, **kwargs):
     """Log Vehicle creation and updates to audit log."""
     from core.models import AuditLog
@@ -424,6 +458,16 @@ def audit_vehicle_delete(sender, instance, **kwargs):
         'plate': instance.plate,
         'vin': instance.vin,
     })
+
+
+@receiver(post_save, sender='core.Driver')
+def driver_scores_on_save(sender, instance, created, **kwargs):
+    """Recompute driver scores when violations/accidents/experience are updated."""
+    try:
+        from core.tasks import compute_driver_scores
+        compute_driver_scores.delay(instance.pk)
+    except Exception:
+        pass
 
 
 @receiver(post_save, sender='core.Driver')
