@@ -737,7 +737,7 @@ class FuelPriceSurchargeCheckView(APIView):
             try:
                 current_fuel = fetch_fuel_prices()
                 fuel_current = float(current_fuel.diesel_inland)
-            except:
+            except Exception:
                 fuel_current = 20.0  # fallback
 
             fuel_at_creation = float(quote.fuel_price_at_creation) if quote.fuel_price_at_creation else fuel_current
@@ -798,7 +798,7 @@ class QuoteFuelAlertView(APIView):
             try:
                 current_fuel = fetch_fuel_prices()
                 fuel_current = float(current_fuel.diesel_inland)
-            except:
+            except Exception:
                 fuel_current = 20.0
 
             fuel_at_creation = float(quote.fuel_price_at_creation) if quote.fuel_price_at_creation else fuel_current
@@ -1021,7 +1021,7 @@ class QuoteWinProbabilityView(APIView):
 
             # Get client historical acceptance rate
             try:
-                customer = Customer.objects.get(id=client_id)
+                customer = Customer.objects.get(id=client_id, company=request.user.company)
                 accepted_count = Quote.objects.filter(
                     customer=customer,
                     outcome='accepted'
@@ -1039,7 +1039,7 @@ class QuoteWinProbabilityView(APIView):
                     client_tier = 1  # Regular
                 else:
                     client_tier = 0  # New
-            except:
+            except Exception:
                 historical_acceptance_rate = 0.7
                 client_tier = 0
 
