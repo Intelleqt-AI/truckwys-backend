@@ -23,10 +23,21 @@ for _key in (
 SECRET_KEY = config('SECRET_KEY', default='django-insecure-dev-key-change-in-production')
 DEBUG = config('DEBUG', default=False, cast=bool)
 
-# Fail fast: never run in production on the insecure dev SECRET_KEY.
+# In production (DEBUG=False) we must never run on the shared insecure dev key.
+# Rather than crash the boot, self-heal: generate an ephemeral random key so the
+# service still starts, and log a loud warning. CAVEAT: an ephemeral key is
+# regenerated on every restart/worker, which invalidates sessions and signed
+# links (password-reset / email-verify). Set SECRET_KEY in the environment
+# (e.g. Railway → Variables) for stable, secure behaviour.
 if not DEBUG and SECRET_KEY == 'django-insecure-dev-key-change-in-production':
-    from django.core.exceptions import ImproperlyConfigured
-    raise ImproperlyConfigured('SECRET_KEY must be set via environment when DEBUG=False.')
+    import logging
+    from django.core.management.utils import get_random_secret_key
+    SECRET_KEY = get_random_secret_key()
+    logging.getLogger('django').warning(
+        'SECRET_KEY is not set in the environment — generated an ephemeral key so '
+        'the app can boot. Sessions and signed links will NOT survive restarts. '
+        'Set SECRET_KEY in your environment (e.g. Railway Variables) ASAP.'
+    )
 
 # ALLOWED_HOSTS from environment (CSV)
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,*.ngrok.io', cast=lambda v: [s.strip() for s in v.split(',')])
