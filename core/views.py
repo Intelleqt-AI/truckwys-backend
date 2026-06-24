@@ -1283,7 +1283,7 @@ class CustomerViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['status', 'city', 'state']
-    search_fields = ['name', 'company', 'email', 'phone']
+    search_fields = ['name', 'company_name', 'email', 'phone']
     ordering_fields = ['created_at', 'name']
 
     @action(detail=True, methods=['get'])
@@ -1626,6 +1626,8 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
             company=getattr(quote, 'company', None) or getattr(request.user, 'company', None),
             customer=quote.customer,
             quote=quote,
+            driver=quote.driver,
+            vehicle=quote.vehicle,
             pickup_location=quote.pickup_location,
             delivery_location=quote.delivery_location,
             pickup_city=quote.origin or 'TBD',
@@ -1876,6 +1878,16 @@ class PublicQuoteRespondView(APIView):
                 return Response(
                     {'error': 'Invalid quote link'},
                     status=status.HTTP_404_NOT_FOUND
+                )
+
+            if quote.status in ['ACCEPTED', 'DECLINED']:
+                return Response(
+                    {
+                        'error': 'This quote has already been responded to',
+                        'status': quote.status,
+                        'already_responded': True,
+                    },
+                    status=status.HTTP_409_CONFLICT
                 )
 
             action = request.data.get('action')

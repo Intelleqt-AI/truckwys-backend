@@ -181,15 +181,22 @@ class VehicleLogSerializer(serializers.ModelSerializer):
 # Load Serializer
 class LoadSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source='customer.name', read_only=True)
-    driver_name = serializers.CharField(source='driver.user.username', read_only=True)
+    driver_name = serializers.SerializerMethodField()
     vehicle_info = serializers.SerializerMethodField()
     quote_number = serializers.SerializerMethodField()
-    
+
     class Meta:
         model = Load
         fields = '__all__'
         read_only_fields = ['id', 'created_at', 'updated_at', 'created_by']
-    
+
+    def get_driver_name(self, obj):
+        if not obj.driver:
+            return None
+        u = obj.driver.user
+        name = f"{u.first_name} {u.last_name}".strip()
+        return name or u.username
+
     def get_vehicle_info(self, obj):
         if obj.vehicle:
             return f"{obj.vehicle.make} {obj.vehicle.model} - {obj.vehicle.plate}"
