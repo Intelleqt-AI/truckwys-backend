@@ -13,12 +13,28 @@
 #   implicit company scoping through related objects ✓
 # - UserViewSet: Admin-only, filters all users (needs multi-tenancy if non-admin users access) ⚠️
 
+import logging as _logging
 from rest_framework import viewsets, status, filters
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
+from rest_framework.views import exception_handler as _drf_exception_handler
+
+_exc_logger = _logging.getLogger(__name__)
+
+def custom_exception_handler(exc, context):
+    """Return JSON for every error — never let Django's HTML debug page leak to the API."""
+    response = _drf_exception_handler(exc, context)
+    if response is not None:
+        return response
+    # Unhandled exception (e.g. OperationalError, AttributeError) — log and return 500 JSON.
+    _exc_logger.exception('Unhandled exception in %s', context.get('view', ''))
+    return Response(
+        {'error': 'An unexpected server error occurred. Please try again.'},
+        status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+    )
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.authtoken.models import Token
 from django.contrib.auth import authenticate
@@ -108,7 +124,7 @@ class RegisterView(APIView):
         otp_code = str(secrets.randbelow(900000) + 100000)
         cache.set(f'email_verify_{email}', otp_code, timeout=600)
         from core.tasks import send_verification_email_task
-        send_verification_email_task.delay(email, otp_code, first_name or username)
+        send_verification_email_task(email, otp_code, first_name or username)
 
         return Response({
             'message': 'Please check your email for a verification code.',
@@ -187,7 +203,7 @@ class ResendVerificationView(APIView):
         otp_code = str(secrets.randbelow(900000) + 100000)
         cache.set(f'email_verify_{email}', otp_code, timeout=600)
         from core.tasks import send_verification_email_task
-        send_verification_email_task.delay(email, otp_code, pending.get('first_name') or pending.get('username') or email)
+        send_verification_email_task(email, otp_code, pending.get('first_name') or pending.get('username') or email)
         return Response({'detail': 'Verification code resent. Please check your email.'})
 
 
@@ -498,12 +514,20 @@ class FleetOverviewView(APIView):
         
         # Banner message data
         margin_change = 2.3
-        flagged_vehicles = Vehicle.objects.filter(
+        # Vehicles flagged by km-based service (within 10% of interval or overdue)
+        # plus those with expiring registration/insurance.
+        company_vehicles = Vehicle.objects.filter(company=request.user.company)
+        km_flagged = sum(
+            1 for v in company_vehicles
+            if v.service_interval_km and v.last_service_mileage is not None and v.mileage is not None
+            and (float(v.mileage) - float(v.last_service_mileage)) >= float(v.service_interval_km) * 0.9
+        )
+        date_flagged = company_vehicles.filter(
             Q(next_maintenance_due__lte=now + timedelta(days=30)) |
             Q(insurance_expiry__lte=now + timedelta(days=30)) |
-            Q(registration_expiry__lte=now + timedelta(days=30)),
-            company=request.user.company
+            Q(registration_expiry__lte=now + timedelta(days=30))
         ).count()
+        flagged_vehicles = km_flagged + date_flagged
         
         return Response({
             'header': {
@@ -1365,6 +1389,9 @@ class VehicleTypeViewSet(viewsets.ModelViewSet):
         return VehicleType.objects.filter(
             Q(company=None) | Q(company=user.company)
         )
+
+    def perform_create(self, serializer):
+        serializer.save(company=self.request.user.company)
 
 
 class VehicleLogViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
@@ -2291,7 +2318,13 @@ class LocationSuggestView(APIView):
         try:
             r = http_requests.get(
                 f'https://api.tomtom.com/search/2/search/{query}.json',
-                params={'key': self.TOMTOM_API_KEY, 'limit': 5, 'language': 'en-US'},
+                params={
+                    'key': self.TOMTOM_API_KEY,
+                    'limit': 6,
+                    'language': 'en-US',
+                    'countrySet': 'ZA',
+                    'typeahead': 'true',
+                },
                 timeout=4,
             )
             if r.status_code != 200:
@@ -2301,10 +2334,10 @@ class LocationSuggestView(APIView):
                 addr = result.get('address', {})
                 pos = result.get('position', {})
                 label = addr.get('freeformAddress', '')
-                country = addr.get('country', '')
+                municipality = addr.get('municipality', '')
                 if not label:
                     continue
-                display = f"{label}, {country}" if country and country not in label else label
+                display = f"{label}, {municipality}" if municipality and municipality not in label else label
                 suggestions.append({'label': display, 'lat': pos.get('lat'), 'lon': pos.get('lon')})
             return Response(suggestions)
         except Exception:
@@ -2526,7 +2559,7 @@ class PasswordResetRequestView(APIView):
                 cache.set(f'pwd_reset_{email}', code, timeout=3600)  # 1hr
 
                 from core.tasks import send_password_reset_email_task
-                send_password_reset_email_task.delay(email, user.first_name or user.username, code)
+                send_password_reset_email_task(email, user.first_name or user.username, code)
         except Exception as e:
             pass
 
@@ -2659,7 +2692,7 @@ class InviteView(APIView):
 
         from core.tasks import send_invite_email_task
         invite_url = f"{settings.FRONTEND_URL}/invite/{token}"
-        send_invite_email_task.delay(email, invited_by_name, company.company_name, invite_url, role)
+        send_invite_email_task(email, invited_by_name, company.company_name, invite_url, role)
 
         return Response(
             {'success': True, 'message': 'Invite sent', 'token': token},
@@ -2775,7 +2808,7 @@ class InviteResendView(APIView):
         invite_url = f"{settings.FRONTEND_URL}/invite/{new_token}"
         invited_by_name = request.user.get_full_name() or request.user.username
         company_name = request.user.company.company_name if request.user.company else "TruckWys"
-        send_invite_email_task.delay(invite_data.get('email'), invited_by_name, company_name, invite_url, invite_data.get('role'))
+        send_invite_email_task(invite_data.get('email'), invited_by_name, company_name, invite_url, invite_data.get('role'))
 
         return Response({'success': True, 'message': 'Invite resent', 'token': new_token}, status=status.HTTP_200_OK)
 

@@ -17,44 +17,37 @@ import logging
 from decimal import Decimal
 from datetime import date
 
-from celery import shared_task
 from django.db.models import Sum
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Transactional email tasks — fire-and-forget, never block a request
+# Transactional email helpers — called synchronously from views
 # ---------------------------------------------------------------------------
 
-@shared_task(bind=True, max_retries=3, default_retry_delay=30)
-def send_verification_email_task(self, email: str, code: str, first_name: str):
+def send_verification_email_task(email: str, code: str, first_name: str):
     try:
         from core.services.email_service import send_verification_email
         send_verification_email(email, code, first_name)
     except Exception as exc:
-        logger.error('send_verification_email_task failed for %s: %s', email, exc)
-        raise self.retry(exc=exc)
+        logger.error('send_verification_email failed for %s: %s', email, exc)
 
 
-@shared_task(bind=True, max_retries=3, default_retry_delay=30)
-def send_password_reset_email_task(self, email: str, first_name: str, reset_code: str):
+def send_password_reset_email_task(email: str, first_name: str, reset_code: str):
     try:
         from core.services.email_service import send_password_reset_email
         send_password_reset_email(email, first_name, reset_code)
     except Exception as exc:
-        logger.error('send_password_reset_email_task failed for %s: %s', email, exc)
-        raise self.retry(exc=exc)
+        logger.error('send_password_reset_email failed for %s: %s', email, exc)
 
 
-@shared_task(bind=True, max_retries=3, default_retry_delay=30)
-def send_invite_email_task(self, email: str, invited_by_name: str, company_name: str, invite_url: str, role: str):
+def send_invite_email_task(email: str, invited_by_name: str, company_name: str, invite_url: str, role: str):
     try:
         from core.services.email_service import send_invite_email
         send_invite_email(email, invited_by_name, company_name, invite_url, role)
     except Exception as exc:
-        logger.error('send_invite_email_task failed for %s: %s', email, exc)
-        raise self.retry(exc=exc)
+        logger.error('send_invite_email failed for %s: %s', email, exc)
 
 # South African diesel price (ZAR/litre). Override via settings.FUEL_PRICE_ZAR.
 _DEFAULT_FUEL_PRICE = Decimal('22.50')
@@ -71,31 +64,50 @@ def _fuel_price() -> Decimal:
 
 def _maintenance_score(vehicle) -> int:
     """
-    0-100. Penalises overdue maintenance, expired insurance/registration,
-    and vehicles with no maintenance history.
+    0-100. Penalises overdue/approaching service based on km travelled,
+    expired registration, and vehicles with no maintenance data.
+    Falls back to date-based logic when km fields are not set.
     """
     today = date.today()
     score = 100
 
-    if vehicle.last_maintenance_date:
-        days_since = (today - vehicle.last_maintenance_date).days
-        if days_since > 180:
-            score -= 40
-        elif days_since > 90:
-            score -= 20
-        elif days_since > 60:
-            score -= 10
+    # --- km-based service scheduling (preferred) ---
+    has_km_data = (
+        vehicle.service_interval_km
+        and vehicle.last_service_mileage is not None
+        and vehicle.mileage is not None
+    )
+    if has_km_data:
+        km_since = float(vehicle.mileage) - float(vehicle.last_service_mileage)
+        interval = float(vehicle.service_interval_km)
+        km_overdue = km_since - interval
+        if km_overdue >= 0:
+            score -= 40  # already past service interval
+        elif km_since >= interval * 0.9:
+            score -= 15  # within 10% of interval (imminent)
+        elif km_since >= interval * 0.75:
+            score -= 5   # within 25% of interval (approaching)
     else:
-        score -= 30  # no recorded maintenance
+        # --- date-based fallback for vehicles without km service data ---
+        if vehicle.last_maintenance_date:
+            days_since = (today - vehicle.last_maintenance_date).days
+            if days_since > 180:
+                score -= 40
+            elif days_since > 90:
+                score -= 20
+            elif days_since > 60:
+                score -= 10
+        else:
+            score -= 30  # no maintenance data at all
 
-    if vehicle.next_maintenance_due:
-        days_until = (vehicle.next_maintenance_due - today).days
-        if days_until < 0:
-            score -= 30  # already overdue
-        elif days_until < 14:
-            score -= 15
-        elif days_until < 30:
-            score -= 5
+        if vehicle.next_maintenance_due:
+            days_until = (vehicle.next_maintenance_due - today).days
+            if days_until < 0:
+                score -= 30
+            elif days_until < 14:
+                score -= 15
+            elif days_until < 30:
+                score -= 5
 
     if vehicle.insurance_expiry:
         days_until = (vehicle.insurance_expiry - today).days
@@ -243,8 +255,7 @@ def _economics(vehicle, loads) -> tuple:
 # Main task
 # ---------------------------------------------------------------------------
 
-@shared_task(bind=True, max_retries=3, default_retry_delay=60)
-def compute_vehicle_scores(self, vehicle_id: int):
+def compute_vehicle_scores(vehicle_id: int):
     """
     Compute and persist all performance scores for a single vehicle.
     Safe to call multiple times — always overwrites with fresh values.
@@ -293,26 +304,21 @@ def compute_vehicle_scores(self, vehicle_id: int):
 
     except Exception as exc:
         logger.exception('compute_vehicle_scores failed for vehicle %s', vehicle_id)
-        raise self.retry(exc=exc)
 
 
 # ---------------------------------------------------------------------------
 # Nightly batch task
 # ---------------------------------------------------------------------------
 
-@shared_task
 def compute_all_vehicle_scores():
-    """
-    Nightly Celery Beat task: recompute scores for every vehicle.
-    Fans out one compute_vehicle_scores task per vehicle so they run in parallel.
-    """
+    """Recompute scores for every vehicle (run from management command or cron)."""
     from core.models import Vehicle
 
     ids = list(Vehicle.objects.values_list('pk', flat=True))
     for vid in ids:
-        compute_vehicle_scores.delay(vid)
+        compute_vehicle_scores(vid)
 
-    logger.info('compute_all_vehicle_scores: queued %d vehicles', len(ids))
+    logger.info('compute_all_vehicle_scores: processed %d vehicles', len(ids))
     return len(ids)
 
 
@@ -361,8 +367,7 @@ def _driver_margin_per_trip(loads):
     return round(sum(margins) / len(margins), 2)
 
 
-@shared_task(bind=True, max_retries=3, default_retry_delay=60)
-def compute_driver_scores(self, driver_id: int):
+def compute_driver_scores(driver_id: int):
     """Compute and persist all performance scores for a single driver."""
     from core.models import Driver, Load
     from decimal import Decimal
@@ -414,15 +419,13 @@ def compute_driver_scores(self, driver_id: int):
 
     except Exception as exc:
         logger.exception('compute_driver_scores failed for driver %s', driver_id)
-        raise self.retry(exc=exc)
 
 
-@shared_task
 def compute_all_driver_scores():
-    """Nightly batch: recompute scores for every driver."""
+    """Recompute scores for every driver (run from management command or cron)."""
     from core.models import Driver
     ids = list(Driver.objects.values_list('pk', flat=True))
     for did in ids:
-        compute_driver_scores.delay(did)
-    logger.info('compute_all_driver_scores: queued %d drivers', len(ids))
+        compute_driver_scores(did)
+    logger.info('compute_all_driver_scores: processed %d drivers', len(ids))
     return len(ids)
