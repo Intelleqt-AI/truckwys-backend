@@ -19,7 +19,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
-from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.authtoken.models import Token
 from django.contrib.auth import authenticate
 from django_filters.rest_framework import DjangoFilterBackend
@@ -76,49 +76,44 @@ class RegisterView(APIView):
     throttle_scope = 'login'
 
     def post(self, request):
-        serializer = UserSerializer(data=request.data)
-        if serializer.is_valid():
-            user = serializer.save()
-            user.set_password(request.data.get('password'))
+        import secrets
+        import logging
+        from django.core.cache import cache
+        from django.contrib.auth.hashers import make_password
+        from core.services.email_service import send_verification_email
 
-            # Create a Company for the new user
-            company_name = request.data.get('company_name', f"{user.first_name or user.username}'s Transport")
-            from core.models import Company, Facility
-            company = Company.objects.create(company_name=company_name)
-            user.company = company
-            user.role = 'ADMIN'
-            user.is_active = False  # Require email verification before login
-            user.save()
+        email = request.data.get('email', '').strip().lower()
+        password = request.data.get('password', '')
+        first_name = request.data.get('first_name', '')
+        last_name = request.data.get('last_name', '')
+        username = request.data.get('username', '').strip() or email
+        company_name = request.data.get('company_name', f"{first_name or username}'s Transport")
 
-            # Create a default Facility for the company
-            Facility.objects.create(
-                company=company,
-                limit=1000000,
-                outstanding=0,
-                status='ACTIVE'
-            )
+        if not email or not password:
+            return Response({'detail': 'email and password are required.'}, status=status.HTTP_400_BAD_REQUEST)
 
-            # Seed default vehicle types so the add-vehicle picker isn't empty
-            from core.services.company_setup import seed_default_vehicle_types
-            seed_default_vehicle_types(company)
+        if User.objects.filter(email=email).exists():
+            return Response({'detail': 'An account with this email already exists.'}, status=status.HTTP_400_BAD_REQUEST)
 
-            # Generate OTP and send verification email via SMTP
-            import secrets
-            from django.core.cache import cache
-            otp_code = str(secrets.randbelow(900000) + 100000)
-            cache.set(f'email_verify_{user.email}', otp_code, timeout=600)
-            try:
-                from core.services.email_service import send_verification_email
-                send_verification_email(user.email, otp_code, user.first_name or user.username)
-            except Exception as e:
-                import logging
-                logging.getLogger(__name__).error(f"Failed to send verification email to {user.email}: {e}")
+        # Store registration data in cache — account is created only after OTP verification
+        cache.set(f'pending_registration_{email}', {
+            'email': email,
+            'username': username,
+            'first_name': first_name,
+            'last_name': last_name,
+            'password': make_password(password),
+            'company_name': company_name,
+        }, timeout=600)
 
-            return Response({
-                'message': 'Account created. Please check your email for a verification code.',
-                'email': user.email,
-            }, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        otp_code = str(secrets.randbelow(900000) + 100000)
+        cache.set(f'email_verify_{email}', otp_code, timeout=600)
+        from core.tasks import send_verification_email_task
+        send_verification_email_task.delay(email, otp_code, first_name or username)
+
+        return Response({
+            'message': 'Please check your email for a verification code.',
+            'email': email,
+        }, status=status.HTTP_200_OK)
 
 
 class EmailVerifyView(APIView):
@@ -127,22 +122,45 @@ class EmailVerifyView(APIView):
     throttle_scope = 'login'
 
     def post(self, request):
-        import logging
+        import hmac
         from django.core.cache import cache
+        from core.models import Company, Facility
+        from core.services.company_setup import seed_default_vehicle_types
+
         email = request.data.get('email', '').strip().lower()
         code = request.data.get('code', '').strip()
         if not email or not code:
             return Response({'detail': 'email and code are required.'}, status=status.HTTP_400_BAD_REQUEST)
+
         cached_code = cache.get(f'email_verify_{email}')
-        if not cached_code or str(cached_code) != str(code):
+        if not cached_code or not hmac.compare_digest(str(cached_code), str(code)):
             return Response({'detail': 'Invalid or expired verification code.'}, status=status.HTTP_400_BAD_REQUEST)
-        try:
-            user = User.objects.get(email=email)
-        except User.DoesNotExist:
-            return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
-        user.is_active = True
+
+        pending = cache.get(f'pending_registration_{email}')
+        if not pending:
+            return Response({'detail': 'Registration session expired. Please register again.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Create user now that email is verified
+        user = User.objects.create(
+            email=pending['email'],
+            username=pending['username'],
+            first_name=pending['first_name'],
+            last_name=pending['last_name'],
+            password=pending['password'],
+            is_active=True,
+        )
+
+        company = Company.objects.create(company_name=pending['company_name'])
+        user.company = company
+        user.role = 'ADMIN'
         user.save()
+
+        Facility.objects.create(company=company, limit=1000000, outstanding=0, status='ACTIVE')
+        seed_default_vehicle_types(company)
+
         cache.delete(f'email_verify_{email}')
+        cache.delete(f'pending_registration_{email}')
+
         token, _ = Token.objects.get_or_create(user=user)
         return Response({'token': token.key, 'user': UserSerializer(user).data})
 
@@ -154,25 +172,23 @@ class ResendVerificationView(APIView):
 
     def post(self, request):
         import secrets
+        import logging
         from django.core.cache import cache
+        from core.services.email_service import send_verification_email
+
         email = request.data.get('email', '').strip().lower()
         if not email:
             return Response({'detail': 'email is required.'}, status=status.HTTP_400_BAD_REQUEST)
-        try:
-            user = User.objects.get(email=email)
-            if user.is_active:
-                return Response({'detail': 'Account is already verified.'}, status=status.HTTP_400_BAD_REQUEST)
-        except User.DoesNotExist:
-            return Response({'detail': 'If an account exists, a verification email has been sent.'})
+
+        pending = cache.get(f'pending_registration_{email}')
+        if not pending:
+            return Response({'detail': 'No pending registration found. Please register again.'}, status=status.HTTP_400_BAD_REQUEST)
+
         otp_code = str(secrets.randbelow(900000) + 100000)
         cache.set(f'email_verify_{email}', otp_code, timeout=600)
-        try:
-            from core.services.email_service import send_verification_email
-            send_verification_email(email, otp_code, user.first_name or user.username)
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).error(f"Failed to resend verification email to {email}: {e}")
-        return Response({'detail': 'If an account exists, a verification email has been sent.'})
+        from core.tasks import send_verification_email_task
+        send_verification_email_task.delay(email, otp_code, pending.get('first_name') or pending.get('username') or email)
+        return Response({'detail': 'Verification code resent. Please check your email.'})
 
 
 class LoginView(APIView):
@@ -237,10 +253,18 @@ class ChangePasswordView(APIView):
 
 class UserProfileView(APIView):
     permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get(self, request):
-        serializer = UserSerializer(request.user)
+        serializer = UserSerializer(request.user, context={'request': request})
         return Response(serializer.data)
+
+    def patch(self, request):
+        serializer = UserSerializer(request.user, data=request.data, partial=True, context={'request': request})
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 class SessionsView(APIView):
@@ -1152,6 +1176,12 @@ class UserViewSet(viewsets.ModelViewSet):
         if not allowed:
             raise PermissionDenied(detail=message)
         serializer.save(company=company)
+
+    def partial_update(self, request, *args, **kwargs):
+        """Prevent admins from changing their own role."""
+        if 'role' in request.data and str(request.user.id) == str(kwargs.get('pk')):
+            return Response({'error': 'You cannot change your own role.'}, status=status.HTTP_400_BAD_REQUEST)
+        return super().partial_update(request, *args, **kwargs)
 
     @action(detail=False, methods=['post'])
     def invite(self, request):
@@ -2495,14 +2525,8 @@ class PasswordResetRequestView(APIView):
                 from django.core.cache import cache
                 cache.set(f'pwd_reset_{email}', code, timeout=3600)  # 1hr
 
-                # Send password reset email
-                try:
-                    from core.services.email_service import send_password_reset_email
-                    send_password_reset_email(email, user.first_name or user.username, code)
-                except Exception as e:
-                    import logging
-                    logger = logging.getLogger(__name__)
-                    logger.error(f"Failed to send password reset email to {email}: {str(e)}")
+                from core.tasks import send_password_reset_email_task
+                send_password_reset_email_task.delay(email, user.first_name or user.username, code)
         except Exception as e:
             pass
 
@@ -2552,21 +2576,26 @@ class InviteView(APIView):
 
     def get(self, request):
         """List pending invites (PENDING users) for the admin's company."""
+        import datetime
         from django.core.cache import cache
         company = resolve_user_company(request.user)
         pending = User.objects.filter(company=company, status='PENDING').order_by('-created_at')
-        return Response([
-            {
+        rows = []
+        for u in pending:
+            token = cache.get(f'invite_user_{u.id}')
+            # Skip invites whose cache token has expired (Redis restart / TTL elapsed)
+            if not token:
+                continue
+            expires_at = u.created_at + datetime.timedelta(days=7) if u.created_at else None
+            rows.append({
                 'id': u.id,
                 'email': u.email,
                 'role': u.role,
-                'status': u.status,
-                'created_at': u.created_at,
-                # Token kept in a reverse cache index so resend/revoke work from the list.
-                'token': cache.get(f'invite_user_{u.id}'),
-            }
-            for u in pending
-        ])
+                'invited_at': u.created_at,
+                'expires_at': expires_at,
+                'token': token,
+            })
+        return Response(rows)
 
     def post(self, request):
         import secrets
@@ -2628,16 +2657,9 @@ class InviteView(APIView):
         # Reverse index so the pending-invites list can surface the token for resend/revoke.
         cache.set(f'invite_user_{user.id}', token, timeout=7 * 24 * 60 * 60)
 
-        # Send invite email (best-effort: a missing/unconfigured provider must not
-        # 500 the whole invite — the pending user is already created).
-        try:
-            from core.services.resend_email import send_invite_email
-            invite_url = f"{settings.FRONTEND_URL}/invite/{token}"
-            company_name = company.company_name
-            send_invite_email(email, invited_by_name, company_name, invite_url, role)
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning(f"Invite email not sent to {email}: {e}")
+        from core.tasks import send_invite_email_task
+        invite_url = f"{settings.FRONTEND_URL}/invite/{token}"
+        send_invite_email_task.delay(email, invited_by_name, company.company_name, invite_url, role)
 
         return Response(
             {'success': True, 'message': 'Invite sent', 'token': token},
@@ -2695,6 +2717,12 @@ class InviteTokenView(APIView):
         if not user:
             return Response({'error': 'User not found'}, status=status.HTTP_400_BAD_REQUEST)
 
+        full_name = request.data.get('full_name', '').strip()
+        if full_name:
+            parts = full_name.split(' ', 1)
+            user.first_name = parts[0]
+            user.last_name = parts[1] if len(parts) > 1 else ''
+
         user.set_password(password)
         user.status = 'ACTIVE'
         user.is_active = True
@@ -2743,22 +2771,11 @@ class InviteResendView(APIView):
 
         # Resend invite email (best-effort — a missing/unconfigured provider must
         # not fail the resend; the token has already been regenerated).
-        try:
-            from core.services.resend_email import send_invite_email
-            invite_url = f"{settings.FRONTEND_URL}/invite/{new_token}"
-            invited_by_name = request.user.get_full_name() or request.user.username
-            company_name = request.user.company.company_name if request.user.company else "TruckWys"
-
-            send_invite_email(
-                invite_data.get('email'),
-                invited_by_name,
-                company_name,
-                invite_url,
-                invite_data.get('role')
-            )
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning(f"Invite email not resent: {e}")
+        from core.tasks import send_invite_email_task
+        invite_url = f"{settings.FRONTEND_URL}/invite/{new_token}"
+        invited_by_name = request.user.get_full_name() or request.user.username
+        company_name = request.user.company.company_name if request.user.company else "TruckWys"
+        send_invite_email_task.delay(invite_data.get('email'), invited_by_name, company_name, invite_url, invite_data.get('role'))
 
         return Response({'success': True, 'message': 'Invite resent', 'token': new_token}, status=status.HTTP_200_OK)
 
