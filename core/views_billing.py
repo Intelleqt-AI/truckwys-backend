@@ -138,12 +138,18 @@ class PayFastITNView(APIView):
     authentication_classes = []
 
     def post(self, request):
+        # Capture the raw body FIRST: once request.POST reads the stream,
+        # request.body raises RawPostDataException. The raw body is needed to
+        # verify the ITN signature against PayFast's exact bytes/order.
+        try:
+            raw_body = request.body.decode('utf-8', 'ignore')
+        except Exception:
+            raw_body = ''
         post_data = request.POST.dict()
         source_ip = request.META.get('REMOTE_ADDR', '')
 
-        # 1. Verify the ITN signature (and source IP in production). Pass the raw
-        #    body so the signature is rebuilt from PayFast's exact bytes/order.
-        if not validate_itn(post_data, source_ip, request.body.decode('utf-8', 'ignore')):
+        # 1. Verify the ITN signature (and source IP in production).
+        if not validate_itn(post_data, source_ip, raw_body):
             return Response({'detail': 'Invalid signature.'}, status=status.HTTP_400_BAD_REQUEST)
 
         # 2. Server-to-server confirmation: PayFast must echo this ITN as VALID.
