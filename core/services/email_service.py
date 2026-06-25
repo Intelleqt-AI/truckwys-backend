@@ -1,23 +1,26 @@
 """
 Email Service for sending invoice emails with PDF attachments,
-and transactional auth emails (verification, etc.) via Django SMTP.
+and transactional auth emails (verification, etc.) via Resend.
 """
 
 from typing import Optional
-from django.core.mail import EmailMultiAlternatives
-from django.template.loader import render_to_string
 from django.utils.html import strip_tags
 from django.conf import settings
 from django.utils import timezone
+import logging
+import resend
 import os
+
+from core.models import Invoice, Company
+
+logger = logging.getLogger(__name__)
 
 from core.models import Invoice, Company
 
 
 def send_verification_email(email: str, code: str, first_name: str) -> bool:
-    """Send email verification OTP via Django SMTP backend."""
+    """Send email verification OTP via Resend."""
     subject = "Verify your TruckWys account"
-    text_content = f"Hi {first_name},\n\nYour TruckWys verification code is: {code}\n\nThis code expires in 10 minutes."
     html_content = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -108,30 +111,22 @@ def send_verification_email(email: str, code: str, first_name: str) -> bool:
 </body>
 </html>"""
     try:
-        msg = EmailMultiAlternatives(
-            subject=subject,
-            body=text_content,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            to=[email],
-        )
-        msg.attach_alternative(html_content, "text/html")
-        msg.send(fail_silently=False)
+        resend.api_key = settings.RESEND_API_KEY
+        resend.Emails.send({
+            "from": settings.EMAIL_FROM,
+            "to": [email],
+            "subject": subject,
+            "html": html_content,
+        })
         return True
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"Failed to send verification email to {email}: {e}")
+        logger.error(f"Failed to send verification email to {email}: {e}")
         return False
 
 
 def send_password_reset_email(email: str, first_name: str, reset_code: str) -> bool:
     """Send password reset OTP via Django SMTP backend."""
-    import logging
     subject = "Your TruckWys password reset code"
-    text_content = (
-        f"Hi {first_name},\n\n"
-        f"Your TruckWys password reset code is: {reset_code}\n\n"
-        f"This code expires in 1 hour. If you didn't request this, ignore this email."
-    )
     html_content = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -210,31 +205,23 @@ def send_password_reset_email(email: str, first_name: str, reset_code: str) -> b
 </body>
 </html>"""
     try:
-        msg = EmailMultiAlternatives(
-            subject=subject,
-            body=text_content,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            to=[email],
-        )
-        msg.attach_alternative(html_content, "text/html")
-        msg.send(fail_silently=False)
+        resend.api_key = settings.RESEND_API_KEY
+        resend.Emails.send({
+            "from": settings.EMAIL_FROM,
+            "to": [email],
+            "subject": subject,
+            "html": html_content,
+        })
         return True
     except Exception as e:
-        logging.getLogger(__name__).error(f"Failed to send password reset email to {email}: {e}")
+        logger.error(f"Failed to send password reset email to {email}: {e}")
         return False
 
 
 def send_invite_email(invite_email: str, invited_by_name: str, company_name: str, invite_url: str, role: str) -> bool:
-    """Send team invitation email via Django SMTP backend."""
-    import logging
+    """Send team invitation email via Resend."""
     role_display = role.replace('_', ' ').title()
     subject = f"You've been invited to join {company_name} on TruckWys"
-    text_content = (
-        f"Hi,\n\n"
-        f"{invited_by_name} has invited you to join {company_name} on TruckWys as {role_display}.\n\n"
-        f"Accept your invitation: {invite_url}\n\n"
-        f"This invitation expires in 7 days."
-    )
     html_content = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -303,17 +290,16 @@ def send_invite_email(invite_email: str, invited_by_name: str, company_name: str
 </body>
 </html>"""
     try:
-        msg = EmailMultiAlternatives(
-            subject=subject,
-            body=text_content,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            to=[invite_email],
-        )
-        msg.attach_alternative(html_content, "text/html")
-        msg.send(fail_silently=False)
+        resend.api_key = settings.RESEND_API_KEY
+        resend.Emails.send({
+            "from": settings.EMAIL_FROM,
+            "to": [invite_email],
+            "subject": subject,
+            "html": html_content,
+        })
         return True
     except Exception as e:
-        logging.getLogger(__name__).error(f"Failed to send invite email to {invite_email}: {e}")
+        logger.error(f"Failed to send invite email to {invite_email}: {e}")
         return False
 
 

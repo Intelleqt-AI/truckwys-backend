@@ -22,6 +22,40 @@ from django.db.models import Sum
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Transactional email tasks — fire-and-forget, never block a request
+# ---------------------------------------------------------------------------
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=30)
+def send_verification_email_task(self, email: str, code: str, first_name: str):
+    try:
+        from core.services.email_service import send_verification_email
+        send_verification_email(email, code, first_name)
+    except Exception as exc:
+        logger.error('send_verification_email_task failed for %s: %s', email, exc)
+        raise self.retry(exc=exc)
+
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=30)
+def send_password_reset_email_task(self, email: str, first_name: str, reset_code: str):
+    try:
+        from core.services.email_service import send_password_reset_email
+        send_password_reset_email(email, first_name, reset_code)
+    except Exception as exc:
+        logger.error('send_password_reset_email_task failed for %s: %s', email, exc)
+        raise self.retry(exc=exc)
+
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=30)
+def send_invite_email_task(self, email: str, invited_by_name: str, company_name: str, invite_url: str, role: str):
+    try:
+        from core.services.email_service import send_invite_email
+        send_invite_email(email, invited_by_name, company_name, invite_url, role)
+    except Exception as exc:
+        logger.error('send_invite_email_task failed for %s: %s', email, exc)
+        raise self.retry(exc=exc)
+
 # South African diesel price (ZAR/litre). Override via settings.FUEL_PRICE_ZAR.
 _DEFAULT_FUEL_PRICE = Decimal('22.50')
 

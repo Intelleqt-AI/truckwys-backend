@@ -128,9 +128,8 @@ urlpatterns = [
     path('auth/resend-verification/', ResendVerificationView.as_view(), name='resend-verification'),
     path('auth/invite/', InviteView.as_view(), name='auth-invite'),
     path('auth/invite/<str:token>/accept/', InviteTokenView.as_view(), name='auth-invite-accept'),
-    path('auth/invite/<str:token>/', InviteTokenView.as_view(), name='auth-invite-detail'),
     path('auth/invite/<str:token>/resend/', InviteResendView.as_view(), name='auth-invite-resend'),
-    path('auth/invite/<str:token>/accept/', InviteAcceptView.as_view(), name='auth-invite-accept'),
+    path('auth/invite/<str:token>/', InviteTokenView.as_view(), name='auth-invite-detail'),
     
     # Fleet/Vehicle specific endpoints (must come before router to avoid conflicts)
     path('fleet/overview/', FleetOverviewView.as_view(), name='fleet-overview'),
