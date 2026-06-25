@@ -33,7 +33,11 @@ class Quote(models.Model):
     
     pickup_location = models.CharField(max_length=500)
     delivery_location = models.CharField(max_length=500)
-    
+    pickup_lat = models.DecimalField(max_digits=12, decimal_places=7, null=True, blank=True)
+    pickup_lng = models.DecimalField(max_digits=12, decimal_places=7, null=True, blank=True)
+    delivery_lat = models.DecimalField(max_digits=12, decimal_places=7, null=True, blank=True)
+    delivery_lng = models.DecimalField(max_digits=12, decimal_places=7, null=True, blank=True)
+
     origin = models.CharField(max_length=50, blank=True)  # e.g., "JHB", "CPT"
     destination = models.CharField(max_length=50, blank=True)  # e.g., "DUR", "PE"
     

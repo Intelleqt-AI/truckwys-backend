@@ -165,6 +165,7 @@ MEDIA_ROOT = BASE_DIR / 'media'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 REST_FRAMEWORK = {
+    'EXCEPTION_HANDLER': 'core.views.custom_exception_handler',
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework.authentication.TokenAuthentication',
         'rest_framework.authentication.SessionAuthentication',
@@ -273,28 +274,8 @@ PAYFAST_SANDBOX = config('PAYFAST_SANDBOX', default=True, cast=bool)
 CONTROLFLEET_WEBHOOK_KEY = config('CONTROLFLEET_WEBHOOK_KEY', default='')
 CONTROLFLEET_API_KEY = config('CONTROLFLEET_API_KEY', default='')
 
-# Celery / Redis (async tasks). Connection is lazy — no broker needed for the
-# web process unless a task is actually dispatched.
+# Redis — used by Django Channels (WebSocket channel layer)
 REDIS_URL = config('REDIS_URL', default='redis://localhost:6379/0')
-CELERY_BROKER_URL = config('CELERY_BROKER_URL', default=REDIS_URL)
-CELERY_RESULT_BACKEND = config('CELERY_RESULT_BACKEND', default=REDIS_URL)
-CELERY_TASK_ALWAYS_EAGER = config('CELERY_TASK_ALWAYS_EAGER', default=False, cast=bool)
-CELERY_ACCEPT_CONTENT = ['json']
-CELERY_TASK_SERIALIZER = 'json'
-CELERY_RESULT_SERIALIZER = 'json'
-
-# Nightly vehicle score recomputation (runs at 02:00 every day)
-from celery.schedules import crontab
-CELERY_BEAT_SCHEDULE = {
-    'vehicle-scores-nightly': {
-        'task': 'core.tasks.compute_all_vehicle_scores',
-        'schedule': crontab(hour=2, minute=0),
-    },
-    'driver-scores-nightly': {
-        'task': 'core.tasks.compute_all_driver_scores',
-        'schedule': crontab(hour=2, minute=10),
-    },
-}
 
 # ZAR diesel price used for cost/margin calculations.
 # Update this periodically to match the current pump price.

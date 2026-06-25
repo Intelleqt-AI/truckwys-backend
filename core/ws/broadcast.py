@@ -27,5 +27,6 @@ def broadcast_event(company_id, event_type: str, message: str = '', data: dict |
             f'company_{company_id}',
             {'type': 'app.event', 'payload': payload},
         )
+        logger.debug('broadcast_event OK: company=%s event=%s', company_id, event_type)
     except Exception as exc:  # never break the request because a push failed
-        logger.warning('broadcast_event failed: %s', exc)
+        logger.error('broadcast_event FAILED company=%s event=%s: %s', company_id, event_type, exc, exc_info=True)

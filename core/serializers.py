@@ -122,6 +122,7 @@ class VehicleSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'company', 'vin', 'make', 'model', 'driver', 'vehicle_type',
             'year', 'plate', 'type', 'capacity', 'status', 'fuel_type', 'mileage',
+            'service_interval_km', 'last_service_mileage',
             'last_maintenance_date', 'next_maintenance_due', 'insurance_expiry',
             'registration_expiry', 'ai_health_score', 'fuel_efficiency_score',
             'uptime_score', 'maintenance_score', 'uptime_percentage', 'cost_per_km',
@@ -163,11 +164,12 @@ class VehicleTypeSerializer(serializers.ModelSerializer):
     class Meta:
         model = VehicleType
         fields = '__all__'
-        read_only_fields = ['id', 'created_at', 'updated_at']
-        # Optional on quick-add; sensible defaults keep the directory add simple.
+        read_only_fields = ['id', 'company', 'created_at', 'updated_at']
         extra_kwargs = {
-            'max_distance': {'required': False, 'default': 0},
             'description': {'required': False, 'allow_blank': True, 'default': ''},
+            'capacity': {'required': False, 'default': 0},
+            'max_distance': {'required': False, 'default': 0},
+            'base_rate': {'required': False, 'default': 0},
         }
 
 
