@@ -141,8 +141,9 @@ class PayFastITNView(APIView):
         post_data = request.POST.dict()
         source_ip = request.META.get('REMOTE_ADDR', '')
 
-        # 1. Verify the ITN signature (and source IP in production).
-        if not validate_itn(post_data, source_ip):
+        # 1. Verify the ITN signature (and source IP in production). Pass the raw
+        #    body so the signature is rebuilt from PayFast's exact bytes/order.
+        if not validate_itn(post_data, source_ip, request.body.decode('utf-8', 'ignore')):
             return Response({'detail': 'Invalid signature.'}, status=status.HTTP_400_BAD_REQUEST)
 
         # 2. Server-to-server confirmation: PayFast must echo this ITN as VALID.
