@@ -106,7 +106,7 @@ def build_payment_data(plan, company_id, user_email, first_name='', last_name=''
     }
 
 
-def validate_itn(post_data, source_ip=''):
+def validate_itn(post_data, source_ip='', raw_body=''):
     """
     Validate an incoming ITN callback.
     1. Verify signature
@@ -115,9 +115,20 @@ def validate_itn(post_data, source_ip=''):
     """
     passphrase = getattr(settings, 'PAYFAST_PASSPHRASE', '')
 
-    # 1. Signature check
+    # 1. Signature check. PayFast signs the ITN over EVERY received field (except
+    # `signature`) in the exact order and URL-encoding it sent — including blank
+    # fields. Re-encoding a parsed dict and dropping blanks (as _generate_signature
+    # does) diverges from that and causes false "signature mismatch" rejections, so
+    # rebuild the signing string from the raw POST body verbatim when available.
     received_sig = post_data.get('signature', '')
-    expected_sig = _generate_signature(post_data, passphrase)
+    if raw_body:
+        pairs = [p for p in raw_body.split('&') if p and not p.startswith('signature=')]
+        param_string = '&'.join(pairs)
+        if passphrase:
+            param_string += '&passphrase=' + urllib.parse.quote_plus(passphrase)
+        expected_sig = hashlib.md5(param_string.encode()).hexdigest()
+    else:
+        expected_sig = _generate_signature(post_data, passphrase)
     if received_sig != expected_sig:
         logger.warning("PayFast ITN signature mismatch")
         return False
