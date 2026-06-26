@@ -67,36 +67,41 @@ def load_saved(sender, instance, created, **kwargs):
 
         # Notify the whole company (persist + live WebSocket push), with a valid
         # deep-link to the bookings detail route.
-        from core.services.notify import notify_company
-        cust = instance.customer.name if getattr(instance, 'customer', None) else ''
-        route = (f'{instance.pickup_city} → {instance.delivery_city}'
-                 if getattr(instance, 'pickup_city', None) else '')
-        detail = f"{instance.load_number or ('Load ' + str(instance.id))}"
-        if cust:
-            detail += f' · {cust}'
-        elif route:
-            detail += f' · {route}'
-        notify_company(
-            getattr(instance, 'company_id', None),
-            'INFO',
-            'New booking created',
-            detail,
-            link=f'/bookings/{instance.id}',
-            event='booking.created',
-        )
+        try:
+            from core.services.notify import notify_company
+            cust = instance.customer.name if getattr(instance, 'customer', None) else ''
+            route = (f'{instance.pickup_city} → {instance.delivery_city}'
+                     if getattr(instance, 'pickup_city', None) else '')
+            detail = f"{instance.load_number or ('Load ' + str(instance.id))}"
+            if cust:
+                detail += f' · {cust}'
+            elif route:
+                detail += f' · {route}'
+            notify_company(
+                getattr(instance, 'company_id', None),
+                'INFO',
+                'New booking created',
+                detail,
+                link=f'/bookings/{instance.id}',
+                event='booking.created',
+            )
+        except Exception:
+            pass
     else:
         # Fire load.status_changed event
         dispatch_webhook('load.status_changed', data)
-        # Create activity event for status change
-        ActivityEvent.objects.create(
-            event_type='load',
-            title=f'Load {instance.load_number} status changed',
-            description=f'Status: {instance.get_status_display()}',
-            entity_id=instance.id,
-            entity_type='Load',
-            company=instance.company,
-            metadata={'load_number': instance.load_number, 'status': instance.status}
-        )
+        try:
+            ActivityEvent.objects.create(
+                event_type='load',
+                title=f'Load {instance.load_number} status changed',
+                description=f'Status: {instance.get_status_display()}',
+                entity_id=instance.id,
+                entity_type='Load',
+                company=instance.company,
+                metadata={'load_number': instance.load_number, 'status': instance.status}
+            )
+        except Exception:
+            pass
 
         # Fire specific events for certain statuses
         if instance.status == 'DELIVERED':
@@ -104,8 +109,12 @@ def load_saved(sender, instance, created, **kwargs):
             _auto_invoice_on_delivery(instance)
             # Stamp actual delivery time (used for on-time rate computation)
             if not instance.actual_delivered_at:
-                from django.utils import timezone
-                Load.objects.filter(pk=instance.pk).update(actual_delivered_at=timezone.now())
+                try:
+                    from django.utils import timezone
+                    from core.models import Load
+                    Load.objects.filter(pk=instance.pk).update(actual_delivered_at=timezone.now())
+                except Exception:
+                    pass
 
         # Recompute vehicle + driver scores whenever a load is completed
         if instance.status in ('DELIVERED', 'INVOICED'):
@@ -119,22 +128,25 @@ def load_saved(sender, instance, created, **kwargs):
                 pass  # never block the load save
 
         # Live notify on status transitions
-        old = getattr(instance, '_old_status', None)
-        if old != instance.status:
-            from core.services.notify import notify_company
-            cid = getattr(instance, 'company_id', None)
-            num = instance.load_number or f'Load {instance.id}'
-            cust = instance.customer.name if getattr(instance, 'customer', None) else ''
-            detail = f'{num} · {cust}' if cust else num
-            _LOAD_STATUS_NOTIFY = {
-                'ASSIGNED':   ('booking.assigned',   'Booking assigned',    'INFO'),
-                'IN_TRANSIT': ('booking.in_transit',  'Booking in transit',  'INFO'),
-                'DELIVERED':  ('booking.delivered',   'Booking delivered',   'SUCCESS'),
-                'CANCELLED':  ('booking.cancelled',   'Booking cancelled',   'ALERT'),
-            }
-            if instance.status in _LOAD_STATUS_NOTIFY:
-                event, title, ntype = _LOAD_STATUS_NOTIFY[instance.status]
-                notify_company(cid, ntype, title, detail, link=f'/bookings/{instance.id}', event=event)
+        try:
+            old = getattr(instance, '_old_status', None)
+            if old != instance.status:
+                from core.services.notify import notify_company
+                cid = getattr(instance, 'company_id', None)
+                num = instance.load_number or f'Load {instance.id}'
+                cust = instance.customer.name if getattr(instance, 'customer', None) else ''
+                detail = f'{num} · {cust}' if cust else num
+                _LOAD_STATUS_NOTIFY = {
+                    'ASSIGNED':   ('booking.assigned',   'Booking assigned',    'INFO'),
+                    'IN_TRANSIT': ('booking.in_transit',  'Booking in transit',  'INFO'),
+                    'DELIVERED':  ('booking.delivered',   'Booking delivered',   'SUCCESS'),
+                    'CANCELLED':  ('booking.cancelled',   'Booking cancelled',   'ALERT'),
+                }
+                if instance.status in _LOAD_STATUS_NOTIFY:
+                    event, title, ntype = _LOAD_STATUS_NOTIFY[instance.status]
+                    notify_company(cid, ntype, title, detail, link=f'/bookings/{instance.id}', event=event)
+        except Exception:
+            pass
 
 
 def _auto_invoice_on_delivery(load):
@@ -207,40 +219,46 @@ def invoice_saved(sender, instance, created, **kwargs):
 
     # Live notify on PAID transition
     if not created and instance.status == 'PAID' and getattr(instance, '_old_status', None) != 'PAID':
-        from core.services.notify import notify_company
-        amount = getattr(instance, 'total_amount', 0)
-        cust = instance.customer.name if getattr(instance, 'customer', None) else ''
-        detail = instance.invoice_number
-        if cust:
-            detail += f' · {cust}'
-        if amount:
-            detail += f' · R{float(amount):,.0f}'
-        notify_company(
-            getattr(instance, 'company_id', None),
-            'SUCCESS',
-            'Invoice paid',
-            detail,
-            link=f'/finance/invoices/{instance.id}',
-            event='invoice.paid',
-        )
+        try:
+            from core.services.notify import notify_company
+            amount = getattr(instance, 'total_amount', 0)
+            cust = instance.customer.name if getattr(instance, 'customer', None) else ''
+            detail = instance.invoice_number
+            if cust:
+                detail += f' · {cust}'
+            if amount:
+                detail += f' · R{float(amount):,.0f}'
+            notify_company(
+                getattr(instance, 'company_id', None),
+                'SUCCESS',
+                'Invoice paid',
+                detail,
+                link=f'/finance/invoices/{instance.id}',
+                event='invoice.paid',
+            )
+        except Exception:
+            pass
 
     # Live-push + persist notification for overdue invoices
     if not created and instance.status == 'OVERDUE':
-        from core.services.notify import notify_company
-        cust_name = instance.customer.name if getattr(instance, 'customer', None) else ''
-        detail = instance.invoice_number
-        if cust_name:
-            detail += f' · {cust_name}'
-        if getattr(instance, 'balance', None):
-            detail += f' · R{float(instance.balance):,.0f}'
-        notify_company(
-            instance.company_id,
-            'ALERT',
-            'Invoice overdue',
-            detail,
-            link=f'/finance/invoices/{instance.id}',
-            event='invoice.overdue',
-        )
+        try:
+            from core.services.notify import notify_company
+            cust_name = instance.customer.name if getattr(instance, 'customer', None) else ''
+            detail = instance.invoice_number
+            if cust_name:
+                detail += f' · {cust_name}'
+            if getattr(instance, 'balance', None):
+                detail += f' · R{float(instance.balance):,.0f}'
+            notify_company(
+                instance.company_id,
+                'ALERT',
+                'Invoice overdue',
+                detail,
+                link=f'/finance/invoices/{instance.id}',
+                event='invoice.overdue',
+            )
+        except Exception:
+            pass
 
 
 @receiver(post_save, sender='core.Quote')
@@ -250,89 +268,103 @@ def quote_saved(sender, instance, created, **kwargs):
     from core.models import ActivityEvent
 
     if created:
-        # Create activity event for new quote
-        origin = getattr(instance, 'origin', getattr(instance, 'pickup_city', 'N/A'))
-        destination = getattr(instance, 'destination', getattr(instance, 'delivery_city', 'N/A'))
-        ActivityEvent.objects.create(
-            event_type='quote',
-            title=f'New quote created: {instance.quote_number}',
-            description=f'{origin} → {destination}',
-            entity_id=instance.id,
-            entity_type='Quote',
-            company=getattr(instance, 'company', None),
-            metadata={'quote_number': instance.quote_number, 'status': instance.status}
-        )
-        # Notify on new quote created
-        from core.services.notify import notify_company
-        cust = getattr(instance.customer, 'name', '') if getattr(instance, 'customer', None) else ''
-        detail = instance.quote_number or f'Quote {instance.id}'
-        if cust:
-            detail += f' · {cust}'
-        if getattr(instance, 'total_amount', None):
-            detail += f' · R{float(instance.total_amount):,.0f}'
-        notify_company(
-            getattr(instance, 'company_id', None),
-            'INFO',
-            'New quote created',
-            detail,
-            link=f'/quotes/{instance.id}',
-            event='quote.created',
-        )
-
-    # Notify on other status transitions
-    if not created:
-        old = getattr(instance, '_old_status', None)
-        if old != instance.status:
+        try:
+            origin = getattr(instance, 'origin', getattr(instance, 'pickup_city', 'N/A'))
+            destination = getattr(instance, 'destination', getattr(instance, 'delivery_city', 'N/A'))
+            ActivityEvent.objects.create(
+                event_type='quote',
+                title=f'New quote created: {instance.quote_number}',
+                description=f'{origin} → {destination}',
+                entity_id=instance.id,
+                entity_type='Quote',
+                company=getattr(instance, 'company', None),
+                metadata={'quote_number': instance.quote_number, 'status': instance.status}
+            )
+        except Exception:
+            pass
+        try:
             from core.services.notify import notify_company
-            cid = getattr(instance, 'company_id', None)
             cust = getattr(instance.customer, 'name', '') if getattr(instance, 'customer', None) else ''
             detail = instance.quote_number or f'Quote {instance.id}'
             if cust:
                 detail += f' · {cust}'
-            _QUOTE_STATUS_NOTIFY = {
-                'SENT':      ('quote.sent',      'Quote sent to customer', 'INFO'),
-                'DECLINED':  ('quote.declined',  'Quote declined',         'ALERT'),
-                'COMPLETED': ('quote.completed', 'Quote completed',        'SUCCESS'),
-            }
-            if instance.status in _QUOTE_STATUS_NOTIFY:
-                event, title, ntype = _QUOTE_STATUS_NOTIFY[instance.status]
-                notify_company(cid, ntype, title, detail, link=f'/quotes/{instance.id}', event=event)
+            if getattr(instance, 'total_amount', None):
+                detail += f' · R{float(instance.total_amount):,.0f}'
+            notify_company(
+                getattr(instance, 'company_id', None),
+                'INFO',
+                'New quote created',
+                detail,
+                link=f'/quotes/{instance.id}',
+                event='quote.created',
+            )
+        except Exception:
+            pass
+
+    # Notify on other status transitions
+    if not created:
+        try:
+            old = getattr(instance, '_old_status', None)
+            if old != instance.status:
+                from core.services.notify import notify_company
+                cid = getattr(instance, 'company_id', None)
+                cust = getattr(instance.customer, 'name', '') if getattr(instance, 'customer', None) else ''
+                detail = instance.quote_number or f'Quote {instance.id}'
+                if cust:
+                    detail += f' · {cust}'
+                _QUOTE_STATUS_NOTIFY = {
+                    'SENT':      ('quote.sent',      'Quote sent to customer', 'INFO'),
+                    'DECLINED':  ('quote.declined',  'Quote declined',         'ALERT'),
+                    'COMPLETED': ('quote.completed', 'Quote completed',        'SUCCESS'),
+                }
+                if instance.status in _QUOTE_STATUS_NOTIFY:
+                    event, title, ntype = _QUOTE_STATUS_NOTIFY[instance.status]
+                    notify_company(cid, ntype, title, detail, link=f'/quotes/{instance.id}', event=event)
+        except Exception:
+            pass
 
     # Only fire on status change to ACCEPTED
     if not created and instance.status == 'ACCEPTED':
-        dispatch_webhook('quote.accepted', {
-            'id': instance.id,
-            'quote_number': instance.quote_number,
-            'customer_name': instance.customer_name if hasattr(instance, 'customer_name') else None,
-            'total_amount': str(instance.total_amount) if instance.total_amount else '0',
-            'status': instance.status,
-        })
-        # Create activity event
-        ActivityEvent.objects.create(
-            event_type='quote',
-            title=f'Quote accepted: {instance.quote_number}',
-            description=f'Customer accepted quote for R{instance.total_amount}',
-            entity_id=instance.id,
-            entity_type='Quote',
-            company=getattr(instance, 'company', None),
-            metadata={'quote_number': instance.quote_number, 'status': instance.status}
-        )
-        # Live-push + persist notification
-        from core.services.notify import notify_company
-        cust = getattr(instance.customer, 'name', '') if getattr(instance, 'customer', None) else ''
-        detail = instance.quote_number or f'Quote {instance.id}'
-        if cust:
-            detail += f' · {cust}'
-        if instance.total_amount:
-            detail += f' · R{float(instance.total_amount):,.0f}'
-        notify_company(
-            getattr(instance, 'company_id', None),
-            'SUCCESS',
-            'Quote accepted',
-            detail,
-            link=f'/quotes/{instance.id}',
-            event='quote.accepted',
-        )
+        try:
+            dispatch_webhook('quote.accepted', {
+                'id': instance.id,
+                'quote_number': instance.quote_number,
+                'customer_name': instance.customer_name if hasattr(instance, 'customer_name') else None,
+                'total_amount': str(instance.total_amount) if instance.total_amount else '0',
+                'status': instance.status,
+            })
+        except Exception:
+            pass
+        try:
+            ActivityEvent.objects.create(
+                event_type='quote',
+                title=f'Quote accepted: {instance.quote_number}',
+                description=f'Customer accepted quote for R{instance.total_amount}',
+                entity_id=instance.id,
+                entity_type='Quote',
+                company=getattr(instance, 'company', None),
+                metadata={'quote_number': instance.quote_number, 'status': instance.status}
+            )
+        except Exception:
+            pass
+        try:
+            from core.services.notify import notify_company
+            cust = getattr(instance.customer, 'name', '') if getattr(instance, 'customer', None) else ''
+            detail = instance.quote_number or f'Quote {instance.id}'
+            if cust:
+                detail += f' · {cust}'
+            if instance.total_amount:
+                detail += f' · R{float(instance.total_amount):,.0f}'
+            notify_company(
+                getattr(instance, 'company_id', None),
+                'SUCCESS',
+                'Quote accepted',
+                detail,
+                link=f'/quotes/{instance.id}',
+                event='quote.accepted',
+            )
+        except Exception:
+            pass
 
 
 @receiver(post_save, sender='core.Customer')
