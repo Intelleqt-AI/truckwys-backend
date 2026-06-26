@@ -222,3 +222,60 @@ class PayFastITNView(APIView):
 
         # PayFast expects a 200 OK with no body on success
         return Response(status=status.HTTP_200_OK)
+
+
+class ConfirmPaymentView(APIView):
+    """
+    POST /api/v1/billing/confirm/
+    Called by the frontend immediately after the user returns from PayFast
+    (return_url fires before ITN in most cases). Finds the most recent pending
+    transaction for the company and activates the subscription.
+
+    In sandbox mode: activates without server-to-server check (ITN can't reach
+    localhost). In production: verifies with PayFast before activating.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        company = request.user.company
+        sandbox = getattr(settings, 'PAYFAST_SANDBOX', True)
+
+        txn = (
+            BillingTransaction.objects
+            .filter(company=company, status='pending')
+            .order_by('-created_at')
+            .first()
+        )
+
+        if not txn:
+            # Already activated (ITN arrived first) or nothing to confirm
+            from .serializers_billing import BillingStatusSerializer
+            return Response(BillingStatusSerializer(company).data)
+
+        if not sandbox:
+            # Production: verify with PayFast before trusting
+            fake_itn = {
+                'm_payment_id': txn.payment_id,
+                'payment_status': 'COMPLETE',
+                'custom_str1': str(company.id),
+                'custom_str2': txn.plan or '',
+            }
+            if not confirm_payment_with_payfast(fake_itn):
+                return Response(
+                    {'detail': 'Payment could not be confirmed with PayFast. Please wait a moment and try again.'},
+                    status=status.HTTP_402_PAYMENT_REQUIRED,
+                )
+
+        # Activate
+        txn.status = 'complete'
+        txn.payment_status = 'COMPLETE'
+        txn.save(update_fields=['status', 'payment_status'])
+
+        company.subscription_plan = txn.plan or company.subscription_plan
+        company.subscription_status = 'active'
+        if not company.subscription_start:
+            company.subscription_start = timezone.now()
+        company.save(update_fields=['subscription_plan', 'subscription_status', 'subscription_start', 'updated_at'])
+
+        from .serializers_billing import BillingStatusSerializer
+        return Response(BillingStatusSerializer(company).data)

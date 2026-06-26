@@ -53,6 +53,12 @@ def send_payment_reminder(invoice, *, company=None) -> dict:
         return {'sent': False, 'reason': 'email not configured (set RESEND_API_KEY)',
                 'tone': tone, 'recipient': recipient}
 
+    # Ensure a public view token exists so the email link works
+    if not getattr(invoice, 'view_token', None):
+        import secrets
+        invoice.view_token = secrets.token_urlsafe(32)
+        invoice.save(update_fields=['view_token'])
+
     company = company or getattr(invoice, 'company', None)
     try:
         from core.services.resend_email import send_payment_reminder_email

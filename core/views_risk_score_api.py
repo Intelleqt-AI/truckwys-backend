@@ -13,6 +13,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 
 from rest_framework import status, authentication, exceptions
+from rest_framework.throttling import SimpleRateThrottle
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
@@ -39,6 +40,14 @@ class IntegrationKeyUser:
         return self.username
 
 
+def _get_client_ip(request) -> str:
+    """Extract the real client IP from request headers."""
+    x_forwarded = request.META.get('HTTP_X_FORWARDED_FOR')
+    if x_forwarded:
+        return x_forwarded.split(',')[0].strip()
+    return request.META.get('REMOTE_ADDR', '')
+
+
 class IntegrationKeyAuthentication(authentication.BaseAuthentication):
     """Authenticate via an IntegrationAPIKey in the X-API-Key header."""
 
@@ -50,10 +59,35 @@ class IntegrationKeyAuthentication(authentication.BaseAuthentication):
             api_key = IntegrationAPIKey.objects.get(key=key, active=True)
         except IntegrationAPIKey.DoesNotExist:
             raise exceptions.AuthenticationFailed('Invalid API key')
+
+        # IP allowlist check
+        if api_key.allowed_ips and api_key.allowed_ips.strip():
+            caller_ip = _get_client_ip(request)
+            if not api_key.is_ip_allowed(caller_ip):
+                raise exceptions.AuthenticationFailed(
+                    f'Caller IP {caller_ip!r} is not in the allowed list for this key'
+                )
+
         return (IntegrationKeyUser(api_key), api_key)
 
     def authenticate_header(self, request):
         return 'X-API-Key'
+
+
+class ApiKeyThrottle(SimpleRateThrottle):
+    """60 calls/minute per API key (or per authenticated user for bearer auth)."""
+    scope = 'risk_api'
+    THROTTLE_RATES = {'risk_api': '60/min'}
+
+    def get_cache_key(self, request, view):
+        if isinstance(request.auth, IntegrationAPIKey):
+            return f'apikey_throttle_{request.auth.id}'
+        if request.user and request.user.is_authenticated:
+            return f'bearer_throttle_{request.user.pk}'
+        return None  # no throttle for unauthenticated (will be rejected by permission)
+
+    def get_rate(self):
+        return self.THROTTLE_RATES.get(self.scope, '60/min')
 
 
 def _dec(v, default='0'):
@@ -79,9 +113,11 @@ class RiskUnderwriteView(APIView):
 
     authentication_classes = [IntegrationKeyAuthentication, authentication.TokenAuthentication]
     permission_classes = [IsAuthenticated]
+    throttle_classes = [ApiKeyThrottle]
 
     def post(self, request):
         api_key = request.auth if isinstance(request.auth, IntegrationAPIKey) else None
+        caller_ip = _get_client_ip(request)
 
         # Quota enforcement for metered keys
         if api_key is not None and api_key.is_over_quota():
@@ -156,10 +192,22 @@ class RiskUnderwriteView(APIView):
         except Exception as exc:
             return Response({'error': f'Scoring failed: {exc}'}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
 
-        # Meter the call (only for API-key callers)
+        # Meter + log the call (only for API-key callers)
         if api_key is not None:
             try:
                 api_key.record_call()
+            except Exception:
+                pass
+            try:
+                from core.models.integration_api_key import APICallLog
+                APICallLog.objects.create(
+                    api_key=api_key,
+                    invoice_amount=amount,
+                    risk_tier=result.risk_tier or '',
+                    score=int(result.final_score) if result.final_score is not None else None,
+                    eligible=result.is_eligible,
+                    caller_ip=caller_ip or None,
+                )
             except Exception:
                 pass
 
@@ -192,4 +240,18 @@ class RiskUnderwriteView(APIView):
                 'monthly_quota': api_key.monthly_quota,
                 'quota_used': api_key.quota_used,
             }
+
+        # Webhook dispatch — fire-and-forget, never block the response
+        if api_key is not None and api_key.webhook_url:
+            try:
+                import threading
+                from core.services.webhook_dispatcher import dispatch_webhook
+                threading.Thread(
+                    target=dispatch_webhook,
+                    args=('risk.scored', {'api_key': api_key.name, **payload}),
+                    daemon=True,
+                ).start()
+            except Exception:
+                pass
+
         return Response(payload, status=status.HTTP_200_OK)

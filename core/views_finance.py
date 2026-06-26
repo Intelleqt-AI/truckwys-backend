@@ -97,6 +97,12 @@ class InvoiceFinanceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
 
+        # Ensure view token exists before sending (included in email body)
+        if not invoice.view_token:
+            import secrets
+            invoice.view_token = secrets.token_urlsafe(32)
+            invoice.save(update_fields=['view_token'])
+
         # Send email
         additional_recipients = request.data.get('additional_recipients', [])
 
@@ -108,10 +114,13 @@ class InvoiceFinanceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
             )
 
             if success:
+                from django.conf import settings as _s
+                frontend_url = _s.FRONTEND_URL.rstrip('/')
                 return Response({
                     'message': 'Invoice email sent successfully',
                     'sent_at': invoice.sent_at,
-                    'status': invoice.status
+                    'status': invoice.status,
+                    'view_url': f"{frontend_url}/invoice/view/{invoice.id}/{invoice.view_token}",
                 })
             else:
                 return Response(

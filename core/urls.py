@@ -3,7 +3,7 @@ from rest_framework.routers import DefaultRouter
 from rest_framework.authtoken.views import obtain_auth_token
 from .views_billing import (
     SubscribeView, CancelSubscriptionView, BillingStatusView,
-    BillingHistoryView, PayFastITNView,
+    BillingHistoryView, PayFastITNView, ConfirmPaymentView,
 )
 from .views import (
     UserViewSet, CustomerViewSet, DriverViewSet,
@@ -16,7 +16,7 @@ from .views import (
     QuotesPipelineOverviewView, NotificationSettingsView,
     CompanyProfileView, CompanyLogoUploadView, DashboardOverviewView, ActivityEventViewSet,
     TestEmailView, InviteView, InviteTokenView, InviteResendView,
-    PublicQuoteView, PublicQuoteRespondView,
+    PublicQuoteView, PublicQuoteRespondView, PublicInvoiceView,
     EmailVerifyView, ResendVerificationView,
 )
 from .views_ai_quote import (
@@ -120,6 +120,7 @@ urlpatterns = [
     path('billing/subscribe/', SubscribeView.as_view(), name='billing-subscribe'),
     path('billing/cancel/', CancelSubscriptionView.as_view(), name='billing-cancel'),
     path('billing/itn/', PayFastITNView.as_view(), name='billing-itn'),
+    path('billing/confirm/', ConfirmPaymentView.as_view(), name='billing-confirm'),
     path('auth/me/', UserProfileView.as_view(), name='user-profile'),
     path('auth/sessions/', SessionsView.as_view(), name='auth-sessions'),
     path('auth/password-reset/', PasswordResetRequestView.as_view(), name='password-reset'),
@@ -200,9 +201,10 @@ urlpatterns = [
     path('route/calculate/', RouteCalculatorView.as_view(), name='route-calculate'),
     path('location/suggest/', LocationSuggestView.as_view(), name='location-suggest'),
 
-    # Public Quote endpoints (no auth required)
+    # Public endpoints (no auth required)
     path('quotes/public/<int:quote_id>/<str:token>/', PublicQuoteView.as_view(), name='public-quote-view'),
     path('quotes/public/<int:quote_id>/<str:token>/respond/', PublicQuoteRespondView.as_view(), name='public-quote-respond'),
+    path('invoices/public/<int:invoice_id>/<str:token>/', PublicInvoiceView.as_view(), name='public-invoice-view'),
 
     # AI Quote & Revenue Guard endpoints (Phase 2 + Sprint 1)
     path('fuel-prices/current/', FuelPriceCurrentView.as_view(), name='fuel-prices-current'),

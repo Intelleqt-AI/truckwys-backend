@@ -330,76 +330,58 @@ class InvoiceEmailService:
         pdf_path: Optional[str] = None,
         additional_recipients: Optional[list] = None
     ) -> bool:
-        """
-        Send invoice email to customer.
+        """Send invoice email to customer via Resend with optional PDF attachment."""
+        import base64
 
-        Args:
-            pdf_path: Path to the PDF file to attach
-            additional_recipients: Additional email addresses to send to
-
-        Returns:
-            bool: True if email sent successfully, False otherwise
-        """
-        # Get recipient email
         to_email = self.invoice.customer.email
         if not to_email:
             raise ValueError(f"Customer {self.invoice.customer.name} has no email address")
 
-        # Build recipient list
         recipients = [to_email]
         if additional_recipients:
             recipients.extend(additional_recipients)
 
-        # Get company details for from address
         try:
-            company = Company.objects.first()
-            from_email = company.contact.get('email', settings.DEFAULT_FROM_EMAIL) if company and company.contact else settings.DEFAULT_FROM_EMAIL
+            company = Company.objects.filter(users=self.invoice.company.users.first()).first() if hasattr(self.invoice, 'company') and self.invoice.company else Company.objects.first()
             company_name = company.company_name if company else "TruckWys"
-        except (Company.DoesNotExist, AttributeError):
-            from_email = settings.DEFAULT_FROM_EMAIL
+        except Exception:
             company_name = "TruckWys"
 
-        # Build subject
         subject = f"Invoice {self.invoice.invoice_number} from {company_name}"
-
-        # Build HTML content
         html_content = self._build_html_content()
-        text_content = strip_tags(html_content)
 
-        # Create email
-        email = EmailMultiAlternatives(
-            subject=subject,
-            body=text_content,
-            from_email=from_email,
-            to=recipients,
-        )
-        email.attach_alternative(html_content, "text/html")
-
-        # Attach PDF if provided
+        # Build attachments list for Resend
+        attachments = []
         if pdf_path:
             pdf_full_path = os.path.join(settings.MEDIA_ROOT, pdf_path)
             if os.path.exists(pdf_full_path):
                 with open(pdf_full_path, 'rb') as f:
-                    email.attach(
-                        f"Invoice_{self.invoice.invoice_number}.pdf",
-                        f.read(),
-                        'application/pdf'
-                    )
+                    attachments.append({
+                        "filename": f"Invoice_{self.invoice.invoice_number}.pdf",
+                        "content": base64.b64encode(f.read()).decode(),
+                    })
 
-        # Send email
         try:
-            email.send(fail_silently=False)
+            resend.api_key = settings.RESEND_API_KEY
+            payload = {
+                "from": settings.EMAIL_FROM,
+                "to": recipients,
+                "subject": subject,
+                "html": html_content,
+            }
+            if attachments:
+                payload["attachments"] = attachments
+            resend.Emails.send(payload)
 
-            # Update invoice sent timestamp
+            # Mark invoice as sent
             if self.invoice.status == 'DRAFT':
                 self.invoice.status = 'SENT'
             self.invoice.sent_at = timezone.now()
-            self.invoice.save()
+            self.invoice.save(update_fields=['status', 'sent_at'])
 
             return True
         except Exception as e:
-            # Log error (in production, use proper logging)
-            print(f"Error sending invoice email: {str(e)}")
+            logger.error(f"Failed to send invoice email {self.invoice.invoice_number}: {e}")
             return False
 
     def _build_html_content(self) -> str:
@@ -415,8 +397,10 @@ class InvoiceEmailService:
         except Company.DoesNotExist:
             company = None
 
-        # Build portal link (placeholder for now)
-        portal_link = f"{settings.FRONTEND_URL if hasattr(settings, 'FRONTEND_URL') else 'https://app.truckwys.co.za'}/invoices/{self.invoice.invoice_number}"
+        # Public view link — no login required for customer
+        frontend_url = settings.FRONTEND_URL.rstrip('/')
+        view_token = getattr(self.invoice, 'view_token', '') or ''
+        portal_link = f"{frontend_url}/invoice/view/{self.invoice.id}/{view_token}" if view_token else frontend_url
 
         # Calculate days until due
         days_until_due = self.invoice.days_until_due

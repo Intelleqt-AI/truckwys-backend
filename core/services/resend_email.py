@@ -344,7 +344,7 @@ def send_invoice_email(invoice, company, pdf_bytes=None):
             </tr>
         </table>
 
-        <a href="https://app.truckwys.co.za/invoices/{invoice.id}" class="cta-button">View Invoice</a>
+        <a href="{settings.FRONTEND_URL.rstrip('/')}/invoice/view/{invoice.id}/{getattr(invoice, 'view_token', '') or ''}" class="cta-button">View Invoice</a>
 
         <div class="info-box">
             <p><strong>Banking Details:</strong><br>
@@ -409,7 +409,7 @@ def send_payment_reminder_email(invoice, company, tone='gentle', days_overdue=0)
             <tr><th>Due date</th><td>{due_date}</td></tr>
             <tr><th>Amount outstanding</th><td class="amount-highlight">{amount_formatted}</td></tr>
         </table>
-        <a href="https://app.truckwys.co.za/invoices/{invoice.id}" class="cta-button">View &amp; pay invoice</a>
+        <a href="{settings.FRONTEND_URL.rstrip('/')}/invoice/view/{invoice.id}/{getattr(invoice, 'view_token', '') or ''}" class="cta-button">View &amp; pay invoice</a>
         <p>If payment has already been made, please disregard this notice. Thank you for your business.</p>
         <p>{company_name}</p>
     """
