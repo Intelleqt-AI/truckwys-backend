@@ -303,24 +303,34 @@ class InvoicePDFGenerator:
         if self.invoice.discount > 0:
             data.append(['Discount:', f"R -{self.invoice.discount:,.2f}"])
 
-        data.append(['<b>TOTAL:</b>', f"<b>R {self.invoice.total_amount:,.2f}</b>"])
+        total_row = len(data)
+        data.append(['TOTAL:', f"R {self.invoice.total_amount:,.2f}"])
 
-        if self.invoice.paid_amount > 0:
+        has_balance = self.invoice.paid_amount > 0
+        if has_balance:
             data.append(['Paid:', f"R {self.invoice.paid_amount:,.2f}"])
-            data.append(['<b>Balance Due:</b>', f"<b>R {self.invoice.balance:,.2f}</b>"])
+            data.append(['Balance Due:', f"R {self.invoice.balance:,.2f}"])
 
-        table = Table(data, colWidths=[140*mm, 35*mm])
-        table.setStyle(TableStyle([
-            ('FONTNAME', (0, 0), (0, -1), 'Helvetica'),
+        bold_rows = [total_row]
+        if has_balance:
+            bold_rows.append(len(data) - 1)
+
+        style = [
+            ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
             ('FONTSIZE', (0, 0), (-1, -1), 10),
             ('ALIGN', (0, 0), (0, -1), 'RIGHT'),
             ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
-            # Last row (total) styling
-            ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, -1), (-1, -1), 12),
-            ('LINEABOVE', (0, -1), (-1, -1), 1.5, colors.HexColor('#1e3a8a')),
-            ('TOPPADDING', (0, -1), (-1, -1), 8),
-        ]))
+        ]
+        for r in bold_rows:
+            style += [
+                ('FONTNAME', (0, r), (-1, r), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, r), (-1, r), 12),
+                ('LINEABOVE', (0, r), (-1, r), 1.5, colors.HexColor('#1e3a8a')),
+                ('TOPPADDING', (0, r), (-1, r), 8),
+            ]
+
+        table = Table(data, colWidths=[140*mm, 35*mm])
+        table.setStyle(TableStyle(style))
 
         elements.append(table)
         return elements

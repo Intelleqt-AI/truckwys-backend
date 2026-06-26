@@ -1932,6 +1932,51 @@ class PublicQuoteRespondView(APIView):
             )
 
 
+class PublicInvoiceView(APIView):
+    """Public invoice view — customers can view invoice details without a TruckWys account."""
+    permission_classes = [AllowAny]
+
+    def get(self, request, invoice_id, token):
+        import hmac as _hmac
+        try:
+            invoice = Invoice.objects.select_related('customer', 'company').get(id=invoice_id)
+        except Invoice.DoesNotExist:
+            return Response({'error': 'Invoice not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if not invoice.view_token or not _hmac.compare_digest(invoice.view_token, token):
+            return Response({'error': 'Invalid invoice link'}, status=status.HTTP_404_NOT_FOUND)
+
+        # Mark as viewed if still in SENT state
+        if invoice.status == 'SENT':
+            invoice.status = 'VIEWED'
+            invoice.viewed_at = timezone.now()
+            invoice.save(update_fields=['status', 'viewed_at'])
+
+        company = invoice.company
+        contact = company.contact if company and company.contact else {}
+
+        return Response({
+            'invoice_number': invoice.invoice_number,
+            'issue_date': str(invoice.issue_date),
+            'due_date': str(invoice.due_date),
+            'status': invoice.status,
+            'customer_name': invoice.customer.name,
+            'subtotal': str(invoice.subtotal),
+            'vat_amount': str(invoice.vat_amount),
+            'discount': str(invoice.discount),
+            'total_amount': str(invoice.total_amount),
+            'paid_amount': str(invoice.paid_amount),
+            'balance': str(invoice.balance),
+            'notes': invoice.notes,
+            'line_items': invoice.line_items or [],
+            'description': getattr(invoice, 'description', '') or '',
+            'company_name': company.company_name if company else 'TruckWys',
+            'company_phone': contact.get('phone', ''),
+            'company_email': contact.get('email', ''),
+            'company_address': contact.get('address', ''),
+        })
+
+
 class InvoiceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     queryset = Invoice.objects.all()
     serializer_class = InvoiceSerializer
@@ -2859,8 +2904,9 @@ class IntegrationAPIKeyViewSet(viewsets.ModelViewSet):
     list: Get all API keys for current user
     create: Create new API key
     retrieve: Get API key detail
-    update/partial_update: Update API key (name, active status)
+    update/partial_update: Update API key (name, quota, allowed_ips, webhook_url, active)
     destroy: Delete/revoke API key
+    calls: GET paginated call log for this key
     """
     permission_classes = [IsAuthenticated]
 
@@ -2874,6 +2920,15 @@ class IntegrationAPIKeyViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(operator=self.request.user)
+
+    @action(detail=True, methods=['get'], url_path='calls')
+    def calls(self, request, pk=None):
+        from core.models.integration_api_key import APICallLog
+        from core.serializers import APICallLogSerializer
+        api_key = self.get_object()
+        logs = APICallLog.objects.filter(api_key=api_key).order_by('-scored_at')[:100]
+        serializer = APICallLogSerializer(logs, many=True)
+        return Response(serializer.data)
 
 
 class ActivityEventViewSet(viewsets.ReadOnlyModelViewSet):

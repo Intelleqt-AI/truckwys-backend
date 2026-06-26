@@ -429,8 +429,19 @@ class IntegrationAPIKeySerializer(serializers.ModelSerializer):
             'id', 'name', 'key', 'key_type', 'active',
             'created_at', 'last_used_at',
             'usage_count', 'monthly_quota', 'quota_used',
+            'allowed_ips', 'webhook_url',
         ]
         read_only_fields = ['id', 'key', 'created_at', 'last_used_at', 'usage_count', 'quota_used']
+
+
+class APICallLogSerializer(serializers.ModelSerializer):
+    """Serializer for per-key API call log entries."""
+
+    class Meta:
+        from core.models.integration_api_key import APICallLog
+        model = APICallLog
+        fields = ['id', 'scored_at', 'invoice_amount', 'risk_tier', 'score', 'eligible', 'caller_ip']
+        read_only_fields = fields
 
 
 class ActivityEventSerializer(serializers.ModelSerializer):

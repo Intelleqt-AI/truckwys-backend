@@ -18,7 +18,7 @@ from .advance_request import AdvanceRequest
 from .payment_outcome import PaymentOutcome
 from .audit_log import AuditLog
 from .webhook import Webhook
-from .integration_api_key import IntegrationAPIKey
+from .integration_api_key import IntegrationAPIKey, APICallLog
 from .activity_event import ActivityEvent
 from .copilot_message import CopilotMessage, CopilotConversation
 from .webhook_subscription import WebhookSubscription
@@ -53,6 +53,7 @@ __all__ = [
     'AuditLog',
     'Webhook',
     'IntegrationAPIKey',
+    'APICallLog',
     'CopilotMessage',
     'CopilotConversation',
     'ActivityEvent',

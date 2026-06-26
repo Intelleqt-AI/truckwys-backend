@@ -103,6 +103,9 @@ class Invoice(models.Model):
     # Notes
     notes = models.TextField(blank=True)
 
+    # Public view token — generated on first send, used for the customer-facing link
+    view_token = models.CharField(max_length=64, blank=True, default='')
+
     # NEW: Timestamp tracking
     sent_at = models.DateTimeField(
         null=True,

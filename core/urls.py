@@ -16,7 +16,7 @@ from .views import (
     QuotesPipelineOverviewView, NotificationSettingsView,
     CompanyProfileView, CompanyLogoUploadView, DashboardOverviewView, ActivityEventViewSet,
     TestEmailView, InviteView, InviteTokenView, InviteResendView,
-    PublicQuoteView, PublicQuoteRespondView,
+    PublicQuoteView, PublicQuoteRespondView, PublicInvoiceView,
     EmailVerifyView, ResendVerificationView,
 )
 from .views_ai_quote import (
@@ -201,9 +201,10 @@ urlpatterns = [
     path('route/calculate/', RouteCalculatorView.as_view(), name='route-calculate'),
     path('location/suggest/', LocationSuggestView.as_view(), name='location-suggest'),
 
-    # Public Quote endpoints (no auth required)
+    # Public endpoints (no auth required)
     path('quotes/public/<int:quote_id>/<str:token>/', PublicQuoteView.as_view(), name='public-quote-view'),
     path('quotes/public/<int:quote_id>/<str:token>/respond/', PublicQuoteRespondView.as_view(), name='public-quote-respond'),
+    path('invoices/public/<int:invoice_id>/<str:token>/', PublicInvoiceView.as_view(), name='public-invoice-view'),
 
     # AI Quote & Revenue Guard endpoints (Phase 2 + Sprint 1)
     path('fuel-prices/current/', FuelPriceCurrentView.as_view(), name='fuel-prices-current'),
