@@ -1,1 +1,2 @@
-web: gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 3
+release: python manage.py migrate --noinput
+web: daphne -b 0.0.0.0 -p ${PORT:-8000} config.asgi:application

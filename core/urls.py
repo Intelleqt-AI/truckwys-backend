@@ -3,7 +3,7 @@ from rest_framework.routers import DefaultRouter
 from rest_framework.authtoken.views import obtain_auth_token
 from .views_billing import (
     SubscribeView, CancelSubscriptionView, BillingStatusView,
-    BillingHistoryView, PayFastITNView,
+    BillingHistoryView, PayFastITNView, ConfirmPaymentView,
 )
 from .views import (
     UserViewSet, CustomerViewSet, DriverViewSet,
@@ -120,6 +120,7 @@ urlpatterns = [
     path('billing/subscribe/', SubscribeView.as_view(), name='billing-subscribe'),
     path('billing/cancel/', CancelSubscriptionView.as_view(), name='billing-cancel'),
     path('billing/itn/', PayFastITNView.as_view(), name='billing-itn'),
+    path('billing/confirm/', ConfirmPaymentView.as_view(), name='billing-confirm'),
     path('auth/me/', UserProfileView.as_view(), name='user-profile'),
     path('auth/sessions/', SessionsView.as_view(), name='auth-sessions'),
     path('auth/password-reset/', PasswordResetRequestView.as_view(), name='password-reset'),
