@@ -7,6 +7,7 @@ configured, every function still returns a useful, honest, deterministic result
 """
 import logging
 import os
+from datetime import datetime, date
 from decimal import Decimal
 
 from django.conf import settings
@@ -37,17 +38,61 @@ def _money(v) -> float:
         return 0.0
 
 
-def build_company_metrics(company) -> dict:
-    """Assemble a compact, real metrics snapshot from the company's data."""
-    from core.models import Invoice
+def _aware_start(d):
+    return timezone.make_aware(datetime.combine(d, datetime.min.time()))
+
+
+def _aware_end(d):
+    return timezone.make_aware(datetime.combine(d, datetime.max.time()))
+
+
+def build_company_metrics(company, from_date=None, to_date=None) -> dict:
+    """Assemble a compact, real metrics snapshot from the company's data, scoped to
+    the reporting window [from_date, to_date] (defaults to month-to-date).
+
+    Flow metrics (collections, expenses, margin, activity counts) are computed
+    WITHIN the window; balance-sheet metrics (outstanding, overdue) are a snapshot
+    AS-OF to_date — those are point-in-time, not a window."""
+    from core.models import Invoice, Expense, Load, Quote
     from core.services.intelligence import IntelligenceService
 
     today = timezone.now().date()
+    if to_date is None:
+        to_date = today
+    if from_date is None:
+        from_date = to_date.replace(day=1)
+    start, end = _aware_start(from_date), _aware_end(to_date)
+
     invoices = Invoice.objects.filter(company=company)
 
-    outstanding = invoices.exclude(status='PAID').aggregate(s=Sum('balance'))['s'] or Decimal('0')
-    overdue = invoices.filter(due_date__lt=today).exclude(status='PAID').aggregate(s=Sum('balance'))['s'] or Decimal('0')
-    paid_total = invoices.filter(status='PAID').aggregate(s=Sum('total_amount'))['s'] or Decimal('0')
+    # --- Flow: within the window ---
+    revenue_collected = invoices.filter(
+        status='PAID', paid_at__gte=start, paid_at__lte=end
+    ).aggregate(s=Sum('total_amount'))['s'] or Decimal('0')
+    expenses_period = Expense.objects.filter(
+        company=company, expense_date__gte=from_date, expense_date__lte=to_date
+    ).aggregate(s=Sum('amount'))['s'] or Decimal('0')
+    net_margin = revenue_collected - expenses_period
+    net_margin_pct = (
+        float(round((net_margin / revenue_collected * 100), 1)) if revenue_collected else 0.0
+    )
+
+    invoices_issued = invoices.filter(issue_date__gte=from_date, issue_date__lte=to_date).count()
+    loads_delivered = Load.objects.filter(
+        company=company, status='DELIVERED', delivery_date__gte=start, delivery_date__lte=end
+    ).count()
+    quotes_in_period = Quote.objects.filter(
+        company=company, created_at__gte=start, created_at__lte=end
+    ).count()
+
+    # --- Snapshot: as-of to_date ---
+    overdue_cutoff = min(to_date, today)
+    outstanding = invoices.exclude(status='PAID').filter(
+        issue_date__lte=to_date
+    ).aggregate(s=Sum('balance'))['s'] or Decimal('0')
+    overdue = invoices.exclude(status='PAID').filter(
+        due_date__lt=overdue_cutoff
+    ).aggregate(s=Sum('balance'))['s'] or Decimal('0')
 
     try:
         recommendations = IntelligenceService(company).generate_recommendations() or []
@@ -57,10 +102,17 @@ def build_company_metrics(company) -> dict:
 
     return {
         "company_name": getattr(company, "company_name", "Your company"),
+        "period": {"from": from_date.isoformat(), "to": to_date.isoformat()},
         "invoice_count": invoices.count(),
+        "invoices_issued_in_period": invoices_issued,
+        "loads_delivered_in_period": loads_delivered,
+        "quotes_in_period": quotes_in_period,
+        "revenue_collected": _money(revenue_collected),
+        "expenses_period": _money(expenses_period),
+        "net_margin": _money(net_margin),
+        "net_margin_pct": net_margin_pct,
         "outstanding_total": _money(outstanding),
         "overdue_total": _money(overdue),
-        "revenue_collected": _money(paid_total),
         "top_recommendations": [
             {
                 "type": r.get("type") or r.get("category"),
@@ -74,11 +126,16 @@ def build_company_metrics(company) -> dict:
 
 
 def _fallback_briefing(m: dict) -> dict:
-    """Deterministic, honest briefing used when Claude isn't configured."""
+    """Deterministic, honest, period-aware briefing used when no LLM is configured."""
+    p = m.get("period") or {}
+    window = f"{p.get('from')} to {p.get('to')}" if p.get("from") else "the selected period"
     lines = [
-        f"{m['company_name']} has R{m['outstanding_total']:,.0f} outstanding across "
-        f"{m['invoice_count']} invoices, of which R{m['overdue_total']:,.0f} is overdue. "
-        f"R{m['revenue_collected']:,.0f} has been collected to date."
+        f"{m['company_name']} — {window}: collected R{m['revenue_collected']:,.0f} against "
+        f"R{m['expenses_period']:,.0f} of costs (net margin R{m['net_margin']:,.0f}, "
+        f"{m['net_margin_pct']:.1f}%). {m['invoices_issued_in_period']} invoices issued, "
+        f"{m['loads_delivered_in_period']} loads delivered, {m['quotes_in_period']} quotes.",
+        f"As of {p.get('to', 'today')}: R{m['outstanding_total']:,.0f} outstanding across "
+        f"{m['invoice_count']} invoices, of which R{m['overdue_total']:,.0f} is overdue.",
     ]
     recs = m.get("top_recommendations") or []
     if recs:
@@ -94,33 +151,61 @@ def _fallback_briefing(m: dict) -> dict:
     }
 
 
-def executive_briefing(company) -> dict:
-    """Return {narrative, source, ai_available, metrics}. Never raises."""
-    metrics = build_company_metrics(company)
+def executive_briefing(company, from_date=None, to_date=None) -> dict:
+    """Return {narrative, source, ai_available, metrics} for the reporting window.
 
-    if not _llm_enabled():
+    Period-aware, RAG-grounded (per-account invoice records), and provider-agnostic
+    (reuses the copilot's Anthropic→OpenAI→rules selection). Never raises."""
+    metrics = build_company_metrics(company, from_date, to_date)
+
+    # RAG grounding: freshen the per-account invoice index, then pull the records
+    # most relevant to a cash/collections briefing. Degrades to "" if RAG is off.
+    grounding = ""
+    try:
+        from core.services import rag
+        rag.index_company_invoices(company)
+    except Exception as exc:
+        logger.warning("RAG index failed for briefing: %s", exc)
+    try:
+        from core.services import agent as agent_svc
+        grounding = agent_svc._retrieved_block(
+            company,
+            "largest outstanding and overdue invoices, collections and cash exposure this period",
+        )
+    except Exception as exc:
+        logger.warning("RAG retrieve failed for briefing: %s", exc)
+
+    # Provider-agnostic generation: Anthropic if keyed, else OpenAI, else rules.
+    try:
+        from core.services import agent as agent_svc
+        provider = agent_svc._provider()
+    except Exception:
+        provider = ""
+
+    if not provider:
         result = _fallback_briefing(metrics)
         result["metrics"] = metrics
         return result
 
     try:
-        client = anthropic.Anthropic()
+        import json
+        period = metrics["period"]
         system = (
             "You are the CFO co-pilot for a South African road-freight operator using TruckWys, "
             "a fleet finance/data/AI platform. Write a crisp executive briefing (3 short paragraphs, "
-            "no preamble): 1) profitability & revenue, 2) cash-flow outlook & collections (call out "
-            "overdue exposure), 3) the single most important action this week. Use ZAR (R). Be direct, "
-            "concrete, and grounded ONLY in the numbers provided — never invent figures."
+            f"no preamble) for the reporting window {period['from']} to {period['to']}: "
+            "1) profitability & revenue for the period, 2) cash-flow outlook & collections (call out "
+            "overdue exposure as-of the period end), 3) the single most important action this week. "
+            "Use ZAR (R). Be direct and concrete, and ground EVERY figure ONLY in the metrics JSON and "
+            "the retrieved invoice records below — never invent numbers." + grounding
         )
-        import json
-        response = client.messages.create(
-            model=INSIGHTS_MODEL,
-            max_tokens=900,
-            system=system,
-            messages=[{"role": "user", "content": f"Here is the data:\n{json.dumps(metrics, default=str)}"}],
+        narrative = agent_svc._llm_generate(
+            system,
+            [{"role": "user", "content": f"Metrics for the period:\n{json.dumps(metrics, default=str)}"}],
         )
-        narrative = next((b.text for b in response.content if b.type == "text"), "").strip()
-        return {"narrative": narrative, "source": "llm", "ai_available": True, "metrics": metrics}
+        if not narrative:
+            raise ValueError("empty narrative from provider")
+        return {"narrative": narrative, "source": provider, "ai_available": True, "metrics": metrics}
     except Exception as exc:
         logger.warning("LLM briefing failed, using fallback: %s", exc)
         result = _fallback_briefing(metrics)

@@ -1260,7 +1260,9 @@ class DashboardKPIView(APIView):
 
     def get(self, request):
         from core.models import AdvanceRequest
+        from core.views import resolve_user_company
 
+        company = resolve_user_company(request.user)
         today = date.today()
 
         def aware_start(d):
@@ -1269,53 +1271,62 @@ class DashboardKPIView(APIView):
         def aware_end(d):
             return timezone.make_aware(datetime.combine(d, datetime.max.time()))
 
-        # Current month
-        current_month_start = today.replace(day=1)
-        current_month_end = (current_month_start + relativedelta(months=1)) - timedelta(days=1)
+        # Reporting window from the Insights filter (?from=&to=, YYYY-MM-DD),
+        # defaulting to month-to-date.
+        def _parse(s):
+            try:
+                return datetime.strptime(s, '%Y-%m-%d').date()
+            except (TypeError, ValueError):
+                return None
 
-        # Previous month
-        prev_month_start = (current_month_start - relativedelta(months=1))
-        prev_month_end = current_month_start - timedelta(days=1)
+        to_date = _parse(request.query_params.get('to')) or today
+        from_date = _parse(request.query_params.get('from')) or to_date.replace(day=1)
 
-        # Revenue MTD (current month paid invoices)
-        revenue_mtd = Invoice.objects.filter(
-            paid_at__gte=aware_start(current_month_start),
-            paid_at__lte=aware_end(current_month_end),
+        # Previous window of equal length, immediately before, for the delta %.
+        span = to_date - from_date
+        prev_to = from_date - timedelta(days=1)
+        prev_from = prev_to - span
+
+        # All querysets are scoped to the caller's company (multi-tenant correctness).
+        inv = Invoice.objects.filter(company=company)
+
+        # Revenue for the selected window (paid invoices)
+        revenue_period = inv.filter(
+            paid_at__gte=aware_start(from_date),
+            paid_at__lte=aware_end(to_date),
             status='PAID'
         ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
 
-        # Revenue previous month
-        revenue_prev_month = Invoice.objects.filter(
-            paid_at__gte=aware_start(prev_month_start),
-            paid_at__lte=aware_end(prev_month_end),
+        # Revenue for the previous equal-length window
+        revenue_prev = inv.filter(
+            paid_at__gte=aware_start(prev_from),
+            paid_at__lte=aware_end(prev_to),
             status='PAID'
         ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
 
-        # Revenue change %
         revenue_change_pct = 0.0
-        if revenue_prev_month > 0:
-            revenue_change_pct = float((revenue_mtd - revenue_prev_month) / revenue_prev_month * 100)
+        if revenue_prev > 0:
+            revenue_change_pct = float((revenue_period - revenue_prev) / revenue_prev * 100)
 
-        # Expenses MTD
-        expenses_mtd = Expense.objects.filter(
-            expense_date__gte=current_month_start,
-            expense_date__lte=current_month_end,
+        # Expenses for the window
+        expenses_period = Expense.objects.filter(
+            company=company,
+            expense_date__gte=from_date,
+            expense_date__lte=to_date,
             status='APPROVED'
         ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
 
-        # Net margin % MTD
         net_margin_pct = 0.0
-        if revenue_mtd > 0:
-            net_margin_pct = float((revenue_mtd - expenses_mtd) / revenue_mtd * 100)
+        if revenue_period > 0:
+            net_margin_pct = float((revenue_period - expenses_period) / revenue_period * 100)
 
-        # Outstanding invoices
-        outstanding_invoices = Invoice.objects.filter(
+        # Outstanding / overdue — point-in-time snapshot (as of today)
+        outstanding_invoices = inv.filter(
             balance__gt=0,
             status__in=['SENT', 'VIEWED', 'PARTIALLY_PAID', 'OVERDUE']
         ).aggregate(total=Sum('balance'))['total'] or Decimal('0.00')
 
-        # Overdue invoices
-        overdue_invoices = Invoice.objects.filter(
+        overdue_invoices = inv.filter(
             due_date__lt=today,
             balance__gt=0,
             status__in=['SENT', 'VIEWED', 'PARTIALLY_PAID', 'OVERDUE']
@@ -1326,9 +1337,10 @@ class DashboardKPIView(APIView):
         aging_service = AgingAnalysisService()
         dso = aging_service.calculate_dso()
 
-        # Fleet metrics
-        total_vehicles = Vehicle.objects.count()
+        # Fleet metrics (company-scoped)
+        total_vehicles = Vehicle.objects.filter(company=company).count()
         active_vehicles = Vehicle.objects.filter(
+            company=company,
             status__in=['AVAILABLE', 'IN_USE', 'ACTIVE']
         ).count()
 
@@ -1336,20 +1348,18 @@ class DashboardKPIView(APIView):
         if total_vehicles > 0:
             fleet_utilization_pct = float(active_vehicles / total_vehicles * 100)
 
-        # Advances this month
-        advances_this_month = AdvanceRequest.objects.filter(
-            requested_at__gte=current_month_start,
-            requested_at__lte=current_month_end
-        ).count()
-
-        total_advance_amount = AdvanceRequest.objects.filter(
-            requested_at__gte=current_month_start,
-            requested_at__lte=current_month_end
-        ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+        # Advances in the window (company-scoped via the linked invoice)
+        advances_qs = AdvanceRequest.objects.filter(
+            invoice__company=company,
+            requested_at__gte=aware_start(from_date),
+            requested_at__lte=aware_end(to_date)
+        )
+        advances_this_month = advances_qs.count()
+        total_advance_amount = advances_qs.aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
 
         return Response({
-            'revenue_mtd': float(revenue_mtd),
-            'revenue_prev_month': float(revenue_prev_month),
+            'revenue_mtd': float(revenue_period),
+            'revenue_prev_month': float(revenue_prev),
             'revenue_change_pct': round(revenue_change_pct, 2),
             'net_margin_pct': round(net_margin_pct, 2),
             'outstanding_invoices': float(outstanding_invoices),
