@@ -144,8 +144,10 @@ class CopilotConversationsView(APIView):
     def get(self, request):
         from core.models import CopilotConversation
         from django.db.models import Count
+        # Only surface threads that actually have messages — an unused "New chat"
+        # (or one whose first message failed) is never shown in history.
         convs = (CopilotConversation.objects.filter(user=request.user)
-                 .annotate(n=Count('messages')).order_by('-updated_at')[:50])
+                 .annotate(n=Count('messages')).filter(n__gt=0).order_by('-updated_at')[:50])
         return Response({'conversations': [
             {'id': c.id, 'title': c.title or 'New conversation',
              'updated_at': c.updated_at.isoformat(), 'message_count': c.n}
@@ -187,9 +189,21 @@ class DashboardBriefingView(APIView):
 
     def get(self, request):
         from core.views import resolve_user_company
+        from datetime import datetime, date
         company = resolve_user_company(request.user)
+
+        # Reporting window from the Insights filter (?from=&to=, YYYY-MM-DD).
+        # Defaults to month-to-date, matching the finance dashboard contract.
+        def _parse(s):
+            try:
+                return datetime.strptime(s, '%Y-%m-%d').date()
+            except (TypeError, ValueError):
+                return None
+
+        to_date = _parse(request.query_params.get('to')) or date.today()
+        from_date = _parse(request.query_params.get('from')) or to_date.replace(day=1)
         try:
-            return Response(executive_briefing(company))
+            return Response(executive_briefing(company, from_date, to_date))
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 

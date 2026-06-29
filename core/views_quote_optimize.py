@@ -70,6 +70,32 @@ class AIPriceOptimizeView(APIView):
             except (TypeError, ValueError):
                 historical_acceptance_rate = 0.5
 
+            # Ground the benchmark in REAL lane data when origin & destination are
+            # given — never optimise around a UI-passed guess. Cross-platform
+            # benchmark first, then lane-level, then the client value, then a cost
+            # anchor. We report which source was used so the UI can be honest.
+            market_rate_source = 'client' if market_rate > 0 else 'none'
+            origin = str(data.get('origin') or '').strip()
+            destination = str(data.get('destination') or '').strip()
+            vehicle_type = str(data.get('vehicle_type') or '').strip()
+            if origin and destination:
+                try:
+                    from core.services.lane_benchmark import resolve_market_rate
+                    rate, src = resolve_market_rate(
+                        origin, destination, vehicle_type or None,
+                        company=getattr(request.user, 'company', None),
+                    )
+                    if rate and rate > 0:
+                        market_rate = float(rate)
+                        market_rate_source = src
+                except Exception as exc:
+                    logger.warning('optimize: market-rate resolve failed: %s', exc)
+
+            # Last-resort anchor so we never optimise around a missing/zero rate.
+            if market_rate <= 0:
+                market_rate = total_cost * 1.25
+                market_rate_source = 'cost_anchor'
+
             result = optimize_price(
                 total_cost=total_cost,
                 market_rate=market_rate,
@@ -78,7 +104,11 @@ class AIPriceOptimizeView(APIView):
                 historical_acceptance_rate=historical_acceptance_rate,
             )
 
-            response_data = {'success': True}
+            response_data = {
+                'success': True,
+                'market_rate': round(market_rate, 2),
+                'market_rate_source': market_rate_source,
+            }
             response_data.update(result)
             return Response(response_data)
 
