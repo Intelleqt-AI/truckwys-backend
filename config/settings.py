@@ -226,6 +226,17 @@ DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='Truckwys <noreply@tru
 RESEND_API_KEY = config('RESEND_API_KEY', default='')
 EMAIL_FROM = config('EMAIL_FROM', default='TruckWys <noreply@mail.baselinq.ai>')
 
+# RAG / embeddings (Copilot retrieval). OpenAI provides the embeddings; Claude
+# (ANTHROPIC_API_KEY) does the generation. Without OPENAI_API_KEY, RAG degrades
+# to the snapshot-only prompt.
+OPENAI_API_KEY = config('OPENAI_API_KEY', default='')
+EMBEDDING_MODEL = config('EMBEDDING_MODEL', default='text-embedding-3-small')
+# Copilot generation: which model writes the answer, and which provider to use.
+# COPILOT_LLM_PROVIDER: 'auto' (prefer Anthropic if its key is set, else OpenAI),
+# 'openai', or 'anthropic'. With only OPENAI_API_KEY set, 'auto' uses OpenAI.
+OPENAI_CHAT_MODEL = config('OPENAI_CHAT_MODEL', default='gpt-4o')
+COPILOT_LLM_PROVIDER = config('COPILOT_LLM_PROVIDER', default='auto')
+
 # Frontend URL for email links
 FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:3701')
 

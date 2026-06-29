@@ -23,13 +23,53 @@ try:
 except ImportError:  # pragma: no cover
     ANTHROPIC_AVAILABLE = False
 
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    OPENAI_AVAILABLE = False
+
 AGENT_MODEL = os.environ.get("CLAUDE_AGENT_MODEL", "claude-opus-4-8")
+OPENAI_CHAT_MODEL = (
+    os.environ.get("OPENAI_CHAT_MODEL") or getattr(settings, "OPENAI_CHAT_MODEL", "") or "gpt-4o"
+)
+
+
+def _anthropic_key() -> str:
+    return os.environ.get("ANTHROPIC_API_KEY") or getattr(settings, "ANTHROPIC_API_KEY", "")
+
+
+def _openai_key() -> str:
+    return os.environ.get("OPENAI_API_KEY") or getattr(settings, "OPENAI_API_KEY", "")
+
+
+def _provider() -> str:
+    """Which LLM provider generates the reply, based on configured keys.
+
+    COPILOT_LLM_PROVIDER ('auto'|'openai'|'anthropic') can force one. In 'auto'
+    (default) Anthropic is preferred when its key is set — preserving existing
+    installs — otherwise OpenAI. Returns '' when neither is usable (→ rules).
+    Generation and embeddings are independent: this only picks the generator.
+    """
+    pref = (os.environ.get("COPILOT_LLM_PROVIDER")
+            or getattr(settings, "COPILOT_LLM_PROVIDER", "auto") or "auto").lower()
+    has_anthropic = ANTHROPIC_AVAILABLE and bool(_anthropic_key())
+    has_openai = OPENAI_AVAILABLE and bool(_openai_key())
+
+    if pref == "anthropic":
+        return "anthropic" if has_anthropic else ""
+    if pref == "openai":
+        return "openai" if has_openai else ""
+    # auto
+    if has_anthropic:
+        return "anthropic"
+    if has_openai:
+        return "openai"
+    return ""
 
 
 def _llm_enabled() -> bool:
-    return ANTHROPIC_AVAILABLE and bool(
-        os.environ.get("ANTHROPIC_API_KEY") or getattr(settings, "ANTHROPIC_API_KEY", "")
-    )
+    return bool(_provider())
 
 
 def _money(v) -> float:
@@ -154,7 +194,7 @@ def _capital_summary(company):
         return count, _money(value), (eligible[0] if eligible else None)
     except Exception as exc:
         logger.warning("capital summary failed for agent: %s", exc)
-        return 0, 0.0
+        return 0, 0.0, None
 
 
 # ---------------------------------------------------------------------------
@@ -322,13 +362,133 @@ def _propose_action(ctx: dict, user_text: str):
     return None
 
 
-def agent_respond(company, messages: list) -> dict:
-    """Return {reply, source, ai_available, actions, proposed_action}. Never raises.
+def _retrieved_block(company, query: str) -> str:
+    """Per-account RAG: pull the invoices most relevant to the question and render
+    them as a grounding block. Empty string if RAG is unavailable (graceful fallback)."""
+    if not query:
+        return ""
+    try:
+        from core.services import rag
+        hits = rag.retrieve(company, query, k=8)
+    except Exception as exc:  # pragma: no cover - never break the chat
+        logger.warning("RAG retrieve failed, continuing without it: %s", exc)
+        return ""
+    if not hits:
+        return ""
+    docs = "\n".join(f"- {h['content']}" for h in hits)
+    return (
+        "\n\nRetrieved invoice records (account-scoped, most relevant to the question — "
+        "prefer these exact figures when answering):\n" + docs
+    )
+
+
+def _llm_generate(system: str, convo: list) -> str:
+    """Generate a reply from the selected provider. Caller handles exceptions.
+
+    Both providers receive the same instructions + grounding: Anthropic takes the
+    system prompt as a top-level param; OpenAI takes it as the first message. That
+    message-shape difference is the only divergence.
+    """
+    provider = _provider()
+    if provider == "anthropic":
+        client = anthropic.Anthropic()
+        response = client.messages.create(
+            model=AGENT_MODEL,
+            max_tokens=700,
+            system=system,
+            messages=convo,
+        )
+        return next((b.text for b in response.content if b.type == "text"), "").strip()
+    if provider == "openai":
+        client = OpenAI(api_key=_openai_key())
+        response = client.chat.completions.create(
+            model=OPENAI_CHAT_MODEL,
+            max_tokens=700,
+            temperature=0,  # grounding: quote the provided figures exactly, don't "helpfully" derive
+            messages=[{"role": "system", "content": system}, *convo],
+        )
+        return (response.choices[0].message.content or "").strip()
+    return ""
+
+
+# Appended to the system prompt when the agent is allowed to create quotes.
+QUOTE_TOOL_SYSTEM = (
+    "\n\nYOU CAN CREATE FREIGHT QUOTES. When the user wants a quote, collect: customer name, pickup "
+    "location, delivery location, cargo description, weight, and (optionally) vehicle type. You must NEVER "
+    "decide or invent the price — always ASK the user what price to quote. Only once you have the customer, "
+    "pickup, delivery, cargo, weight, AND a price the user has explicitly given, call the create_quote tool. "
+    "A new customer is created automatically. After the tool returns, tell the user the new quote number and "
+    "total in one short sentence. Do not call the tool before you have a user-provided price."
+)
+
+
+def _openai_tool_loop(system: str, convo: list, company, user):
+    """OpenAI function-calling loop exposing the create_quote tool.
+
+    Returns (reply_text, created_quote_or_None). The caller wraps this in try/except
+    so any failure degrades to the rules reply.
+    """
+    from core.services import quote_agent
+    client = OpenAI(api_key=_openai_key())
+    messages = [{"role": "system", "content": system}, *convo]
+    created_quote = None
+    for _ in range(4):  # cap the tool loop
+        response = client.chat.completions.create(
+            model=OPENAI_CHAT_MODEL,
+            max_tokens=700,
+            temperature=0,
+            tools=[quote_agent.CREATE_QUOTE_TOOL],
+            messages=messages,
+        )
+        msg = response.choices[0].message
+        if not getattr(msg, "tool_calls", None):
+            return (msg.content or "").strip(), created_quote
+        # Echo the assistant's tool-call request, then answer each call.
+        messages.append({
+            "role": "assistant",
+            "content": msg.content or "",
+            "tool_calls": [
+                {"id": tc.id, "type": "function",
+                 "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                for tc in msg.tool_calls
+            ],
+        })
+        for tc in msg.tool_calls:
+            if tc.function.name == "create_quote":
+                if created_quote:
+                    # Idempotent within a turn: never create a second quote — return the
+                    # one already made so the model can confirm without duplicating.
+                    result = created_quote
+                else:
+                    try:
+                        args = json.loads(tc.function.arguments or "{}")
+                        result = quote_agent.create_quote(company, user, **args)
+                        created_quote = result
+                    except Exception as exc:  # surface a tool error back to the model
+                        result = {"error": str(exc)}
+            else:
+                result = {"error": f"unknown tool {tc.function.name}"}
+            messages.append({"role": "tool", "tool_call_id": tc.id,
+                             "content": json.dumps(result, default=str)})
+    if created_quote:
+        return (f"Created quote {created_quote['quote_number']} "
+                f"(R{created_quote['total_amount']:,.2f}) for {created_quote['customer_name']}."), created_quote
+    return "Tell me the remaining details and I'll create the quote.", created_quote
+
+
+def agent_respond(company, messages: list, *, query: str = None, user=None, enable_tools: bool = False) -> dict:
+    """Return {reply, source, ai_available, actions, proposed_action, ...}. Never raises.
 
     messages: [{"role": "user"|"assistant", "content": str}, ...]
+    query: the current user question to retrieve account records for (RAG). Falls back
+        to the last user message when omitted.
+    user: the acting user (required for write actions like creating a quote).
+    enable_tools: when True (and the OpenAI provider is active), the agent can CREATE
+        quotes via function-calling. Read-only callers leave this False.
     """
     ctx = build_agent_context(company)
     last_user = next((m.get("content", "") for m in reversed(messages or []) if m.get("role") == "user"), "")
+    rag_query = query if query is not None else last_user
     actions = _suggest_actions(last_user)
     proposed_action = _propose_action(ctx, last_user)
 
@@ -341,16 +501,27 @@ def agent_respond(company, messages: list) -> dict:
             "proposed_action": proposed_action,
         }
 
+    tools_on = bool(enable_tools and _provider() == "openai")
+
     try:
-        client = anthropic.Anthropic()
+        readonly_clause = (
+            "You can CREATE freight quotes for the user via the quote tool below; apart from that you are "
+            "read-only and must never claim to have changed other data."
+            if tools_on else
+            "You are read-only: suggest what the user should do, but never claim to have changed anything."
+        )
         system = (
             "You are the TruckWys copilot — an AI agent for a South African road-freight operator. "
             "TruckWys is a fleet finance/data/AI platform (quotes, bookings, invoicing, and a Capital "
             "fast-pay/factoring product). Answer concisely and practically, grounded ONLY in the JSON "
-            "company snapshot provided — never invent figures. Use ZAR (R). When a number isn't in the "
-            "snapshot, say you don't have it rather than guessing. You are read-only: suggest what the "
-            "user should do, but never claim to have changed anything. Keep replies under ~120 words."
-            f"\n\nCompany snapshot:\n{json.dumps(ctx, default=str)}"
+            "company snapshot and the retrieved invoice records provided — never invent figures. Use "
+            "ZAR (R). When a number isn't in the snapshot or retrieved records, say you don't have it "
+            "rather than guessing. Quote amounts and dates EXACTLY as they appear — do not add VAT, "
+            "interest, or any derived calculation unless the user explicitly asks. A PAID invoice is "
+            "settled (balance 0) and is never overdue. " + readonly_clause + " Keep replies under ~120 words."
+            + (QUOTE_TOOL_SYSTEM if tools_on else "")
+            + f"\n\nCompany snapshot:\n{json.dumps(ctx, default=str)}"
+            + f"{_retrieved_block(company, rag_query)}"
         )
         convo = [
             {"role": m["role"], "content": str(m.get("content", ""))}
@@ -359,14 +530,28 @@ def agent_respond(company, messages: list) -> dict:
         ][-12:]
         if not convo:
             convo = [{"role": "user", "content": "Give me a quick status of my business."}]
-        response = client.messages.create(
-            model=AGENT_MODEL,
-            max_tokens=700,
-            system=system,
-            messages=convo,
-        )
-        reply = next((b.text for b in response.content if b.type == "text"), "").strip()
-        return {"reply": reply, "source": "llm", "ai_available": True, "actions": actions, "proposed_action": proposed_action}
+
+        created_quote = None
+        if tools_on:
+            reply, created_quote = _openai_tool_loop(system, convo, company, user)
+        else:
+            reply = _llm_generate(system, convo)
+
+        result = {
+            "reply": reply,
+            "source": "llm",
+            "ai_available": True,
+            "provider": _provider(),
+            "actions": list(actions),
+            "proposed_action": proposed_action,
+        }
+        if created_quote and created_quote.get("quote_id"):
+            result["created_quote"] = created_quote
+            result["actions"] = [{
+                "label": f"Open quote {created_quote['quote_number']}",
+                "route": f"/quotes/{created_quote['quote_id']}",
+            }] + list(actions)
+        return result
     except Exception as exc:
         logger.warning("agent LLM failed, using fallback: %s", exc)
         return {

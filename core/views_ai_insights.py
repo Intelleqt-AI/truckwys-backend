@@ -64,6 +64,79 @@ class AgentChatView(APIView):
         return Response(result)
 
 
+class ConversationChatView(APIView):
+    """POST /api/v1/agent/conversations/<id>/chat/ — send one message to a specific
+    conversation and get a RAG-grounded reply.
+
+    Each conversation has its own endpoint. The server owns the history (loaded from
+    the DB), so the client only sends the new message. Strictly account-scoped:
+    the conversation must belong to request.user and retrieval is scoped to their
+    company.
+
+    Body: { "message": str }  (also accepts { "content": str })
+    Returns: { reply, source, ai_available, actions, proposed_action, conversation_id }
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        from core.views import resolve_user_company
+        from core.models import CopilotConversation, CopilotMessage
+
+        company = resolve_user_company(request.user)
+        if company is None:
+            return Response(
+                {'error': 'No company associated with this account'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        conv = CopilotConversation.objects.filter(id=pk, user=request.user).first()
+        if conv is None:
+            return Response({'error': 'Conversation not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        text = request.data.get('message') or request.data.get('content')
+        if not text or not str(text).strip():
+            return Response({'error': 'message is required'}, status=status.HTTP_400_BAD_REQUEST)
+        text = str(text).strip()
+
+        # Server-side history (last 12 turns) loaded from the DB, then the new user turn.
+        history = [
+            {'role': m.role, 'content': m.content}
+            for m in conv.messages.order_by('created_at')[:300]
+        ][-12:]
+        history.append({'role': 'user', 'content': text})
+
+        # Keep this account's invoice index fresh (cheap: skips unchanged rows), then
+        # answer with per-account RAG retrieval grounded in the user's question.
+        try:
+            from core.services import rag
+            rag.index_company_invoices(company)
+        except Exception:
+            pass
+
+        try:
+            # enable_tools=True lets the agent CREATE quotes (function-calling) from chat.
+            result = agent_respond(company, history, query=text, user=request.user, enable_tools=True)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # Persist the turn.
+        try:
+            CopilotMessage.objects.create(user=request.user, conversation=conv, role='user', content=text[:8000])
+            if not conv.title:
+                conv.title = text[:80]
+            reply = result.get('reply')
+            if reply:
+                CopilotMessage.objects.create(
+                    user=request.user, conversation=conv, role='assistant', content=str(reply)[:8000]
+                )
+            conv.save()  # bump updated_at + title
+        except Exception:
+            pass
+
+        result['conversation_id'] = conv.id
+        return Response(result)
+
+
 class CopilotConversationsView(APIView):
     """GET/POST /api/v1/agent/conversations/ — list past threads or start a new one."""
     permission_classes = [IsAuthenticated]

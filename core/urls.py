@@ -66,7 +66,7 @@ from .views_risk_api import (
 from .views_invite import (
     InviteCreateView, InviteValidateView, InviteAcceptView
 )
-from .views_ai_insights import DashboardBriefingView, RiskScoreExplainView, AgentChatView, CopilotConversationsView, CopilotConversationDetailView
+from .views_ai_insights import DashboardBriefingView, RiskScoreExplainView, AgentChatView, CopilotConversationsView, CopilotConversationDetailView, ConversationChatView
 from .views_quote_optimize import AIPriceOptimizeView
 from .views_risk_score_api import RiskUnderwriteView
 
@@ -160,6 +160,7 @@ urlpatterns = [
     path('agent/chat/', AgentChatView.as_view(), name='agent-chat'),
     path('agent/conversations/', CopilotConversationsView.as_view(), name='agent-conversations'),
     path('agent/conversations/<int:pk>/', CopilotConversationDetailView.as_view(), name='agent-conversation-detail'),
+    path('agent/conversations/<int:pk>/chat/', ConversationChatView.as_view(), name='agent-conversation-chat'),
     path('quotes/optimize/', AIPriceOptimizeView.as_view(), name='quote-optimize'),
     path('risk/underwrite/', RiskUnderwriteView.as_view(), name='risk-underwrite'),
     path('risk/score/<int:pk>/explain/', RiskScoreExplainView.as_view(), name='risk-score-explain'),

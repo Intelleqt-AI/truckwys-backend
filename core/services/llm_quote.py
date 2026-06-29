@@ -22,7 +22,17 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     ANTHROPIC_AVAILABLE = False
 
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:  # pragma: no cover - optional dependency
+    OPENAI_AVAILABLE = False
+
 QUOTE_MODEL = os.environ.get("CLAUDE_QUOTE_MODEL", "claude-opus-4-8")
+OPENAI_QUOTE_MODEL = (
+    os.environ.get("OPENAI_QUOTE_MODEL")
+    or getattr(settings, "OPENAI_CHAT_MODEL", "") or "gpt-4o"
+)
 
 VEHICLE_TYPES = ["Flatbed", "Tautliner", "Refrigerated", "Tanker", "Box Truck", "Danger Load"]
 
@@ -59,11 +69,26 @@ EXTRACTION_SCHEMA = {
 }
 
 
+def _anthropic_key() -> str:
+    return os.environ.get("ANTHROPIC_API_KEY") or getattr(settings, "ANTHROPIC_API_KEY", "")
+
+
+def _openai_key() -> str:
+    return os.environ.get("OPENAI_API_KEY") or getattr(settings, "OPENAI_API_KEY", "")
+
+
+def _provider() -> str:
+    """Pick the LLM provider for extraction, preferring Anthropic when both keys exist."""
+    if ANTHROPIC_AVAILABLE and _anthropic_key():
+        return "anthropic"
+    if OPENAI_AVAILABLE and _openai_key():
+        return "openai"
+    return ""
+
+
 def is_enabled() -> bool:
-    """True when Claude-backed extraction can run."""
-    if not ANTHROPIC_AVAILABLE:
-        return False
-    return bool(os.environ.get("ANTHROPIC_API_KEY") or getattr(settings, "ANTHROPIC_API_KEY", ""))
+    """True when LLM-backed extraction can run on either provider."""
+    return bool(_provider())
 
 
 def _build_messages(message: str, history: Optional[List[Dict[str, Any]]],
@@ -89,18 +114,42 @@ def _build_messages(message: str, history: Optional[List[Dict[str, Any]]],
 
 def extract(message: str, history: Optional[List[Dict[str, Any]]] = None,
             current_fields: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, Any], str]:
-    """Return (extracted_fields, reply). Raises on SDK/API error so the caller can fall back."""
-    client = anthropic.Anthropic()
-    response = client.messages.create(
-        model=QUOTE_MODEL,
-        max_tokens=600,
-        system=SYSTEM_PROMPT,
-        messages=_build_messages(message, history, current_fields),
-        output_config={"format": {"type": "json_schema", "schema": EXTRACTION_SCHEMA}},
-    )
+    """Return (extracted_fields, reply). Raises on SDK/API error so the caller can fall back.
 
-    text = next((b.text for b in response.content if b.type == "text"), "")
-    data = json.loads(text)
+    Provider-agnostic: uses Claude when ANTHROPIC_API_KEY is set, else OpenAI (gpt-4o)
+    with JSON mode. Both return the same {pickup_location, delivery_location, weight_kg,
+    vehicle_type, cargo_description, reply} shape.
+    """
+    msgs = _build_messages(message, history, current_fields)
+    provider = _provider()
+
+    if provider == "anthropic":
+        client = anthropic.Anthropic()
+        response = client.messages.create(
+            model=QUOTE_MODEL,
+            max_tokens=600,
+            system=SYSTEM_PROMPT,
+            messages=msgs,
+            output_config={"format": {"type": "json_schema", "schema": EXTRACTION_SCHEMA}},
+        )
+        text = next((b.text for b in response.content if b.type == "text"), "")
+        data = json.loads(text)
+    elif provider == "openai":
+        client = OpenAI(api_key=_openai_key())
+        sys = SYSTEM_PROMPT + (
+            "\n\nRespond ONLY with a JSON object with exactly these keys: pickup_location, "
+            "delivery_location, weight_kg, vehicle_type, cargo_description, reply."
+        )
+        response = client.chat.completions.create(
+            model=OPENAI_QUOTE_MODEL,
+            max_tokens=600,
+            temperature=0,
+            response_format={"type": "json_object"},
+            messages=[{"role": "system", "content": sys}, *msgs],
+        )
+        data = json.loads(response.choices[0].message.content or "{}")
+    else:
+        raise RuntimeError("No LLM provider configured for quote extraction")
 
     extracted: Dict[str, Any] = {}
     if data.get("pickup_location"):
