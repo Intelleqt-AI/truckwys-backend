@@ -108,28 +108,40 @@ def _extract_country(location: str) -> str:
         'PRETORIA', 'PTA', 'BLOEMFONTEIN', 'BFN', 'PORT ELIZABETH',
         'GQEBERHA', 'EAST LONDON', 'NELSPRUIT', 'MBOMBELA', 'POLOKWANE',
         'RUSTENBURG', 'KIMBERLEY', 'GEORGE', 'SOUTH AFRICA',
+        # Major SA cities/areas not in the short list above
+        'KEMPTON PARK', 'EKURHULENI', 'SANDTON', 'MIDRAND', 'CENTURION',
+        'BOKSBURG', 'GERMISTON', 'BENONI', 'SOWETO', 'ROODEPOORT',
+        'RANDBURG', 'KRUGERSDORP', 'WITBANK', 'EMALAHLENI', 'SECUNDA',
+        'PIETERMARITZBURG', 'PMB', 'RICHARDS BAY', 'NEWCASTLE', 'VEREENIGING',
+        'VANDERBIJLPARK', 'SASOLBURG', 'UPINGTON', 'SPRINGBOK', 'VREDENDAL',
+        'WORCESTER', 'STELLENBOSCH', 'PAARL', 'MALMESBURY', 'BEAUFORT WEST',
+        'OR TAMBO', 'KING SHAKA', 'BRAM FISCHER', 'LANSERIA',
     ]):
         return 'SA'
 
-    if any(kw in loc for kw in ['HARARE', 'BULAWAYO', 'MUTARE', 'ZIMBABWE', ', ZW']):
+    # NOTE: Do NOT use short country-code suffixes like ', KE' or ', ZW' here —
+    # they are substrings of SA place names (e.g. ', KE' matches ', KEMPTON',
+    # ', ZW' matches ', ZWELITSHA', ', NA' matches ', NAPIER'). Use full city
+    # or country names only.
+    if any(kw in loc for kw in ['HARARE', 'BULAWAYO', 'MUTARE', 'ZIMBABWE']):
         return 'ZW'
-    if any(kw in loc for kw in ['LUSAKA', 'NDOLA', 'KITWE', 'ZAMBIA', ', ZM']):
+    if any(kw in loc for kw in ['LUSAKA', 'NDOLA', 'KITWE', 'LIVINGSTONE', 'ZAMBIA']):
         return 'ZM'
-    if any(kw in loc for kw in ['MAPUTO', 'BEIRA', 'NAMPULA', 'MOZAMBIQUE', ', MZ']):
+    if any(kw in loc for kw in ['MAPUTO', 'BEIRA', 'NAMPULA', 'MOZAMBIQUE']):
         return 'MZ'
-    if any(kw in loc for kw in ['GABORONE', 'FRANCISTOWN', 'MAUN', 'BOTSWANA', ', BW']):
+    if any(kw in loc for kw in ['GABORONE', 'FRANCISTOWN', 'MAUN', 'BOTSWANA']):
         return 'BW'
-    if any(kw in loc for kw in ['WINDHOEK', 'WALVIS BAY', 'SWAKOPMUND', 'NAMIBIA', ', NA']):
+    if any(kw in loc for kw in ['WINDHOEK', 'WALVIS BAY', 'SWAKOPMUND', 'NAMIBIA']):
         return 'NA'
-    if any(kw in loc for kw in ['LILONGWE', 'BLANTYRE', 'MALAWI', ', MW']):
+    if any(kw in loc for kw in ['LILONGWE', 'BLANTYRE', 'MALAWI']):
         return 'MW'
-    if any(kw in loc for kw in ['DAR ES SALAAM', 'DODOMA', 'ARUSHA', 'TANZANIA', ', TZ']):
+    if any(kw in loc for kw in ['DAR ES SALAAM', 'DODOMA', 'ARUSHA', 'TANZANIA']):
         return 'TZ'
-    if any(kw in loc for kw in ['NAIROBI', 'MOMBASA', 'KISUMU', 'KENYA', ', KE']):
+    if any(kw in loc for kw in ['NAIROBI', 'MOMBASA', 'KISUMU', 'KENYA']):
         return 'KE'
-    if any(kw in loc for kw in ['MASERU', 'LESOTHO', ', LS']):
+    if any(kw in loc for kw in ['MASERU', 'LESOTHO']):
         return 'LS'
-    if any(kw in loc for kw in ['MBABANE', 'MANZINI', 'ESWATINI', 'SWAZILAND', ', SZ']):
+    if any(kw in loc for kw in ['MBABANE', 'MANZINI', 'ESWATINI', 'SWAZILAND']):
         return 'SZ'
 
     return 'SA'
