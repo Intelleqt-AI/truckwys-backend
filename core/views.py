@@ -1575,6 +1575,28 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     search_fields = ['quote_number', 'customer__name', 'pickup_location', 'delivery_location']
     ordering_fields = ['created_at', 'valid_until']
 
+    def create(self, request, *args, **kwargs):
+        from django.db import IntegrityError
+        from rest_framework.exceptions import ValidationError as DRFValidationError
+        try:
+            return super().create(request, *args, **kwargs)
+        except IntegrityError as exc:
+            msg = str(exc)
+            if 'quote_number' in msg.lower():
+                detail = 'A quote with this number already exists.'
+            elif 'customer' in msg.lower():
+                detail = 'Invalid customer reference.'
+            else:
+                detail = f'Database constraint violated: {msg}'
+            return Response({'error': detail}, status=status.HTTP_400_BAD_REQUEST)
+        except DRFValidationError:
+            raise
+        except Exception as exc:
+            return Response(
+                {'error': f'Could not create quote: {exc}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
     def perform_create(self, serializer):
         from django.utils import timezone
         import secrets
