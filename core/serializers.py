@@ -217,6 +217,10 @@ class LoadSerializer(serializers.ModelSerializer):
 # Quote Serializer
 class QuoteSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source='customer.name', read_only=True)
+    customer_email = serializers.CharField(source='customer.email', read_only=True)
+    customer_phone = serializers.CharField(source='customer.phone', read_only=True)
+    customer_company = serializers.CharField(source='customer.company_name', read_only=True)
+    customer_city = serializers.CharField(source='customer.city', read_only=True)
     created_by_name = serializers.CharField(source='created_by.username', read_only=True)
     quote_number = serializers.CharField(required=False, allow_blank=True)
     vehicle_display = serializers.SerializerMethodField()
