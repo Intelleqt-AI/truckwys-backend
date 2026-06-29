@@ -35,6 +35,18 @@ class IntegrationAPIKey(models.Model):
     quota_used = models.PositiveIntegerField(default=0, help_text="Calls used in the current quota window")
     quota_period = models.CharField(max_length=7, blank=True, default='', help_text="YYYY-MM window quota_used tracks")
 
+    # --- Security: IP allowlisting ---
+    allowed_ips = models.TextField(
+        blank=True, default='',
+        help_text="Comma-separated list of allowed caller IPs. Empty = all IPs permitted."
+    )
+
+    # --- Webhook: push scoring results to partner endpoint ---
+    webhook_url = models.URLField(
+        blank=True, default='',
+        help_text="If set, POST the scoring result to this URL after every successful score."
+    )
+
     class Meta:
         db_table = 'integration_api_keys'
         ordering = ['-created_at']
@@ -76,3 +88,36 @@ class IntegrationAPIKey(models.Model):
         self.quota_used = (self.quota_used or 0) + 1
         self.last_used_at = now
         self.save(update_fields=['usage_count', 'quota_used', 'quota_period', 'last_used_at'])
+
+    def is_ip_allowed(self, ip: str) -> bool:
+        """Return True if ip is permitted (empty allowed_ips = all allowed)."""
+        if not self.allowed_ips or not self.allowed_ips.strip():
+            return True
+        allowed = [x.strip() for x in self.allowed_ips.split(',') if x.strip()]
+        return ip in allowed
+
+
+class APICallLog(models.Model):
+    """Per-call audit log for the Risk-Scoring API."""
+
+    api_key = models.ForeignKey(
+        IntegrationAPIKey,
+        on_delete=models.CASCADE,
+        related_name='call_logs',
+    )
+    scored_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    invoice_amount = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    risk_tier = models.CharField(max_length=20, blank=True, default='')
+    score = models.IntegerField(null=True, blank=True)
+    eligible = models.BooleanField(null=True, blank=True)
+    caller_ip = models.GenericIPAddressField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'api_call_logs'
+        ordering = ['-scored_at']
+        indexes = [
+            models.Index(fields=['api_key', 'scored_at']),
+        ]
+
+    def __str__(self):
+        return f"{self.api_key.name} — {self.risk_tier} — {self.scored_at}"

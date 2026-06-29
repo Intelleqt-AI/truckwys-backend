@@ -33,7 +33,11 @@ class Quote(models.Model):
     
     pickup_location = models.CharField(max_length=500)
     delivery_location = models.CharField(max_length=500)
-    
+    pickup_lat = models.DecimalField(max_digits=12, decimal_places=7, null=True, blank=True)
+    pickup_lng = models.DecimalField(max_digits=12, decimal_places=7, null=True, blank=True)
+    delivery_lat = models.DecimalField(max_digits=12, decimal_places=7, null=True, blank=True)
+    delivery_lng = models.DecimalField(max_digits=12, decimal_places=7, null=True, blank=True)
+
     origin = models.CharField(max_length=50, blank=True)  # e.g., "JHB", "CPT"
     destination = models.CharField(max_length=50, blank=True)  # e.g., "DUR", "PE"
     
@@ -68,6 +72,9 @@ class Quote(models.Model):
     rejected_at = models.DateTimeField(null=True, blank=True, help_text="Timestamp when quote was rejected")
     fuel_price_at_creation = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True, help_text="Fuel price snapshot at quote creation time")
     win_probability = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True, help_text="Predicted win probability (0-100)")
+
+    vehicle = models.ForeignKey('Vehicle', on_delete=models.SET_NULL, null=True, blank=True, related_name='quotes')
+    driver = models.ForeignKey('Driver', on_delete=models.SET_NULL, null=True, blank=True, related_name='quotes')
 
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name='quotes_created')
     created_at = models.DateTimeField(auto_now_add=True)

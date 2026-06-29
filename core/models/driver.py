@@ -33,7 +33,17 @@ class Driver(models.Model):
         default=3,
         help_text='Years of driving experience'
     )
-    
+
+    # Computed performance fields — written by background task, never by forms
+    efficiency_score    = models.IntegerField(default=0)
+    on_time_rate        = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    safety_score        = models.IntegerField(default=0)
+    total_distance      = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    trips_this_month    = models.IntegerField(default=0)
+    revenue_generated   = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    avg_revenue_per_trip = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    margin_per_trip     = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+
     class Meta:
         db_table = 'drivers'
         ordering = ['-created_at']

@@ -3,7 +3,7 @@ from rest_framework.routers import DefaultRouter
 from rest_framework.authtoken.views import obtain_auth_token
 from .views_billing import (
     SubscribeView, CancelSubscriptionView, BillingStatusView,
-    BillingHistoryView, PayFastITNView,
+    BillingHistoryView, PayFastITNView, ConfirmPaymentView,
 )
 from .views import (
     UserViewSet, CustomerViewSet, DriverViewSet,
@@ -16,7 +16,7 @@ from .views import (
     QuotesPipelineOverviewView, NotificationSettingsView,
     CompanyProfileView, CompanyLogoUploadView, DashboardOverviewView, ActivityEventViewSet,
     TestEmailView, InviteView, InviteTokenView, InviteResendView,
-    PublicQuoteView, PublicQuoteRespondView,
+    PublicQuoteView, PublicQuoteRespondView, PublicInvoiceView,
     EmailVerifyView, ResendVerificationView,
 )
 from .views_ai_quote import (
@@ -44,7 +44,7 @@ from .views_integrations import (
     CreditLookupView, DashboardInsightsView, CashFlowForecastView,
     FleetTripSyncView, FleetTripBulkSyncView, TripSyncView
 )
-from .views import RouteCalculatorView, DashboardSignalsView, PasswordResetRequestView, PasswordResetConfirmView, IntegrationAPIKeyViewSet
+from .views import RouteCalculatorView, LocationSuggestView, DashboardSignalsView, PasswordResetRequestView, PasswordResetConfirmView, IntegrationAPIKeyViewSet
 from .views_lender import (
     LenderHealthView, LenderRiskProfileView, LenderEligibleInvoicesView,
     LenderAdvanceRequestView, LenderPortfolioView
@@ -120,6 +120,7 @@ urlpatterns = [
     path('billing/subscribe/', SubscribeView.as_view(), name='billing-subscribe'),
     path('billing/cancel/', CancelSubscriptionView.as_view(), name='billing-cancel'),
     path('billing/itn/', PayFastITNView.as_view(), name='billing-itn'),
+    path('billing/confirm/', ConfirmPaymentView.as_view(), name='billing-confirm'),
     path('auth/me/', UserProfileView.as_view(), name='user-profile'),
     path('auth/sessions/', SessionsView.as_view(), name='auth-sessions'),
     path('auth/password-reset/', PasswordResetRequestView.as_view(), name='password-reset'),
@@ -128,9 +129,8 @@ urlpatterns = [
     path('auth/resend-verification/', ResendVerificationView.as_view(), name='resend-verification'),
     path('auth/invite/', InviteView.as_view(), name='auth-invite'),
     path('auth/invite/<str:token>/accept/', InviteTokenView.as_view(), name='auth-invite-accept'),
-    path('auth/invite/<str:token>/', InviteTokenView.as_view(), name='auth-invite-detail'),
     path('auth/invite/<str:token>/resend/', InviteResendView.as_view(), name='auth-invite-resend'),
-    path('auth/invite/<str:token>/accept/', InviteAcceptView.as_view(), name='auth-invite-accept'),
+    path('auth/invite/<str:token>/', InviteTokenView.as_view(), name='auth-invite-detail'),
     
     # Fleet/Vehicle specific endpoints (must come before router to avoid conflicts)
     path('fleet/overview/', FleetOverviewView.as_view(), name='fleet-overview'),
@@ -200,10 +200,12 @@ urlpatterns = [
 
     # Route Calculator endpoint (NEW - Phase 4)
     path('route/calculate/', RouteCalculatorView.as_view(), name='route-calculate'),
+    path('location/suggest/', LocationSuggestView.as_view(), name='location-suggest'),
 
-    # Public Quote endpoints (no auth required)
+    # Public endpoints (no auth required)
     path('quotes/public/<int:quote_id>/<str:token>/', PublicQuoteView.as_view(), name='public-quote-view'),
     path('quotes/public/<int:quote_id>/<str:token>/respond/', PublicQuoteRespondView.as_view(), name='public-quote-respond'),
+    path('invoices/public/<int:invoice_id>/<str:token>/', PublicInvoiceView.as_view(), name='public-invoice-view'),
 
     # AI Quote & Revenue Guard endpoints (Phase 2 + Sprint 1)
     path('fuel-prices/current/', FuelPriceCurrentView.as_view(), name='fuel-prices-current'),

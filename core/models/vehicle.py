@@ -9,6 +9,10 @@ class VehicleType(models.Model):
     capacity = models.DecimalField(max_digits=10, decimal_places=2)
     max_distance = models.DecimalField(max_digits=10, decimal_places=2)
     base_rate = models.DecimalField(max_digits=10, decimal_places=2)
+    fuel_consumption_l_per_100km = models.DecimalField(
+        max_digits=5, decimal_places=2, default=36.0,
+        help_text='Diesel consumption in litres per 100km (e.g. 32 for Flatbed)'
+    )
     active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -37,6 +41,8 @@ class Vehicle(models.Model):
     mileage = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     last_maintenance_date = models.DateField(null=True, blank=True)
     next_maintenance_due = models.DateField(null=True, blank=True)
+    service_interval_km = models.IntegerField(null=True, blank=True, help_text='How many km between services (e.g. 10000)')
+    last_service_mileage = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, help_text='Odometer reading at last service')
     insurance_expiry = models.DateField(null=True, blank=True)
     registration_expiry = models.DateField(null=True, blank=True)
     

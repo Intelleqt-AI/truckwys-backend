@@ -1,23 +1,26 @@
 """
 Email Service for sending invoice emails with PDF attachments,
-and transactional auth emails (verification, etc.) via Django SMTP.
+and transactional auth emails (verification, etc.) via Resend.
 """
 
 from typing import Optional
-from django.core.mail import EmailMultiAlternatives
-from django.template.loader import render_to_string
 from django.utils.html import strip_tags
 from django.conf import settings
 from django.utils import timezone
+import logging
+import resend
 import os
+
+from core.models import Invoice, Company
+
+logger = logging.getLogger(__name__)
 
 from core.models import Invoice, Company
 
 
 def send_verification_email(email: str, code: str, first_name: str) -> bool:
-    """Send email verification OTP via Django SMTP backend."""
+    """Send email verification OTP via Resend."""
     subject = "Verify your TruckWys account"
-    text_content = f"Hi {first_name},\n\nYour TruckWys verification code is: {code}\n\nThis code expires in 10 minutes."
     html_content = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -108,30 +111,22 @@ def send_verification_email(email: str, code: str, first_name: str) -> bool:
 </body>
 </html>"""
     try:
-        msg = EmailMultiAlternatives(
-            subject=subject,
-            body=text_content,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            to=[email],
-        )
-        msg.attach_alternative(html_content, "text/html")
-        msg.send(fail_silently=False)
+        resend.api_key = settings.RESEND_API_KEY
+        resend.Emails.send({
+            "from": settings.EMAIL_FROM,
+            "to": [email],
+            "subject": subject,
+            "html": html_content,
+        })
         return True
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"Failed to send verification email to {email}: {e}")
+        logger.error(f"Failed to send verification email to {email}: {e}")
         return False
 
 
 def send_password_reset_email(email: str, first_name: str, reset_code: str) -> bool:
     """Send password reset OTP via Django SMTP backend."""
-    import logging
     subject = "Your TruckWys password reset code"
-    text_content = (
-        f"Hi {first_name},\n\n"
-        f"Your TruckWys password reset code is: {reset_code}\n\n"
-        f"This code expires in 1 hour. If you didn't request this, ignore this email."
-    )
     html_content = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -210,31 +205,23 @@ def send_password_reset_email(email: str, first_name: str, reset_code: str) -> b
 </body>
 </html>"""
     try:
-        msg = EmailMultiAlternatives(
-            subject=subject,
-            body=text_content,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            to=[email],
-        )
-        msg.attach_alternative(html_content, "text/html")
-        msg.send(fail_silently=False)
+        resend.api_key = settings.RESEND_API_KEY
+        resend.Emails.send({
+            "from": settings.EMAIL_FROM,
+            "to": [email],
+            "subject": subject,
+            "html": html_content,
+        })
         return True
     except Exception as e:
-        logging.getLogger(__name__).error(f"Failed to send password reset email to {email}: {e}")
+        logger.error(f"Failed to send password reset email to {email}: {e}")
         return False
 
 
 def send_invite_email(invite_email: str, invited_by_name: str, company_name: str, invite_url: str, role: str) -> bool:
-    """Send team invitation email via Django SMTP backend."""
-    import logging
+    """Send team invitation email via Resend."""
     role_display = role.replace('_', ' ').title()
     subject = f"You've been invited to join {company_name} on TruckWys"
-    text_content = (
-        f"Hi,\n\n"
-        f"{invited_by_name} has invited you to join {company_name} on TruckWys as {role_display}.\n\n"
-        f"Accept your invitation: {invite_url}\n\n"
-        f"This invitation expires in 7 days."
-    )
     html_content = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -303,17 +290,16 @@ def send_invite_email(invite_email: str, invited_by_name: str, company_name: str
 </body>
 </html>"""
     try:
-        msg = EmailMultiAlternatives(
-            subject=subject,
-            body=text_content,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            to=[invite_email],
-        )
-        msg.attach_alternative(html_content, "text/html")
-        msg.send(fail_silently=False)
+        resend.api_key = settings.RESEND_API_KEY
+        resend.Emails.send({
+            "from": settings.EMAIL_FROM,
+            "to": [invite_email],
+            "subject": subject,
+            "html": html_content,
+        })
         return True
     except Exception as e:
-        logging.getLogger(__name__).error(f"Failed to send invite email to {invite_email}: {e}")
+        logger.error(f"Failed to send invite email to {invite_email}: {e}")
         return False
 
 
@@ -344,76 +330,58 @@ class InvoiceEmailService:
         pdf_path: Optional[str] = None,
         additional_recipients: Optional[list] = None
     ) -> bool:
-        """
-        Send invoice email to customer.
+        """Send invoice email to customer via Resend with optional PDF attachment."""
+        import base64
 
-        Args:
-            pdf_path: Path to the PDF file to attach
-            additional_recipients: Additional email addresses to send to
-
-        Returns:
-            bool: True if email sent successfully, False otherwise
-        """
-        # Get recipient email
         to_email = self.invoice.customer.email
         if not to_email:
             raise ValueError(f"Customer {self.invoice.customer.name} has no email address")
 
-        # Build recipient list
         recipients = [to_email]
         if additional_recipients:
             recipients.extend(additional_recipients)
 
-        # Get company details for from address
         try:
-            company = Company.objects.first()
-            from_email = company.contact.get('email', settings.DEFAULT_FROM_EMAIL) if company and company.contact else settings.DEFAULT_FROM_EMAIL
+            company = Company.objects.filter(users=self.invoice.company.users.first()).first() if hasattr(self.invoice, 'company') and self.invoice.company else Company.objects.first()
             company_name = company.company_name if company else "TruckWys"
-        except (Company.DoesNotExist, AttributeError):
-            from_email = settings.DEFAULT_FROM_EMAIL
+        except Exception:
             company_name = "TruckWys"
 
-        # Build subject
         subject = f"Invoice {self.invoice.invoice_number} from {company_name}"
-
-        # Build HTML content
         html_content = self._build_html_content()
-        text_content = strip_tags(html_content)
 
-        # Create email
-        email = EmailMultiAlternatives(
-            subject=subject,
-            body=text_content,
-            from_email=from_email,
-            to=recipients,
-        )
-        email.attach_alternative(html_content, "text/html")
-
-        # Attach PDF if provided
+        # Build attachments list for Resend
+        attachments = []
         if pdf_path:
             pdf_full_path = os.path.join(settings.MEDIA_ROOT, pdf_path)
             if os.path.exists(pdf_full_path):
                 with open(pdf_full_path, 'rb') as f:
-                    email.attach(
-                        f"Invoice_{self.invoice.invoice_number}.pdf",
-                        f.read(),
-                        'application/pdf'
-                    )
+                    attachments.append({
+                        "filename": f"Invoice_{self.invoice.invoice_number}.pdf",
+                        "content": base64.b64encode(f.read()).decode(),
+                    })
 
-        # Send email
         try:
-            email.send(fail_silently=False)
+            resend.api_key = settings.RESEND_API_KEY
+            payload = {
+                "from": settings.EMAIL_FROM,
+                "to": recipients,
+                "subject": subject,
+                "html": html_content,
+            }
+            if attachments:
+                payload["attachments"] = attachments
+            resend.Emails.send(payload)
 
-            # Update invoice sent timestamp
+            # Mark invoice as sent
             if self.invoice.status == 'DRAFT':
                 self.invoice.status = 'SENT'
             self.invoice.sent_at = timezone.now()
-            self.invoice.save()
+            self.invoice.save(update_fields=['status', 'sent_at'])
 
             return True
         except Exception as e:
-            # Log error (in production, use proper logging)
-            print(f"Error sending invoice email: {str(e)}")
+            logger.error(f"Failed to send invoice email {self.invoice.invoice_number}: {e}")
             return False
 
     def _build_html_content(self) -> str:
@@ -429,8 +397,10 @@ class InvoiceEmailService:
         except Company.DoesNotExist:
             company = None
 
-        # Build portal link (placeholder for now)
-        portal_link = f"{settings.FRONTEND_URL if hasattr(settings, 'FRONTEND_URL') else 'https://app.truckwys.co.za'}/invoices/{self.invoice.invoice_number}"
+        # Public view link — no login required for customer
+        frontend_url = settings.FRONTEND_URL.rstrip('/')
+        view_token = getattr(self.invoice, 'view_token', '') or ''
+        portal_link = f"{frontend_url}/invoice/view/{self.invoice.id}/{view_token}" if view_token else frontend_url
 
         # Calculate days until due
         days_until_due = self.invoice.days_until_due

@@ -23,13 +23,25 @@ for _key in (
 SECRET_KEY = config('SECRET_KEY', default='django-insecure-dev-key-change-in-production')
 DEBUG = config('DEBUG', default=False, cast=bool)
 
-# Fail fast: never run in production on the insecure dev SECRET_KEY.
+# In production (DEBUG=False) we must never run on the shared insecure dev key.
+# Rather than crash the boot, self-heal: generate an ephemeral random key so the
+# service still starts, and log a loud warning. CAVEAT: an ephemeral key is
+# regenerated on every restart/worker, which invalidates sessions and signed
+# links (password-reset / email-verify). Set SECRET_KEY in the environment
+# (e.g. Railway → Variables) for stable, secure behaviour.
 if not DEBUG and SECRET_KEY == 'django-insecure-dev-key-change-in-production':
-    from django.core.exceptions import ImproperlyConfigured
-    raise ImproperlyConfigured('SECRET_KEY must be set via environment when DEBUG=False.')
+    import logging
+    from django.core.management.utils import get_random_secret_key
+    SECRET_KEY = get_random_secret_key()
+    logging.getLogger('django').warning(
+        'SECRET_KEY is not set in the environment — generated an ephemeral key so '
+        'the app can boot. Sessions and signed links will NOT survive restarts. '
+        'Set SECRET_KEY in your environment (e.g. Railway Variables) ASAP.'
+    )
 
-# ALLOWED_HOSTS from environment (CSV)
-ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,*.ngrok.io', cast=lambda v: [s.strip() for s in v.split(',')])
+# ALLOWED_HOSTS from environment (CSV). The leading-dot entry matches the Railway
+# backend domain and any subdomain (e.g. web-production-143e2.up.railway.app).
+ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,*.ngrok.io,.up.railway.app', cast=lambda v: [s.strip() for s in v.split(',')])
 
 # Xero accounting integration (OAuth 2.0). The integration goes live the moment a
 # real Xero app's client id/secret are dropped into .env — until then the connect
@@ -153,6 +165,7 @@ MEDIA_ROOT = BASE_DIR / 'media'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 REST_FRAMEWORK = {
+    'EXCEPTION_HANDLER': 'core.views.custom_exception_handler',
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework.authentication.TokenAuthentication',
         'rest_framework.authentication.SessionAuthentication',
@@ -204,6 +217,7 @@ CORS_ALLOW_HEADERS = [
     'dnt',
     'origin',
     'user-agent',
+    'x-api-key',
     'x-csrftoken',
     'x-requested-with',
 ]
@@ -248,9 +262,23 @@ SESSION_COOKIE_SECURE = not DEBUG  # Only HTTPS in production
 SECURE_BROWSER_XSS_FILTER = True
 X_FRAME_OPTIONS = 'DENY'
 
+# Origins trusted for unsafe (POST/PUT/DELETE) requests over HTTPS. Django 4+
+# requires this for the admin login and any session-auth POST from the browser.
+# CSV via env; platform wildcards are a safe default so admin works out of the box.
+CSRF_TRUSTED_ORIGINS = config(
+    'CSRF_TRUSTED_ORIGINS',
+    default='https://*.up.railway.app,https://*.vercel.app',
+    cast=lambda v: [s.strip() for s in v.split(',') if s.strip()],
+)
+
+# Railway terminates TLS at its edge and forwards plain HTTP to the app; trust the
+# forwarded proto so request.is_secure() is correct (required for the Secure
+# session/CSRF cookies above to be sent and for correct HTTPS URL building).
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
 # PayFast Billing Configuration
-PAYFAST_MERCHANT_ID = config('PAYFAST_MERCHANT_ID', default='10000100')
-PAYFAST_MERCHANT_KEY = config('PAYFAST_MERCHANT_KEY', default='46f0cd694581a')
+PAYFAST_MERCHANT_ID = config('PAYFAST_MERCHANT_ID', default='10050612')
+PAYFAST_MERCHANT_KEY = config('PAYFAST_MERCHANT_KEY', default='hx33jdpodvres')
 PAYFAST_PASSPHRASE = config('PAYFAST_PASSPHRASE', default='')
 PAYFAST_SANDBOX = config('PAYFAST_SANDBOX', default=True, cast=bool)
 
@@ -258,12 +286,9 @@ PAYFAST_SANDBOX = config('PAYFAST_SANDBOX', default=True, cast=bool)
 CONTROLFLEET_WEBHOOK_KEY = config('CONTROLFLEET_WEBHOOK_KEY', default='')
 CONTROLFLEET_API_KEY = config('CONTROLFLEET_API_KEY', default='')
 
-# Celery / Redis (async tasks). Connection is lazy — no broker needed for the
-# web process unless a task is actually dispatched.
+# Redis — used by Django Channels (WebSocket channel layer)
 REDIS_URL = config('REDIS_URL', default='redis://localhost:6379/0')
-CELERY_BROKER_URL = config('CELERY_BROKER_URL', default=REDIS_URL)
-CELERY_RESULT_BACKEND = config('CELERY_RESULT_BACKEND', default=REDIS_URL)
-CELERY_TASK_ALWAYS_EAGER = config('CELERY_TASK_ALWAYS_EAGER', default=False, cast=bool)
-CELERY_ACCEPT_CONTENT = ['json']
-CELERY_TASK_SERIALIZER = 'json'
-CELERY_RESULT_SERIALIZER = 'json'
+
+# ZAR diesel price used for cost/margin calculations.
+# Update this periodically to match the current pump price.
+FUEL_PRICE_ZAR = 22.50

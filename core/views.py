@@ -13,13 +13,29 @@
 #   implicit company scoping through related objects ✓
 # - UserViewSet: Admin-only, filters all users (needs multi-tenancy if non-admin users access) ⚠️
 
+import logging as _logging
 from rest_framework import viewsets, status, filters
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
-from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.views import exception_handler as _drf_exception_handler
+
+_exc_logger = _logging.getLogger(__name__)
+
+def custom_exception_handler(exc, context):
+    """Return JSON for every error — never let Django's HTML debug page leak to the API."""
+    response = _drf_exception_handler(exc, context)
+    if response is not None:
+        return response
+    # Unhandled exception (e.g. OperationalError, AttributeError) — log and return 500 JSON.
+    _exc_logger.exception('Unhandled exception in %s', context.get('view', ''))
+    return Response(
+        {'error': 'An unexpected server error occurred. Please try again.'},
+        status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+    )
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.authtoken.models import Token
 from django.contrib.auth import authenticate
 from django_filters.rest_framework import DjangoFilterBackend
@@ -76,99 +92,119 @@ class RegisterView(APIView):
     throttle_scope = 'login'
 
     def post(self, request):
-        serializer = UserSerializer(data=request.data)
-        if serializer.is_valid():
-            user = serializer.save()
-            user.set_password(request.data.get('password'))
+        import secrets
+        import logging
+        from django.core.cache import cache
+        from django.contrib.auth.hashers import make_password
+        from core.services.email_service import send_verification_email
 
-            # Create a Company for the new user
-            company_name = request.data.get('company_name', f"{user.first_name or user.username}'s Transport")
-            from core.models import Company, Facility
-            company = Company.objects.create(company_name=company_name)
-            user.company = company
-            user.role = 'ADMIN'
-            user.is_active = False  # Require email verification before login
-            user.save()
+        email = request.data.get('email', '').strip().lower()
+        password = request.data.get('password', '')
+        first_name = request.data.get('first_name', '')
+        last_name = request.data.get('last_name', '')
+        username = request.data.get('username', '').strip() or email
+        company_name = request.data.get('company_name', f"{first_name or username}'s Transport")
 
-            # Create a default Facility for the company
-            Facility.objects.create(
-                company=company,
-                limit=1000000,
-                outstanding=0,
-                status='ACTIVE'
-            )
+        if not email or not password:
+            return Response({'detail': 'email and password are required.'}, status=status.HTTP_400_BAD_REQUEST)
 
-            # Seed default vehicle types so the add-vehicle picker isn't empty
-            from core.services.company_setup import seed_default_vehicle_types
-            seed_default_vehicle_types(company)
+        if User.objects.filter(email=email).exists():
+            return Response({'detail': 'An account with this email already exists.'}, status=status.HTTP_400_BAD_REQUEST)
 
-            # Generate OTP and send verification email via SMTP
-            import random
-            from django.core.cache import cache
-            otp_code = str(random.randint(100000, 999999))
-            cache.set(f'email_verify_{user.email}', otp_code, timeout=600)
-            try:
-                from core.services.email_service import send_verification_email
-                send_verification_email(user.email, otp_code, user.first_name or user.username)
-            except Exception as e:
-                import logging
-                logging.getLogger(__name__).error(f"Failed to send verification email to {user.email}: {e}")
+        # Store registration data in cache — account is created only after OTP verification
+        cache.set(f'pending_registration_{email}', {
+            'email': email,
+            'username': username,
+            'first_name': first_name,
+            'last_name': last_name,
+            'password': make_password(password),
+            'company_name': company_name,
+        }, timeout=600)
 
-            return Response({
-                'message': 'Account created. Please check your email for a verification code.',
-                'email': user.email,
-            }, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        otp_code = str(secrets.randbelow(900000) + 100000)
+        cache.set(f'email_verify_{email}', otp_code, timeout=600)
+        from core.tasks import send_verification_email_task
+        send_verification_email_task(email, otp_code, first_name or username)
+
+        return Response({
+            'message': 'Please check your email for a verification code.',
+            'email': email,
+        }, status=status.HTTP_200_OK)
 
 
 class EmailVerifyView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
 
     def post(self, request):
-        import logging
+        import hmac
         from django.core.cache import cache
+        from core.models import Company, Facility
+        from core.services.company_setup import seed_default_vehicle_types
+
         email = request.data.get('email', '').strip().lower()
         code = request.data.get('code', '').strip()
         if not email or not code:
             return Response({'detail': 'email and code are required.'}, status=status.HTTP_400_BAD_REQUEST)
+
         cached_code = cache.get(f'email_verify_{email}')
-        if not cached_code or str(cached_code) != str(code):
+        if not cached_code or not hmac.compare_digest(str(cached_code), str(code)):
             return Response({'detail': 'Invalid or expired verification code.'}, status=status.HTTP_400_BAD_REQUEST)
-        try:
-            user = User.objects.get(email=email)
-        except User.DoesNotExist:
-            return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
-        user.is_active = True
+
+        pending = cache.get(f'pending_registration_{email}')
+        if not pending:
+            return Response({'detail': 'Registration session expired. Please register again.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Create user now that email is verified
+        user = User.objects.create(
+            email=pending['email'],
+            username=pending['username'],
+            first_name=pending['first_name'],
+            last_name=pending['last_name'],
+            password=pending['password'],
+            is_active=True,
+        )
+
+        company = Company.objects.create(company_name=pending['company_name'])
+        user.company = company
+        user.role = 'ADMIN'
         user.save()
+
+        Facility.objects.create(company=company, limit=1000000, outstanding=0, status='ACTIVE')
+        seed_default_vehicle_types(company)
+
         cache.delete(f'email_verify_{email}')
+        cache.delete(f'pending_registration_{email}')
+
         token, _ = Token.objects.get_or_create(user=user)
         return Response({'token': token.key, 'user': UserSerializer(user).data})
 
 
 class ResendVerificationView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
 
     def post(self, request):
-        import random
+        import secrets
+        import logging
         from django.core.cache import cache
+        from core.services.email_service import send_verification_email
+
         email = request.data.get('email', '').strip().lower()
         if not email:
             return Response({'detail': 'email is required.'}, status=status.HTTP_400_BAD_REQUEST)
-        try:
-            user = User.objects.get(email=email)
-            if user.is_active:
-                return Response({'detail': 'Account is already verified.'}, status=status.HTTP_400_BAD_REQUEST)
-        except User.DoesNotExist:
-            return Response({'detail': 'If an account exists, a verification email has been sent.'})
-        otp_code = str(random.randint(100000, 999999))
+
+        pending = cache.get(f'pending_registration_{email}')
+        if not pending:
+            return Response({'detail': 'No pending registration found. Please register again.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        otp_code = str(secrets.randbelow(900000) + 100000)
         cache.set(f'email_verify_{email}', otp_code, timeout=600)
-        try:
-            from core.services.email_service import send_verification_email
-            send_verification_email(email, otp_code, user.first_name or user.username)
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).error(f"Failed to resend verification email to {email}: {e}")
-        return Response({'detail': 'If an account exists, a verification email has been sent.'})
+        from core.tasks import send_verification_email_task
+        send_verification_email_task(email, otp_code, pending.get('first_name') or pending.get('username') or email)
+        return Response({'detail': 'Verification code resent. Please check your email.'})
 
 
 class LoginView(APIView):
@@ -233,10 +269,18 @@ class ChangePasswordView(APIView):
 
 class UserProfileView(APIView):
     permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get(self, request):
-        serializer = UserSerializer(request.user)
+        serializer = UserSerializer(request.user, context={'request': request})
         return Response(serializer.data)
+
+    def patch(self, request):
+        serializer = UserSerializer(request.user, data=request.data, partial=True, context={'request': request})
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 class SessionsView(APIView):
@@ -269,12 +313,6 @@ class SessionsView(APIView):
             'current': True,
         }])
     
-    def patch(self, request):
-        serializer = UserSerializer(request.user, data=request.data, partial=True)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 class NotificationSettingsView(APIView):
@@ -379,7 +417,11 @@ class CompanyLogoUploadView(APIView):
         logo_file = request.FILES['logo']
         if logo_file.size > 2 * 1024 * 1024:
             return Response({'error': 'Logo file size exceeds 2MB limit'}, status=status.HTTP_400_BAD_REQUEST)
-            
+
+        ALLOWED_LOGO_TYPES = {'image/jpeg', 'image/png', 'image/gif', 'image/webp'}
+        if logo_file.content_type not in ALLOWED_LOGO_TYPES:
+            return Response({'error': 'Only JPEG, PNG, GIF and WebP images are accepted'}, status=status.HTTP_400_BAD_REQUEST)
+
         company.logo = logo_file
         company.save()
         
@@ -398,20 +440,22 @@ class FleetOverviewView(APIView):
         last_month_start = (current_month_start - timedelta(days=1)).replace(day=1)
         
         # Get all active vehicles
-        active_vehicles = Vehicle.objects.filter(status='AVAILABLE')
+        active_vehicles = Vehicle.objects.filter(status='AVAILABLE', company=request.user.company)
         total_active = active_vehicles.count()
-        
+
         # Last month active vehicles count
         last_month_vehicles = Vehicle.objects.filter(
             created_at__lt=current_month_start,
-            status='AVAILABLE'
+            status='AVAILABLE',
+            company=request.user.company
         ).count()
         vehicle_trend = total_active - last_month_vehicles
         
         # Calculate margins per vehicle (MTD)
         current_month_loads = Load.objects.filter(
             created_at__gte=current_month_start,
-            status__in=['DELIVERED', 'IN_TRANSIT', 'ASSIGNED']
+            status__in=['DELIVERED', 'IN_TRANSIT', 'ASSIGNED'],
+            company=request.user.company
         )
         
         # Average margin per vehicle - convert to float
@@ -425,7 +469,8 @@ class FleetOverviewView(APIView):
         last_month_loads = Load.objects.filter(
             created_at__gte=last_month_start,
             created_at__lt=current_month_start,
-            status__in=['DELIVERED', 'IN_TRANSIT', 'ASSIGNED']
+            status__in=['DELIVERED', 'IN_TRANSIT', 'ASSIGNED'],
+            company=request.user.company
         )
         
         last_month_vehicle_margins = last_month_loads.values('vehicle').annotate(
@@ -438,7 +483,8 @@ class FleetOverviewView(APIView):
         # Fleet Cost per KM
         total_expenses = Expense.objects.filter(
             created_at__gte=current_month_start,
-            vehicle__isnull=False
+            vehicle__isnull=False,
+            company=request.user.company
         ).aggregate(total=Sum('amount'))['total']
         
         total_expenses = float(total_expenses) if total_expenses else 0.0
@@ -446,7 +492,8 @@ class FleetOverviewView(APIView):
         total_distance = Load.objects.filter(
             created_at__gte=current_month_start,
             status='DELIVERED',
-            distance__isnull=False
+            distance__isnull=False,
+            company=request.user.company
         ).aggregate(total=Sum('distance'))['total']
         
         total_distance = float(total_distance) if total_distance else 1.0
@@ -454,20 +501,33 @@ class FleetOverviewView(APIView):
         cost_per_km = total_expenses / total_distance if total_distance > 0 else 22.0
         target_cost_per_km = 20.0
         
-        # AI Health Score calculation
-        # Based on fuel efficiency, uptime, and maintenance
-        fuel_score = 75  # Calculated from fuel expenses vs distance
-        uptime_score = 85  # Calculated from vehicle availability
-        maintenance_score = 78  # Calculated from maintenance frequency
-        ai_health_score = int((fuel_score + uptime_score + maintenance_score) / 3)
+        # AI Health Score — real aggregates from Vehicle model fields
+        vehicle_agg = Vehicle.objects.filter(company=request.user.company).aggregate(
+            avg_health=Avg('ai_health_score'),
+            avg_fuel=Avg('fuel_efficiency_score'),
+            avg_maint=Avg('maintenance_score'),
+        )
+        ai_health_score = round(float(vehicle_agg['avg_health'] or 0))
+        fuel_score = round(float(vehicle_agg['avg_fuel'] or 0))
+        uptime_score = 0  # Not stored per-vehicle; kept for response shape compatibility
+        maintenance_score = round(float(vehicle_agg['avg_maint'] or 0))
         
         # Banner message data
         margin_change = 2.3
-        flagged_vehicles = Vehicle.objects.filter(
+        # Vehicles flagged by km-based service (within 10% of interval or overdue)
+        # plus those with expiring registration/insurance.
+        company_vehicles = Vehicle.objects.filter(company=request.user.company)
+        km_flagged = sum(
+            1 for v in company_vehicles
+            if v.service_interval_km and v.last_service_mileage is not None and v.mileage is not None
+            and (float(v.mileage) - float(v.last_service_mileage)) >= float(v.service_interval_km) * 0.9
+        )
+        date_flagged = company_vehicles.filter(
             Q(next_maintenance_due__lte=now + timedelta(days=30)) |
             Q(insurance_expiry__lte=now + timedelta(days=30)) |
             Q(registration_expiry__lte=now + timedelta(days=30))
         ).count()
+        flagged_vehicles = km_flagged + date_flagged
         
         return Response({
             'header': {
@@ -544,120 +604,94 @@ class VehicleInsightsView(APIView):
     permission_classes = [IsAuthenticated]
     
     def get(self, request):
-        # Get all vehicles with their associated data
-        vehicles_data = []
-        
-        # Hardcoded data matching the UI exactly (for demo purposes)
-        # In production, this would be calculated from actual database records
-        vehicles = [
-            {
-                'vehicle_id': 'TRK-001',
-                'driver_name': 'John Smith',
-                'status': 'En Route',
-                'status_color': 'success',
-                'margin_per_trip': 'R 8 350,00',
-                'margin_per_trip_raw': 8350.00,
-                'cost_per_km': 'R 21.4',
-                'cost_per_km_raw': 21.4,
-                'uptime': '94.2%',
-                'uptime_raw': 94.2,
-                'ai_score': 87,
-                'ai_score_color': 'green'
-            },
-            {
-                'vehicle_id': 'TRK-007',
-                'driver_name': 'Sarah Jones',
-                'status': 'Idle',
-                'status_color': 'gray',
-                'margin_per_trip': 'R 6 750,00',
-                'margin_per_trip_raw': 6750.00,
-                'cost_per_km': 'R 23.1',
-                'cost_per_km_raw': 23.1,
-                'uptime': '82.5%',
-                'uptime_raw': 82.5,
-                'ai_score': 72,
-                'ai_score_color': 'yellow'
-            },
-            {
-                'vehicle_id': 'TRK-012',
-                'driver_name': 'Mike Johnson',
-                'status': 'En Route',
-                'status_color': 'success',
-                'margin_per_trip': 'R 9 100,00',
-                'margin_per_trip_raw': 9100.00,
-                'cost_per_km': 'R 19.8',
-                'cost_per_km_raw': 19.8,
-                'uptime': '96.8%',
-                'uptime_raw': 96.8,
-                'ai_score': 92,
-                'ai_score_color': 'green'
-            },
-            {
-                'vehicle_id': 'TRK-045',
-                'driver_name': 'Lisa Brown',
-                'status': 'Loading',
-                'status_color': 'warning',
-                'margin_per_trip': 'R 5 200,00',
-                'margin_per_trip_raw': 5200.00,
-                'cost_per_km': 'R 24.5',
-                'cost_per_km_raw': 24.5,
-                'uptime': '78.3%',
-                'uptime_raw': 78.3,
-                'ai_score': 65,
-                'ai_score_color': 'red'
-            },
-            {
-                'vehicle_id': 'TRK-023',
-                'driver_name': 'David Wilson',
-                'status': 'En Route',
-                'status_color': 'success',
-                'margin_per_trip': 'R 7 800,00',
-                'margin_per_trip_raw': 7800.00,
-                'cost_per_km': 'R 20.7',
-                'cost_per_km_raw': 20.7,
-                'uptime': '91.5%',
-                'uptime_raw': 91.5,
-                'ai_score': 81,
-                'ai_score_color': 'yellow'
-            },
-            {
-                'vehicle_id': 'TRK-089',
-                'driver_name': 'Emma Davis',
-                'status': 'Maintenance',
-                'status_color': 'error',
-                'margin_per_trip': 'R 6 400,00',
-                'margin_per_trip_raw': 6400.00,
-                'cost_per_km': 'R 22.3',
-                'cost_per_km_raw': 22.3,
-                'uptime': '85.0%',
-                'uptime_raw': 85.0,
-                'ai_score': 74,
-                'ai_score_color': 'yellow'
+        from django.db.models import Avg
+        company = request.user.company
+
+        vehicles = Vehicle.objects.filter(
+            company=company
+        ).select_related('driver__user', 'vehicle_type').order_by('-ai_health_score')
+
+        data = []
+        for v in vehicles:
+            if v.driver and v.driver.user:
+                u = v.driver.user
+                driver_name = f"{u.first_name} {u.last_name}".strip() or u.username
+            else:
+                driver_name = '—'
+
+            # Map vehicle status to display label and color
+            status_map = {
+                'AVAILABLE': ('Available', 'success'),
+                'IN_USE': ('En Route', 'success'),
+                'MAINTENANCE': ('Maintenance', 'error'),
+                'OUT_OF_SERVICE': ('Out of Service', 'gray'),
             }
-        ]
-        
-        # Table configuration
+            status_label, status_color = status_map.get(v.status, (v.status, 'gray'))
+
+            ai_score = v.ai_health_score or 0
+            if ai_score >= 80:
+                ai_color = 'green'
+            elif ai_score >= 60:
+                ai_color = 'yellow'
+            else:
+                ai_color = 'red'
+
+            margin = float(v.margin_per_trip or 0)
+            cost = float(v.cost_per_km or 0)
+            uptime = float(v.uptime_percentage or 0)
+
+            data.append({
+                'vehicle_id': v.plate,
+                'vehicle_db_id': v.id,
+                'make': v.make,
+                'model': v.model,
+                'driver_name': driver_name,
+                'status': status_label,
+                'status_color': status_color,
+                'margin_per_trip': f'R {margin:,.2f}',
+                'margin_per_trip_raw': margin,
+                'cost_per_km': f'R {cost:.1f}',
+                'cost_per_km_raw': cost,
+                'uptime': f'{uptime:.1f}%',
+                'uptime_raw': float(uptime),
+                'ai_score': ai_score,
+                'ai_score_color': ai_color,
+            })
+
+        # Fleet-level averages for the footer
+        agg = vehicles.aggregate(
+            avg_margin=Avg('margin_per_trip'),
+            avg_cost=Avg('cost_per_km'),
+            avg_health=Avg('ai_health_score'),
+        )
+        top3_margin = sum(v['margin_per_trip_raw'] for v in data[:3])
+        fleet_total_margin = sum(v['margin_per_trip_raw'] for v in data)
+        top3_pct = round((top3_margin / fleet_total_margin * 100)) if fleet_total_margin > 0 else 0
+        underperformers = sum(1 for v in data if v['margin_per_trip_raw'] < 0)
+
+        footer_note = f"Top 3 vehicles generate {top3_pct}% of fleet margin." if top3_pct else ''
+        if underperformers:
+            footer_note += f" {underperformers} vehicle{'s' if underperformers != 1 else ''} with negative margin."
+
         columns = [
-            {'key': 'vehicle_id', 'label': 'Vehicle ↕', 'sortable': True},
+            {'key': 'vehicle_id', 'label': 'Vehicle', 'sortable': True},
             {'key': 'driver_name', 'label': 'Driver', 'sortable': False},
             {'key': 'status', 'label': 'Status', 'sortable': False},
-            {'key': 'margin_per_trip', 'label': 'Margin per Trip ↕', 'sortable': True},
-            {'key': 'cost_per_km', 'label': 'Cost per KM ↕', 'sortable': True},
-            {'key': 'uptime', 'label': 'Uptime ↕', 'sortable': True},
-            {'key': 'ai_score', 'label': 'AI Score ↕', 'sortable': True}
+            {'key': 'margin_per_trip', 'label': 'Margin per Trip', 'sortable': True},
+            {'key': 'cost_per_km', 'label': 'Cost per KM', 'sortable': True},
+            {'key': 'uptime', 'label': 'Uptime', 'sortable': True},
+            {'key': 'ai_score', 'label': 'AI Score', 'sortable': True},
         ]
-        
-        footer_note = "Top 3 vehicles generate 32% of fleet profit. 4 vehicles underperform with negative margins."
-        
+
         return Response({
             'columns': columns,
-            'data': vehicles,
-            'total_count': len(vehicles),
+            'data': data,
+            'total_count': len(data),
             'footer_note': footer_note,
             'view_options': {
                 'current_view': 'by_vehicle',
-                'available_views': ['by_vehicle', 'by_driver']
-            }
+                'available_views': ['by_vehicle', 'by_driver'],
+            },
         })
 
 
@@ -820,76 +854,43 @@ class DriverOverviewView(APIView):
     permission_classes = [IsAuthenticated]
     
     def get(self, request):
-        from datetime import datetime, timedelta
-        from django.db.models import Avg, Count, Q
-        
-        now = datetime.now()
-        current_month_start = now.replace(day=1)
-        last_month_start = (current_month_start - timedelta(days=1)).replace(day=1)
-        
-        # Get all active drivers
-        active_drivers = Driver.objects.filter(status='ACTIVE')
+        from django.db.models import Avg
+
+        active_drivers = Driver.objects.filter(status='ACTIVE', company=request.user.company)
         total_active = active_drivers.count()
-        
-        # Calculate Fleet Avg On-Time %
-        total_loads = Load.objects.filter(
-            created_at__gte=current_month_start,
-            status='DELIVERED'
-        ).count()
-        
-        # Simulate on-time percentage (in production, track actual delivery times)
-        fleet_on_time = 91.5  # Calculate from actual data
-        on_time_trend = 2.3  # vs last month
-        
-        # Calculate Fleet Avg Safety Score
-        drivers_with_loads = Driver.objects.filter(
-            loads__created_at__gte=current_month_start
-        ).distinct()
-        
-        safety_scores = []
-        for driver in drivers_with_loads:
-            base_score = 80 + ((driver.id * 3) % 20)
-            safety_scores.append(base_score)
-        
-        fleet_safety = int(sum(safety_scores) / len(safety_scores)) if safety_scores else 86
-        safety_trend = 4  # points vs baseline
-        
-        # Calculate Fleet Avg Fuel Efficiency
-        fuel_scores = []
-        for driver in drivers_with_loads:
-            recent_load = Load.objects.filter(driver=driver).order_by('-created_at').first()
-            if recent_load and recent_load.vehicle:
-                fuel_scores.append(recent_load.vehicle.fuel_efficiency_score or 75)
-        
-        fleet_fuel = int(sum(fuel_scores) / len(fuel_scores)) if fuel_scores else 82
-        
-        # Calculate Fleet Avg Margin
-        loads_this_month = Load.objects.filter(
-            created_at__gte=current_month_start,
-            status__in=['DELIVERED', 'IN_TRANSIT']
+
+        # Fleet KPIs aggregated from stored computed fields (written by Celery tasks)
+        agg = active_drivers.aggregate(
+            avg_on_time=Avg('on_time_rate'),
+            avg_safety=Avg('safety_score'),
+            avg_efficiency=Avg('efficiency_score'),
+            avg_margin=Avg('margin_per_trip'),
         )
-        
-        if loads_this_month.exists():
-            avg_margin = loads_this_month.aggregate(avg=Avg('total_amount'))['avg']
-            fleet_margin = float(avg_margin) if avg_margin else 20458.33
+
+        fleet_on_time = round(float(agg['avg_on_time'] or 0), 1)
+        fleet_safety = round(float(agg['avg_safety'] or 0))
+        fleet_fuel = round(float(agg['avg_efficiency'] or 0))
+        fleet_margin = round(float(agg['avg_margin'] or 0), 2)
+
+        # Top performer by composite efficiency score
+        top_driver_obj = active_drivers.order_by('-efficiency_score').select_related('user').first()
+        if top_driver_obj:
+            u = top_driver_obj.user
+            top_driver_name = f"{u.first_name} {u.last_name}".strip() or u.username
         else:
-            fleet_margin = 20458.33
-        
-        # Find top performer
-        top_driver = drivers_with_loads.first()
-        if top_driver:
-            top_driver_name = f"{top_driver.user.first_name} {top_driver.user.last_name}"
-        else:
-            top_driver_name = "Mike Johnson"
-        
-        # Count drivers flagged for coaching
-        drivers_needing_coaching = active_drivers.filter(
-            Q(id__in=[d.id for d in active_drivers if ((d.id * 3) % 100) < 70])
-        ).count()
-        
-        if drivers_needing_coaching == 0:
-            drivers_needing_coaching = 2  # At least show some for demo
-        
+            top_driver_name = None
+
+        # Drivers needing coaching: composite efficiency below 60
+        drivers_needing_coaching = active_drivers.filter(efficiency_score__lt=60).count()
+
+        banner_parts = []
+        if top_driver_name:
+            banner_parts.append(f"Top driver: {top_driver_name}.")
+        if drivers_needing_coaching:
+            label = 'driver' if drivers_needing_coaching == 1 else 'drivers'
+            banner_parts.append(f"{drivers_needing_coaching} {label} flagged for coaching.")
+        banner_message = ' '.join(banner_parts) if banner_parts else 'Driver performance data is being computed by background jobs.'
+
         return Response({
             'header': {
                 'title': 'Driver Intelligence Hub',
@@ -901,12 +902,10 @@ class DriverOverviewView(APIView):
                 }
             },
             'banner': {
-                'message': f"Fleet performance improved by +3.8% margin this month. Top driver {top_driver_name} saved R 4 500,00 in fuel costs. {drivers_needing_coaching} drivers flagged for coaching due to idle time increase.",
+                'message': banner_message,
                 'type': 'info',
                 'highlight': {
-                    'margin': '+3.8%',
                     'top_driver': top_driver_name,
-                    'savings': 'R 4 500,00',
                     'flagged': drivers_needing_coaching
                 }
             },
@@ -916,14 +915,6 @@ class DriverOverviewView(APIView):
                     'title': 'Fleet Avg. On-Time %',
                     'value': f'{fleet_on_time}%',
                     'raw_value': fleet_on_time,
-                    'trend': {
-                        'value': on_time_trend,
-                        'label': f'+{on_time_trend}% vs last month',
-                        'direction': 'up',
-                        'type': 'positive',
-                        'icon': 'trending-up',
-                        'color': 'green'
-                    },
                     'icon': 'clock'
                 },
                 {
@@ -931,14 +922,6 @@ class DriverOverviewView(APIView):
                     'title': 'Fleet Avg. Safety',
                     'value': fleet_safety,
                     'raw_value': fleet_safety,
-                    'trend': {
-                        'value': safety_trend,
-                        'label': f'+{safety_trend} points vs baseline',
-                        'direction': 'up',
-                        'type': 'positive',
-                        'icon': 'arrow-up',
-                        'color': 'green'
-                    },
                     'icon': 'shield',
                     'description': 'Safety score'
                 },
@@ -948,7 +931,7 @@ class DriverOverviewView(APIView):
                     'value': fleet_fuel,
                     'raw_value': fleet_fuel,
                     'icon': 'droplet',
-                    'description': 'km/L efficiency score'
+                    'description': 'Efficiency score'
                 },
                 {
                     'id': 'fleet_margin',
@@ -956,7 +939,7 @@ class DriverOverviewView(APIView):
                     'value': f'R {fleet_margin:,.2f}',
                     'raw_value': fleet_margin,
                     'icon': 'dollar-sign',
-                    'description': 'per trip, last 30 days'
+                    'description': 'per trip'
                 }
             ]
         })
@@ -974,8 +957,8 @@ class DriverPerformanceLeaderboardView(APIView):
         # Get filter parameter
         filter_type = request.query_params.get('filter', 'all')  # all, top, coaching, inactive
         
-        # Get all drivers
-        drivers = Driver.objects.all().select_related('user')
+        # Get all drivers scoped to the requesting user's company
+        drivers = Driver.objects.filter(company=request.user.company).select_related('user')
         
         # Apply filters
         if filter_type == 'top':
@@ -1047,8 +1030,8 @@ class QuotesPipelineOverviewView(APIView):
         customer_filter = request.query_params.get('customer', 'all')
         lane_filter = request.query_params.get('lane', 'all')
         
-        # Base queryset
-        quotes = Quote.objects.all()
+        # Base queryset — scoped to the requesting user's company
+        quotes = Quote.objects.filter(company=request.user.company)
         
         # Apply filters
         if customer_filter and customer_filter != 'all':
@@ -1210,8 +1193,19 @@ class UserViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         """Bind newly-created users to the creating admin's company (multi-tenancy)."""
+        from core.middleware.plan_limits import check_user_limit
+        from rest_framework.exceptions import PermissionDenied
         company = resolve_user_company(self.request.user)
+        allowed, message = check_user_limit(company)
+        if not allowed:
+            raise PermissionDenied(detail=message)
         serializer.save(company=company)
+
+    def partial_update(self, request, *args, **kwargs):
+        """Prevent admins from changing their own role."""
+        if 'role' in request.data and str(request.user.id) == str(kwargs.get('pk')):
+            return Response({'error': 'You cannot change your own role.'}, status=status.HTTP_400_BAD_REQUEST)
+        return super().partial_update(request, *args, **kwargs)
 
     @action(detail=False, methods=['post'])
     def invite(self, request):
@@ -1283,7 +1277,7 @@ class CustomerViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['status', 'city', 'state']
-    search_fields = ['name', 'company', 'email', 'phone']
+    search_fields = ['name', 'company_name', 'email', 'phone']
     ordering_fields = ['created_at', 'name']
 
     @action(detail=True, methods=['get'])
@@ -1308,7 +1302,11 @@ class DriverViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     serializer_class = DriverSerializer
     permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = ['status', 'license_state']
+    filterset_fields = {
+        'status': ['exact'],
+        'license_state': ['exact'],
+        'vehicles__id': ['exact'],  # filter by assigned vehicle id: ?vehicles__id=5
+    }
     search_fields = ['user__username', 'license_number', 'user__first_name', 'user__last_name']
     ordering_fields = ['created_at', 'hire_date']
 
@@ -1334,7 +1332,12 @@ class VehicleViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     serializer_class = VehicleSerializer
     permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = ['status', 'type', 'fuel_type']
+    filterset_fields = {
+        'status': ['exact'],
+        'type': ['exact'],
+        'fuel_type': ['exact'],
+        'vehicle_type__name': ['exact', 'icontains'],
+    }
     search_fields = ['vin', 'plate', 'make', 'model']
     ordering_fields = ['created_at', 'make', 'model', 'year']
 
@@ -1386,6 +1389,9 @@ class VehicleTypeViewSet(viewsets.ModelViewSet):
         return VehicleType.objects.filter(
             Q(company=None) | Q(company=user.company)
         )
+
+    def perform_create(self, serializer):
+        serializer.save(company=self.request.user.company)
 
 
 class VehicleLogViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
@@ -1450,7 +1456,19 @@ class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         load = self.get_object()
         driver_id = request.data.get('driver_id')
         vehicle_id = request.data.get('vehicle_id')
-        
+
+        # Verify driver and vehicle belong to the requesting user's company
+        if driver_id:
+            try:
+                Driver.objects.get(id=driver_id, company=request.user.company)
+            except Driver.DoesNotExist:
+                return Response({'error': 'Driver not found'}, status=status.HTTP_404_NOT_FOUND)
+        if vehicle_id:
+            try:
+                Vehicle.objects.get(id=vehicle_id, company=request.user.company)
+            except Vehicle.DoesNotExist:
+                return Response({'error': 'Vehicle not found'}, status=status.HTTP_404_NOT_FOUND)
+
         try:
             load.driver_id = driver_id
             load.vehicle_id = vehicle_id
@@ -1509,6 +1527,9 @@ class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         file = request.FILES.get('pod_document') or request.FILES.get('file')
         if not file:
             return Response({'error': 'No file provided'}, status=400)
+        ALLOWED_POD_TYPES = {'application/pdf', 'image/jpeg', 'image/png', 'image/webp'}
+        if file.content_type not in ALLOWED_POD_TYPES:
+            return Response({'error': 'Only PDF and image files are accepted'}, status=status.HTTP_400_BAD_REQUEST)
         load.pod_document = file
         load.pod_received_by = request.data.get('received_by', file.name)
         load.pod_signature = f'POD: {file.name} ({file.size} bytes)'
@@ -1534,16 +1555,16 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         from django.utils import timezone
-        import random
+        import secrets
         # Auto-generate quote_number if not provided
         quote_number = self.request.data.get('quote_number')
         if not quote_number:
             ts = timezone.now().strftime('%Y%m%d')
-            rand = random.randint(1000, 9999)
+            rand = secrets.randbelow(9000) + 1000
             quote_number = f'QT-{ts}-{rand}'
             # Ensure uniqueness
             while Quote.objects.filter(quote_number=quote_number).exists():
-                rand = random.randint(1000, 9999)
+                rand = secrets.randbelow(9000) + 1000
                 quote_number = f'QT-{ts}-{rand}'
 
         save_kwargs = {'created_by': self.request.user, 'quote_number': quote_number}
@@ -1596,7 +1617,7 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def convert_to_load(self, request, pk=None):
         """Convert quote to load"""
-        import random
+        import secrets
         quote = self.get_object()
 
         # Check if quote already converted
@@ -1607,9 +1628,9 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
             )
 
         # Auto-generate unique load_number
-        load_number = f'LOAD-{timezone.now().strftime("%Y%m%d")}-{random.randint(1000, 9999)}'
+        load_number = f'LOAD-{timezone.now().strftime("%Y%m%d")}-{secrets.randbelow(9000) + 1000}'
         while Load.objects.filter(load_number=load_number).exists():
-            load_number = f'LOAD-{timezone.now().strftime("%Y%m%d")}-{random.randint(1000, 9999)}'
+            load_number = f'LOAD-{timezone.now().strftime("%Y%m%d")}-{secrets.randbelow(9000) + 1000}'
 
         # Create load from quote (stamp the company so it's tenant-scoped/visible)
         load = Load.objects.create(
@@ -1617,6 +1638,8 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
             company=getattr(quote, 'company', None) or getattr(request.user, 'company', None),
             customer=quote.customer,
             quote=quote,
+            driver=quote.driver,
+            vehicle=quote.vehicle,
             pickup_location=quote.pickup_location,
             delivery_location=quote.delivery_location,
             pickup_city=quote.origin or 'TBD',
@@ -1795,7 +1818,7 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
 
         # Generate share URL
         frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:3701')
-        share_url = f"{frontend_url}/quotes/view/{quote.id}/{quote.token[:8]}"
+        share_url = f"{frontend_url}/quotes/view/{quote.id}/{quote.token}"
 
         return Response({
             'share_url': share_url,
@@ -1811,8 +1834,8 @@ class PublicQuoteView(APIView):
     def get(self, request, quote_id, token):
         try:
             quote = Quote.objects.get(id=quote_id)
-            # Validate token (use first 8 chars for URL, but check full token)
-            if not quote.token or not quote.token.startswith(token):
+            import hmac as _hmac
+            if not quote.token or not _hmac.compare_digest(quote.token, token):
                 return Response(
                     {'error': 'Invalid quote link'},
                     status=status.HTTP_404_NOT_FOUND
@@ -1829,6 +1852,15 @@ class PublicQuoteView(APIView):
                 'weight': str(quote.weight),
                 'distance': str(quote.distance) if quote.distance else None,
                 'vehicle_type': quote.vehicle_type,
+                'vehicle_display': (
+                    f"{quote.vehicle.make} {quote.vehicle.model} ({quote.vehicle.plate})"
+                    if quote.vehicle else None
+                ),
+                'driver_display': (
+                    (f"{quote.driver.user.first_name} {quote.driver.user.last_name}".strip()
+                     or quote.driver.user.username)
+                    if quote.driver else None
+                ),
                 'base_rate': str(quote.base_rate),
                 'fuel_surcharge': str(quote.fuel_surcharge),
                 'toll_charges': str(quote.toll_charges),
@@ -1853,11 +1885,21 @@ class PublicQuoteRespondView(APIView):
     def post(self, request, quote_id, token):
         try:
             quote = Quote.objects.get(id=quote_id)
-            # Validate token
-            if not quote.token or not quote.token.startswith(token):
+            import hmac as _hmac
+            if not quote.token or not _hmac.compare_digest(quote.token, token):
                 return Response(
                     {'error': 'Invalid quote link'},
                     status=status.HTTP_404_NOT_FOUND
+                )
+
+            if quote.status in ['ACCEPTED', 'DECLINED']:
+                return Response(
+                    {
+                        'error': 'This quote has already been responded to',
+                        'status': quote.status,
+                        'already_responded': True,
+                    },
+                    status=status.HTTP_409_CONFLICT
                 )
 
             action = request.data.get('action')
@@ -1888,6 +1930,51 @@ class PublicQuoteRespondView(APIView):
                 {'error': 'Quote not found'},
                 status=status.HTTP_404_NOT_FOUND
             )
+
+
+class PublicInvoiceView(APIView):
+    """Public invoice view — customers can view invoice details without a TruckWys account."""
+    permission_classes = [AllowAny]
+
+    def get(self, request, invoice_id, token):
+        import hmac as _hmac
+        try:
+            invoice = Invoice.objects.select_related('customer', 'company').get(id=invoice_id)
+        except Invoice.DoesNotExist:
+            return Response({'error': 'Invoice not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if not invoice.view_token or not _hmac.compare_digest(invoice.view_token, token):
+            return Response({'error': 'Invalid invoice link'}, status=status.HTTP_404_NOT_FOUND)
+
+        # Mark as viewed if still in SENT state
+        if invoice.status == 'SENT':
+            invoice.status = 'VIEWED'
+            invoice.viewed_at = timezone.now()
+            invoice.save(update_fields=['status', 'viewed_at'])
+
+        company = invoice.company
+        contact = company.contact if company and company.contact else {}
+
+        return Response({
+            'invoice_number': invoice.invoice_number,
+            'issue_date': str(invoice.issue_date),
+            'due_date': str(invoice.due_date),
+            'status': invoice.status,
+            'customer_name': invoice.customer.name,
+            'subtotal': str(invoice.subtotal),
+            'vat_amount': str(invoice.vat_amount),
+            'discount': str(invoice.discount),
+            'total_amount': str(invoice.total_amount),
+            'paid_amount': str(invoice.paid_amount),
+            'balance': str(invoice.balance),
+            'notes': invoice.notes,
+            'line_items': invoice.line_items or [],
+            'description': getattr(invoice, 'description', '') or '',
+            'company_name': company.company_name if company else 'TruckWys',
+            'company_phone': contact.get('phone', ''),
+            'company_email': contact.get('email', ''),
+            'company_address': contact.get('address', ''),
+        })
 
 
 class InvoiceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
@@ -2035,12 +2122,34 @@ class RouteCalculatorView(APIView):
     permission_classes = [IsAuthenticated]
 
     TOMTOM_API_KEY = config('TOMTOM_API_KEY', default='')
-    FUEL_RATE = 0.35        # litres/km
-    TOLL_ZAR_KM = 0.95      # ZAR/km (SA tolls only)
+    FUEL_RATE_FALLBACK = 0.35   # litres/km — used only when vehicle_type is unrecognised
+    TOLL_ZAR_KM_FALLBACK = 0.95 # ZAR/km — used only when no SANRAL route is matched
+
+    # Per-vehicle-type diesel consumption (litres/km). Mirrors frontend FUEL_CONSUMPTION.
+    FUEL_CONSUMPTION_BY_TYPE: dict = {
+        'Flatbed':      0.32,
+        'Tautliner':    0.35,
+        'Refrigerated': 0.38,
+        'Box Truck':    0.30,
+        'Tanker':       0.40,
+        'Danger Load':  0.36,
+    }
+
+    # Maps frontend vehicle_type → SANRAL truck class used by toll_calculator.
+    # Box Truck = 2-axle rigid (Class 3/heavy); everything else is a semi/combination.
+    VEHICLE_TO_TOLL_TYPE: dict = {
+        'Flatbed':      'combination',
+        'Tautliner':    'combination',
+        'Refrigerated': 'combination',
+        'Tanker':       'combination',
+        'Danger Load':  'combination',
+        'Box Truck':    'heavy',
+    }
 
     def post(self, request):
-        from core.services.cross_border import detect_countries, calculate_cross_border_costs, get_cross_border_warnings
+        from core.services.cross_border import detect_countries, calculate_cross_border_costs, calculate_sa_tolls_for_cross_border, get_cross_border_warnings
         from core.services.fuel_price import fetch_fuel_prices
+        from core.services.toll_calculator import calculate_tolls
 
         data = request.data
         origin = data.get('origin', '')
@@ -2049,8 +2158,8 @@ class RouteCalculatorView(APIView):
         origin_lon = data.get('origin_lon')
         dest_lat = data.get('dest_lat')
         dest_lon = data.get('dest_lon')
-        weight_kg = int(data.get('weight_kg', 20000))
-        vehicle_type = data.get('vehicle_type', 'truck')
+        weight_kg = int(data.get('weight_kg') or data.get('weight') or 20000)
+        vehicle_type = data.get('vehicle_type', 'Flatbed')
 
         # Geocode if no coords
         if origin_lat and origin_lon:
@@ -2083,18 +2192,58 @@ class RouteCalculatorView(APIView):
             fuel_price_obj = fetch_fuel_prices()
             diesel_price = float(fuel_price_obj.diesel_inland)
         except Exception:
-            diesel_price = 21.7  # Fallback
+            # Fall back to company's configured fuel price, then static default
+            try:
+                company = getattr(request.user, 'company', None)
+                diesel_price = float(company.fuel_price_per_litre) if company and company.fuel_price_per_litre else 21.7
+            except Exception:
+                diesel_price = 21.7
 
-        # Fuel cost
-        fuel_litres = round(distance_km * self.FUEL_RATE, 2)
+        # Fuel cost — vehicle-specific consumption rate (DB first, dict fallback)
+        try:
+            from core.models import VehicleType as VehicleTypeModel
+            vt_obj = VehicleTypeModel.objects.filter(name=vehicle_type).first()
+            fuel_rate = float(vt_obj.fuel_consumption_l_per_100km) / 100 if vt_obj and vt_obj.fuel_consumption_l_per_100km else None
+        except Exception:
+            fuel_rate = None
+        fuel_rate = fuel_rate or self.FUEL_CONSUMPTION_BY_TYPE.get(vehicle_type, self.FUEL_RATE_FALLBACK)
+        fuel_litres = round(distance_km * fuel_rate, 2)
         fuel_zar = round(fuel_litres * diesel_price, 2)
 
+        # Use resolved labels for country detection (fix 1)
+        origin_label = o.get('label', origin)
+        dest_label   = d.get('label', destination)
+
         # Detect cross-border route
-        countries = detect_countries(origin, destination)
+        countries    = detect_countries(origin_label, dest_label)
         cross_border = countries is not None and len(countries) > 1
 
-        # SA tolls (only if domestic or SA portion)
-        toll_zar = round(distance_km * self.TOLL_ZAR_KM, 2) if not cross_border else 0
+        # Toll cost
+        toll_breakdown   = []
+        toll_routes_used = []
+
+        if not cross_border:
+            # Domestic: query SANRAL plaza DB, fall back to flat rate
+            toll_truck_type = self.VEHICLE_TO_TOLL_TYPE.get(vehicle_type, 'combination')
+            try:
+                toll_result = calculate_tolls(origin_label, dest_label, toll_truck_type)
+                if toll_result.total_zar > 0:
+                    toll_zar         = float(toll_result.total_zar)
+                    toll_routes_used = toll_result.routes_used
+                    toll_breakdown   = [
+                        {'plaza': item.plaza_name, 'route': item.route, 'tariff': float(item.tariff)}
+                        for item in toll_result.breakdown
+                    ]
+                else:
+                    toll_zar = round(distance_km * self.TOLL_ZAR_KM_FALLBACK, 2)
+            except Exception:
+                toll_zar = round(distance_km * self.TOLL_ZAR_KM_FALLBACK, 2)
+        else:
+            # Cross-border: charge SA-side SANRAL plazas where data exists (fix 4)
+            sa_toll = calculate_sa_tolls_for_cross_border(countries, vehicle_type)
+            toll_zar         = sa_toll['toll_zar']
+            toll_breakdown   = sa_toll['breakdown']
+            toll_routes_used = [sa_toll['route']] if sa_toll['route'] else []
 
         # Cross-border costs
         additional_costs = {}
@@ -2102,12 +2251,11 @@ class RouteCalculatorView(APIView):
         if cross_border:
             cb_costs = calculate_cross_border_costs(countries, distance_km, vehicle_type)
             additional_costs = {
-                'border_fees': cb_costs['border_fees'],
+                'border_fees':      cb_costs['border_fees'],
                 'weighbridge_fees': cb_costs['weighbridge_fees'],
-                'non_sa_tolls': cb_costs['non_sa_tolls'],
+                'non_sa_tolls':     cb_costs['non_sa_tolls'],
             }
-            warnings = get_cross_border_warnings(countries)
-            # Add non-SA tolls to toll_cost_zar
+            warnings  = get_cross_border_warnings(countries)
             toll_zar += cb_costs['non_sa_tolls']
 
         response_data = {
@@ -2117,7 +2265,11 @@ class RouteCalculatorView(APIView):
             'duration_minutes': int(duration_min),
             'fuel_usage_litres': fuel_litres,
             'fuel_cost_zar': fuel_zar,
+            'fuel_rate_l_per_100km': round(fuel_rate * 100, 1),
             'toll_cost_zar': round(toll_zar, 2),
+            'toll_source': 'sanral' if toll_routes_used else 'estimated',
+            'toll_routes': toll_routes_used,
+            'toll_breakdown': toll_breakdown,
             'total_cost_zar': round(fuel_zar + toll_zar + sum(additional_costs.values()), 2),
             'origin_coords': o,
             'dest_coords': d,
@@ -2196,6 +2348,47 @@ class RouteCalculatorView(APIView):
         a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
         return R * 2 * math.asin(math.sqrt(a))
 
+
+class LocationSuggestView(APIView):
+    """GET /api/v1/location/suggest/?q=<query> — TomTom fuzzy search proxy."""
+    permission_classes = [IsAuthenticated]
+    TOMTOM_API_KEY = config('TOMTOM_API_KEY', default='')
+
+    def get(self, request):
+        query = request.query_params.get('q', '').strip()
+        if len(query) < 2:
+            return Response([])
+        if not self.TOMTOM_API_KEY:
+            return Response([])
+        try:
+            r = http_requests.get(
+                f'https://api.tomtom.com/search/2/search/{query}.json',
+                params={
+                    'key': self.TOMTOM_API_KEY,
+                    'limit': 6,
+                    'language': 'en-US',
+                    'countrySet': 'ZA',
+                    'typeahead': 'true',
+                },
+                timeout=4,
+            )
+            if r.status_code != 200:
+                return Response([])
+            suggestions = []
+            for result in r.json().get('results', []):
+                addr = result.get('address', {})
+                pos = result.get('position', {})
+                label = addr.get('freeformAddress', '')
+                municipality = addr.get('municipality', '')
+                if not label:
+                    continue
+                display = f"{label}, {municipality}" if municipality and municipality not in label else label
+                suggestions.append({'label': display, 'lat': pos.get('lat'), 'lon': pos.get('lon')})
+            return Response(suggestions)
+        except Exception:
+            return Response([])
+
+
 class DashboardOverviewView(APIView):
     """Overview dashboard KPIs in one call"""
     permission_classes = [IsAuthenticated]
@@ -2207,24 +2400,35 @@ class DashboardOverviewView(APIView):
         # Revenue MTD from PAID invoices
         revenue_mtd = Invoice.objects.filter(
             created_at__gte=start_of_month,
-            status='PAID'
+            status='PAID',
+            company=request.user.company
         ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0')
-        
+
         # Outstanding invoices (SENT + OVERDUE)
-        outstanding = Invoice.objects.filter(status__in=['SENT', 'OVERDUE'])
+        outstanding = Invoice.objects.filter(
+            status__in=['SENT', 'OVERDUE'],
+            company=request.user.company
+        )
         outstanding_total = outstanding.aggregate(total=Sum('total_amount'))['total'] or Decimal('0')
         outstanding_count = outstanding.count()
-        
+
         # Active loads (IN_TRANSIT + LOADING)
-        active_loads = Load.objects.filter(status__in=['IN_TRANSIT', 'LOADING']).count()
-        
+        active_loads = Load.objects.filter(
+            status__in=['IN_TRANSIT', 'LOADING'],
+            company=request.user.company
+        ).count()
+
         # Fast pay available (SENT invoices)
-        fast_pay = Invoice.objects.filter(status='SENT').aggregate(
-            total=Sum('total_amount'))['total'] or Decimal('0')
-        
+        fast_pay = Invoice.objects.filter(
+            status='SENT',
+            company=request.user.company
+        ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0')
+
         # Quote pipeline value (DRAFT + SENT)
-        pipeline = Quote.objects.filter(status__in=['DRAFT', 'SENT']).aggregate(
-            total=Sum('total_amount'))['total'] or Decimal('0')
+        pipeline = Quote.objects.filter(
+            status__in=['DRAFT', 'SENT'],
+            company=request.user.company
+        ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0')
         
         return Response({
             'revenue_mtd': float(revenue_mtd),
@@ -2277,7 +2481,7 @@ class DashboardSignalsView(APIView):
         signals = []
 
         # INVOICE_CHASE — overdue invoices
-        overdue = Invoice.objects.filter(status='OVERDUE').select_related('customer')
+        overdue = Invoice.objects.filter(status='OVERDUE', company=request.user.company).select_related('customer')
         for inv in overdue[:3]:
             signals.append({
                 'type': 'CRITICAL',
@@ -2292,7 +2496,7 @@ class DashboardSignalsView(APIView):
 
         # IDLE_FLEET — available vehicles not on a load
         from core.models.vehicle import Vehicle
-        idle_vehicles = Vehicle.objects.filter(status='AVAILABLE')
+        idle_vehicles = Vehicle.objects.filter(status='AVAILABLE', company=request.user.company)
         if idle_vehicles.count() >= 2:
             names = ', '.join([v.plate or v.make for v in idle_vehicles[:3]])
             signals.append({
@@ -2307,7 +2511,7 @@ class DashboardSignalsView(APIView):
             })
 
         # FAST_PAY — eligible invoices
-        eligible = Invoice.objects.filter(status='SENT', early_pay_eligible=True)
+        eligible = Invoice.objects.filter(status='SENT', early_pay_eligible=True, company=request.user.company)
         if eligible.exists():
             total = eligible.aggregate(t=Sum('total_amount'))['t'] or 0
             signals.append({
@@ -2322,7 +2526,7 @@ class DashboardSignalsView(APIView):
             })
         else:
             # Show all sent invoices as potential fast pay
-            sent = Invoice.objects.filter(status='SENT')
+            sent = Invoice.objects.filter(status='SENT', company=request.user.company)
             if sent.exists():
                 total = sent.aggregate(t=Sum('total_amount'))['t'] or 0
                 signals.append({
@@ -2340,7 +2544,8 @@ class DashboardSignalsView(APIView):
         recent_loads = Load.objects.filter(
             status='DELIVERED',
             created_at__gte=from_date,
-            created_at__lte=to_date
+            created_at__lte=to_date,
+            company=request.user.company
         ).select_related('customer')
         low_margin = [l for l in recent_loads if float(l.fuel_surcharge or 0) > float(l.total_amount or 1) * 0.15]
         if low_margin:
@@ -2356,7 +2561,7 @@ class DashboardSignalsView(APIView):
             })
 
         # Active loads update
-        active = Load.objects.filter(status='IN_TRANSIT').count()
+        active = Load.objects.filter(status='IN_TRANSIT', company=request.user.company).count()
         if active > 0:
             signals.append({
                 'type': 'INFO',
@@ -2378,6 +2583,8 @@ class DashboardSignalsView(APIView):
 class PasswordResetRequestView(APIView):
     """Request a password reset code."""
     permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
 
     def post(self, request):
         from django.contrib.auth import get_user_model
@@ -2390,20 +2597,14 @@ class PasswordResetRequestView(APIView):
         try:
             user = User.objects.filter(email__iexact=email).first()
             if user:
-                import random
-                code = str(random.randint(100000, 999999))
+                import secrets
+                code = str(secrets.randbelow(900000) + 100000)
                 # Store in cache/session — use Django cache
                 from django.core.cache import cache
                 cache.set(f'pwd_reset_{email}', code, timeout=3600)  # 1hr
 
-                # Send password reset email
-                try:
-                    from core.services.email_service import send_password_reset_email
-                    send_password_reset_email(email, user.first_name or user.username, code)
-                except Exception as e:
-                    import logging
-                    logger = logging.getLogger(__name__)
-                    logger.error(f"Failed to send password reset email to {email}: {str(e)}")
+                from core.tasks import send_password_reset_email_task
+                send_password_reset_email_task(email, user.first_name or user.username, code)
         except Exception as e:
             pass
 
@@ -2413,6 +2614,8 @@ class PasswordResetRequestView(APIView):
 class PasswordResetConfirmView(APIView):
     """Confirm a password reset with code."""
     permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
 
     def post(self, request):
         from django.contrib.auth import get_user_model
@@ -2430,7 +2633,8 @@ class PasswordResetConfirmView(APIView):
             return Response({'detail': 'Password must be at least 8 characters.'}, status=400)
 
         stored_code = cache.get(f'pwd_reset_{email}')
-        if not stored_code or stored_code != code:
+        import hmac as _hmac
+        if not stored_code or not _hmac.compare_digest(str(stored_code), str(code)):
             return Response({'code': ['Invalid or expired reset code.']}, status=400)
 
         user = User.objects.filter(email__iexact=email).first()
@@ -2450,21 +2654,26 @@ class InviteView(APIView):
 
     def get(self, request):
         """List pending invites (PENDING users) for the admin's company."""
+        import datetime
         from django.core.cache import cache
         company = resolve_user_company(request.user)
         pending = User.objects.filter(company=company, status='PENDING').order_by('-created_at')
-        return Response([
-            {
+        rows = []
+        for u in pending:
+            token = cache.get(f'invite_user_{u.id}')
+            # Skip invites whose cache token has expired (Redis restart / TTL elapsed)
+            if not token:
+                continue
+            expires_at = u.created_at + datetime.timedelta(days=7) if u.created_at else None
+            rows.append({
                 'id': u.id,
                 'email': u.email,
                 'role': u.role,
-                'status': u.status,
-                'created_at': u.created_at,
-                # Token kept in a reverse cache index so resend/revoke work from the list.
-                'token': cache.get(f'invite_user_{u.id}'),
-            }
-            for u in pending
-        ])
+                'invited_at': u.created_at,
+                'expires_at': expires_at,
+                'token': token,
+            })
+        return Response(rows)
 
     def post(self, request):
         import secrets
@@ -2487,6 +2696,12 @@ class InviteView(APIView):
             return Response({'error': 'User with this email already exists'}, status=status.HTTP_400_BAD_REQUEST)
 
         company = resolve_user_company(request.user)
+
+        # Enforce per-plan user limit before creating a new user
+        from core.middleware.plan_limits import check_user_limit
+        allowed, message = check_user_limit(company)
+        if not allowed:
+            return Response({'error': message}, status=status.HTTP_402_PAYMENT_REQUIRED)
 
         # Generate secure token
         token = secrets.token_urlsafe(32)
@@ -2520,16 +2735,9 @@ class InviteView(APIView):
         # Reverse index so the pending-invites list can surface the token for resend/revoke.
         cache.set(f'invite_user_{user.id}', token, timeout=7 * 24 * 60 * 60)
 
-        # Send invite email (best-effort: a missing/unconfigured provider must not
-        # 500 the whole invite — the pending user is already created).
-        try:
-            from core.services.resend_email import send_invite_email
-            invite_url = f"{settings.FRONTEND_URL}/invite/{token}"
-            company_name = company.company_name
-            send_invite_email(email, invited_by_name, company_name, invite_url, role)
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning(f"Invite email not sent to {email}: {e}")
+        from core.tasks import send_invite_email_task
+        invite_url = f"{settings.FRONTEND_URL}/invite/{token}"
+        send_invite_email_task(email, invited_by_name, company.company_name, invite_url, role)
 
         return Response(
             {'success': True, 'message': 'Invite sent', 'token': token},
@@ -2587,6 +2795,12 @@ class InviteTokenView(APIView):
         if not user:
             return Response({'error': 'User not found'}, status=status.HTTP_400_BAD_REQUEST)
 
+        full_name = request.data.get('full_name', '').strip()
+        if full_name:
+            parts = full_name.split(' ', 1)
+            user.first_name = parts[0]
+            user.last_name = parts[1] if len(parts) > 1 else ''
+
         user.set_password(password)
         user.status = 'ACTIVE'
         user.is_active = True
@@ -2635,22 +2849,11 @@ class InviteResendView(APIView):
 
         # Resend invite email (best-effort — a missing/unconfigured provider must
         # not fail the resend; the token has already been regenerated).
-        try:
-            from core.services.resend_email import send_invite_email
-            invite_url = f"{settings.FRONTEND_URL}/invite/{new_token}"
-            invited_by_name = request.user.get_full_name() or request.user.username
-            company_name = request.user.company.company_name if request.user.company else "TruckWys"
-
-            send_invite_email(
-                invite_data.get('email'),
-                invited_by_name,
-                company_name,
-                invite_url,
-                invite_data.get('role')
-            )
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning(f"Invite email not resent: {e}")
+        from core.tasks import send_invite_email_task
+        invite_url = f"{settings.FRONTEND_URL}/invite/{new_token}"
+        invited_by_name = request.user.get_full_name() or request.user.username
+        company_name = request.user.company.company_name if request.user.company else "TruckWys"
+        send_invite_email_task(invite_data.get('email'), invited_by_name, company_name, invite_url, invite_data.get('role'))
 
         return Response({'success': True, 'message': 'Invite resent', 'token': new_token}, status=status.HTTP_200_OK)
 
@@ -2701,8 +2904,9 @@ class IntegrationAPIKeyViewSet(viewsets.ModelViewSet):
     list: Get all API keys for current user
     create: Create new API key
     retrieve: Get API key detail
-    update/partial_update: Update API key (name, active status)
+    update/partial_update: Update API key (name, quota, allowed_ips, webhook_url, active)
     destroy: Delete/revoke API key
+    calls: GET paginated call log for this key
     """
     permission_classes = [IsAuthenticated]
 
@@ -2717,6 +2921,15 @@ class IntegrationAPIKeyViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(operator=self.request.user)
 
+    @action(detail=True, methods=['get'], url_path='calls')
+    def calls(self, request, pk=None):
+        from core.models.integration_api_key import APICallLog
+        from core.serializers import APICallLogSerializer
+        api_key = self.get_object()
+        logs = APICallLog.objects.filter(api_key=api_key).order_by('-scored_at')[:100]
+        serializer = APICallLogSerializer(logs, many=True)
+        return Response(serializer.data)
+
 
 class ActivityEventViewSet(viewsets.ReadOnlyModelViewSet):
     """
@@ -2729,7 +2942,9 @@ class ActivityEventViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = ActivityEventSerializer
 
     def get_queryset(self):
-        return ActivityEvent.objects.all()[:50]
+        return ActivityEvent.objects.filter(
+            company=self.request.user.company
+        ).order_by('-created_at')[:50]
 
 
 class TestEmailView(APIView):

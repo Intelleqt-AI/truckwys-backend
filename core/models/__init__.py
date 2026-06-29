@@ -18,7 +18,7 @@ from .advance_request import AdvanceRequest
 from .payment_outcome import PaymentOutcome
 from .audit_log import AuditLog
 from .webhook import Webhook
-from .integration_api_key import IntegrationAPIKey
+from .integration_api_key import IntegrationAPIKey, APICallLog
 from .activity_event import ActivityEvent
 from .copilot_message import CopilotMessage, CopilotConversation
 from .webhook_subscription import WebhookSubscription
@@ -27,6 +27,8 @@ from .invite_token import InviteToken
 from .fuel_price import FuelPrice
 from .toll_plaza import TollPlaza
 from .rag_chunk import InvoiceEmbedding
+from .border_crossing_fee import BorderCrossingFee
+from .country_transit_rate import CountryTransitRate
 
 __all__ = [
     'User',
@@ -52,6 +54,7 @@ __all__ = [
     'AuditLog',
     'Webhook',
     'IntegrationAPIKey',
+    'APICallLog',
     'CopilotMessage',
     'CopilotConversation',
     'ActivityEvent',
@@ -61,4 +64,6 @@ __all__ = [
     'FuelPrice',
     'TollPlaza',
     'InvoiceEmbedding',
+    'BorderCrossingFee',
+    'CountryTransitRate',
 ]

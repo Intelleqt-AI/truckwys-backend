@@ -54,7 +54,7 @@ class CustomerSerializer(serializers.ModelSerializer):
     class Meta:
         model = Customer
         fields = '__all__'
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'company', 'created_at', 'updated_at']
         # Address details are optional on quick-add (directory). They can be
         # filled in later from the full customer record.
         extra_kwargs = {
@@ -69,9 +69,8 @@ class CustomerSerializer(serializers.ModelSerializer):
 # Driver Serializer
 class DriverSerializer(serializers.ModelSerializer):
     user_details = UserSerializer(source='user', read_only=True)
-    revenue_generated = serializers.SerializerMethodField()
+    assigned_vehicle = serializers.SerializerMethodField()
     total_trips = serializers.SerializerMethodField()
-    avg_revenue_per_trip = serializers.SerializerMethodField()
 
     class Meta:
         model = Driver
@@ -80,30 +79,37 @@ class DriverSerializer(serializers.ModelSerializer):
             'license_state', 'medical_card_expiry', 'hire_date', 'status',
             'emergency_contact', 'emergency_phone', 'violation_count',
             'accident_history', 'experience_years', 'created_at', 'updated_at',
-            'revenue_generated', 'total_trips', 'avg_revenue_per_trip'
+            # computed fields written by background task
+            'efficiency_score', 'on_time_rate', 'safety_score', 'total_distance',
+            'trips_this_month', 'revenue_generated', 'avg_revenue_per_trip',
+            'margin_per_trip',
+            # live helpers
+            'total_trips', 'assigned_vehicle',
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at', 'revenue_generated', 'total_trips', 'avg_revenue_per_trip']
-
-    def get_revenue_generated(self, obj):
-        """Calculate total revenue from all delivered loads for this driver."""
-        from django.db.models import Sum
-        total = obj.loads.filter(status='DELIVERED').aggregate(total=Sum('total_amount'))['total']
-        return float(total) if total else 0.0
+        read_only_fields = [
+            'id', 'created_at', 'updated_at',
+            'efficiency_score', 'on_time_rate', 'safety_score', 'total_distance',
+            'trips_this_month', 'revenue_generated', 'avg_revenue_per_trip',
+            'margin_per_trip', 'total_trips', 'assigned_vehicle',
+        ]
 
     def get_total_trips(self, obj):
-        """Count total delivered loads for this driver."""
-        return obj.loads.filter(status='DELIVERED').count()
+        """Live count — cheap, used for the profile header before the task runs."""
+        return obj.loads.filter(status__in=['DELIVERED', 'INVOICED']).count()
 
-    def get_avg_revenue_per_trip(self, obj):
-        """Calculate average revenue per trip for this driver."""
-        from django.db.models import Avg
-        avg = obj.loads.filter(status='DELIVERED').aggregate(avg=Avg('total_amount'))['avg']
-        return float(avg) if avg else 0.0
+    def get_assigned_vehicle(self, obj):
+        vehicle = obj.vehicles.first()
+        if not vehicle:
+            return None
+        parts = [vehicle.plate]
+        if vehicle.make or vehicle.model:
+            parts.append(f"{vehicle.make or ''} {vehicle.model or ''}".strip())
+        return ' — '.join(filter(None, parts))
 
 
 # Vehicle Serializer
 class VehicleSerializer(serializers.ModelSerializer):
-    driver_name = serializers.CharField(source='driver.user.username', read_only=True)
+    driver_name = serializers.SerializerMethodField()
     vehicle_type_name = serializers.CharField(source='vehicle_type.name', read_only=True)
     revenue_generated = serializers.SerializerMethodField()
     total_trips = serializers.SerializerMethodField()
@@ -116,6 +122,7 @@ class VehicleSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'company', 'vin', 'make', 'model', 'driver', 'vehicle_type',
             'year', 'plate', 'type', 'capacity', 'status', 'fuel_type', 'mileage',
+            'service_interval_km', 'last_service_mileage',
             'last_maintenance_date', 'next_maintenance_due', 'insurance_expiry',
             'registration_expiry', 'ai_health_score', 'fuel_efficiency_score',
             'uptime_score', 'maintenance_score', 'uptime_percentage', 'cost_per_km',
@@ -125,6 +132,13 @@ class VehicleSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'driver_name', 'vehicle_type_name',
                            'revenue_generated', 'total_trips', 'utilisation_rate']
+
+    def get_driver_name(self, obj):
+        if not obj.driver:
+            return None
+        u = obj.driver.user
+        name = f"{u.first_name} {u.last_name}".strip()
+        return name or u.username
 
     def get_revenue_generated(self, obj):
         """Calculate total revenue from all delivered loads for this vehicle."""
@@ -150,11 +164,12 @@ class VehicleTypeSerializer(serializers.ModelSerializer):
     class Meta:
         model = VehicleType
         fields = '__all__'
-        read_only_fields = ['id', 'created_at', 'updated_at']
-        # Optional on quick-add; sensible defaults keep the directory add simple.
+        read_only_fields = ['id', 'company', 'created_at', 'updated_at']
         extra_kwargs = {
-            'max_distance': {'required': False, 'default': 0},
             'description': {'required': False, 'allow_blank': True, 'default': ''},
+            'capacity': {'required': False, 'default': 0},
+            'max_distance': {'required': False, 'default': 0},
+            'base_rate': {'required': False, 'default': 0},
         }
 
 
@@ -172,15 +187,22 @@ class VehicleLogSerializer(serializers.ModelSerializer):
 # Load Serializer
 class LoadSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source='customer.name', read_only=True)
-    driver_name = serializers.CharField(source='driver.user.username', read_only=True)
+    driver_name = serializers.SerializerMethodField()
     vehicle_info = serializers.SerializerMethodField()
     quote_number = serializers.SerializerMethodField()
-    
+
     class Meta:
         model = Load
         fields = '__all__'
-        read_only_fields = ['id', 'created_at', 'updated_at', 'created_by']
-    
+        read_only_fields = ['id', 'created_at', 'updated_at', 'created_by', 'actual_delivered_at', 'company']
+
+    def get_driver_name(self, obj):
+        if not obj.driver:
+            return None
+        u = obj.driver.user
+        name = f"{u.first_name} {u.last_name}".strip()
+        return name or u.username
+
     def get_vehicle_info(self, obj):
         if obj.vehicle:
             return f"{obj.vehicle.make} {obj.vehicle.model} - {obj.vehicle.plate}"
@@ -197,11 +219,25 @@ class QuoteSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source='customer.name', read_only=True)
     created_by_name = serializers.CharField(source='created_by.username', read_only=True)
     quote_number = serializers.CharField(required=False, allow_blank=True)
-    
+    vehicle_display = serializers.SerializerMethodField()
+    driver_display = serializers.SerializerMethodField()
+
     class Meta:
         model = Quote
         fields = '__all__'
         read_only_fields = ['id', 'created_at', 'updated_at', 'created_by']
+
+    def get_vehicle_display(self, obj):
+        if obj.vehicle:
+            return f"{obj.vehicle.make} {obj.vehicle.model} ({obj.vehicle.plate})"
+        return None
+
+    def get_driver_display(self, obj):
+        if obj.driver:
+            u = obj.driver.user
+            name = f"{u.first_name} {u.last_name}".strip() or u.username
+            return name
+        return None
 
 
 # Invoice Serializer
@@ -212,7 +248,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
     class Meta:
         model = Invoice
         fields = '__all__'
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'company', 'created_at', 'updated_at']
 
 
 # Payment Serializer
@@ -285,9 +321,15 @@ class CompanySerializer(serializers.ModelSerializer):
     class Meta:
         model = Company
         fields = [
-            'company_name', 'registration_number', 'vat_number', 
-            'industry', 'website', 'description', 'logo_url', 
-            'address', 'contact'
+            'company_name', 'registration_number', 'vat_number',
+            'industry', 'website', 'description', 'logo_url',
+            'address', 'contact',
+            'default_base_rate_per_km', 'weight_surcharge_threshold_kg',
+            'weight_surcharge_pct', 'default_sla_hours',
+            'default_quote_validity_days', 'allow_cross_border',
+            'fuel_price_per_litre',
+            'margin_at_risk_pct', 'margin_caution_pct', 'margin_target_pct',
+            'default_toll_rate_per_km',
         ]
     
     def get_logo_url(self, obj):
@@ -323,97 +365,45 @@ class QuotePipelineSerializer(serializers.ModelSerializer):
         return obj.status.capitalize()
 
 
-# Driver Performance Serializer (NEW)
+# Driver Performance Serializer
 class DriverPerformanceSerializer(serializers.ModelSerializer):
     driver_id = serializers.CharField(source='user.username')
     driver_name = serializers.SerializerMethodField()
     vehicle = serializers.SerializerMethodField()
-    on_time_percentage = serializers.SerializerMethodField()
-    safety_score = serializers.SerializerMethodField()
-    fuel_efficiency = serializers.SerializerMethodField()
-    margin_per_trip = serializers.SerializerMethodField()
-    avoidable_cost = serializers.SerializerMethodField()
+    on_time_percentage = serializers.DecimalField(source='on_time_rate', max_digits=5, decimal_places=2, read_only=True)
+    fuel_efficiency = serializers.IntegerField(source='efficiency_score', read_only=True)
     roi_score = serializers.SerializerMethodField()
     driver_status = serializers.SerializerMethodField()
-    
+
     class Meta:
         model = Driver
         fields = [
             'id', 'driver_id', 'driver_name', 'vehicle', 'on_time_percentage',
-            'safety_score', 'fuel_efficiency', 'margin_per_trip', 
-            'avoidable_cost', 'roi_score', 'driver_status', 'status'
+            'safety_score', 'fuel_efficiency', 'margin_per_trip',
+            'roi_score', 'driver_status', 'status',
         ]
-    
+
     def get_driver_name(self, obj):
-        return f"{obj.user.first_name} {obj.user.last_name}"
-    
+        name = f"{obj.user.first_name} {obj.user.last_name}".strip()
+        return name or obj.user.username
+
     def get_vehicle(self, obj):
-        # Get the most recent load's vehicle for this driver
-        recent_load = Load.objects.filter(driver=obj).order_by('-created_at').first()
-        if recent_load and recent_load.vehicle:
-            return recent_load.vehicle.plate
-        return None
-    
-    def get_on_time_percentage(self, obj):
-        # Calculate on-time delivery percentage
-        total_loads = Load.objects.filter(driver=obj, status='DELIVERED').count()
-        if total_loads == 0:
-            return 0.0
-        
-        # Simulate on-time percentage based on driver performance
-        # In production, track actual delivery times
-        base_score = 85.0
-        performance_boost = (obj.id % 20) - 10  # Random variation
-        return round(min(100.0, max(0.0, base_score + performance_boost)), 1)
-    
-    def get_safety_score(self, obj):
-        # Calculate safety score (incidents, violations, etc.)
-        # In production, track actual safety metrics
-        base_score = 80
-        safety_boost = (obj.id * 3) % 25
-        return min(100, base_score + safety_boost)
-    
-    def get_fuel_efficiency(self, obj):
-        # Get fuel efficiency from vehicle or calculate
-        recent_load = Load.objects.filter(driver=obj).order_by('-created_at').first()
-        if recent_load and recent_load.vehicle:
-            return recent_load.vehicle.fuel_efficiency_score or 75
-        return 75
-    
-    def get_margin_per_trip(self, obj):
-        # Calculate average margin from loads
-        loads = Load.objects.filter(driver=obj, status='DELIVERED')
-        if loads.exists():
-            avg_margin = loads.aggregate(avg=Avg('total_amount'))['avg']
-            return float(avg_margin) if avg_margin else 0.0
-        return 0.0
-    
-    def get_avoidable_cost(self, obj):
-        # Calculate avoidable costs (idle time, route inefficiency)
-        # In production, track actual costs
-        monthly_base = 2000
-        cost_variation = (obj.id * 100) % 3000
-        return float(monthly_base + cost_variation)
-    
+        vehicle = obj.vehicles.first()
+        return vehicle.plate if vehicle else None
+
     def get_roi_score(self, obj):
-        # Calculate ROI score based on performance
-        on_time = self.get_on_time_percentage(obj)
-        safety = self.get_safety_score(obj)
-        fuel = self.get_fuel_efficiency(obj)
-        return int((on_time + safety + fuel) / 3)
-    
+        # Composite of stored scores — no fake randomness
+        return int((float(obj.on_time_rate) * 0.4 + obj.safety_score * 0.35 + obj.efficiency_score * 0.25))
+
     def get_driver_status(self, obj):
-        if obj.status == 'INACTIVE':
-            return 'Off Duty'
-        
-        # Check recent load status
-        recent_load = Load.objects.filter(driver=obj).order_by('-created_at').first()
-        if recent_load:
-            if recent_load.status == 'IN_TRANSIT':
-                return 'Active'
-            elif recent_load.status == 'ASSIGNED':
-                return 'Active'
-        return 'Active'
+        if obj.status != 'ACTIVE':
+            return obj.status.replace('_', ' ').title()
+        recent = obj.loads.order_by('-created_at').first()
+        if recent and recent.status == 'IN_TRANSIT':
+            return 'In Transit'
+        if recent and recent.status == 'ASSIGNED':
+            return 'Assigned'
+        return 'Available'
 
 
 class WebhookSerializer(serializers.ModelSerializer):
@@ -439,8 +429,19 @@ class IntegrationAPIKeySerializer(serializers.ModelSerializer):
             'id', 'name', 'key', 'key_type', 'active',
             'created_at', 'last_used_at',
             'usage_count', 'monthly_quota', 'quota_used',
+            'allowed_ips', 'webhook_url',
         ]
         read_only_fields = ['id', 'key', 'created_at', 'last_used_at', 'usage_count', 'quota_used']
+
+
+class APICallLogSerializer(serializers.ModelSerializer):
+    """Serializer for per-key API call log entries."""
+
+    class Meta:
+        from core.models.integration_api_key import APICallLog
+        model = APICallLog
+        fields = ['id', 'scored_at', 'invoice_amount', 'risk_tier', 'score', 'eligible', 'caller_ip']
+        read_only_fields = fields
 
 
 class ActivityEventSerializer(serializers.ModelSerializer):

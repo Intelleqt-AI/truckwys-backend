@@ -15,10 +15,52 @@ class Company(models.Model):
 
     # NEW: Fuel price for expense calculations
     fuel_price_per_litre = models.DecimalField(
-        max_digits=6,
-        decimal_places=2,
-        default=23.50,
+        max_digits=6, decimal_places=2, default=23.50,
         help_text='Current fuel price per litre in ZAR (default: R23.50)'
+    )
+
+    # Quote defaults — configurable per company
+    default_base_rate_per_km = models.DecimalField(
+        max_digits=8, decimal_places=2, default=10.00,
+        help_text='Default base rate per km used when creating a new quote (ZAR)'
+    )
+    weight_surcharge_threshold_kg = models.IntegerField(
+        default=5000,
+        help_text='Cargo weight above which a surcharge is applied (kg)'
+    )
+    weight_surcharge_pct = models.DecimalField(
+        max_digits=5, decimal_places=2, default=15.00,
+        help_text='Weight surcharge percentage applied to base cost when threshold is exceeded'
+    )
+    default_sla_hours = models.IntegerField(
+        default=48,
+        help_text='Default SLA delivery time in hours'
+    )
+    default_quote_validity_days = models.IntegerField(
+        default=7,
+        help_text='Default number of days a quote remains valid'
+    )
+    allow_cross_border = models.BooleanField(
+        default=True,
+        help_text='Whether cross-border routes are enabled for this company'
+    )
+
+    # Revenue Guard thresholds — configurable per company
+    margin_at_risk_pct = models.DecimalField(
+        max_digits=5, decimal_places=2, default=5.00,
+        help_text='Margin % below which a quote is flagged AT RISK (default: 5%)'
+    )
+    margin_caution_pct = models.DecimalField(
+        max_digits=5, decimal_places=2, default=12.00,
+        help_text='Margin % below which a quote is flagged CAUTION (default: 12%)'
+    )
+    margin_target_pct = models.DecimalField(
+        max_digits=5, decimal_places=2, default=10.00,
+        help_text='Target margin % used in price-increase suggestions (default: 10%)'
+    )
+    default_toll_rate_per_km = models.DecimalField(
+        max_digits=6, decimal_places=3, default=0.500,
+        help_text='Fallback toll cost in ZAR/km used when TomTom returns no toll data (default: R0.50/km)'
     )
 
     # Risk engine fields
