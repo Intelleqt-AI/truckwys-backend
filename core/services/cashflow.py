@@ -1,328 +1,51 @@
 """
 Cash Flow Forecast Service
-Predicts future cash in/out based on historical data and outstanding invoices.
+Predicts future cash in/out based on actual invoice due dates and scheduled expenses.
 """
-from typing import List, Dict, Any
-from datetime import datetime, timedelta, date
+from typing import List, Dict, Any, Optional
+from datetime import timedelta, date
 from decimal import Decimal
-from django.db.models import Sum, Avg, Q
+from django.db.models import Sum
 from django.utils import timezone
 from collections import defaultdict
-from core.models import Invoice, Payment, Expense
+from core.models import Invoice, Expense
 
 
 class CashFlowForecastService:
     """
     Cash flow forecasting service.
 
-    Predicts daily cash inflows and outflows based on:
-    - Outstanding invoices × payment probability
-    - Historical payment patterns
-    - Scheduled expenses
+    Inflow:  outstanding invoices anchored to their actual due dates (or customer's
+             historical average-days-to-pay when that's available). Full balance shown —
+             no probability weighting that obscures real amounts.
+
+    Outflow: actual future-dated expenses placed on their exact dates, plus a
+             3-month daily baseline for ongoing costs not yet recorded.
     """
 
+    # Overdue invoices are assumed to be collected within this many days.
+    OVERDUE_COLLECTION_LAG_DAYS = 14
+    # Invoices past due but not yet marked OVERDUE get a shorter lag.
+    PAST_DUE_LAG_DAYS = 7
+
     def __init__(self):
-        """Initialize cash flow forecast service."""
-        pass
+        self._avg_days_cache: Optional[Dict[int, float]] = None
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     def forecast_cashflow(self, days: int = 90) -> List[Dict[str, Any]]:
-        """
-        Generate cash flow forecast.
-
-        Args:
-            days: Number of days to forecast (default: 90)
-
-        Returns:
-            List of daily cash flow projections, grouped by week
-        """
-        # Get forecast start date (today)
         start_date = timezone.now().date()
         end_date = start_date + timedelta(days=days)
 
-        # Initialize daily forecast
         daily_forecast = self._initialize_daily_forecast(start_date, end_date)
+        self._add_inflow(daily_forecast, start_date, end_date)
+        self._add_outflow(daily_forecast, start_date, end_date)
 
-        # Add expected cash in (from outstanding invoices)
-        self._add_expected_cash_in(daily_forecast, start_date, end_date)
-
-        # Add expected cash out (from expenses)
-        self._add_expected_cash_out(daily_forecast, start_date, end_date)
-
-        # Group by week
-        weekly_forecast = self._group_by_week(daily_forecast)
-
-        return weekly_forecast
-
-    def _initialize_daily_forecast(self, start_date: date, end_date: date) -> Dict[date, Dict[str, Decimal]]:
-        """
-        Initialize daily forecast dictionary.
-
-        Args:
-            start_date: Forecast start date
-            end_date: Forecast end date
-
-        Returns:
-            Dictionary of daily forecasts
-        """
-        forecast = {}
-        current_date = start_date
-
-        while current_date <= end_date:
-            forecast[current_date] = {
-                'date': current_date,
-                'expected_in': Decimal('0'),
-                'expected_out': Decimal('0'),
-                'net': Decimal('0'),
-            }
-            current_date += timedelta(days=1)
-
-        return forecast
-
-    def _add_expected_cash_in(self, forecast: Dict[date, Dict], start_date: date, end_date: date) -> None:
-        """
-        Add expected cash inflows from outstanding invoices.
-
-        Uses payment probability based on historical payment patterns.
-
-        Args:
-            forecast: Daily forecast dictionary
-            start_date: Forecast start date
-            end_date: Forecast end date
-        """
-        # Get outstanding invoices
-        outstanding_invoices = Invoice.objects.filter(
-            status__in=['SENT', 'VIEWED', 'OVERDUE', 'PARTIALLY_PAID'],
-            balance__gt=0
-        ).select_related('customer')
-
-        # Get payment probabilities
-        payment_probabilities = self._calculate_payment_probabilities()
-
-        for invoice in outstanding_invoices:
-            # Estimate payment date based on due date and historical patterns
-            expected_payment_date = self._estimate_payment_date(invoice, payment_probabilities)
-
-            # Only include if within forecast period
-            if start_date <= expected_payment_date <= end_date:
-                # Calculate probability-weighted amount
-                probability = payment_probabilities.get(invoice.customer_id, 0.7)  # Default 70%
-                expected_amount = invoice.balance * Decimal(str(probability))
-
-                forecast[expected_payment_date]['expected_in'] += expected_amount
-
-    def _calculate_payment_probabilities(self) -> Dict[int, float]:
-        """
-        Calculate payment probability per customer based on historical data.
-
-        Returns:
-            Dictionary of customer_id -> probability
-        """
-        probabilities = {}
-
-        # Get all customers with payment history
-        paid_invoices = Invoice.objects.filter(
-            status='PAID',
-            paid_at__isnull=False
-        ).select_related('customer')
-
-        # Group by customer
-        customer_invoices = defaultdict(list)
-        for invoice in paid_invoices:
-            customer_invoices[invoice.customer_id].append(invoice)
-
-        # Calculate probability for each customer
-        for customer_id, invoices in customer_invoices.items():
-            # Calculate on-time payment rate
-            on_time_count = 0
-            total_count = len(invoices)
-
-            for invoice in invoices:
-                # Check if paid on or before due date
-                if invoice.paid_at.date() <= invoice.due_date:
-                    on_time_count += 1
-
-            # Probability = on-time rate
-            probability = on_time_count / total_count if total_count > 0 else 0.7
-
-            # Cap between 0.3 and 0.95
-            probability = max(0.3, min(0.95, probability))
-
-            probabilities[customer_id] = probability
-
-        return probabilities
-
-    def _estimate_payment_date(self, invoice: Invoice, probabilities: Dict[int, float]) -> date:
-        """
-        Estimate when an invoice will be paid based on historical patterns.
-
-        Args:
-            invoice: Invoice instance
-            probabilities: Customer payment probabilities
-
-        Returns:
-            Estimated payment date
-        """
-        # Get customer's average days to pay
-        avg_days_to_pay = self._get_customer_avg_days_to_pay(invoice.customer_id)
-
-        # If no history, use due date
-        if avg_days_to_pay is None:
-            return invoice.due_date
-
-        # Estimate payment date = issue date + avg days
-        estimated_date = invoice.issue_date + timedelta(days=int(avg_days_to_pay))
-
-        # Don't forecast payments earlier than today
-        today = timezone.now().date()
-        if estimated_date < today:
-            estimated_date = today
-
-        return estimated_date
-
-    def _get_customer_avg_days_to_pay(self, customer_id: int) -> float:
-        """
-        Get customer's average days from invoice issue to payment.
-
-        Args:
-            customer_id: Customer ID
-
-        Returns:
-            Average days to pay
-        """
-        paid_invoices = Invoice.objects.filter(
-            customer_id=customer_id,
-            status='PAID',
-            paid_at__isnull=False
-        )
-
-        if not paid_invoices.exists():
-            return None
-
-        total_days = 0
-        count = 0
-
-        for invoice in paid_invoices:
-            days = (invoice.paid_at.date() - invoice.issue_date).days
-            total_days += days
-            count += 1
-
-        return total_days / count if count > 0 else None
-
-    def _add_expected_cash_out(self, forecast: Dict[date, Dict], start_date: date, end_date: date) -> None:
-        """
-        Add expected cash outflows from expenses.
-
-        Args:
-            forecast: Daily forecast dictionary
-            start_date: Forecast start date
-            end_date: Forecast end date
-        """
-        # Get historical monthly expense average
-        monthly_avg_expenses = self._get_monthly_avg_expenses()
-
-        # Distribute monthly expenses across forecast period
-        # Simple approach: divide evenly by number of days in month
-        current_date = start_date
-
-        while current_date <= end_date:
-            # Daily expense = monthly average / 30
-            daily_expense = monthly_avg_expenses / 30
-
-            forecast[current_date]['expected_out'] += daily_expense
-
-            current_date += timedelta(days=1)
-
-        # TODO: Add scheduled/recurring expenses with specific dates
-
-    def _get_monthly_avg_expenses(self) -> Decimal:
-        """
-        Calculate average monthly expenses from historical data.
-
-        Returns:
-            Average monthly expenses
-        """
-        # Get last 6 months of expenses
-        six_months_ago = timezone.now() - timedelta(days=180)
-
-        expenses = Expense.objects.filter(
-            expense_date__gte=six_months_ago
-        ).aggregate(total=Sum('amount'))
-
-        total_expenses = expenses['total'] or Decimal('0')
-
-        # Average per month (6 months)
-        return total_expenses / 6 if total_expenses > 0 else Decimal('0')
-
-    def _group_by_week(self, daily_forecast: Dict[date, Dict]) -> List[Dict[str, Any]]:
-        """
-        Group daily forecast into weekly periods.
-
-        Args:
-            daily_forecast: Daily forecast dictionary
-
-        Returns:
-            List of weekly forecast periods
-        """
-        weekly_forecast = []
-        current_week = None
-        week_data = None
-
-        # Sort by date
-        sorted_dates = sorted(daily_forecast.keys())
-
-        for forecast_date in sorted_dates:
-            # Get week number
-            week_number = forecast_date.isocalendar()[1]
-            year = forecast_date.year
-
-            week_key = f"{year}-W{week_number:02d}"
-
-            # Start new week if changed
-            if current_week != week_key:
-                # Save previous week
-                if week_data is not None:
-                    week_data['net'] = week_data['expected_in'] - week_data['expected_out']
-                    weekly_forecast.append(week_data)
-
-                # Start new week
-                current_week = week_key
-                week_data = {
-                    'period': week_key,
-                    'start_date': forecast_date.strftime('%Y-%m-%d'),
-                    'expected_in': Decimal('0'),
-                    'expected_out': Decimal('0'),
-                    'net': Decimal('0'),
-                }
-
-            # Add to week totals
-            day_data = daily_forecast[forecast_date]
-            week_data['expected_in'] += day_data['expected_in']
-            week_data['expected_out'] += day_data['expected_out']
-            week_data['end_date'] = forecast_date.strftime('%Y-%m-%d')
-
-        # Add final week
-        if week_data is not None:
-            week_data['net'] = week_data['expected_in'] - week_data['expected_out']
-            weekly_forecast.append(week_data)
-
-        # Convert Decimals to floats for JSON serialization
-        for week in weekly_forecast:
-            week['expected_in'] = float(week['expected_in'])
-            week['expected_out'] = float(week['expected_out'])
-            week['net'] = float(week['net'])
-
-        return weekly_forecast
+        return self._group_by_week(daily_forecast)
 
     def get_summary_stats(self, forecast: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        Generate summary statistics from forecast.
-
-        Args:
-            forecast: Weekly forecast data
-
-        Returns:
-            Summary statistics
-        """
         if not forecast:
             return {
                 'total_expected_in': 0,
@@ -330,20 +53,223 @@ class CashFlowForecastService:
                 'net_position': 0,
                 'weeks_positive': 0,
                 'weeks_negative': 0,
+                'total_weeks': 0,
             }
 
-        total_in = sum(week['expected_in'] for week in forecast)
-        total_out = sum(week['expected_out'] for week in forecast)
-        net = total_in - total_out
-
-        weeks_positive = sum(1 for week in forecast if week['net'] > 0)
-        weeks_negative = sum(1 for week in forecast if week['net'] < 0)
+        total_in = sum(w['expected_in'] for w in forecast)
+        total_out = sum(w['expected_out'] for w in forecast)
 
         return {
             'total_expected_in': total_in,
             'total_expected_out': total_out,
-            'net_position': net,
-            'weeks_positive': weeks_positive,
-            'weeks_negative': weeks_negative,
+            'net_position': total_in - total_out,
+            'weeks_positive': sum(1 for w in forecast if w['net'] > 0),
+            'weeks_negative': sum(1 for w in forecast if w['net'] < 0),
             'total_weeks': len(forecast),
         }
+
+    # ------------------------------------------------------------------
+    # Inflow
+    # ------------------------------------------------------------------
+
+    def _add_inflow(self, forecast: Dict, start_date: date, end_date: date) -> None:
+        """Place each outstanding invoice on the day we expect to receive the money."""
+        today = timezone.now().date()
+        avg_days = self._get_all_avg_days_to_pay()
+
+        outstanding = Invoice.objects.filter(
+            status__in=['SENT', 'VIEWED', 'OVERDUE', 'PARTIALLY_PAID'],
+            balance__gt=0,
+        ).select_related('customer')
+
+        for invoice in outstanding:
+            expected = self._expected_payment_date(invoice, avg_days, today)
+
+            if start_date <= expected <= end_date:
+                forecast[expected]['expected_in'] += invoice.balance
+
+    def _expected_payment_date(
+        self,
+        invoice: Invoice,
+        avg_days: Dict[int, float],
+        today: date,
+    ) -> date:
+        """
+        Determine when this invoice is likely to be paid.
+
+        Priority:
+        1. Customer has historical avg-days-to-pay → issue_date + avg_days
+        2. No history → use due_date directly
+        3. Result is in the past → shift forward by collection lag
+        """
+        cid = invoice.customer_id
+
+        if cid in avg_days:
+            estimated = invoice.issue_date + timedelta(days=int(avg_days[cid]))
+        else:
+            estimated = invoice.due_date
+
+        # Already past — shift forward based on urgency
+        if estimated < today:
+            if invoice.status == 'OVERDUE':
+                estimated = today + timedelta(days=self.OVERDUE_COLLECTION_LAG_DAYS)
+            else:
+                estimated = today + timedelta(days=self.PAST_DUE_LAG_DAYS)
+
+        return estimated
+
+    def _get_all_avg_days_to_pay(self) -> Dict[int, float]:
+        """Return {customer_id: avg_days_from_issue_to_payment} for all customers."""
+        if self._avg_days_cache is not None:
+            return self._avg_days_cache
+
+        paid = Invoice.objects.filter(
+            status='PAID',
+            paid_at__isnull=False,
+            issue_date__isnull=False,
+        ).values('customer_id', 'paid_at', 'issue_date')
+
+        bucket: Dict[int, List[int]] = defaultdict(list)
+        for inv in paid:
+            days = (inv['paid_at'].date() - inv['issue_date']).days
+            if days >= 0:
+                bucket[inv['customer_id']].append(days)
+
+        self._avg_days_cache = {
+            cid: sum(days) / len(days)
+            for cid, days in bucket.items()
+            if days
+        }
+        return self._avg_days_cache
+
+    # ------------------------------------------------------------------
+    # Outflow
+    # ------------------------------------------------------------------
+
+    def _add_outflow(self, forecast: Dict, start_date: date, end_date: date) -> None:
+        """
+        Two-layer outflow model:
+        1. Actual scheduled expenses with future expense_date → exact date, exact amount.
+        2. Daily baseline (3-month historical avg) applied to every day to capture
+           ongoing costs not yet recorded (fuel top-ups, driver advances, etc.).
+        """
+        scheduled_total_by_date = self._place_scheduled_expenses(forecast, start_date, end_date)
+        self._apply_baseline(forecast, start_date, end_date, scheduled_total_by_date)
+
+    def _place_scheduled_expenses(
+        self,
+        forecast: Dict,
+        start_date: date,
+        end_date: date,
+    ) -> Dict[date, Decimal]:
+        """Place actual future-dated expenses on their exact dates. Returns totals per date."""
+        totals: Dict[date, Decimal] = defaultdict(Decimal)
+
+        future_expenses = Expense.objects.filter(
+            expense_date__gte=start_date,
+            expense_date__lte=end_date,
+            status__in=['PENDING', 'APPROVED'],
+        )
+
+        for exp in future_expenses:
+            amount = Decimal(str(exp.amount))
+            if exp.expense_date in forecast:
+                forecast[exp.expense_date]['expected_out'] += amount
+                totals[exp.expense_date] += amount
+
+        return totals
+
+    def _apply_baseline(
+        self,
+        forecast: Dict,
+        start_date: date,
+        end_date: date,
+        already_scheduled: Dict[date, Decimal],
+    ) -> None:
+        """
+        Add a daily average from the past 3 months' HISTORICAL expenses.
+        Days that already have actual scheduled expenses receive a reduced baseline
+        (baseline minus what's already there, floored at zero) so we don't wildly
+        double-count recurring costs.
+        """
+        daily_avg = self._daily_avg_from_history()
+        if daily_avg <= 0:
+            return
+
+        current = start_date
+        while current <= end_date:
+            scheduled_today = already_scheduled.get(current, Decimal('0'))
+            # Only add what the baseline adds beyond what's already scheduled
+            extra = max(daily_avg - scheduled_today, Decimal('0'))
+            forecast[current]['expected_out'] += extra
+            current += timedelta(days=1)
+
+    def _daily_avg_from_history(self) -> Decimal:
+        """3-month historical expense average, divided to a per-day rate."""
+        three_months_ago = timezone.now().date() - timedelta(days=90)
+
+        result = Expense.objects.filter(
+            expense_date__gte=three_months_ago,
+            expense_date__lt=timezone.now().date(),
+            status__in=['APPROVED'],
+        ).aggregate(total=Sum('amount'))
+
+        total = result['total'] or Decimal('0')
+        return total / 90 if total > 0 else Decimal('0')
+
+    # ------------------------------------------------------------------
+    # Grouping
+    # ------------------------------------------------------------------
+
+    def _initialize_daily_forecast(self, start_date: date, end_date: date) -> Dict:
+        forecast = {}
+        current = start_date
+        while current <= end_date:
+            forecast[current] = {
+                'date': current,
+                'expected_in': Decimal('0'),
+                'expected_out': Decimal('0'),
+                'net': Decimal('0'),
+            }
+            current += timedelta(days=1)
+        return forecast
+
+    def _group_by_week(self, daily_forecast: Dict) -> List[Dict[str, Any]]:
+        weekly: List[Dict] = []
+        current_week_key = None
+        week_data = None
+
+        for forecast_date in sorted(daily_forecast):
+            iso = forecast_date.isocalendar()
+            week_key = f"{iso[0]}-W{iso[1]:02d}"
+
+            if current_week_key != week_key:
+                if week_data is not None:
+                    week_data['net'] = week_data['expected_in'] - week_data['expected_out']
+                    weekly.append(week_data)
+
+                current_week_key = week_key
+                week_data = {
+                    'period': week_key,
+                    'start_date': forecast_date.strftime('%Y-%m-%d'),
+                    'end_date': forecast_date.strftime('%Y-%m-%d'),
+                    'expected_in': Decimal('0'),
+                    'expected_out': Decimal('0'),
+                    'net': Decimal('0'),
+                }
+
+            day = daily_forecast[forecast_date]
+            week_data['expected_in'] += day['expected_in']
+            week_data['expected_out'] += day['expected_out']
+            week_data['end_date'] = forecast_date.strftime('%Y-%m-%d')
+
+        if week_data is not None:
+            week_data['net'] = week_data['expected_in'] - week_data['expected_out']
+            weekly.append(week_data)
+
+        for week in weekly:
+            week['expected_in'] = float(week['expected_in'])
+            week['expected_out'] = float(week['expected_out'])
+            week['net'] = float(week['net'])
+
+        return weekly

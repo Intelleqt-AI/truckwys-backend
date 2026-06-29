@@ -676,8 +676,9 @@ class CapitalEligibleInvoicesView(APIView):
                 company=company, status='ACTIVE'
             ).first() if company else None
 
-        # Candidate invoices: this company's SENT/OVERDUE invoices with no active advance.
-        eligible_statuses = ['SENT', 'OVERDUE']
+        # Candidate invoices: this company's SENT/VIEWED/OVERDUE invoices with no active advance.
+        # VIEWED is included because viewing the public link auto-transitions SENT → VIEWED.
+        eligible_statuses = ['SENT', 'VIEWED', 'OVERDUE']
         candidates = Invoice.objects.filter(
             status__in=eligible_statuses,
         ).select_related('customer', 'load', 'trip').exclude(
@@ -734,6 +735,7 @@ class CapitalEligibleInvoicesView(APIView):
                 'fee_rate_pct': fee_rate,
                 'fee_amount_zar': float(fee_amount),
                 'net_payout_zar': float(net_payout),
+                'max_advance_percent': res.max_advance_percent,
                 'load_reference': inv.load.load_number if inv.load else None,
                 'route': f'{inv.load.pickup_city} → {inv.load.delivery_city}' if inv.load else None,
             })

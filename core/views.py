@@ -1341,6 +1341,28 @@ class VehicleViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     search_fields = ['vin', 'plate', 'make', 'model']
     ordering_fields = ['created_at', 'make', 'model', 'year']
 
+    def create(self, request, *args, **kwargs):
+        from django.db import IntegrityError
+        from rest_framework.exceptions import ValidationError as DRFValidationError
+        try:
+            return super().create(request, *args, **kwargs)
+        except IntegrityError as exc:
+            msg = str(exc)
+            if 'plate' in msg.lower():
+                detail = 'A vehicle with this plate number already exists.'
+            elif 'vin' in msg.lower():
+                detail = 'A vehicle with this VIN already exists.'
+            else:
+                detail = f'Database constraint violated: {msg}'
+            return Response({'error': detail}, status=status.HTTP_400_BAD_REQUEST)
+        except DRFValidationError:
+            raise
+        except Exception as exc:
+            return Response(
+                {'error': f'Could not create vehicle: {exc}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
     def perform_create(self, serializer):
         """Check plan limits before creating vehicle"""
         from core.middleware.plan_limits import check_vehicle_limit
