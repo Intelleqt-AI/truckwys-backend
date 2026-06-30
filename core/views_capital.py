@@ -689,11 +689,20 @@ class CapitalEligibleInvoicesView(APIView):
         candidates = candidates.order_by('-issue_date')[:50]
 
         result = []
+        ineligible_result = []
         total_face_value = Decimal('0.00')
         total_net_payout = Decimal('0.00')
 
         for inv in candidates:
             if not facility:
+                ineligible_result.append({
+                    'id': inv.id,
+                    'invoice_number': inv.invoice_number,
+                    'customer': inv.customer.name,
+                    'amount': float(inv.total_amount),
+                    'reason': 'No active facility on file',
+                    'rule': 'NO_FACILITY',
+                })
                 continue
             # Run the SAME risk engine used at advance creation so this list only
             # contains invoices that will actually be accepted (POD on file, score OK).
@@ -703,6 +712,16 @@ class CapitalEligibleInvoicesView(APIView):
             except Exception:
                 continue
             if not res.is_eligible:
+                primary = res.ineligibility_reasons[0] if res.ineligibility_reasons else None
+                ineligible_result.append({
+                    'id': inv.id,
+                    'invoice_number': inv.invoice_number,
+                    'customer': inv.customer.name,
+                    'amount': float(inv.total_amount),
+                    'reason': primary.description if primary else 'Ineligible',
+                    'rule': primary.rule if primary else 'UNKNOWN',
+                    'all_reasons': [r.description for r in res.ineligibility_reasons],
+                })
                 continue
 
             amount = Decimal(str(inv.total_amount))
@@ -745,4 +764,6 @@ class CapitalEligibleInvoicesView(APIView):
             'total_face_value_zar': float(total_face_value),
             'total_net_payout_zar': float(total_net_payout),
             'invoices': result,
+            'ineligible_count': len(ineligible_result),
+            'ineligible_invoices': ineligible_result,
         })
