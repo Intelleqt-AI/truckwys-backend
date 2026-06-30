@@ -52,7 +52,8 @@ class Quote(models.Model):
     vehicle_type = models.CharField(max_length=50, blank=True, default='')
     
     sla_hours = models.IntegerField(default=48, help_text="Service Level Agreement in hours")
-    
+    estimated_duration_minutes = models.IntegerField(null=True, blank=True, help_text="Travel time of the chosen TomTom route at quote creation (minutes)")
+
     base_rate = models.DecimalField(max_digits=10, decimal_places=2)
     fuel_surcharge = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     toll_charges = models.DecimalField(max_digits=10, decimal_places=2, default=0)
