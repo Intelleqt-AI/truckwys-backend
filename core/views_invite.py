@@ -8,14 +8,14 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.views import APIView
-from rest_framework.authtoken.models import Token
 from django.core.mail import EmailMultiAlternatives
 from django.utils.html import strip_tags
 from django.conf import settings
 from django.shortcuts import get_object_or_404
 from django.db import transaction
 
-from core.models import InviteToken, User, Company
+from core.models import InviteToken, User, Company, UserSession
+from core.utils.request_meta import parse_device, client_ip
 
 
 class InviteCreateView(APIView):
@@ -333,12 +333,17 @@ class InviteAcceptView(APIView):
         # Mark invite as used
         invite.mark_as_used()
 
-        # Create auth token (using Token auth like the rest of the app)
-        token_obj, created = Token.objects.get_or_create(user=user)
+        # Create a per-device session (auto-login, matching LoginView)
+        session = UserSession.objects.create(
+            user=user,
+            device=parse_device(request),
+            user_agent=(request.META.get('HTTP_USER_AGENT', '') or '')[:512],
+            ip_address=client_ip(request),
+        )
 
         # Return token (matching the format of LoginView)
         return Response({
-            'token': token_obj.key,
+            'token': session.key,
             'user': {
                 'id': user.id,
                 'username': user.username,

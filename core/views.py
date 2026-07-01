@@ -36,10 +36,10 @@ def custom_exception_handler(exc, context):
         status=status.HTTP_500_INTERNAL_SERVER_ERROR,
     )
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
-from rest_framework.authtoken.models import Token
 from django.contrib.auth import authenticate
 from django_filters.rest_framework import DjangoFilterBackend
 from django.utils import timezone
+from django.conf import settings
 from decouple import config
 
 
@@ -74,8 +74,10 @@ import threading
 
 from .models import (
     User, Customer, Driver, Vehicle, VehicleLog, VehicleType, Load,
-    Quote, Invoice, Payment, Expense, Settlement, Notification, Company, ActivityEvent
+    Quote, Invoice, Payment, Expense, Settlement, Notification, Company, ActivityEvent,
+    UserSession
 )
+from .utils.request_meta import parse_device, client_ip, mask_email
 from .serializers import (
     UserSerializer, CustomerSerializer, DriverSerializer,
     VehicleSerializer, VehicleTypeSerializer, VehicleLogSerializer, LoadSerializer,
@@ -177,8 +179,13 @@ class EmailVerifyView(APIView):
         cache.delete(f'email_verify_{email}')
         cache.delete(f'pending_registration_{email}')
 
-        token, _ = Token.objects.get_or_create(user=user)
-        return Response({'token': token.key, 'user': UserSerializer(user).data})
+        session = UserSession.objects.create(
+            user=user,
+            device=parse_device(request),
+            user_agent=(request.META.get('HTTP_USER_AGENT', '') or '')[:512],
+            ip_address=client_ip(request),
+        )
+        return Response({'token': session.key, 'user': UserSerializer(user).data})
 
 
 class ResendVerificationView(APIView):
@@ -207,6 +214,64 @@ class ResendVerificationView(APIView):
         return Response({'detail': 'Verification code resent. Please check your email.'})
 
 
+# --- Two-factor (email OTP) login helpers -------------------------------------
+# The pending challenge lives in the cache, keyed by an opaque token bound to a
+# user_id (emails aren't unique, so we never key by email). NOTE: a multi-worker
+# deployment must use a shared cache (Redis) — see LOGIN_2FA_ENABLED in settings.
+OTP_TTL = 600            # seconds a sign-in challenge stays valid
+OTP_MAX_ATTEMPTS = 5     # wrong-code guesses before the challenge is burned
+OTP_MAX_RESENDS = 3      # resends before the user must start over
+OTP_RESEND_COOLDOWN = 60  # seconds between resends
+
+
+def _gen_otp():
+    import secrets
+    return str(secrets.randbelow(900000) + 100000)
+
+
+def _dispatch_login_otp(user, otp):
+    """Email the sign-in OTP (best-effort). In DEBUG, also log it so local dev
+    works without a live email provider. Returns True if the email was sent."""
+    from core.tasks import send_login_otp_email_task
+    sent = send_login_otp_email_task(user.email, otp, user.first_name or user.username)
+    if settings.DEBUG:
+        _exc_logger.info('Login OTP for %s: %s', user.email, otp)
+    return sent
+
+
+def complete_login(user, request):
+    """Create a per-device session, fire the new-device alert if opted in, and
+    return the auth-token response. Shared by the direct-login path and the 2FA
+    OTP-verify path (which is why the new-device check must precede the insert)."""
+    device = parse_device(request)
+    ip = client_ip(request)
+    # "New device" = a device+IP fingerprint this user has never signed in from.
+    # Tracked persistently on the user so it survives logout (unlike active
+    # sessions) — matching "a device that signed in before → no alert".
+    fingerprint = f"{device}|{ip or 'Unknown'}"
+    known = user.known_devices or []
+    is_new_device = fingerprint not in known
+    if is_new_device:
+        # Record it regardless of the alert preference, so turning alerts on
+        # later doesn't fire for already-familiar devices.
+        user.known_devices = (known + [fingerprint])[-100:]
+        user.save(update_fields=['known_devices'])
+    session = UserSession.objects.create(
+        user=user,
+        device=device,
+        user_agent=(request.META.get('HTTP_USER_AGENT', '') or '')[:512],
+        ip_address=ip,
+    )
+    if is_new_device and (user.security_settings or {}).get('login_alerts', True):
+        from core.tasks import send_login_alert_email_task
+        send_login_alert_email_task(
+            user.email, user.first_name or user.username,
+            device, ip or 'Unknown',
+            timezone.localtime().strftime('%d %b %Y, %H:%M'),
+        )
+    return Response({'token': session.key, 'user': UserSerializer(user).data})
+
+
 class LoginView(APIView):
     permission_classes = [AllowAny]
     # Attach the 'login' scope (5/min) so credential brute-force is actually
@@ -215,6 +280,10 @@ class LoginView(APIView):
     throttle_scope = 'login'
 
     def post(self, request):
+        import secrets
+        import time
+        from django.core.cache import cache
+
         identifier = request.data.get('username') or request.data.get('email')
         password = request.data.get('password')
 
@@ -231,23 +300,132 @@ class LoginView(APIView):
                     user = candidate
                     break
 
-        if user:
-            token, created = Token.objects.get_or_create(user=user)
-            return Response({
-                'token': token.key,
-                'user': UserSerializer(user).data
-            })
-        return Response(
-            {'error': 'Invalid credentials'},
-            status=status.HTTP_401_UNAUTHORIZED
-        )
+        # Identical response for both 2FA-on and 2FA-off users — never branch on
+        # 2FA before the password check (no account/2FA enumeration).
+        if not user:
+            return Response({'error': 'Invalid credentials'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        # If 2FA is enabled (globally + for this user), issue an email OTP
+        # challenge instead of a token. Nothing is created until it's verified.
+        two_factor_on = settings.LOGIN_2FA_ENABLED and (user.security_settings or {}).get('two_factor', True)
+        if not two_factor_on:
+            return complete_login(user, request)
+
+        otp = _gen_otp()
+        sent = _dispatch_login_otp(user, otp)
+        if not sent and not settings.DEBUG:
+            # Fail closed: don't hand out a challenge for a code that never arrived.
+            return Response(
+                {'error': 'Could not send your verification code. Please try again.'},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        pending_token = secrets.token_urlsafe(32)
+        cache.set(f'login_pending_{pending_token}', {
+            'user_id': user.id,
+            'otp': otp,
+            'attempts': 0,
+            'resends': 0,
+            'last_sent': time.time(),
+        }, timeout=OTP_TTL)
+        return Response({
+            'otp_required': True,
+            'pending_token': pending_token,
+            'email': mask_email(user.email),
+        })
+
+
+class LoginVerifyOtpView(APIView):
+    """Step 2 of a 2FA login: exchange {pending_token, code} for an auth token."""
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'otp_verify'
+
+    def post(self, request):
+        import hmac
+        from django.core.cache import cache
+        from .models import User
+
+        pending_token = (request.data.get('pending_token') or '').strip()
+        code = (request.data.get('code') or '').strip()
+        if not pending_token or not code:
+            return Response({'detail': 'pending_token and code are required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        key = f'login_pending_{pending_token}'
+        challenge = cache.get(key)
+        if not challenge:
+            return Response({'detail': 'Your sign-in session has expired. Please log in again.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not hmac.compare_digest(str(challenge.get('otp')), str(code)):
+            challenge['attempts'] = challenge.get('attempts', 0) + 1
+            if challenge['attempts'] >= OTP_MAX_ATTEMPTS:
+                cache.delete(key)
+                return Response({'detail': 'Too many incorrect attempts. Please log in again.'}, status=status.HTTP_400_BAD_REQUEST)
+            cache.set(key, challenge, timeout=OTP_TTL)
+            return Response({'detail': 'Invalid or expired code.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Correct code — burn the challenge and complete the login.
+        cache.delete(key)
+        user = User.objects.filter(id=challenge.get('user_id')).first()
+        if not user or not user.is_active:
+            return Response({'detail': 'Account unavailable. Please log in again.'}, status=status.HTTP_400_BAD_REQUEST)
+        return complete_login(user, request)
+
+
+class LoginResendOtpView(APIView):
+    """Resend the 2FA sign-in code for an in-flight login challenge."""
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'otp_resend'
+
+    def post(self, request):
+        import time
+        from django.core.cache import cache
+        from .models import User
+
+        pending_token = (request.data.get('pending_token') or '').strip()
+        if not pending_token:
+            return Response({'detail': 'pending_token is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        key = f'login_pending_{pending_token}'
+        challenge = cache.get(key)
+        if not challenge:
+            return Response({'detail': 'Your sign-in session has expired. Please log in again.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        now = time.time()
+        if now - challenge.get('last_sent', 0) < OTP_RESEND_COOLDOWN:
+            return Response({'detail': 'Please wait a moment before requesting another code.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+        if challenge.get('resends', 0) >= OTP_MAX_RESENDS:
+            cache.delete(key)
+            return Response({'detail': 'Too many code requests. Please log in again.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        user = User.objects.filter(id=challenge.get('user_id')).first()
+        if not user or not user.is_active:
+            cache.delete(key)
+            return Response({'detail': 'Account unavailable. Please log in again.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        otp = _gen_otp()
+        sent = _dispatch_login_otp(user, otp)
+        if not sent and not settings.DEBUG:
+            return Response({'error': 'Could not send your verification code. Please try again.'}, status=status.HTTP_502_BAD_GATEWAY)
+        challenge.update({
+            'otp': otp,
+            'attempts': 0,
+            'resends': challenge.get('resends', 0) + 1,
+            'last_sent': now,
+        })
+        cache.set(key, challenge, timeout=OTP_TTL)
+        return Response({'detail': 'A new code has been sent.'})
 
 
 class LogoutView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        request.user.auth_token.delete()
+        # Log out only the current device's session. request.auth is None under
+        # SessionAuthentication (admin/browsable API), so guard the type.
+        session = request.auth
+        if isinstance(session, UserSession):
+            session.delete()
         return Response({'message': 'Successfully logged out'})
 
 
@@ -284,35 +462,36 @@ class UserProfileView(APIView):
 
 
 class SessionsView(APIView):
-    """Active sessions for the authenticated user.
+    """List and revoke the authenticated user's per-device sessions.
 
-    We use DRF token auth (one token per user), so we surface the current
-    session derived from the live request. Returns a list the Security
-    Settings panel can render directly.
+    Each login creates a UserSession, so this lists every active device and
+    marks the one making the request as ``current``. DELETE revokes a session
+    by its public id, killing that device's token immediately.
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        ua = request.META.get('HTTP_USER_AGENT', '') or ''
-        device = 'This device'
-        low = ua.lower()
-        if 'iphone' in low or 'android' in low or 'mobile' in low:
-            device = 'Mobile device'
-        elif 'mac' in low:
-            device = 'Mac'
-        elif 'windows' in low:
-            device = 'Windows PC'
-        ip = request.META.get('HTTP_X_FORWARDED_FOR', '') or request.META.get('REMOTE_ADDR', '') or ''
-        ip = ip.split(',')[0].strip()
-        last_login = getattr(request.user, 'last_login', None)
-        return Response([{
-            'id': 'current',
-            'device': device,
-            'location': ip or 'Unknown',
-            'time': last_login.isoformat() if last_login else 'Now',
-            'current': True,
-        }])
-    
+        current = request.auth if isinstance(request.auth, UserSession) else None
+        current_key = getattr(current, 'key', None)
+        data = [{
+            'id': str(s.id),
+            'device': s.device or 'Unknown device',
+            'location': s.ip_address or 'Unknown',
+            'time': (s.last_activity or s.created_at).isoformat(),
+            'current': s.key == current_key,
+        } for s in request.user.sessions.all()]
+        return Response(data)
+
+    def delete(self, request, session_id):
+        # Scope the lookup to the user's own sessions — a missing or non-owned
+        # id both return 404 (no existence leak).
+        try:
+            session = request.user.sessions.get(id=session_id)
+        except UserSession.DoesNotExist:
+            return Response({'detail': 'Session not found.'}, status=status.HTTP_404_NOT_FOUND)
+        session.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
 
 
 class NotificationSettingsView(APIView):
@@ -347,6 +526,35 @@ class NotificationSettingsView(APIView):
         user.notification_settings = settings
         user.save()
         return Response(user.notification_settings)
+
+
+class SecuritySettingsView(APIView):
+    """Security preference toggles (2FA, session timeout, login alerts).
+
+    Persists the user's preference only — enforcement (actual OTP challenge,
+    inactivity timeout, login-alert emails) is a separate concern.
+    """
+    permission_classes = [IsAuthenticated]
+
+    DEFAULTS = {
+        "two_factor": True,
+        "session_timeout": True,
+        "login_alerts": True,
+    }
+
+    def get(self, request):
+        settings = {**self.DEFAULTS, **(request.user.security_settings or {})}
+        return Response(settings)
+
+    def patch(self, request):
+        user = request.user
+        settings = {**self.DEFAULTS, **(user.security_settings or {})}
+        for key in self.DEFAULTS:
+            if key in request.data:
+                settings[key] = bool(request.data[key])
+        user.security_settings = settings
+        user.save(update_fields=['security_settings', 'updated_at'])
+        return Response(settings)
 
 
 class IsAdmin(IsAuthenticated):
@@ -2267,12 +2475,14 @@ class RouteCalculatorView(APIView):
         fuel_litres = round(distance_km * fuel_rate, 2)
         fuel_zar = round(fuel_litres * diesel_price, 2)
 
-        # Use resolved labels for country detection (fix 1)
+        # Use resolved labels + TomTom country codes for country detection
         origin_label = o.get('label', origin)
         dest_label   = d.get('label', destination)
+        origin_iso   = o.get('country_code', '')
+        dest_iso     = d.get('country_code', '')
 
-        # Detect cross-border route
-        countries    = detect_countries(origin_label, dest_label)
+        # Detect cross-border route — ISO codes take precedence over keyword matching
+        countries    = detect_countries(origin_label, dest_label, origin_iso, dest_iso)
         cross_border = countries is not None and len(countries) > 1
 
         # Toll cost
@@ -2342,13 +2552,25 @@ class RouteCalculatorView(APIView):
             if warnings:
                 response_data['warnings'] = warnings
 
-        # Per-route breakdown (best + alternatives). Fuel/total are distance-based;
-        # toll & cross-border are O/D-based so identical across routes (no custom ranking).
+        # Per-route breakdown (best + alternatives). Fuel/total are distance-based.
+        # Toll cost is scaled per route: SANRAL gives a per-plaza breakdown for the
+        # O/D pair; TomTom's section analysis gives each alternative's plaza count.
+        # We scale proportionally so a route with fewer toll plazas costs less.
+        sanral_plaza_count = len(toll_breakdown) if toll_breakdown else 0
         extra_costs = sum(additional_costs.values()) if additional_costs else 0
         routes_out = []
         for i, rt in enumerate(routes_raw):
             r_litres = round(rt['distance_km'] * fuel_rate, 2)
             r_fuel = round(r_litres * diesel_price, 2)
+            analysis = self._analyze_route(rt)
+            terrain = self._infer_terrain(rt['geometry'], origin, destination)
+            rt_toll_count = analysis['toll_count']
+            if sanral_plaza_count > 0:
+                # Scale SANRAL cost by this route's plaza count vs expected total
+                rt_toll_zar = round(toll_zar * rt_toll_count / sanral_plaza_count, 2)
+            else:
+                # Fallback: scale flat-rate estimate by route distance
+                rt_toll_zar = round(rt['distance_km'] * self.TOLL_ZAR_KM_FALLBACK, 2)
             routes_out.append({
                 'index': i,
                 'is_best': i == 0,
@@ -2363,8 +2585,19 @@ class RouteCalculatorView(APIView):
                 'arrival_time': rt['arrival_time'],
                 'fuel_usage_litres': r_litres,
                 'fuel_cost_zar': r_fuel,
-                'toll_cost_zar': round(toll_zar, 2),
-                'total_cost_zar': round(r_fuel + toll_zar + extra_costs, 2),
+                'toll_cost_zar': rt_toll_zar,
+                'total_cost_zar': round(r_fuel + rt_toll_zar + extra_costs, 2),
+                # Rich route metadata from section analysis
+                'toll_count': analysis['toll_count'],
+                'has_tunnel': analysis['has_tunnel'],
+                'motorway_pct': analysis['motorway_pct'],
+                'road_type': analysis['road_type'],
+                'max_traffic_severity': analysis['max_traffic_severity'],
+                'traffic_status': analysis['traffic_status'],
+                'traffic_vs_historic': analysis['traffic_vs_historic'],
+                'congested_km': analysis['congested_km'],
+                'country_codes': analysis['country_codes'],
+                'terrain': terrain,
                 'sections': rt['sections'],
                 'geometry': rt['geometry'],
             })
@@ -2391,7 +2624,8 @@ class RouteCalculatorView(APIView):
                     if -36 <= lat <= -10 and 10 <= lon <= 45:
                         addr = result.get('address', {})
                         label = addr.get('freeformAddress') or addr.get('municipality') or query
-                        return {'lat': lat, 'lon': lon, 'label': label}
+                        country_code = addr.get('countryCode', '')
+                        return {'lat': lat, 'lon': lon, 'label': label, 'country_code': country_code}
             # Fallback: append South Africa to query and retry
             r2 = http_requests.get(
                 f'https://api.tomtom.com/search/2/geocode/{query}, South Africa.json',
@@ -2406,7 +2640,8 @@ class RouteCalculatorView(APIView):
                     if -36 <= lat <= -10 and 10 <= lon <= 45:
                         addr = result.get('address', {})
                         label = addr.get('freeformAddress') or query
-                        return {'lat': lat, 'lon': lon, 'label': label}
+                        country_code = addr.get('countryCode', '')
+                        return {'lat': lat, 'lon': lon, 'label': label, 'country_code': country_code}
         except Exception:
             pass
         return None
@@ -2470,9 +2705,10 @@ class RouteCalculatorView(APIView):
                 return round(v / 60, 1) if v is not None else None
 
             duration_min = s.get('travelTimeInSeconds', 0) / 60
+            congested_km = round(s.get('trafficLengthInMeters', 0) / 1000, 1)
             return {
                 'distance_km': round(s.get('lengthInMeters', 0) / 1000, 1),
-                'duration_min': duration_min,                       # raw float, internal
+                'duration_min': duration_min,
                 'duration_minutes': int(round(duration_min)),
                 'traffic_delay_minutes': _to_min('trafficDelayInSeconds'),
                 'no_traffic_minutes': _to_min('noTrafficTravelTimeInSeconds'),
@@ -2480,11 +2716,115 @@ class RouteCalculatorView(APIView):
                 'live_minutes': _to_min('liveTrafficIncidentsTravelTimeInSeconds'),
                 'departure_time': s.get('departureTime'),
                 'arrival_time': s.get('arrivalTime'),
+                'congested_km': congested_km,
                 'sections': sections,
                 'geometry': geometry,
             }
         except Exception:
             return None
+
+    @staticmethod
+    def _analyze_route(rt):
+        """Derive rich metadata from a parsed route dict (sections + summary fields)."""
+        sections = rt.get('sections', [])
+        geometry = rt.get('geometry', [])
+        total_pts = max(len(geometry) - 1, 1)
+
+        toll_count = sum(1 for s in sections if s.get('type') == 'TOLL')
+        has_tunnel = any(s.get('type') == 'TUNNEL' for s in sections)
+
+        motorway_pts = sum(
+            max(s.get('end', 0) - s.get('start', 0), 0)
+            for s in sections if s.get('type') == 'MOTORWAY'
+        )
+        motorway_pct = round(min(motorway_pts / total_pts * 100, 100))
+
+        max_severity = max(
+            (s.get('magnitude', 0) for s in sections if s.get('type') == 'TRAFFIC'),
+            default=0,
+        )
+        severity_labels = {0: 'Clear', 1: 'Minor delays', 2: 'Moderate delays',
+                           3: 'Heavy traffic', 4: 'Very heavy traffic'}
+        traffic_status = severity_labels.get(max_severity, 'Unknown')
+
+        historic = rt.get('historic_minutes')
+        live = rt.get('live_minutes')
+        traffic_vs_historic = None
+        if historic and live:
+            traffic_vs_historic = round(live - historic, 1)
+
+        country_codes = list({
+            s['country_code'] for s in sections
+            if s.get('type') == 'COUNTRY' and s.get('country_code')
+        })
+
+        if motorway_pct >= 70:
+            road_type = 'Mostly Highway'
+        elif motorway_pct >= 35:
+            road_type = 'Mixed Roads'
+        else:
+            road_type = 'Mostly Arterial'
+
+        congested_km = rt.get('congested_km', 0)
+
+        return {
+            'toll_count': toll_count,
+            'has_tunnel': has_tunnel,
+            'motorway_pct': motorway_pct,
+            'road_type': road_type,
+            'max_traffic_severity': max_severity,
+            'traffic_status': traffic_status,
+            'traffic_vs_historic': traffic_vs_historic,
+            'congested_km': congested_km,
+            'country_codes': country_codes,
+        }
+
+    @staticmethod
+    def _infer_terrain(geometry, origin='', destination=''):
+        """Heuristic terrain labels from route geometry and city names."""
+        if not geometry:
+            return ['Unknown']
+
+        # Sample every 10th point for speed
+        sample = geometry[::10] or geometry
+
+        coastal_cities = {
+            'cape town', 'durban', 'port elizabeth', 'gqeberha', 'east london',
+            'george', 'knysna', 'mossel bay', 'jeffreys bay', 'port shepstone',
+            'richards bay', 'maputo', 'beira',
+        }
+        origin_lc = origin.lower()
+        dest_lc = destination.lower()
+        is_coastal = any(c in origin_lc or c in dest_lc for c in coastal_cities)
+
+        terrain = []
+        if is_coastal:
+            terrain.append('Coastal')
+
+        for p in sample:
+            lat, lon = p['lat'], p['lon']
+            # Western Cape mountain passes (Hex River, Du Toitskloof, Outeniqua)
+            if -34.5 < lat < -32.5 and 18.5 < lon < 22.0:
+                if 'Mountain Passes' not in terrain:
+                    terrain.append('Mountain Passes')
+            # Drakensberg / KZN Midlands (N3 corridor)
+            if -30.5 < lat < -27.5 and 28.0 < lon < 30.5:
+                if 'Mountain Passes' not in terrain:
+                    terrain.append('Mountain Passes')
+            # Karoo semi-desert
+            if -33.0 < lat < -30.0 and 21.0 < lon < 26.5:
+                if 'Karoo' not in terrain:
+                    terrain.append('Karoo')
+            # Mpumalanga Escarpment / Lowveld
+            if -26.5 < lat < -24.0 and 30.0 < lon < 33.0:
+                if 'Escarpment' not in terrain:
+                    terrain.append('Escarpment')
+            # Limpopo / Bushveld
+            if -24.0 < lat < -21.0 and 27.0 < lon < 32.0:
+                if 'Bushveld' not in terrain:
+                    terrain.append('Bushveld')
+
+        return terrain if terrain else ['Highveld / Flat']
 
     def _haversine(self, lat1, lon1, lat2, lon2):
         R = 6371
@@ -2954,11 +3294,16 @@ class InviteTokenView(APIView):
         # Delete invite token
         cache.delete(f'invite_{token}')
 
-        # Generate auth token
-        token_obj, created = Token.objects.get_or_create(user=user)
+        # Generate a per-device session (auto-login after accepting the invite)
+        session = UserSession.objects.create(
+            user=user,
+            device=parse_device(request),
+            user_agent=(request.META.get('HTTP_USER_AGENT', '') or '')[:512],
+            ip_address=client_ip(request),
+        )
 
         return Response({
-            'token': token_obj.key,
+            'token': session.key,
             'user': UserSerializer(user).data
         }, status=status.HTTP_200_OK)
 

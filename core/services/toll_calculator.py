@@ -105,6 +105,20 @@ _ROUTE_KEYWORDS: dict[str, list[set[str]]] = {
         {'kuruman', 'johannesburg'},
         {'lichtenburg', 'johannesburg'},
     ],
+    'N17': [
+        {'johannesburg', 'ermelo'},
+        {'joburg', 'ermelo'},
+        {'johannesburg', 'swaziland'},
+        {'johannesburg', 'eswatini'},
+        {'johannesburg', 'secunda'},
+        {'johannesburg', 'standerton'},
+        {'springs', 'ermelo'},
+    ],
+    'R30': [
+        {'bloemfontein', 'brandfort'},
+        {'bloemfontein', 'winburg'},
+        {'bloemfontein', 'theunissen'},
+    ],
 }
 
 

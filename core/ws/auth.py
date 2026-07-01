@@ -13,13 +13,13 @@ from django.contrib.auth.models import AnonymousUser
 
 @database_sync_to_async
 def _resolve(token_key):
-    from rest_framework.authtoken.models import Token
+    from core.models import UserSession
     try:
-        tok = Token.objects.select_related('user').get(key=token_key)
-        user = tok.user
+        session = UserSession.objects.select_related('user').get(key=token_key)
+        user = session.user
         company = getattr(user, 'company', None)
         return user, (company.id if company else None)
-    except Token.DoesNotExist:
+    except UserSession.DoesNotExist:
         return AnonymousUser(), None
 
 
