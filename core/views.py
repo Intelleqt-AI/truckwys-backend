@@ -2475,12 +2475,14 @@ class RouteCalculatorView(APIView):
         fuel_litres = round(distance_km * fuel_rate, 2)
         fuel_zar = round(fuel_litres * diesel_price, 2)
 
-        # Use resolved labels for country detection (fix 1)
+        # Use resolved labels + TomTom country codes for country detection
         origin_label = o.get('label', origin)
         dest_label   = d.get('label', destination)
+        origin_iso   = o.get('country_code', '')
+        dest_iso     = d.get('country_code', '')
 
-        # Detect cross-border route
-        countries    = detect_countries(origin_label, dest_label)
+        # Detect cross-border route — ISO codes take precedence over keyword matching
+        countries    = detect_countries(origin_label, dest_label, origin_iso, dest_iso)
         cross_border = countries is not None and len(countries) > 1
 
         # Toll cost
@@ -2550,13 +2552,25 @@ class RouteCalculatorView(APIView):
             if warnings:
                 response_data['warnings'] = warnings
 
-        # Per-route breakdown (best + alternatives). Fuel/total are distance-based;
-        # toll & cross-border are O/D-based so identical across routes (no custom ranking).
+        # Per-route breakdown (best + alternatives). Fuel/total are distance-based.
+        # Toll cost is scaled per route: SANRAL gives a per-plaza breakdown for the
+        # O/D pair; TomTom's section analysis gives each alternative's plaza count.
+        # We scale proportionally so a route with fewer toll plazas costs less.
+        sanral_plaza_count = len(toll_breakdown) if toll_breakdown else 0
         extra_costs = sum(additional_costs.values()) if additional_costs else 0
         routes_out = []
         for i, rt in enumerate(routes_raw):
             r_litres = round(rt['distance_km'] * fuel_rate, 2)
             r_fuel = round(r_litres * diesel_price, 2)
+            analysis = self._analyze_route(rt)
+            terrain = self._infer_terrain(rt['geometry'], origin, destination)
+            rt_toll_count = analysis['toll_count']
+            if sanral_plaza_count > 0:
+                # Scale SANRAL cost by this route's plaza count vs expected total
+                rt_toll_zar = round(toll_zar * rt_toll_count / sanral_plaza_count, 2)
+            else:
+                # Fallback: scale flat-rate estimate by route distance
+                rt_toll_zar = round(rt['distance_km'] * self.TOLL_ZAR_KM_FALLBACK, 2)
             routes_out.append({
                 'index': i,
                 'is_best': i == 0,
@@ -2571,8 +2585,19 @@ class RouteCalculatorView(APIView):
                 'arrival_time': rt['arrival_time'],
                 'fuel_usage_litres': r_litres,
                 'fuel_cost_zar': r_fuel,
-                'toll_cost_zar': round(toll_zar, 2),
-                'total_cost_zar': round(r_fuel + toll_zar + extra_costs, 2),
+                'toll_cost_zar': rt_toll_zar,
+                'total_cost_zar': round(r_fuel + rt_toll_zar + extra_costs, 2),
+                # Rich route metadata from section analysis
+                'toll_count': analysis['toll_count'],
+                'has_tunnel': analysis['has_tunnel'],
+                'motorway_pct': analysis['motorway_pct'],
+                'road_type': analysis['road_type'],
+                'max_traffic_severity': analysis['max_traffic_severity'],
+                'traffic_status': analysis['traffic_status'],
+                'traffic_vs_historic': analysis['traffic_vs_historic'],
+                'congested_km': analysis['congested_km'],
+                'country_codes': analysis['country_codes'],
+                'terrain': terrain,
                 'sections': rt['sections'],
                 'geometry': rt['geometry'],
             })
@@ -2599,7 +2624,8 @@ class RouteCalculatorView(APIView):
                     if -36 <= lat <= -10 and 10 <= lon <= 45:
                         addr = result.get('address', {})
                         label = addr.get('freeformAddress') or addr.get('municipality') or query
-                        return {'lat': lat, 'lon': lon, 'label': label}
+                        country_code = addr.get('countryCode', '')
+                        return {'lat': lat, 'lon': lon, 'label': label, 'country_code': country_code}
             # Fallback: append South Africa to query and retry
             r2 = http_requests.get(
                 f'https://api.tomtom.com/search/2/geocode/{query}, South Africa.json',
@@ -2614,7 +2640,8 @@ class RouteCalculatorView(APIView):
                     if -36 <= lat <= -10 and 10 <= lon <= 45:
                         addr = result.get('address', {})
                         label = addr.get('freeformAddress') or query
-                        return {'lat': lat, 'lon': lon, 'label': label}
+                        country_code = addr.get('countryCode', '')
+                        return {'lat': lat, 'lon': lon, 'label': label, 'country_code': country_code}
         except Exception:
             pass
         return None
@@ -2678,9 +2705,10 @@ class RouteCalculatorView(APIView):
                 return round(v / 60, 1) if v is not None else None
 
             duration_min = s.get('travelTimeInSeconds', 0) / 60
+            congested_km = round(s.get('trafficLengthInMeters', 0) / 1000, 1)
             return {
                 'distance_km': round(s.get('lengthInMeters', 0) / 1000, 1),
-                'duration_min': duration_min,                       # raw float, internal
+                'duration_min': duration_min,
                 'duration_minutes': int(round(duration_min)),
                 'traffic_delay_minutes': _to_min('trafficDelayInSeconds'),
                 'no_traffic_minutes': _to_min('noTrafficTravelTimeInSeconds'),
@@ -2688,11 +2716,115 @@ class RouteCalculatorView(APIView):
                 'live_minutes': _to_min('liveTrafficIncidentsTravelTimeInSeconds'),
                 'departure_time': s.get('departureTime'),
                 'arrival_time': s.get('arrivalTime'),
+                'congested_km': congested_km,
                 'sections': sections,
                 'geometry': geometry,
             }
         except Exception:
             return None
+
+    @staticmethod
+    def _analyze_route(rt):
+        """Derive rich metadata from a parsed route dict (sections + summary fields)."""
+        sections = rt.get('sections', [])
+        geometry = rt.get('geometry', [])
+        total_pts = max(len(geometry) - 1, 1)
+
+        toll_count = sum(1 for s in sections if s.get('type') == 'TOLL')
+        has_tunnel = any(s.get('type') == 'TUNNEL' for s in sections)
+
+        motorway_pts = sum(
+            max(s.get('end', 0) - s.get('start', 0), 0)
+            for s in sections if s.get('type') == 'MOTORWAY'
+        )
+        motorway_pct = round(min(motorway_pts / total_pts * 100, 100))
+
+        max_severity = max(
+            (s.get('magnitude', 0) for s in sections if s.get('type') == 'TRAFFIC'),
+            default=0,
+        )
+        severity_labels = {0: 'Clear', 1: 'Minor delays', 2: 'Moderate delays',
+                           3: 'Heavy traffic', 4: 'Very heavy traffic'}
+        traffic_status = severity_labels.get(max_severity, 'Unknown')
+
+        historic = rt.get('historic_minutes')
+        live = rt.get('live_minutes')
+        traffic_vs_historic = None
+        if historic and live:
+            traffic_vs_historic = round(live - historic, 1)
+
+        country_codes = list({
+            s['country_code'] for s in sections
+            if s.get('type') == 'COUNTRY' and s.get('country_code')
+        })
+
+        if motorway_pct >= 70:
+            road_type = 'Mostly Highway'
+        elif motorway_pct >= 35:
+            road_type = 'Mixed Roads'
+        else:
+            road_type = 'Mostly Arterial'
+
+        congested_km = rt.get('congested_km', 0)
+
+        return {
+            'toll_count': toll_count,
+            'has_tunnel': has_tunnel,
+            'motorway_pct': motorway_pct,
+            'road_type': road_type,
+            'max_traffic_severity': max_severity,
+            'traffic_status': traffic_status,
+            'traffic_vs_historic': traffic_vs_historic,
+            'congested_km': congested_km,
+            'country_codes': country_codes,
+        }
+
+    @staticmethod
+    def _infer_terrain(geometry, origin='', destination=''):
+        """Heuristic terrain labels from route geometry and city names."""
+        if not geometry:
+            return ['Unknown']
+
+        # Sample every 10th point for speed
+        sample = geometry[::10] or geometry
+
+        coastal_cities = {
+            'cape town', 'durban', 'port elizabeth', 'gqeberha', 'east london',
+            'george', 'knysna', 'mossel bay', 'jeffreys bay', 'port shepstone',
+            'richards bay', 'maputo', 'beira',
+        }
+        origin_lc = origin.lower()
+        dest_lc = destination.lower()
+        is_coastal = any(c in origin_lc or c in dest_lc for c in coastal_cities)
+
+        terrain = []
+        if is_coastal:
+            terrain.append('Coastal')
+
+        for p in sample:
+            lat, lon = p['lat'], p['lon']
+            # Western Cape mountain passes (Hex River, Du Toitskloof, Outeniqua)
+            if -34.5 < lat < -32.5 and 18.5 < lon < 22.0:
+                if 'Mountain Passes' not in terrain:
+                    terrain.append('Mountain Passes')
+            # Drakensberg / KZN Midlands (N3 corridor)
+            if -30.5 < lat < -27.5 and 28.0 < lon < 30.5:
+                if 'Mountain Passes' not in terrain:
+                    terrain.append('Mountain Passes')
+            # Karoo semi-desert
+            if -33.0 < lat < -30.0 and 21.0 < lon < 26.5:
+                if 'Karoo' not in terrain:
+                    terrain.append('Karoo')
+            # Mpumalanga Escarpment / Lowveld
+            if -26.5 < lat < -24.0 and 30.0 < lon < 33.0:
+                if 'Escarpment' not in terrain:
+                    terrain.append('Escarpment')
+            # Limpopo / Bushveld
+            if -24.0 < lat < -21.0 and 27.0 < lon < 32.0:
+                if 'Bushveld' not in terrain:
+                    terrain.append('Bushveld')
+
+        return terrain if terrain else ['Highveld / Flat']
 
     def _haversine(self, lat1, lon1, lat2, lon2):
         R = 6371

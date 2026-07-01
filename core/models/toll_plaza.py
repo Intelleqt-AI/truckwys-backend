@@ -17,11 +17,13 @@ class TollPlaza(models.Model):
     """
 
     ROUTE_CHOICES = [
-        ('N1',  'N1 — Cape Town to Johannesburg'),
+        ('N1',  'N1 — Cape Town to Johannesburg / Polokwane'),
         ('N2',  'N2 — Cape Town to Durban (coastal)'),
         ('N3',  'N3 — Johannesburg to Durban'),
-        ('N4',  'N4 — Pretoria to Maputo (TRAC concession)'),
+        ('N4',  'N4 — Pretoria to Maputo'),
         ('N14', 'N14 — Johannesburg to Springbok'),
+        ('N17', 'N17 — Johannesburg to Ermelo / Swaziland'),
+        ('R30', 'R30/R730/R34 — Bloemfontein region'),
     ]
 
     name = models.CharField(max_length=100, help_text='Official SANRAL plaza name')
