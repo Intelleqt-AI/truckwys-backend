@@ -295,106 +295,65 @@ class RevenueGuardView(APIView):
                     'error': 'total_cost and quote_price must be > 0',
                 }, status=status.HTTP_400_BAD_REQUEST)
 
-            margin = (quote_price - total_cost) / quote_price
-            margin_pct = margin * 100
-
-            # Read thresholds from company settings (fall back to defaults if no company)
             company = getattr(request.user, 'company', None)
-            at_risk_threshold = float(company.margin_at_risk_pct) if company else 5.0
-            caution_threshold = float(company.margin_caution_pct) if company else 12.0
-            target_margin = float(company.margin_target_pct) if company else 10.0
-
-            # Initialize explanations and suggestions
-            explanations = []
-            suggestions = []
-
-            # Risk thresholds
-            if margin_pct < at_risk_threshold:
-                risk_level = 'AT_RISK'
-                color = 'danger'
-                explanations.append(f"Margin is below {at_risk_threshold:.0f}% safety threshold ({margin_pct:.1f}%)")
-            elif margin_pct < caution_threshold:
-                risk_level = 'CAUTION'
-                color = 'warning'
-                explanations.append(f"Margin is below {caution_threshold:.0f}% — limited buffer for unexpected costs ({margin_pct:.1f}%)")
-            else:
-                risk_level = 'SAFE'
-                color = 'success'
-                explanations.append(f"Margin is healthy at {margin_pct:.1f}%")
-
-            # Enhanced analysis if quote_id provided
+            quote = None
             if quote_id:
                 try:
-                    quote = Quote.objects.get(id=quote_id, company=request.user.company)
-
-                    # Fuel risk analysis
-                    if quote.fuel_price_at_creation:
-                        current_fuel = fetch_fuel_prices()
-                        fuel_current = float(current_fuel.diesel_inland)
-                        fuel_at_creation = float(quote.fuel_price_at_creation)
-                        if fuel_at_creation > 0:
-                            delta_pct = ((fuel_current - fuel_at_creation) / fuel_at_creation) * 100
-                            if delta_pct > 3:
-                                delta_zar = fuel_current - fuel_at_creation
-                                explanations.append(f"Fuel cost has increased R{delta_zar:.2f}/L since your last quote on this route")
-                                surcharge = int(fuel_cost * (delta_pct / 100))
-                                suggestions.append(f"Add a fuel surcharge of R{surcharge} to restore margin to 12%")
-
-                    # Client payment history risk
-                    if quote.customer:
-                        late_invoices = Invoice.objects.filter(
-                            customer=quote.customer,
-                            status='paid',
-                            actual_payment_date__gt=F('due_date')
-                        ).count()
-                        total_invoices = Invoice.objects.filter(
-                            customer=quote.customer,
-                            status='paid'
-                        ).count()
-
-                        if late_invoices > 2 and total_invoices > 0:
-                            explanations.append(f"This client has paid late on {late_invoices} of last {total_invoices} invoices")
-                            suggestions.append("Require 50% upfront deposit given client payment history")
-
-                    # CPK analysis
-                    if distance_km > 0:
-                        cpk = total_cost / distance_km
-                        # Get fleet average (mock for now)
-                        fleet_avg_cpk = 19.80
-                        if cpk > fleet_avg_cpk * 1.1:
-                            explanations.append(f"Your CPK on this route is R{cpk:.2f} — above fleet average of R{fleet_avg_cpk:.2f}")
-                            suggestions.append("Review your cost model — this route may need a base rate increase")
-
+                    quote = Quote.objects.get(id=quote_id, company=company)
                 except Quote.DoesNotExist:
-                    pass
-                except Exception:
-                    pass
+                    quote = None
 
-            # Price adjustment suggestion
-            if margin_pct < at_risk_threshold:
-                t = target_margin / 100
-                increase_needed = total_cost * t / (1 - t) - quote_price
-                suggestions.append(f"Current margin is {margin_pct:.1f}%. Consider increasing price by R{int(increase_needed)} to reach {target_margin:.0f}% margin")
+            from core.services.quote_analysis import assess_revenue_guard
+            result = assess_revenue_guard(
+                total_cost=total_cost, quote_price=quote_price,
+                distance_km=distance_km, fuel_cost=fuel_cost,
+                company=company, quote=quote,
+            )
+            result.setdefault('factors', [])  # legacy field
+            return Response(result)
 
-            # Margin floor calculation
-            margin_floor = int(total_cost)
-            margin_floor_display = f"R{margin_floor:,}"
-
+        except Exception as e:
             return Response({
-                'success': True,
-                'status': risk_level,
-                'margin_pct': round(margin_pct, 2),
-                'factors': [],  # Legacy field
-                'explanations': explanations,
-                'suggestions': suggestions,
-                'margin_floor': margin_floor,
-                'margin_floor_display': margin_floor_display,
-                # Legacy fields
-                'risk_level': risk_level,
-                'color': color,
-                'warnings': explanations if risk_level != 'SAFE' else [],
-            })
+                'success': False,
+                'error': str(e),
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+
+class AIQuoteAnalyzeView(APIView):
+    """POST /api/v1/quotes/analyze/ — one comprehensive AI analysis of a quote.
+
+    Synthesises cost correctness, fuel freshness/usage, profit optimisation and
+    market context into a single response, plus an LLM narrative + suggested
+    price. Consumes the Step 1 + Step 2 data the New Quote flow already has.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        try:
+            data = request.data
+            payload = {
+                'quote_total': data.get('quote_total'),
+                'direct_cost': data.get('direct_cost'),
+                'distance_km': data.get('distance_km'),
+                'origin': data.get('origin'),
+                'destination': data.get('destination'),
+                'vehicle_type': data.get('vehicle_type'),
+                'weight': data.get('weight'),
+                'fuel_cost': data.get('fuel_cost'),
+                'toll_cost': data.get('toll_cost'),
+                'driver_cost': data.get('driver_cost'),
+                'fuel_usage_litres': data.get('fuel_usage_litres'),
+                'fuel_price_used': data.get('fuel_price_used'),
+                'market_rate': data.get('market_rate'),
+                'client_tier': data.get('client_tier', 'standard'),
+                'days_until_departure': data.get('days_until_departure', 7),
+            }
+            company = getattr(request.user, 'company', None)
+            from core.services.quote_analysis import analyze_quote
+            result = analyze_quote(payload, company=company)
+            if not result.get('success'):
+                return Response(result, status=status.HTTP_400_BAD_REQUEST)
+            return Response(result)
         except Exception as e:
             return Response({
                 'success': False,

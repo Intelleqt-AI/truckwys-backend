@@ -19,7 +19,7 @@ from .views import (
     EmailVerifyView, ResendVerificationView,
 )
 from .views_ai_quote import (
-    AIChatQuoteView, AIQuoteSuggestionView, AIVoiceQuoteView,
+    AIChatQuoteView, AIQuoteAnalyzeView, AIQuoteSuggestionView, AIVoiceQuoteView,
     FuelPriceCurrentView, FuelPriceSurchargeCheckView,
     QuoteBenchmarkView, QuoteFuelAlertView, QuoteModelStatsView,
     QuoteOutcomeView, QuoteWinProbabilityView, RevenueGuardView
@@ -165,6 +165,7 @@ urlpatterns = [
     path('agent/conversations/<int:pk>/', CopilotConversationDetailView.as_view(), name='agent-conversation-detail'),
     path('agent/conversations/<int:pk>/chat/', ConversationChatView.as_view(), name='agent-conversation-chat'),
     path('quotes/optimize/', AIPriceOptimizeView.as_view(), name='quote-optimize'),
+    path('quotes/analyze/', AIQuoteAnalyzeView.as_view(), name='quote-analyze'),
     path('risk/underwrite/', RiskUnderwriteView.as_view(), name='risk-underwrite'),
     path('risk/score/<int:pk>/explain/', RiskScoreExplainView.as_view(), name='risk-score-explain'),
     path('dashboard/overview/', DashboardOverviewView.as_view(), name='dashboard-overview'),
