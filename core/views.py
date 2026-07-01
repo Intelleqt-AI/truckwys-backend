@@ -2220,16 +2220,29 @@ class RouteCalculatorView(APIView):
             if not d:
                 return Response({'success': False, 'error': f'Cannot geocode: {destination}'}, status=400)
 
-        # TomTom route
-        route = self._route(o, d, weight_kg)
-        if route:
-            distance_km = route['distance_km']
-            duration_min = route['duration_min']
+        # TomTom route(s) — best + up to 2 alternatives. routes_raw[0] is TomTom's best.
+        routes_raw = self._route(o, d, weight_kg)
+        if routes_raw:
+            best = routes_raw[0]
+            distance_km = best['distance_km']
+            duration_min = best['duration_min']
             source = 'tomtom'
         else:
             distance_km = self._haversine(o['lat'], o['lon'], d['lat'], d['lon']) * 1.3
             duration_min = (distance_km / 80) * 60
             source = 'estimated'
+            # Single estimated route so the response shape stays consistent.
+            routes_raw = [{
+                'distance_km': round(distance_km, 1),
+                'duration_min': duration_min,
+                'duration_minutes': int(round(duration_min)),
+                'traffic_delay_minutes': None, 'no_traffic_minutes': None,
+                'historic_minutes': None, 'live_minutes': None,
+                'departure_time': None, 'arrival_time': None,
+                'sections': [],
+                'geometry': [{'lat': o['lat'], 'lon': o['lon']},
+                             {'lat': d['lat'], 'lon': d['lon']}],
+            }]
 
         # Get live fuel price
         try:
@@ -2329,6 +2342,35 @@ class RouteCalculatorView(APIView):
             if warnings:
                 response_data['warnings'] = warnings
 
+        # Per-route breakdown (best + alternatives). Fuel/total are distance-based;
+        # toll & cross-border are O/D-based so identical across routes (no custom ranking).
+        extra_costs = sum(additional_costs.values()) if additional_costs else 0
+        routes_out = []
+        for i, rt in enumerate(routes_raw):
+            r_litres = round(rt['distance_km'] * fuel_rate, 2)
+            r_fuel = round(r_litres * diesel_price, 2)
+            routes_out.append({
+                'index': i,
+                'is_best': i == 0,
+                'label': 'Best Routes' if i == 0 else f'Alternative {i}',
+                'distance_km': rt['distance_km'],
+                'duration_minutes': rt['duration_minutes'],
+                'traffic_delay_minutes': rt['traffic_delay_minutes'],
+                'no_traffic_minutes': rt['no_traffic_minutes'],
+                'historic_minutes': rt['historic_minutes'],
+                'live_minutes': rt['live_minutes'],
+                'departure_time': rt['departure_time'],
+                'arrival_time': rt['arrival_time'],
+                'fuel_usage_litres': r_litres,
+                'fuel_cost_zar': r_fuel,
+                'toll_cost_zar': round(toll_zar, 2),
+                'total_cost_zar': round(r_fuel + toll_zar + extra_costs, 2),
+                'sections': rt['sections'],
+                'geometry': rt['geometry'],
+            })
+        response_data['routes'] = routes_out
+        response_data['best_index'] = 0
+
         return Response(response_data)
 
     def _geocode(self, query):
@@ -2370,20 +2412,79 @@ class RouteCalculatorView(APIView):
         return None
 
     def _route(self, o, d, weight_kg):
+        """Call TomTom calculateRoute for the best route + up to 2 alternatives.
+
+        Returns a list of parsed route dicts (index 0 = TomTom's own best) with
+        geometry + summary fields, or None on failure. No custom ranking — order
+        is exactly what TomTom returns (routeType=fastest)."""
         try:
             url = f"https://api.tomtom.com/routing/1/calculateRoute/{o['lat']},{o['lon']}:{d['lat']},{d['lon']}/json"
             r = http_requests.get(url, params={
-                'key': self.TOMTOM_API_KEY, 'travelMode': 'truck',
-                'vehicleWeight': weight_kg, 'traffic': 'true',
-            }, timeout=15)
+                'key': self.TOMTOM_API_KEY,
+                'travelMode': 'truck',
+                'vehicleWeight': weight_kg,
+                'traffic': 'true',
+                'routeType': 'fastest',
+                'maxAlternatives': 2,
+                'computeTravelTimeFor': 'all',
+                'sectionType': ['traffic', 'toll', 'motorway', 'tunnel', 'country'],
+            }, timeout=20)
             if r.status_code == 200:
-                routes = r.json().get('routes', [])
-                if routes:
-                    s = routes[0]['summary']
-                    return {'distance_km': s['lengthInMeters'] / 1000, 'duration_min': s['travelTimeInSeconds'] / 60}
+                parsed = [self._parse_route(rt) for rt in r.json().get('routes', [])]
+                parsed = [p for p in parsed if p]
+                if parsed:
+                    return parsed
         except Exception:
             pass
         return None
+
+    @staticmethod
+    def _parse_route(rt):
+        """Normalise one TomTom route into our per-route shape (summary + geometry + sections)."""
+        try:
+            s = rt.get('summary', {})
+
+            geometry = [
+                {'lat': p['latitude'], 'lon': p['longitude']}
+                for leg in rt.get('legs', [])
+                for p in leg.get('points', [])
+            ]
+
+            sections = []
+            for sec in rt.get('sections', []):
+                item = {'type': sec.get('sectionType'),
+                        'start': sec.get('startPointIndex'),
+                        'end': sec.get('endPointIndex')}
+                if sec.get('simpleCategory') is not None:
+                    item['category'] = sec.get('simpleCategory')
+                if sec.get('effectiveSpeedInKmh') is not None:
+                    item['effective_speed_kmh'] = sec.get('effectiveSpeedInKmh')
+                if sec.get('delayInSeconds') is not None:
+                    item['delay_seconds'] = sec.get('delayInSeconds')
+                if sec.get('magnitudeOfDelay') is not None:
+                    item['magnitude'] = sec.get('magnitudeOfDelay')
+                sections.append(item)
+
+            def _to_min(key):
+                v = s.get(key)
+                return round(v / 60, 1) if v is not None else None
+
+            duration_min = s.get('travelTimeInSeconds', 0) / 60
+            return {
+                'distance_km': round(s.get('lengthInMeters', 0) / 1000, 1),
+                'duration_min': duration_min,                       # raw float, internal
+                'duration_minutes': int(round(duration_min)),
+                'traffic_delay_minutes': _to_min('trafficDelayInSeconds'),
+                'no_traffic_minutes': _to_min('noTrafficTravelTimeInSeconds'),
+                'historic_minutes': _to_min('historicTrafficTravelTimeInSeconds'),
+                'live_minutes': _to_min('liveTrafficIncidentsTravelTimeInSeconds'),
+                'departure_time': s.get('departureTime'),
+                'arrival_time': s.get('arrivalTime'),
+                'sections': sections,
+                'geometry': geometry,
+            }
+        except Exception:
+            return None
 
     def _haversine(self, lat1, lon1, lat2, lon2):
         R = 6371
