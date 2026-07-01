@@ -2,10 +2,11 @@
 Xero Integration Module
 Handles OAuth 2.0 authentication and API operations with Xero accounting software.
 """
+import re
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone as dt_timezone
 from typing import Optional, Dict, Any, List
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote
 from django.conf import settings
 from django.utils import timezone
 from core.models import Company, Invoice, Customer
@@ -63,10 +64,16 @@ class XeroClient:
             'response_type': 'code',
             'client_id': self.client_id,
             'redirect_uri': self.redirect_uri,
-            'scope': 'offline_access accounting.transactions accounting.contacts accounting.settings',
+            # Granular scopes. Xero apps created on/after 2026-03-02 have NO access to the
+            # broad `accounting.transactions` scope — requesting it returns `invalid_scope`.
+            # Use the granular equivalents the integration actually calls: invoices (push),
+            # payments (reconcile), contacts (customer sync); offline_access = refresh token.
+            'scope': 'offline_access accounting.contacts accounting.invoices accounting.payments',
             'state': state or '',
         }
-        return f"{self.AUTHORIZATION_URL}?{urlencode(params)}"
+        # Encode spaces in `scope` as %20, NOT `+`. Xero's identity server does not treat
+        # `+` as a space in the scope param, so quote_plus's `+` yields `invalid_scope`.
+        return f"{self.AUTHORIZATION_URL}?{urlencode(params, quote_via=quote)}"
 
     def handle_callback(self, code: str) -> Dict[str, Any]:
         """
@@ -220,6 +227,33 @@ class XeroClient:
 
         return response.json()
 
+    def _sales_tax_type(self) -> Optional[str]:
+        """
+        Pick a revenue tax type that's valid in the connected Xero org.
+
+        Xero tax codes are region-specific — South Africa's 'OUTPUT2' (15% VAT) does
+        not exist in, e.g., a Bangladesh org, so a hard-coded code triggers a Xero
+        ValidationException. Instead we read the org's own tax rates and use the
+        highest-rate ACTIVE tax that can apply to revenue (its standard sales tax/VAT).
+        Cached per client. Returns None if undeterminable, in which case push_invoice
+        omits TaxType and Xero falls back to the line account's default tax rate.
+        """
+        cached = getattr(self, '_sales_tax_type_cache', False)
+        if cached is not False:
+            return cached
+        tax_type = None
+        try:
+            data = self._make_request('GET', '/TaxRates')
+            revenue = [r for r in data.get('TaxRates', [])
+                       if r.get('Status') == 'ACTIVE' and r.get('CanApplyToRevenue')]
+            revenue.sort(key=lambda r: r.get('EffectiveRate') or 0, reverse=True)
+            if revenue:
+                tax_type = revenue[0].get('TaxType')
+        except Exception:
+            tax_type = None
+        self._sales_tax_type_cache = tax_type
+        return tax_type
+
     def push_invoice(self, invoice: Invoice) -> Dict[str, Any]:
         """
         Create or update invoice in Xero.
@@ -234,7 +268,9 @@ class XeroClient:
         xero_invoice = {
             'Type': 'ACCREC',  # Accounts Receivable (sales invoice)
             'Contact': {
-                'Name': invoice.customer.company or invoice.customer.name,
+                # NOTE: customer.company is the tenant FK (a Company object, not JSON-
+                # serializable). The business name string is customer.company_name.
+                'Name': invoice.customer.company_name or invoice.customer.name,
             },
             'LineItems': [],
             'Date': invoice.issue_date.strftime('%Y-%m-%d'),
@@ -244,30 +280,58 @@ class XeroClient:
             'Status': 'AUTHORISED',  # Approved and ready for payment
         }
 
+        # Region-agnostic tax: use a tax type valid in THIS org (not a hard-coded SA
+        # code). None => omit TaxType so Xero applies the account's default rate.
+        tax_type = self._sales_tax_type()
+
+        def _line(description, quantity, unit_amount):
+            li = {
+                'Description': description,
+                'Quantity': quantity,
+                'UnitAmount': unit_amount,
+                'AccountCode': '200',  # Sales
+            }
+            if tax_type:
+                li['TaxType'] = tax_type
+            return li
+
         # Add line items
         if invoice.line_items:
             for item in invoice.line_items:
-                xero_invoice['LineItems'].append({
-                    'Description': item.get('description', ''),
-                    'Quantity': item.get('quantity', 1),
-                    'UnitAmount': float(item.get('unit_price', 0)),
-                    'AccountCode': '200',  # Sales account (update as needed)
-                    'TaxType': 'OUTPUT2',  # 15% VAT for South Africa
-                })
+                xero_invoice['LineItems'].append(_line(
+                    item.get('description', ''),
+                    item.get('quantity', 1),
+                    float(item.get('unit_price', 0)),
+                ))
         else:
             # Fallback if no line items
-            xero_invoice['LineItems'].append({
-                'Description': f'Transportation services - Invoice {invoice.invoice_number}',
-                'Quantity': 1,
-                'UnitAmount': float(invoice.subtotal),
-                'AccountCode': '200',
-                'TaxType': 'OUTPUT2',
-            })
+            xero_invoice['LineItems'].append(_line(
+                f'Transportation services - Invoice {invoice.invoice_number}',
+                1,
+                float(invoice.subtotal),
+            ))
 
         # Create invoice in Xero
         response = self._make_request('POST', '/Invoices', {'Invoices': [xero_invoice]})
 
         return response
+
+    def _parse_xero_date(self, value):
+        """
+        Parse a Xero date into a datetime.date.
+
+        Xero's Accounting API returns dates in Microsoft JSON format, e.g.
+        '/Date(1782000000000+0000)/' — NOT ISO 'YYYY-MM-DD'. Slicing [:10] yielded
+        '/Date(178' and broke Payment.payment_date. Falls back to ISO, then today.
+        """
+        s = str(value or '')
+        m = re.search(r'/Date\((-?\d+)', s)
+        if m:
+            return datetime.fromtimestamp(int(m.group(1)) / 1000, tz=dt_timezone.utc).date()
+        try:
+            return datetime.strptime(s[:10], '%Y-%m-%d').date()
+        except ValueError:
+            return timezone.now().date()
 
     def sync_payments(self) -> List[Dict[str, Any]]:
         """
@@ -286,8 +350,10 @@ class XeroClient:
         from django.db.models import Sum
         from core.models import Payment
 
-        # Get payments from Xero (last 90 days)
-        from_date = (timezone.now() - timedelta(days=90)).strftime('%Y-%m-%d')
+        # Get payments from Xero (last 90 days). Xero's `where` filter needs
+        # DateTime(yyyy,mm,dd) with COMMAS — a hyphenated DateTime(2026-04-02) makes
+        # the Xero API itself return HTTP 500.
+        from_date = (timezone.now() - timedelta(days=90)).strftime('%Y,%m,%d')
         endpoint = f'/Payments?where=Date>=DateTime({from_date})'
 
         response = self._make_request('GET', endpoint)
@@ -304,7 +370,8 @@ class XeroClient:
                 continue
 
             amount = xero_payment.get('Amount') or 0
-            raw_date = (xero_payment.get('Date') or '')[:10]  # 'YYYY-MM-DD'
+            payment_date = self._parse_xero_date(xero_payment.get('Date'))
+            date_str = payment_date.isoformat()
             xero_id = xero_payment.get('PaymentID') or ''
 
             # Scope strictly to THIS company's invoices (multi-tenant safe).
@@ -326,7 +393,7 @@ class XeroClient:
                 continue
 
             # Idempotency: never double-record the same Xero payment.
-            ref = f'XERO:{xero_id}' if xero_id else f'XERO:{invoice_number}:{raw_date}:{amount}'
+            ref = f'XERO:{xero_id}' if xero_id else f'XERO:{invoice_number}:{date_str}:{amount}'
             if Payment.objects.filter(invoice=invoice, reference_number=ref).exists():
                 synced_payments.append({
                     'invoice_number': invoice_number,
@@ -341,7 +408,7 @@ class XeroClient:
                 invoice=invoice,
                 customer=invoice.customer,
                 amount=Decimal(str(amount)),
-                payment_date=raw_date or timezone.now().date(),
+                payment_date=payment_date,
                 payment_method='EFT',
                 reference_number=ref,
                 notes='Imported from Xero',
@@ -355,7 +422,7 @@ class XeroClient:
             synced_payments.append({
                 'invoice_number': invoice_number,
                 'amount': float(amount),
-                'date': raw_date,
+                'date': date_str,
                 'status': 'recorded',
             })
 

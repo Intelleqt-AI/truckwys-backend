@@ -29,6 +29,10 @@ class User(AbstractUser):
     language = models.CharField(max_length=10, default='en')
     date_format = models.CharField(max_length=20, default='DD/MM/YYYY')
     notification_settings = models.JSONField(default=dict)
+    security_settings = models.JSONField(default=dict)
+    # Fingerprints ("<device>|<ip>") of devices this user has signed in from,
+    # so the "login alert" only fires for genuinely new devices (survives logout).
+    known_devices = models.JSONField(default=list)
     avatar = models.ImageField(upload_to='avatars/', null=True, blank=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)

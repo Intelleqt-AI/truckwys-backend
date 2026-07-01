@@ -1,4 +1,5 @@
 from .user import User
+from .user_session import UserSession
 from .vehicle import Vehicle, VehicleLog, VehicleType
 from .load import Load
 from .quote import Quote
@@ -32,6 +33,7 @@ from .country_transit_rate import CountryTransitRate
 
 __all__ = [
     'User',
+    'UserSession',
     'Vehicle',
     'VehicleLog',
     'VehicleType',

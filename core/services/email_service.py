@@ -4,6 +4,7 @@ and transactional auth emails (verification, etc.) via Resend.
 """
 
 from typing import Optional
+from django.core.mail import EmailMultiAlternatives
 from django.utils.html import strip_tags
 from django.conf import settings
 from django.utils import timezone
@@ -14,6 +15,22 @@ import os
 from core.models import Invoice, Company
 
 logger = logging.getLogger(__name__)
+
+
+def _send_html_email(subject: str, html_content: str, to_email: str) -> bool:
+    """Send an HTML email via Django's configured EMAIL_BACKEND (SMTP in this
+    project's .env). Use this instead of Resend when we want to honour the
+    operator's mail backend. Returns True on success; never raises."""
+    try:
+        msg = EmailMultiAlternatives(
+            subject, strip_tags(html_content) or subject,
+            settings.DEFAULT_FROM_EMAIL, [to_email],
+        )
+        msg.attach_alternative(html_content, 'text/html')
+        return msg.send() > 0
+    except Exception as e:
+        logger.error(f"Failed to send email to {to_email}: {e}")
+        return False
 
 from core.models import Invoice, Company
 
@@ -124,6 +141,84 @@ def send_verification_email(email: str, code: str, first_name: str) -> bool:
         return False
 
 
+def send_login_otp_email(email: str, code: str, first_name: str) -> bool:
+    """Send a login two-factor sign-in OTP via Resend."""
+    subject = "Your TruckWys sign-in code"
+    html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Your TruckWys sign-in code</title>
+</head>
+<body style="margin:0;padding:0;background:#0F172A;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0F172A;padding:48px 16px;">
+    <tr><td align="center">
+      <table width="500" cellpadding="0" cellspacing="0" style="background:#1E293B;border-radius:12px;overflow:hidden;border:1px solid #334155;">
+
+        <!-- Header -->
+        <tr><td style="background:#0F172A;padding:28px 36px;border-bottom:1px solid #334155;">
+          <table width="100%" cellpadding="0" cellspacing="0"><tr>
+            <td>
+              <img src="{settings.FRONTEND_URL}/brand/truckwys-logo-transparent.png"
+                   alt="TruckWys" width="140" style="display:block;border:0;max-height:40px;width:auto;" />
+            </td>
+            <td align="right">
+              <div style="font-size:11px;color:#475569;font-family:monospace;letter-spacing:0.08em;">TWO-FACTOR SIGN-IN</div>
+            </td>
+          </tr></table>
+        </td></tr>
+
+        <!-- Body -->
+        <tr><td style="padding:36px;">
+          <p style="margin:0 0 6px;font-size:22px;font-weight:600;color:#F8FAFC;text-align:center;">Confirm it's you</p>
+          <p style="margin:0 0 32px;font-size:14px;color:#94A3B8;line-height:1.6;text-align:center;">
+            Hi <strong style="color:#F8FAFC;">{first_name}</strong>, enter the code below to finish signing in to TruckWys.
+          </p>
+
+          <!-- OTP Box -->
+          <div style="background:#0F172A;border:1px solid #38BDF8;border-radius:8px;padding:28px 24px;text-align:center;margin-bottom:28px;">
+            <div style="font-size:11px;color:#64748B;letter-spacing:0.12em;font-family:monospace;margin-bottom:12px;">YOUR SIGN-IN CODE</div>
+            <div style="font-size:42px;font-weight:700;letter-spacing:0.22em;color:#38BDF8;font-family:monospace;">{code}</div>
+            <div style="margin-top:14px;display:inline-block;background:#1E3A4A;border:1px solid #334155;border-radius:4px;padding:4px 12px;">
+              <span style="font-size:11px;color:#64748B;font-family:monospace;letter-spacing:0.08em;">Expires in 10 minutes</span>
+            </div>
+          </div>
+
+          <p style="margin:0;font-size:12px;color:#475569;line-height:1.7;text-align:center;">
+            If you didn't try to sign in, someone may have your password — change it right away from your Security Settings.
+          </p>
+        </td></tr>
+
+        <!-- Footer -->
+        <tr><td style="padding:20px 36px 24px;border-top:1px solid #334155;background:#0F172A;">
+          <p style="margin:0;font-size:11px;color:#334155;text-align:center;letter-spacing:0.04em;">
+            TruckWys &nbsp;&bull;&nbsp; Road Freight Intelligence &nbsp;&bull;&nbsp; South Africa
+          </p>
+          <p style="margin:6px 0 0;font-size:10px;color:#1E293B;text-align:center;font-family:monospace;letter-spacing:0.06em;">
+            DO NOT REPLY TO THIS EMAIL
+          </p>
+        </td></tr>
+
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+    try:
+        resend.api_key = settings.RESEND_API_KEY
+        resend.Emails.send({
+            "from": settings.EMAIL_FROM,
+            "to": [email],
+            "subject": subject,
+            "html": html_content,
+        })
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send login OTP email to {email}: {e}")
+        return False
+
+
 def send_password_reset_email(email: str, first_name: str, reset_code: str) -> bool:
     """Send password reset OTP via Django SMTP backend."""
     subject = "Your TruckWys password reset code"
@@ -216,6 +311,94 @@ def send_password_reset_email(email: str, first_name: str, reset_code: str) -> b
     except Exception as e:
         logger.error(f"Failed to send password reset email to {email}: {e}")
         return False
+
+
+def send_login_alert_email(email: str, first_name: str, device: str, ip_address: str, when: str) -> bool:
+    """Send a 'new device sign-in' alert via Resend."""
+    subject = "New sign-in to your TruckWys account"
+    security_url = f"{settings.FRONTEND_URL.rstrip('/')}/settings/security"
+    html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>New sign-in to your TruckWys account</title>
+</head>
+<body style="margin:0;padding:0;background:#0F172A;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0F172A;padding:48px 16px;">
+    <tr><td align="center">
+      <table width="500" cellpadding="0" cellspacing="0" style="background:#1E293B;border-radius:12px;overflow:hidden;border:1px solid #334155;">
+
+        <!-- Header -->
+        <tr><td style="background:#0F172A;padding:28px 36px;border-bottom:1px solid #334155;">
+          <table width="100%" cellpadding="0" cellspacing="0"><tr>
+            <td>
+              <img src="{settings.FRONTEND_URL}/brand/truckwys-logo-transparent.png"
+                   alt="TruckWys" width="140" style="display:block;border:0;max-height:40px;width:auto;" />
+            </td>
+            <td align="right">
+              <div style="font-size:11px;color:#475569;font-family:monospace;letter-spacing:0.08em;">SECURITY ALERT</div>
+            </td>
+          </tr></table>
+        </td></tr>
+
+        <!-- Body -->
+        <tr><td style="padding:36px;">
+          <p style="margin:0 0 6px;font-size:22px;font-weight:600;color:#F8FAFC;text-align:center;">New sign-in detected</p>
+          <p style="margin:0 0 28px;font-size:14px;color:#94A3B8;line-height:1.6;text-align:center;">
+            Hi <strong style="color:#F8FAFC;">{first_name}</strong>, your TruckWys account was just signed in to from a new device.
+          </p>
+
+          <!-- Details box -->
+          <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;">
+            <tr><td style="background:#0F172A;border:1px solid #38BDF8;border-radius:8px;padding:20px 24px;">
+              <table width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td width="90" style="font-size:11px;color:#64748B;font-family:monospace;letter-spacing:0.08em;padding:4px 0;vertical-align:top;">DEVICE</td>
+                  <td style="font-size:14px;color:#F8FAFC;padding:4px 0;">{device}</td>
+                </tr>
+                <tr>
+                  <td width="90" style="font-size:11px;color:#64748B;font-family:monospace;letter-spacing:0.08em;padding:4px 0;vertical-align:top;">IP ADDRESS</td>
+                  <td style="font-size:14px;color:#F8FAFC;padding:4px 0;font-family:monospace;">{ip_address}</td>
+                </tr>
+                <tr>
+                  <td width="90" style="font-size:11px;color:#64748B;font-family:monospace;letter-spacing:0.08em;padding:4px 0;vertical-align:top;">TIME</td>
+                  <td style="font-size:14px;color:#F8FAFC;padding:4px 0;">{when}</td>
+                </tr>
+              </table>
+            </td></tr>
+          </table>
+
+          <div style="text-align:center;margin-bottom:28px;">
+            <a href="{security_url}"
+               style="display:inline-block;background:#38BDF8;color:#0F172A;text-decoration:none;padding:14px 36px;border-radius:6px;font-weight:700;font-size:14px;letter-spacing:0.04em;">
+              REVIEW ACTIVE SESSIONS
+            </a>
+          </div>
+
+          <p style="margin:0;font-size:12px;color:#475569;line-height:1.7;text-align:center;">
+            If this was you, no action is needed. If you don't recognise this activity, change your password and revoke the session from your Security Settings.
+          </p>
+        </td></tr>
+
+        <!-- Footer -->
+        <tr><td style="padding:20px 36px 24px;border-top:1px solid #334155;background:#0F172A;">
+          <p style="margin:0;font-size:11px;color:#334155;text-align:center;letter-spacing:0.04em;">
+            TruckWys &nbsp;&bull;&nbsp; Road Freight Intelligence &nbsp;&bull;&nbsp; South Africa
+          </p>
+          <p style="margin:6px 0 0;font-size:10px;color:#1E293B;text-align:center;font-family:monospace;letter-spacing:0.06em;">
+            DO NOT REPLY TO THIS EMAIL
+          </p>
+        </td></tr>
+
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+    # Sent via Django's configured mail backend (SMTP) rather than Resend, so it
+    # honours the operator's EMAIL_* settings and actually delivers.
+    return _send_html_email(subject, html_content, email)
 
 
 def send_invite_email(invite_email: str, invited_by_name: str, company_name: str, invite_url: str, role: str) -> bool:

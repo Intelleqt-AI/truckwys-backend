@@ -49,6 +49,25 @@ def send_invite_email_task(email: str, invited_by_name: str, company_name: str, 
     except Exception as exc:
         logger.error('send_invite_email failed for %s: %s', email, exc)
 
+
+def send_login_alert_email_task(email: str, first_name: str, device: str, ip_address: str, when: str):
+    try:
+        from core.services.email_service import send_login_alert_email
+        send_login_alert_email(email, first_name, device, ip_address, when)
+    except Exception as exc:
+        logger.error('send_login_alert_email failed for %s: %s', email, exc)
+
+
+def send_login_otp_email_task(email: str, code: str, first_name: str) -> bool:
+    """Send the 2FA sign-in code. Returns True on success so the caller can
+    fail closed (refuse to issue a challenge) when delivery fails in production."""
+    try:
+        from core.services.email_service import send_login_otp_email
+        return send_login_otp_email(email, code, first_name)
+    except Exception as exc:
+        logger.error('send_login_otp_email failed for %s: %s', email, exc)
+        return False
+
 # South African diesel price (ZAR/litre). Override via settings.FUEL_PRICE_ZAR.
 _DEFAULT_FUEL_PRICE = Decimal('22.50')
 

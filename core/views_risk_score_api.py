@@ -18,6 +18,8 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 
+from core.auth.session_auth import UserSessionTokenAuthentication
+
 from core.models import Company, Customer, Invoice, Facility
 from core.models.integration_api_key import IntegrationAPIKey
 from core.services.risk_engine import RiskEngine
@@ -111,7 +113,7 @@ def _parse_date(v, default=None):
 class RiskUnderwriteView(APIView):
     """POST /api/v1/risk/underwrite/ — stateless underwriting score for a submitted invoice."""
 
-    authentication_classes = [IntegrationKeyAuthentication, authentication.TokenAuthentication]
+    authentication_classes = [IntegrationKeyAuthentication, UserSessionTokenAuthentication]
     permission_classes = [IsAuthenticated]
     throttle_classes = [ApiKeyThrottle]
 

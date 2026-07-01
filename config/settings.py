@@ -167,7 +167,10 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 REST_FRAMEWORK = {
     'EXCEPTION_HANDLER': 'core.views.custom_exception_handler',
     'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework.authentication.TokenAuthentication',
+        # Per-device token auth (one UserSession row per login), so devices can
+        # be listed and revoked individually. Replaces the old single shared
+        # authtoken Token. SessionAuthentication stays for admin/browsable API.
+        'core.auth.session_auth.UserSessionTokenAuthentication',
         'rest_framework.authentication.SessionAuthentication',
     ],
     'DEFAULT_PERMISSION_CLASSES': [
@@ -191,9 +194,21 @@ REST_FRAMEWORK = {
         'anon': '20/minute',
         'user': '60/minute',
         'login': '5/minute',  # Stricter rate for login/signup
+        'otp_verify': '10/minute',  # 2FA code verification (per-challenge cap of 5 also applies)
+        'otp_resend': '3/minute',   # 2FA code resend (plus a per-challenge 60s cooldown)
         'lender': '120/minute',  # Per-API-key cap for the lender API
     }
 }
+
+# Two-factor authentication (email OTP) at login. Master kill-switch: when False,
+# login completes in one step regardless of each user's `two_factor` preference.
+# NOTE: the 2-step OTP flow stores the challenge in the cache, so a multi-worker
+# deployment MUST use a shared cache (Redis) — the base config uses LocMemCache.
+LOGIN_2FA_ENABLED = config('LOGIN_2FA_ENABLED', default=True, cast=bool)
+
+# Minutes of inactivity after which a session is auto-expired, for users who have
+# the "Session timeout" security setting enabled. Enforced in core.auth.session_auth.
+SESSION_IDLE_TIMEOUT_MINUTES = config('SESSION_IDLE_TIMEOUT_MINUTES', default=30, cast=int)
 
 # OpenAPI/Swagger Configuration
 SPECTACULAR_SETTINGS = {
