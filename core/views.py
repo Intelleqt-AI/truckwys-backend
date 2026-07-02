@@ -110,7 +110,7 @@ class RegisterView(APIView):
         if not email or not password:
             return Response({'detail': 'email and password are required.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        if User.objects.filter(email=email).exists():
+        if User.objects.filter(email__iexact=email).exists():
             return Response({'detail': 'An account with this email already exists.'}, status=status.HTTP_400_BAD_REQUEST)
 
         # Store registration data in cache — account is created only after OTP verification
@@ -157,6 +157,10 @@ class EmailVerifyView(APIView):
         pending = cache.get(f'pending_registration_{email}')
         if not pending:
             return Response({'detail': 'Registration session expired. Please register again.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # The email may have been taken between registration and verification
+        if User.objects.filter(email__iexact=email).exists():
+            return Response({'detail': 'An account with this email already exists.'}, status=status.HTTP_400_BAD_REQUEST)
 
         # Create user now that email is verified
         user = User.objects.create(
@@ -1429,7 +1433,7 @@ class UserViewSet(viewsets.ModelViewSet):
         if not email:
             return Response({'error': 'Email is required'}, status=status.HTTP_400_BAD_REQUEST)
 
-        if User.objects.filter(email=email).exists():
+        if User.objects.filter(email__iexact=email).exists():
             return Response({'error': 'User with this email already exists'}, status=status.HTTP_400_BAD_REQUEST)
 
         # Generate secure token
@@ -1923,135 +1927,13 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=['get'])
     def generate_pdf(self, request, pk=None):
         """Generate a PDF quote document."""
-        from reportlab.lib.pagesizes import A4
-        from reportlab.lib import colors
-        from reportlab.lib.units import mm
-        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-        from reportlab.lib.enums import TA_RIGHT, TA_CENTER
-        import io
         from django.http import HttpResponse
+        from core.services.quote_pdf import generate_quote_pdf_bytes
 
         quote = self.get_object()
-        buf = io.BytesIO()
-        doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=20*mm, leftMargin=20*mm, topMargin=20*mm, bottomMargin=20*mm)
+        pdf_bytes = generate_quote_pdf_bytes(quote)
 
-        styles = getSampleStyleSheet()
-        accent = colors.HexColor('#2563EB')
-        dark = colors.HexColor('#0F172A')
-        mid = colors.HexColor('#64748B')
-
-        title_style = ParagraphStyle('title', fontSize=24, textColor=dark, spaceAfter=4, fontName='Helvetica-Bold')
-        sub_style = ParagraphStyle('sub', fontSize=10, textColor=mid, spaceAfter=2)
-        label_style = ParagraphStyle('label', fontSize=9, textColor=mid, fontName='Helvetica')
-        value_style = ParagraphStyle('value', fontSize=10, textColor=dark, fontName='Helvetica-Bold')
-        normal = styles['Normal']
-
-        story = []
-
-        # Header
-        story.append(Paragraph('TRUCKWYS', title_style))
-        story.append(Paragraph('Road Freight Intelligence Platform', sub_style))
-        story.append(Spacer(1, 8*mm))
-
-        # Quote title
-        story.append(Paragraph(f'FREIGHT QUOTE', ParagraphStyle('qt', fontSize=16, textColor=accent, fontName='Helvetica-Bold', spaceAfter=2)))
-        story.append(Paragraph(f'{quote.quote_number}', ParagraphStyle('qn', fontSize=12, textColor=mid, spaceAfter=6)))
-        story.append(Spacer(1, 4*mm))
-
-        # Quote meta table
-        cname = quote.customer.name if quote.customer else 'Direct Customer'
-        meta = [
-            ['Customer', cname, 'Status', quote.status],
-            ['Valid Until', str(quote.valid_until) if quote.valid_until else 'N/A', 'Created', str(quote.created_at.date())],
-            ['Confidence', f'{quote.confidence or 0}%', 'Vehicle Type', quote.vehicle_type or 'Standard'],
-        ]
-        meta_table = Table(meta, colWidths=[35*mm, 65*mm, 35*mm, 35*mm])
-        meta_table.setStyle(TableStyle([
-            ('BACKGROUND', (0,0), (0,-1), colors.HexColor('#F1F5F9')),
-            ('BACKGROUND', (2,0), (2,-1), colors.HexColor('#F1F5F9')),
-            ('FONTNAME', (0,0), (-1,-1), 'Helvetica'),
-            ('FONTSIZE', (0,0), (-1,-1), 9),
-            ('TEXTCOLOR', (0,0), (0,-1), mid),
-            ('TEXTCOLOR', (2,0), (2,-1), mid),
-            ('FONTNAME', (1,0), (1,-1), 'Helvetica-Bold'),
-            ('FONTNAME', (3,0), (3,-1), 'Helvetica-Bold'),
-            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#E2E8F0')),
-            ('PADDING', (0,0), (-1,-1), 6),
-        ]))
-        story.append(meta_table)
-        story.append(Spacer(1, 6*mm))
-
-        # Route
-        story.append(Paragraph('ROUTE', ParagraphStyle('section', fontSize=10, textColor=mid, fontName='Helvetica-Bold', spaceAfter=3)))
-        route_data = [
-            ['Pickup', quote.pickup_location or quote.origin or '—', 'Distance', f'{quote.distance or 0} km'],
-            ['Delivery', quote.delivery_location or quote.destination or '—', 'SLA', f'{quote.sla_hours or 48}h'],
-            ['Cargo', quote.cargo_description or '—', 'Weight', f'{quote.weight or 0} kg'],
-        ]
-        route_table = Table(route_data, colWidths=[30*mm, 80*mm, 30*mm, 30*mm])
-        route_table.setStyle(TableStyle([
-            ('BACKGROUND', (0,0), (0,-1), colors.HexColor('#F1F5F9')),
-            ('BACKGROUND', (2,0), (2,-1), colors.HexColor('#F1F5F9')),
-            ('FONTNAME', (0,0), (-1,-1), 'Helvetica'),
-            ('FONTSIZE', (0,0), (-1,-1), 9),
-            ('TEXTCOLOR', (0,0), (0,-1), mid),
-            ('TEXTCOLOR', (2,0), (2,-1), mid),
-            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#E2E8F0')),
-            ('PADDING', (0,0), (-1,-1), 6),
-        ]))
-        story.append(route_table)
-        story.append(Spacer(1, 6*mm))
-
-        # Cost breakdown
-        story.append(Paragraph('COST BREAKDOWN', ParagraphStyle('section', fontSize=10, textColor=mid, fontName='Helvetica-Bold', spaceAfter=3)))
-        def zar(v):
-            try: return f'R {float(v):,.2f}'
-            except: return 'R 0.00'
-
-        cost_data = [
-            ['Description', 'Amount'],
-            ['Base Rate', zar(quote.base_rate)],
-            ['Fuel Surcharge', zar(quote.fuel_surcharge)],
-            ['Toll Charges', zar(quote.toll_charges or 0)],
-            ['Driver Allowance', zar(quote.driver_allowance or 0)],
-            ['Additional Charges', zar(quote.additional_charges or 0)],
-            ['TOTAL (excl. VAT)', zar(quote.total_amount)],
-        ]
-        cost_table = Table(cost_data, colWidths=[120*mm, 50*mm])
-        cost_table.setStyle(TableStyle([
-            ('BACKGROUND', (0,0), (-1,0), accent),
-            ('TEXTCOLOR', (0,0), (-1,0), colors.white),
-            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-            ('FONTNAME', (0,1), (-1,-2), 'Helvetica'),
-            ('FONTNAME', (0,-1), (-1,-1), 'Helvetica-Bold'),
-            ('BACKGROUND', (0,-1), (-1,-1), colors.HexColor('#F1F5F9')),
-            ('FONTSIZE', (0,0), (-1,-1), 10),
-            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#E2E8F0')),
-            ('ALIGN', (1,0), (1,-1), 'RIGHT'),
-            ('PADDING', (0,0), (-1,-1), 7),
-        ]))
-        story.append(cost_table)
-        story.append(Spacer(1, 6*mm))
-
-        # Notes
-        if quote.notes:
-            story.append(Paragraph('NOTES', ParagraphStyle('section', fontSize=10, textColor=mid, fontName='Helvetica-Bold', spaceAfter=3)))
-            story.append(Paragraph(quote.notes, ParagraphStyle('notes', fontSize=9, textColor=dark, spaceAfter=4)))
-
-        # T&C
-        story.append(Spacer(1, 4*mm))
-        story.append(Paragraph('Terms & Conditions', ParagraphStyle('tc', fontSize=9, textColor=mid, fontName='Helvetica-Bold', spaceAfter=2)))
-        story.append(Paragraph(
-            'This quote is valid for the period indicated. Prices subject to fuel surcharge adjustments. '
-            'Payment terms: 30 days from invoice date. All rates in South African Rand (ZAR) excl. VAT.',
-            ParagraphStyle('tcbody', fontSize=8, textColor=mid)
-        ))
-
-        doc.build(story)
-        buf.seek(0)
-
-        response = HttpResponse(buf.read(), content_type='application/pdf')
+        response = HttpResponse(pdf_bytes, content_type='application/pdf')
         response['Content-Disposition'] = f'attachment; filename="Quote-{quote.quote_number}.pdf"'
         return response
 
@@ -2059,6 +1941,7 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     def send_to_customer(self, request, pk=None):
         """Generate shareable link for customer to view and respond to quote"""
         from django.conf import settings
+        from core.services.email_service import send_quote_share_email
         quote = self.get_object()
 
         # Update status to SENT
@@ -2072,10 +1955,17 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:3701')
         share_url = f"{frontend_url}/quotes/view/{quote.id}/{quote.token}"
 
+        # Email the link to the customer; the share URL is returned regardless
+        recipient = quote.customer.email if quote.customer else None
+        email_sent = send_quote_share_email(quote, share_url) if recipient else False
+
         return Response({
             'share_url': share_url,
             'quote_number': quote.quote_number,
-            'status': quote.status
+            'status': quote.status,
+            'email_sent': email_sent,
+            'customer_email': recipient,
+            'email_skipped_reason': None if recipient else 'no_customer_email',
         })
 
 
@@ -2165,6 +2055,20 @@ class PublicQuoteRespondView(APIView):
                 quote.status = 'ACCEPTED'
                 quote.save()
                 # TODO: Optionally auto-create load here
+
+                # Confirmation email with quote PDF — must never block the acceptance
+                try:
+                    from core.services.email_service import send_quote_accepted_email
+                    from core.services.quote_pdf import generate_quote_pdf_bytes
+                    try:
+                        pdf_bytes = generate_quote_pdf_bytes(quote)
+                    except Exception:
+                        _exc_logger.exception(f"Quote PDF generation failed for {quote.quote_number}")
+                        pdf_bytes = None
+                    send_quote_accepted_email(quote, pdf_bytes)
+                except Exception:
+                    _exc_logger.exception(f"Quote accepted email failed for {quote.quote_number}")
+
                 return Response({
                     'message': 'Quote accepted — your operator will be in touch',
                     'status': quote.status
@@ -3122,12 +3026,16 @@ class PasswordResetConfirmView(APIView):
         if not stored_code or not _hmac.compare_digest(str(stored_code), str(code)):
             return Response({'code': ['Invalid or expired reset code.']}, status=400)
 
-        user = User.objects.filter(email__iexact=email).first()
-        if not user:
+        # Emails aren't unique: the code proved ownership of the inbox, so reset
+        # every account tied to it — otherwise login (which tries all matches)
+        # still accepts the old password on the untouched accounts.
+        users = list(User.objects.filter(email__iexact=email))
+        if not users:
             return Response({'detail': 'Invalid or expired reset code.'}, status=400)
 
-        user.set_password(new_password)
-        user.save()
+        for user in users:
+            user.set_password(new_password)
+            user.save(update_fields=['password'])
         cache.delete(f'pwd_reset_{email}')
 
         return Response({'detail': 'Password has been reset. You can now log in.'})
@@ -3177,7 +3085,7 @@ class InviteView(APIView):
             return Response({'error': 'Email is required'}, status=status.HTTP_400_BAD_REQUEST)
 
         # Check if user already exists
-        if User.objects.filter(email=email).exists():
+        if User.objects.filter(email__iexact=email).exists():
             return Response({'error': 'User with this email already exists'}, status=status.HTTP_400_BAD_REQUEST)
 
         company = resolve_user_company(request.user)

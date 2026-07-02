@@ -40,7 +40,7 @@ class InviteCreateView(APIView):
             )
 
         # Check if user already exists with this email
-        if User.objects.filter(email=email).exists():
+        if User.objects.filter(email__iexact=email).exists():
             return Response(
                 {'error': 'User with this email already exists'},
                 status=status.HTTP_400_BAD_REQUEST
@@ -296,6 +296,13 @@ class InviteAcceptView(APIView):
         name_parts = full_name.strip().split(' ', 1)
         first_name = name_parts[0] if name_parts else ''
         last_name = name_parts[1] if len(name_parts) > 1 else ''
+
+        # The email may have been taken between invite creation and acceptance
+        if User.objects.filter(email__iexact=invite.email).exists():
+            return Response(
+                {'error': 'An account with this email already exists'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         # Generate username from email
         username = invite.email.split('@')[0]
