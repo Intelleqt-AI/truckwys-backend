@@ -26,10 +26,7 @@ RUN chmod +x docker-entrypoint.sh \
     && chown -R appuser /app
 USER appuser
 
-EXPOSE 8000
-
-HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
-    CMD curl -fsS "http://localhost:${PORT}/api/" -o /dev/null || exit 1
+EXPOSE $PORT
 
 ENTRYPOINT ["./docker-entrypoint.sh"]
 CMD ["web"]
