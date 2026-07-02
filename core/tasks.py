@@ -37,7 +37,8 @@ def send_verification_email_task(email: str, code: str, first_name: str):
 def send_password_reset_email_task(email: str, first_name: str, reset_code: str):
     try:
         from core.services.email_service import send_password_reset_email
-        send_password_reset_email(email, first_name, reset_code)
+        if not send_password_reset_email(email, first_name, reset_code):
+            logger.error('send_password_reset_email returned False for %s (delivery failed)', email)
     except Exception as exc:
         logger.error('send_password_reset_email failed for %s: %s', email, exc)
 

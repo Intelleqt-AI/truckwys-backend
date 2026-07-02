@@ -233,19 +233,7 @@ def send_password_reset_email(email: str, first_name: str, reset_code: str) -> b
   <table width="100%" cellpadding="0" cellspacing="0" style="background:#0F172A;padding:48px 16px;">
     <tr><td align="center">
       <table width="500" cellpadding="0" cellspacing="0" style="background:#1E293B;border-radius:12px;overflow:hidden;border:1px solid #334155;">
-
-        <!-- Header -->
-        <tr><td style="background:#0F172A;padding:28px 36px;border-bottom:1px solid #334155;">
-          <table width="100%" cellpadding="0" cellspacing="0"><tr>
-            <td>
-              <img src="{settings.FRONTEND_URL}/brand/truckwys-logo-transparent.png"
-                   alt="TruckWys" width="140" style="display:block;border:0;max-height:40px;width:auto;" />
-            </td>
-            <td align="right">
-              <div style="font-size:11px;color:#475569;font-family:monospace;letter-spacing:0.08em;">PASSWORD RESET</div>
-            </td>
-          </tr></table>
-        </td></tr>
+{_quote_email_header('PASSWORD RESET')}
 
         <!-- Body -->
         <tr><td style="padding:36px;">
@@ -483,6 +471,231 @@ def send_invite_email(invite_email: str, invited_by_name: str, company_name: str
         return True
     except Exception as e:
         logger.error(f"Failed to send invite email to {invite_email}: {e}")
+        return False
+
+
+def _zar(v) -> str:
+    try:
+        return f'R {float(v):,.2f}'
+    except Exception:
+        return 'R 0.00'
+
+
+def _fmt_weight(v) -> str:
+    try:
+        return f'{float(v):,.0f} kg'
+    except Exception:
+        return f'{v} kg' if v else '—'
+
+
+def _quote_email_header(badge: str) -> str:
+    """Card top for quote emails: cyan accent bar + text wordmark (no <img> —
+    image URLs are unreachable from email clients in dev)."""
+    return f"""
+        <!-- Accent bar -->
+        <tr><td style="height:4px;background:#38BDF8;font-size:0;line-height:0;">&nbsp;</td></tr>
+
+        <!-- Header -->
+        <tr><td style="background:#0F172A;padding:26px 36px;border-bottom:1px solid #334155;">
+          <table width="100%" cellpadding="0" cellspacing="0"><tr>
+            <td>
+              <div style="font-size:20px;font-weight:800;letter-spacing:0.03em;color:#F8FAFC;">TRUCK<span style="color:#38BDF8;">WYS</span></div>
+              <div style="font-size:9px;color:#64748B;letter-spacing:0.22em;margin-top:3px;">ROAD FREIGHT INTELLIGENCE</div>
+            </td>
+            <td align="right" valign="top">
+              <div style="font-size:11px;color:#475569;font-family:monospace;letter-spacing:0.08em;">{badge}</div>
+            </td>
+          </tr></table>
+        </td></tr>"""
+
+
+def _quote_email_footer() -> str:
+    return """
+        <!-- Footer -->
+        <tr><td style="padding:20px 36px 24px;border-top:1px solid #334155;background:#0F172A;">
+          <p style="margin:0;font-size:11px;color:#334155;text-align:center;letter-spacing:0.04em;">
+            TruckWys &nbsp;&bull;&nbsp; Road Freight Intelligence &nbsp;&bull;&nbsp; South Africa
+          </p>
+          <p style="margin:6px 0 0;font-size:10px;color:#1E293B;text-align:center;font-family:monospace;letter-spacing:0.06em;">
+            DO NOT REPLY TO THIS EMAIL
+          </p>
+        </td></tr>"""
+
+
+def _quote_number_pill(quote_number: str) -> str:
+    return f"""
+          <div style="text-align:center;margin:0 0 20px;">
+            <span style="display:inline-block;border:1px solid #334155;border-radius:999px;padding:6px 16px;font-family:monospace;font-size:13px;color:#38BDF8;letter-spacing:0.06em;">{quote_number}</span>
+          </div>"""
+
+
+def _quote_summary_box(rows, total_label: str, total_value: str) -> str:
+    """Details box: nowrap label column so long addresses can't collapse it,
+    values wrap on the right, emphasized total row at the bottom."""
+    row_cells = []
+    for i, (label, value) in enumerate(rows):
+        border = 'border-bottom:1px solid #1E293B;' if i < len(rows) - 1 else ''
+        row_cells.append(f"""
+              <tr>
+                <td style="color:#64748B;font-size:13px;white-space:nowrap;vertical-align:top;padding:9px 16px 9px 0;{border}">{label}</td>
+                <td align="right" style="color:#F8FAFC;font-size:13px;line-height:1.5;padding:9px 0;{border}">{value}</td>
+              </tr>""")
+    return f"""
+          <div style="background:#0F172A;border:1px solid #334155;border-radius:8px;padding:8px 20px 14px;margin-bottom:28px;">
+            <table width="100%" cellpadding="0" cellspacing="0">{''.join(row_cells)}
+              <tr>
+                <td style="color:#94A3B8;font-size:13px;font-weight:600;white-space:nowrap;vertical-align:middle;padding:14px 16px 2px 0;border-top:1px solid #334155;">{total_label}</td>
+                <td align="right" style="color:#38BDF8;font-size:18px;font-weight:700;padding:14px 0 2px;border-top:1px solid #334155;">{total_value}</td>
+              </tr>
+            </table>
+          </div>"""
+
+
+def send_quote_share_email(quote, share_url: str) -> bool:
+    """Email the customer their freight quote with a link to view and respond. Via Resend."""
+    if not quote.customer or not quote.customer.email:
+        logger.warning(f"Quote {quote.quote_number}: no customer email, skipping share email")
+        return False
+
+    to_email = quote.customer.email
+    customer_name = quote.customer.name or 'there'
+    valid_until = str(quote.valid_until) if quote.valid_until else 'N/A'
+    summary = _quote_summary_box([
+        ('From', quote.pickup_location or quote.origin or '—'),
+        ('To', quote.delivery_location or quote.destination or '—'),
+        ('Cargo', quote.cargo_description or '—'),
+        ('Weight', _fmt_weight(quote.weight)),
+        ('Valid until', valid_until),
+    ], 'Total excl. VAT', _zar(quote.total_amount))
+    subject = f"Your freight quote {quote.quote_number} from TruckWys"
+    html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Your freight quote from TruckWys</title>
+</head>
+<body style="margin:0;padding:0;background:#0F172A;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0F172A;padding:48px 16px;">
+    <tr><td align="center">
+      <table width="500" cellpadding="0" cellspacing="0" style="background:#1E293B;border-radius:12px;overflow:hidden;border:1px solid #334155;">
+{_quote_email_header('FREIGHT QUOTE')}
+
+        <!-- Body -->
+        <tr><td style="padding:36px;">
+          <p style="margin:0 0 16px;font-size:22px;font-weight:600;color:#F8FAFC;text-align:center;">Your quote is ready</p>
+{_quote_number_pill(quote.quote_number)}
+          <p style="margin:0 0 28px;font-size:14px;color:#94A3B8;line-height:1.6;text-align:center;">
+            Hi <strong style="color:#F8FAFC;">{customer_name}</strong>, you've received a new freight quote from TruckWys.
+            Review the details below and respond online.
+          </p>
+{summary}
+          <div style="text-align:center;margin-bottom:28px;">
+            <a href="{share_url}"
+               style="display:inline-block;background:#38BDF8;color:#0F172A;text-decoration:none;padding:14px 36px;border-radius:6px;font-weight:700;font-size:14px;letter-spacing:0.04em;">
+              VIEW &amp; RESPOND TO QUOTE
+            </a>
+          </div>
+
+          <p style="margin:0;font-size:12px;color:#475569;line-height:1.7;text-align:center;">
+            This quote is valid until {valid_until}. You can accept or decline directly from the link above.
+          </p>
+        </td></tr>
+{_quote_email_footer()}
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+    try:
+        resend.api_key = settings.RESEND_API_KEY
+        resend.Emails.send({
+            "from": settings.EMAIL_FROM,
+            "to": [to_email],
+            "subject": subject,
+            "html": html_content,
+        })
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send quote share email for {quote.quote_number} to {to_email}: {e}")
+        return False
+
+
+def send_quote_accepted_email(quote, pdf_bytes: Optional[bytes] = None) -> bool:
+    """Email the customer confirmation that their quote was accepted, with the quote PDF attached. Via Resend."""
+    import base64
+
+    if not quote.customer or not quote.customer.email:
+        logger.warning(f"Quote {quote.quote_number}: no customer email, skipping accepted email")
+        return False
+
+    to_email = quote.customer.email
+    customer_name = quote.customer.name or 'there'
+    summary = _quote_summary_box([
+        ('From', quote.pickup_location or quote.origin or '—'),
+        ('To', quote.delivery_location or quote.destination or '—'),
+        ('SLA', f'{quote.sla_hours or 48}h'),
+    ], 'Total excl. VAT', _zar(quote.total_amount))
+    attachment_note = (
+        '<p style="margin:0 0 28px;font-size:13px;color:#94A3B8;line-height:1.6;text-align:center;">'
+        '&#128206; A PDF copy of your quote is attached for your records.</p>'
+        if pdf_bytes else ''
+    )
+    subject = f"Quote {quote.quote_number} accepted — confirmation attached"
+    html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Quote accepted</title>
+</head>
+<body style="margin:0;padding:0;background:#0F172A;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0F172A;padding:48px 16px;">
+    <tr><td align="center">
+      <table width="500" cellpadding="0" cellspacing="0" style="background:#1E293B;border-radius:12px;overflow:hidden;border:1px solid #334155;">
+{_quote_email_header('QUOTE ACCEPTED')}
+
+        <!-- Body -->
+        <tr><td style="padding:36px;">
+          <div style="text-align:center;margin:0 0 16px;">
+            <span style="display:inline-block;background:rgba(52,211,153,0.12);border:1px solid rgba(52,211,153,0.4);border-radius:999px;padding:6px 16px;font-size:12px;font-weight:700;color:#34D399;letter-spacing:0.08em;">&#10003; ACCEPTED</span>
+          </div>
+          <p style="margin:0 0 16px;font-size:22px;font-weight:600;color:#F8FAFC;text-align:center;">Thank you — quote accepted</p>
+{_quote_number_pill(quote.quote_number)}
+          <p style="margin:0 0 28px;font-size:14px;color:#94A3B8;line-height:1.6;text-align:center;">
+            Hi <strong style="color:#F8FAFC;">{customer_name}</strong>, you've accepted this quote.
+            Your operator will be in touch to arrange pickup.
+          </p>
+{summary}
+          {attachment_note}
+
+          <p style="margin:0;font-size:12px;color:#475569;line-height:1.7;text-align:center;">
+            TruckWys is South Africa's road freight intelligence platform — AI-powered quoting, fleet management, and instant invoice financing.
+          </p>
+        </td></tr>
+{_quote_email_footer()}
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+    try:
+        resend.api_key = settings.RESEND_API_KEY
+        payload = {
+            "from": settings.EMAIL_FROM,
+            "to": [to_email],
+            "subject": subject,
+            "html": html_content,
+        }
+        if pdf_bytes:
+            payload["attachments"] = [{
+                "filename": f"Quote-{quote.quote_number}.pdf",
+                "content": base64.b64encode(pdf_bytes).decode(),
+            }]
+        resend.Emails.send(payload)
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send quote accepted email for {quote.quote_number} to {to_email}: {e}")
         return False
 
 

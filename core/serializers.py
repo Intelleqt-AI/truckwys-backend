@@ -30,6 +30,18 @@ class UserSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at', 'updated_at', 'last_active']
         extra_kwargs = {'password': {'write_only': True, 'required': False}}
 
+    def validate_email(self, value):
+        # Login and password reset treat an email as one identity across all
+        # accounts, so API-created users (e.g. drivers) must not reuse one.
+        if not value:
+            return value
+        qs = User.objects.filter(email__iexact=value)
+        if self.instance is not None:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError('An account with this email already exists.')
+        return value
+
     def create(self, validated_data):
         # Without this, password was silently dropped, leaving every API-created
         # user (e.g. drivers) unable to log in.
