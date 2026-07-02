@@ -306,14 +306,15 @@ REDIS_URL = config('REDIS_URL', default='redis://localhost:6379/0')
 
 # Shared cache across gunicorn workers. Django's implicit default is per-process
 # LocMemCache, which breaks cache-based OTP (email verification + 2FA login) under
-# multiple workers — a code written on one worker is invisible to another. Point at
-# the same Redis that Channels already uses so the OTP store (and DRF throttling) is
-# shared across all workers.
+# multiple workers — a code written on one worker is invisible to another.
+# We use the Postgres-backed DatabaseCache rather than Redis: the database is always
+# reachable in production (Channels' Redis is not guaranteed to be, and putting an
+# unreachable Redis on the DRF-throttle path 500s every request). The cache table is
+# created by the create_cache_table migration (and `manage.py createcachetable`).
 CACHES = {
     'default': {
-        'BACKEND': 'django.core.cache.backends.redis.RedisCache',
-        'LOCATION': REDIS_URL,
-        'KEY_PREFIX': 'twcache',
+        'BACKEND': 'django.core.cache.backends.db.DatabaseCache',
+        'LOCATION': 'tw_cache_table',
     }
 }
 
