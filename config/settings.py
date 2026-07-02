@@ -304,6 +304,19 @@ CONTROLFLEET_API_KEY = config('CONTROLFLEET_API_KEY', default='')
 # Redis — used by Django Channels (WebSocket channel layer)
 REDIS_URL = config('REDIS_URL', default='redis://localhost:6379/0')
 
+# Shared cache across gunicorn workers. Django's implicit default is per-process
+# LocMemCache, which breaks cache-based OTP (email verification + 2FA login) under
+# multiple workers — a code written on one worker is invisible to another. Point at
+# the same Redis that Channels already uses so the OTP store (and DRF throttling) is
+# shared across all workers.
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+        'LOCATION': REDIS_URL,
+        'KEY_PREFIX': 'twcache',
+    }
+}
+
 # ZAR diesel price used for cost/margin calculations.
 # Update this periodically to match the current pump price.
 FUEL_PRICE_ZAR = 22.50
