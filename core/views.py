@@ -2305,7 +2305,7 @@ class RouteCalculatorView(APIView):
     def post(self, request):
         from core.services.cross_border import detect_countries, calculate_cross_border_costs, calculate_sa_tolls_for_cross_border, get_cross_border_warnings
         from core.services.fuel_price import fetch_fuel_prices
-        from core.services.toll_calculator import calculate_tolls
+        from core.services.toll_calculator import calculate_tolls, calculate_tolls_by_geometry
 
         data = request.data
         origin = data.get('origin', '')
@@ -2392,23 +2392,36 @@ class RouteCalculatorView(APIView):
         # Toll cost
         toll_breakdown   = []
         toll_routes_used = []
+        geometry         = []
 
         if not cross_border:
-            # Domestic: query SANRAL plaza DB, fall back to flat rate
             toll_truck_type = self.VEHICLE_TO_TOLL_TYPE.get(vehicle_type, 'combination')
             try:
-                toll_result = calculate_tolls(origin_label, dest_label, toll_truck_type)
-                if toll_result.total_zar > 0:
-                    toll_zar         = float(toll_result.total_zar)
-                    toll_routes_used = toll_result.routes_used
-                    toll_breakdown   = [
-                        {'plaza': item.plaza_name, 'route': item.route, 'tariff': float(item.tariff)}
-                        for item in toll_result.breakdown
-                    ]
+                # Prefer geofence matching when TomTom geometry is available.
+                # Fall back to keyword matching for estimated routes (no geometry).
+                geometry = routes_raw[0].get('geometry', []) if routes_raw else []
+                if geometry:
+                    toll_result = calculate_tolls_by_geometry(geometry, toll_truck_type)
+                    # If geofence found nothing, retry with keyword matching — the
+                    # coordinates may not yet be verified for this corridor.
+                    if not toll_result.routes_used:
+                        toll_origin = f"{origin} {origin_label}"
+                        toll_dest   = f"{destination} {dest_label}"
+                        toll_result = calculate_tolls(toll_origin, toll_dest, toll_truck_type)
+                        toll_result.warning = (toll_result.warning or '') + ' (geofence found 0 plazas — fell back to keyword matching)'
                 else:
-                    toll_zar = round(distance_km * self.TOLL_ZAR_KM_FALLBACK, 2)
+                    toll_origin = f"{origin} {origin_label}"
+                    toll_dest   = f"{destination} {dest_label}"
+                    toll_result = calculate_tolls(toll_origin, toll_dest, toll_truck_type)
+
+                toll_zar         = float(toll_result.total_zar)
+                toll_routes_used = toll_result.routes_used
+                toll_breakdown   = [
+                    {'plaza': item.plaza_name, 'route': item.route, 'tariff': float(item.tariff)}
+                    for item in toll_result.breakdown
+                ]
             except Exception:
-                toll_zar = round(distance_km * self.TOLL_ZAR_KM_FALLBACK, 2)
+                toll_zar = 0.00
         else:
             # Cross-border: charge SA-side SANRAL plazas where data exists (fix 4)
             sa_toll = calculate_sa_tolls_for_cross_border(countries, vehicle_type)
@@ -2427,7 +2440,6 @@ class RouteCalculatorView(APIView):
                 'non_sa_tolls':     cb_costs['non_sa_tolls'],
             }
             warnings  = get_cross_border_warnings(countries)
-            toll_zar += cb_costs['non_sa_tolls']
 
         response_data = {
             'success': True,
@@ -2438,7 +2450,7 @@ class RouteCalculatorView(APIView):
             'fuel_cost_zar': fuel_zar,
             'fuel_rate_l_per_100km': round(fuel_rate * 100, 1),
             'toll_cost_zar': round(toll_zar, 2),
-            'toll_source': 'sanral' if toll_routes_used else 'estimated',
+            'toll_source': 'geofence' if (toll_routes_used and geometry) else ('sanral' if toll_routes_used else 'estimated'),
             'toll_routes': toll_routes_used,
             'toll_breakdown': toll_breakdown,
             'total_cost_zar': round(fuel_zar + toll_zar + sum(additional_costs.values()), 2),
@@ -2457,9 +2469,12 @@ class RouteCalculatorView(APIView):
                 response_data['warnings'] = warnings
 
         # Per-route breakdown (best + alternatives). Fuel/total are distance-based.
-        # Toll cost is scaled per route: SANRAL gives a per-plaza breakdown for the
-        # O/D pair; TomTom's section analysis gives each alternative's plaza count.
-        # We scale proportionally so a route with fewer toll plazas costs less.
+        # Toll cost strategy depends on source:
+        #   geofence  → geofence already matched exact plazas on the best route geometry;
+        #               use toll_zar directly for all route options (same corridor = same plazas).
+        #   keyword   → scale proportionally by TomTom plaza count vs matched plaza count so
+        #               alternatives with fewer toll sections cost less.
+        toll_source_is_geofence = bool(geometry and toll_routes_used)
         sanral_plaza_count = len(toll_breakdown) if toll_breakdown else 0
         extra_costs = sum(additional_costs.values()) if additional_costs else 0
         routes_out = []
@@ -2469,12 +2484,14 @@ class RouteCalculatorView(APIView):
             analysis = self._analyze_route(rt)
             terrain = self._infer_terrain(rt['geometry'], origin, destination)
             rt_toll_count = analysis['toll_count']
-            if sanral_plaza_count > 0:
-                # Scale SANRAL cost by this route's plaza count vs expected total
+            if toll_source_is_geofence:
+                # Geofence result is authoritative — same plazas on same corridor
+                rt_toll_zar = round(toll_zar, 2)
+            elif sanral_plaza_count > 0:
+                # Keyword fallback: scale by this route's plaza count vs matched total
                 rt_toll_zar = round(toll_zar * rt_toll_count / sanral_plaza_count, 2)
             else:
-                # Fallback: scale flat-rate estimate by route distance
-                rt_toll_zar = round(rt['distance_km'] * self.TOLL_ZAR_KM_FALLBACK, 2)
+                rt_toll_zar = 0.00
             routes_out.append({
                 'index': i,
                 'is_best': i == 0,

@@ -65,12 +65,16 @@ class FuelPriceCurrentView(APIView):
         try:
             fuel_price = fetch_fuel_prices()
 
-            # Check staleness: if fuel price is >7 days old
+            # Stale if: source is a fallback (live scrape failed), or data is >35 days old
             days_old = (timezone.now().date() - fuel_price.date).days
-            is_stale = days_old > 7
+            is_fallback = fuel_price.source in ('FALLBACK', 'FALLBACK_LATEST')
+            is_stale = is_fallback or days_old > 35
             stale_warning = None
             if is_stale:
-                stale_warning = f"Last update {days_old} days ago; consider manual refresh"
+                if is_fallback:
+                    stale_warning = "Live price fetch failed — showing estimated price. Update via Admin > Fuel Prices."
+                else:
+                    stale_warning = f"Last update {days_old} days ago; consider manual refresh"
 
             return Response({
                 'success': True,
@@ -92,6 +96,31 @@ class FuelPriceCurrentView(APIView):
                 'success': False,
                 'error': str(e),
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    def post(self, request):
+        """Admin override: POST {diesel_inland, diesel_coastal} to set current month's price."""
+        if not request.user.is_staff:
+            return Response({'error': 'Staff only'}, status=status.HTTP_403_FORBIDDEN)
+
+        diesel_inland = request.data.get('diesel_inland')
+        diesel_coastal = request.data.get('diesel_coastal')
+        if not diesel_inland:
+            return Response({'error': 'diesel_inland is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        from decimal import Decimal
+        from datetime import date
+        from core.models.fuel_price import FuelPrice
+
+        today = date.today().replace(day=1)
+        FuelPrice.objects.update_or_create(
+            date=today,
+            defaults={
+                'diesel_inland': Decimal(str(diesel_inland)),
+                'diesel_coastal': Decimal(str(diesel_coastal or diesel_inland)),
+                'source': 'MANUAL',
+            }
+        )
+        return Response({'success': True, 'date': today.isoformat(), 'diesel_inland': float(diesel_inland)})
 
 
 class AIQuoteSuggestionView(APIView):

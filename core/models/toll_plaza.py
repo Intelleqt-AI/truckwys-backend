@@ -56,6 +56,18 @@ class TollPlaza(models.Model):
         default=2024,
         help_text='Tariff revision year (SANRAL announces increases annually)',
     )
+    lat = models.DecimalField(
+        max_digits=9, decimal_places=6, null=True, blank=True,
+        help_text='Plaza GPS latitude (WGS84) for geofence matching',
+    )
+    lng = models.DecimalField(
+        max_digits=9, decimal_places=6, null=True, blank=True,
+        help_text='Plaza GPS longitude (WGS84) for geofence matching',
+    )
+    radius_meters = models.IntegerField(
+        default=500,
+        help_text='Geofence trigger radius in metres (default 500 m to tolerate GPS uncertainty)',
+    )
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
