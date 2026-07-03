@@ -11,7 +11,7 @@ from core.models import FuelPrice
 from core.services.fuel_price import (
     _FALLBACK_PRICES,
     _check_price_alert,
-    _fetch_from_doe,
+    _fetch_from_dmre,
     _fetch_from_sapia,
     _to_decimal,
     fetch_fuel_prices,
@@ -65,8 +65,9 @@ class FetchFuelPricesTests(TestCase):
         current_month = today.replace(day=1)
 
         # Patch to avoid live HTTP and ensure fallback is available
-        with patch('core.services.fuel_price._fetch_from_sapia', return_value=None), \
-             patch('core.services.fuel_price._fetch_from_doe', return_value=None):
+        with patch('core.services.fuel_price._fetch_from_aa_sa', return_value=None), \
+             patch('core.services.fuel_price._fetch_from_sapia', return_value=None), \
+             patch('core.services.fuel_price._fetch_from_dmre', return_value=None):
             fp = fetch_fuel_prices()
 
         self.assertEqual(fp.date, current_month)
@@ -74,8 +75,9 @@ class FetchFuelPricesTests(TestCase):
     def test_falls_back_to_latest_when_key_missing(self):
         # Use a future date not in _FALLBACK_PRICES
         target = date(2099, 1, 1)
-        with patch('core.services.fuel_price._fetch_from_sapia', return_value=None), \
-             patch('core.services.fuel_price._fetch_from_doe', return_value=None):
+        with patch('core.services.fuel_price._fetch_from_aa_sa', return_value=None), \
+             patch('core.services.fuel_price._fetch_from_sapia', return_value=None), \
+             patch('core.services.fuel_price._fetch_from_dmre', return_value=None):
             fp = fetch_fuel_prices(target_date=target)
 
         latest_key = max(_FALLBACK_PRICES.keys())

@@ -81,7 +81,7 @@ def _money(v) -> float:
 
 def build_agent_context(company) -> dict:
     """Assemble a compact, real snapshot of the company for grounding the agent."""
-    from core.models import Invoice, Quote, Vehicle, Customer
+    from core.models import Invoice, Quote, Vehicle, Customer, Driver
 
     today = timezone.now().date()
 
@@ -129,6 +129,70 @@ def build_agent_context(company) -> dict:
     ]
     top_customers = sorted(top_customers, key=lambda x: x['outstanding'], reverse=True)[:5]
 
+    # Contact information — all customers with their contact details
+    contacts = [
+        {
+            "name": c.name,
+            "company": c.company_name or "",
+            "email": c.email,
+            "phone": c.phone,
+            "city": c.city,
+            "payment_terms": c.payment_terms_default,
+            "credit_limit": _money(c.credit_limit) if c.credit_limit else None,
+            "status": "active" if c.is_active else "inactive",
+        }
+        for c in Customer.objects.filter(company=company).order_by('name')[:100]
+    ]
+
+    # Recent quote line items — last 25 quotes with full route and pricing detail
+    recent_quotes = [
+        {
+            "quote_number": q.quote_number,
+            "customer": q.customer.name if q.customer else "—",
+            "pickup": q.pickup_location,
+            "delivery": q.delivery_location,
+            "cargo": q.cargo_description,
+            "weight_kg": float(q.weight) if q.weight else None,
+            "vehicle_type": q.vehicle_type or "—",
+            "distance_km": float(q.distance) if q.distance else None,
+            "base_rate": _money(q.base_rate),
+            "fuel_surcharge": _money(q.fuel_surcharge),
+            "toll_charges": _money(q.toll_charges),
+            "total": _money(q.total_amount),
+            "margin_pct": float(q.margin_percentage) if q.margin_percentage else 0,
+            "status": q.status,
+            "valid_until": q.valid_until.isoformat() if q.valid_until else None,
+            "trip_type": q.trip_type,
+            "created": q.created_at.date().isoformat() if q.created_at else None,
+        }
+        for q in quotes.select_related('customer').order_by('-created_at')[:25]
+    ]
+
+    # Driver details — all drivers for this company
+    drivers = []
+    try:
+        for d in Driver.objects.filter(company=company).select_related('user').order_by('user__first_name'):
+            drivers.append({
+                "name": d.user.get_full_name() if d.user else "—",
+                "email": d.user.email if d.user else "—",
+                "license_number": d.license_number,
+                "license_expiry": d.license_expiry.isoformat() if d.license_expiry else None,
+                "status": d.status,
+                "experience_years": d.experience_years,
+                "efficiency_score": d.efficiency_score,
+                "on_time_rate": float(d.on_time_rate),
+                "safety_score": d.safety_score,
+                "trips_this_month": d.trips_this_month,
+                "violations": d.violation_count,
+                "accidents": d.accident_history,
+            })
+    except Exception as exc:
+        logger.warning('driver data for agent failed: %s', exc)
+
+    # Company banking details (stored in contact JSONField under "banking" key)
+    contact_json = getattr(company, 'contact', {}) or {}
+    banking = contact_json.get('banking', {})
+
     return {
         "company_name": getattr(company, "company_name", "Your company"),
         "currency": "ZAR (R)",
@@ -144,6 +208,7 @@ def build_agent_context(company) -> dict:
         "quotes": {
             "total": quotes.count(),
             "by_status": quote_counts,
+            "recent": recent_quotes,
         },
         "fleet": {
             "total": vehicles.count(),
@@ -156,6 +221,9 @@ def build_agent_context(company) -> dict:
         },
         "billing_audit": billing,
         "top_customers_by_outstanding": top_customers,
+        "contacts": contacts,
+        "drivers": drivers,
+        "banking": banking,
     }
 
 
@@ -251,8 +319,9 @@ def _fallback_reply(ctx: dict, user_text: str) -> str:
     if not t or any(w in t for w in ["help", "what can you", "hello", "hi ", "hey"]):
         return (
             f"I'm your TruckWys copilot for {ctx['company_name']}. I can answer questions about your "
-            f"cash position, overdue invoices, quotes pipeline, fleet status and fast-pay eligibility. "
-            f"Try: \"What's overdue?\", \"How much can I advance?\", \"How's my pipeline?\" or \"Fleet status\"."
+            f"cash position, overdue invoices, quotes pipeline, fleet status, fast-pay eligibility, "
+            f"customer contacts, driver details and banking info. "
+            f"Try: \"What's overdue?\", \"Show me driver performance\", \"Contact details for [customer]\" or \"Fleet status\"."
         )
 
     if any(w in t for w in ["overdue", "late", "collect", "debtor"]):
@@ -305,16 +374,44 @@ def _fallback_reply(ctx: dict, user_text: str) -> str:
         return (f"I found {fmt(rec)} of recoverable cash: " + "; ".join(bits)
                 + ". Open Invoices to bill and chase it.")
 
-    if any(w in t for w in ["fleet", "vehicle", "truck", "driver"]):
+    if any(w in t for w in ["fleet", "vehicle", "truck"]):
         by = fleet["by_status"]
         parts = ", ".join(f"{v} {k.replace('_',' ').lower()}" for k, v in by.items()) or "none"
         return f"Your fleet has {fleet['total']} vehicles ({parts})."
+
+    if any(w in t for w in ["driver", "drivers"]):
+        drivers = ctx.get("drivers") or []
+        if not drivers:
+            return "No drivers are recorded for your company yet."
+        lines = [f"You have {len(drivers)} driver(s):"]
+        for d in drivers[:5]:
+            lines.append(
+                f"• {d['name']} — {d['status']}, license {d['license_number']}, "
+                f"on-time {d['on_time_rate']:.0%}, safety score {d['safety_score']}"
+            )
+        return " ".join(lines)
+
+    if any(w in t for w in ["contact", "customer email", "customer phone", "phone number", "email address"]):
+        contacts = ctx.get("contacts") or []
+        if not contacts:
+            return "No contacts found."
+        lines = [f"You have {len(contacts)} contact(s) on record:"]
+        for c in contacts[:5]:
+            lines.append(f"• {c['name']} ({c['company'] or '—'}) — {c['phone']}, {c['email']}, {c['city']}")
+        return " ".join(lines)
+
+    if any(w in t for w in ["bank", "banking", "account number", "branch"]):
+        banking = ctx.get("banking") or {}
+        if not banking:
+            return "No banking details are saved on your company profile yet. Update them in Settings."
+        parts = [f"{k.replace('_', ' ').title()}: {v}" for k, v in banking.items()]
+        return "Banking details: " + " | ".join(parts)
 
     # Default: give the cash headline and point to insights.
     return (
         f"Here's the headline for {ctx['company_name']}: {fmt(inv['outstanding_total'])} outstanding, "
         f"{fmt(inv['overdue_total'])} overdue, {cap['eligible_invoices']} invoice(s) ready for fast pay. "
-        f"Ask me about overdue accounts, fast-pay capacity, your quotes pipeline or fleet status."
+        f"Ask me about overdue accounts, fast-pay capacity, your quotes pipeline, contacts, drivers or fleet status."
     )
 
 
@@ -518,7 +615,11 @@ def agent_respond(company, messages: list, *, query: str = None, user=None, enab
             "ZAR (R). When a number isn't in the snapshot or retrieved records, say you don't have it "
             "rather than guessing. Quote amounts and dates EXACTLY as they appear — do not add VAT, "
             "interest, or any derived calculation unless the user explicitly asks. A PAID invoice is "
-            "settled (balance 0) and is never overdue. " + readonly_clause + " Keep replies under ~120 words."
+            "settled (balance 0) and is never overdue. "
+            "The snapshot includes: invoices, quotes (with individual line items in quotes.recent), "
+            "fleet, capital/fast-pay, billing audit, customer contacts (contacts[]), driver details "
+            "(drivers[]), and company banking info (banking{}). Use these to answer questions about "
+            "specific customers, routes, drivers, or bank details when asked. " + readonly_clause + " Keep replies under ~120 words."
             + (QUOTE_TOOL_SYSTEM if tools_on else "")
             + f"\n\nCompany snapshot:\n{json.dumps(ctx, default=str)}"
             + f"{_retrieved_block(company, rag_query)}"

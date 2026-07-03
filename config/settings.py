@@ -321,3 +321,22 @@ CACHES = {
 # ZAR diesel price used for cost/margin calculations.
 # Update this periodically to match the current pump price.
 FUEL_PRICE_ZAR = 22.50
+
+# ---------------------------------------------------------------------------
+# Celery
+# ---------------------------------------------------------------------------
+CELERY_BROKER_URL = REDIS_URL
+CELERY_RESULT_BACKEND = REDIS_URL
+CELERY_TIMEZONE = 'Africa/Johannesburg'
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_ACCEPT_CONTENT = ['json']
+
+from celery.schedules import crontab  # noqa: E402
+CELERY_BEAT_SCHEDULE = {
+    # SA diesel prices change on the first Wednesday of each month.
+    # Run on 3rd and 10th to catch it; task retries 3× with 6h gaps if scrape fails.
+    'refresh-fuel-price': {
+        'task': 'core.tasks.refresh_fuel_price',
+        'schedule': crontab(day_of_month='3,10', hour='6', minute='0'),
+    },
+}
