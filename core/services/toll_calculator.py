@@ -27,26 +27,73 @@ logger = logging.getLogger(__name__)
 # Vehicle type → SANRAL class mapping
 # ---------------------------------------------------------------------------
 
+# NOTE on the column offset: TollPlaza tariff columns are named one higher than the
+# SANRAL class they hold. tariff_class_2 = SANRAL Class 1 (light), tariff_class_3 =
+# SANRAL Class 2 (2-axle), tariff_class_4 = SANRAL Class 3 (3-axle), tariff_class_5 =
+# SANRAL Class 4 (4+/combination). get_tariff(n) returns column tariff_class_n, so the
+# int below is the COLUMN index (2–5), i.e. SANRAL class + 1.
 TRUCK_TYPE_TO_CLASS: dict[str, int] = {
-    'light':       2,   # LDV / light commercial
-    'medium':      3,   # 2-axle rigid truck or bus
-    'heavy':       4,   # 3+ axle single unit
-    'combination': 5,   # truck + trailer / semi-truck
+    'light':       2,   # SANRAL Class 1 — LDV / light commercial      → tariff_class_2
+    'medium':      3,   # SANRAL Class 2 — 2-axle rigid truck / bus     → tariff_class_3
+    'heavy':       4,   # SANRAL Class 3 — 3-axle single unit           → tariff_class_4
+    'combination': 5,   # SANRAL Class 4 — truck + trailer / semi / interlink → tariff_class_5
     # Aliases
     'rigid':       3,
     'semi':        5,
     'interlink':   5,
 }
 
-# Frontend vehicle_type → toll truck type (also used by cross_border service)
+# Frontend vehicle_type → toll truck type (also used by cross_border service).
+# Single source of truth — core/views.py imports this. Confirmed axle→class table:
+# Box Truck is a 2-axle rigid (SANRAL Class 2); the rest are 4+ combinations (Class 4).
 VEHICLE_TO_TOLL_TYPE_LOOKUP: dict[str, str] = {
     'Flatbed':      'combination',
     'Tautliner':    'combination',
     'Refrigerated': 'combination',
     'Tanker':       'combination',
     'Danger Load':  'combination',
-    'Box Truck':    'heavy',
+    'Box Truck':    'medium',        # 2-axle rigid → SANRAL Class 2 → tariff_class_3
+    # extra fleet types (map by axle count)
+    'Light Truck':  'light',
+    'Van':          'light',
+    'Bakkie':       'light',
+    'Rigid':        'heavy',         # 3-axle rigid → SANRAL Class 3
+    'Interlink':    'combination',
+    'Superlink':    'combination',
 }
+
+# Keyword rules for names that don't hit the exact-match dict above. Vehicle-type
+# names come from the VehicleType table and free-form UI values (e.g. "Medium Truck
+# (4–8 tonnes)", "Semi-Truck / Horse & Trailer (30 tonnes)", "Flatbed Truck"), so an
+# exact dict can never cover them. First matching rule wins — ordered most-specific
+# first. Unknown names fall back to 'combination' (safe over-estimate).
+_TOLL_TYPE_KEYWORD_RULES: list[tuple[tuple[str, ...], str]] = [
+    (('interlink', 'b-train', 'superlink', 'super link'), 'combination'),
+    (('semi', 'horse', 'trailer', 'articulated'),         'combination'),
+    (('flatbed', 'tautliner', 'refrigerated', 'reefer', 'tanker', 'danger'), 'combination'),
+    (('ldv', 'light delivery', 'bakkie', 'van ', ' van', 'light'), 'light'),
+    (('box', 'medium', '4-8', '4–8', '5 ton', '5-ton'),   'medium'),
+    (('heavy', 'rigid', '8-16', '8–16'),                  'heavy'),
+]
+
+
+def resolve_toll_truck_type(vehicle_type: str) -> str:
+    """Vehicle-type name (any source) → toll truck type ('light'/'medium'/'heavy'/'combination').
+
+    Exact dict hit first, then case-insensitive keyword rules, then 'combination'
+    as the safe (highest-tariff) default for unrecognised names.
+    """
+    if not vehicle_type:
+        return 'combination'
+    exact = VEHICLE_TO_TOLL_TYPE_LOOKUP.get(vehicle_type)
+    if exact:
+        return exact
+    name = vehicle_type.casefold()
+    for keywords, toll_type in _TOLL_TYPE_KEYWORD_RULES:
+        if any(k in name for k in keywords):
+            return toll_type
+    logger.warning('Unrecognised vehicle_type %r for toll class — defaulting to combination', vehicle_type)
+    return 'combination'
 
 # ---------------------------------------------------------------------------
 # City alias normaliser — maps suburbs/metro areas to their parent city name.
@@ -314,6 +361,12 @@ def calculate_tolls(
 # Geofence-based toll calculation (preferred when TomTom geometry is available)
 # ---------------------------------------------------------------------------
 
+# Max distance (metres) a plaza may sit from the driven route line to be charged.
+# Tunable 200–500. Tighter than the old 500 m point radius because we now measure to
+# the route LINE (not just vertices), which removes parallel-road false positives.
+TOLL_MATCH_BUFFER_M = 300.0
+
+
 def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Straight-line distance in metres between two WGS84 points."""
     R = 6_371_000.0
@@ -322,6 +375,30 @@ def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     dlam = _math.radians(lon2 - lon1)
     a = _math.sin(dphi / 2) ** 2 + _math.cos(phi1) * _math.cos(phi2) * _math.sin(dlam / 2) ** 2
     return R * 2 * _math.atan2(_math.sqrt(a), _math.sqrt(1 - a))
+
+
+def _point_to_segment_m(plat, plng, alat, alng, blat, blng) -> float:
+    """Shortest distance (metres) from point P to segment A→B.
+
+    Uses a local equirectangular projection (x = lon·cos(lat), y = lat) scaled to
+    metres — accurate to well under a metre over the ~km-scale segments of a road
+    polyline, and dependency-free. Projects P onto the segment, clamps t∈[0,1] so
+    the result is distance to the segment (not the infinite line), then measures the
+    clamped foot with the exact haversine.
+    """
+    cos_lat = _math.cos(_math.radians(plat))
+    ax, ay = alng * cos_lat, alat
+    bx, by = blng * cos_lat, blat
+    px, py = plng * cos_lat, plat
+    dx, dy = bx - ax, by - ay
+    seg_sq = dx * dx + dy * dy
+    if seg_sq == 0.0:
+        return _haversine_m(plat, plng, alat, alng)
+    t = ((px - ax) * dx + (py - ay) * dy) / seg_sq
+    t = max(0.0, min(1.0, t))
+    foot_lat = alat + t * (blat - alat)
+    foot_lng = alng + t * (blng - alng)
+    return _haversine_m(plat, plng, foot_lat, foot_lng)
 
 
 def calculate_tolls_by_geometry(
@@ -345,10 +422,10 @@ def calculate_tolls_by_geometry(
 
     Notes
     -----
-    Each plaza is checked at most once — the first route point inside its
-    ``radius_meters`` triggers it and the loop moves on, preventing double-charging.
-    To handle sparse TomTom polyline segments (rural stretches can be 300–500 m apart)
-    consecutive points are interpolated at 250 m intervals before matching.
+    A plaza is charged once, when its shortest distance to the route polyline is
+    within ``TOLL_MATCH_BUFFER_M``. Distance is measured plaza→nearest-segment
+    (point-to-line), so plazas on parallel/crossing roads near the route are NOT
+    charged, and only plazas the route actually passes count.
     """
     from core.models.toll_plaza import TollPlaza
 
@@ -382,21 +459,9 @@ def calculate_tolls_by_geometry(
             warning='No toll plazas with GPS coordinates seeded — run seed_toll_data --force',
         )
 
-    # Densify the polyline: insert midpoints on segments longer than 250 m so
-    # sparse rural stretches do not skip over a plaza's geofence.
-    INTERP_STEP_M = 250.0
-    dense: list[tuple[float, float]] = []
-    for i, pt in enumerate(route_points):
-        lat, lon = float(pt['lat']), float(pt['lon'])
-        dense.append((lat, lon))
-        if i + 1 < len(route_points):
-            nxt = route_points[i + 1]
-            nlat, nlon = float(nxt['lat']), float(nxt['lon'])
-            seg_m = _haversine_m(lat, lon, nlat, nlon)
-            steps = int(seg_m // INTERP_STEP_M)
-            for s in range(1, steps):
-                frac = s / (steps)
-                dense.append((lat + frac * (nlat - lat), lon + frac * (nlon - lon)))
+    # Build the list of consecutive polyline segments once.
+    pts = [(float(p['lat']), float(p['lon'])) for p in route_points]
+    segments = list(zip(pts, pts[1:]))
 
     matched: list[TollBreakdownItem] = []
     routes_hit: set[str] = set()
@@ -405,29 +470,41 @@ def calculate_tolls_by_geometry(
     for plaza in plazas:
         plaza_lat = float(plaza.lat)
         plaza_lng = float(plaza.lng)
-        radius = plaza.radius_meters or 500
+        # Per-plaza override allowed, but cap at the buffer so a stale 500 m radius
+        # can't re-introduce parallel-road false positives.
+        buffer_m = min(float(plaza.radius_meters or TOLL_MATCH_BUFFER_M), TOLL_MATCH_BUFFER_M)
 
-        for (lat, lon) in dense:
-            if _haversine_m(lat, lon, plaza_lat, plaza_lng) <= radius:
-                tariff = plaza.get_tariff(vehicle_class)
-                matched.append(TollBreakdownItem(
-                    plaza_name=plaza.name,
-                    route=plaza.route,
-                    location_km=plaza.location_km,
-                    tariff=tariff,
-                ))
-                routes_hit.add(plaza.route)
-                total += tariff
-                break  # plaza matched — move to next plaza, no double-charge
+        # Distance from the plaza to the DRIVEN LINE (nearest segment), not just to a
+        # vertex. A plaza only charges when the route actually passes it — this both
+        # kills parallel/crossing-road false positives and windows the charge to the
+        # trip's own segment (no whole-route summing).
+        if segments:
+            dist = min(
+                _point_to_segment_m(plaza_lat, plaza_lng, a[0], a[1], b[0], b[1])
+                for a, b in segments
+            )
+        else:
+            dist = _haversine_m(plaza_lat, plaza_lng, pts[0][0], pts[0][1])
+
+        if dist <= buffer_m:
+            tariff = plaza.get_tariff(vehicle_class)
+            matched.append(TollBreakdownItem(
+                plaza_name=plaza.name,
+                route=plaza.route,
+                location_km=plaza.location_km,
+                tariff=tariff,
+            ))
+            routes_hit.add(plaza.route)
+            total += tariff
 
     matched.sort(key=lambda x: (x.route, x.location_km))
 
     logger.info(
         'Geofence tolls (%s / class %d): R%.2f across %d plaza(s) on %s '
-        '(checked %d densified points vs %d plazas)',
+        '(point-to-polyline, buffer %.0fm, %d segments vs %d plazas)',
         truck_type, vehicle_class, total, len(matched),
         ', '.join(sorted(routes_hit)) or 'no SANRAL routes',
-        len(dense), len(plazas),
+        TOLL_MATCH_BUFFER_M, len(segments), len(plazas),
     )
 
     return TollResult(

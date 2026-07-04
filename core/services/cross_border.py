@@ -43,22 +43,27 @@ _CBRTA_APPLICATION_FEE = 798    # Schedule 1, Part B
 _CBRTA_PERMIT_14DAY_CLASS1 = 1_050  # Schedule 2, Part B, Class 1, 14 days
 _CBRTA_SA_BORDER_FEE = _CBRTA_APPLICATION_FEE + _CBRTA_PERMIT_14DAY_CLASS1  # 1 848
 
+# Per-corridor crossing fee = SA-side CBRTA permit + destination-country entry costs
+# (road-access, carbon tax, third-party insurance, gate pass) folded into one number.
+# KEY DISTINCTION: SACU members (NA, BW, LS, SZ) have far cheaper crossings than
+# non-SACU (ZW, MZ, ...) — Zimbabwe alone adds carbon+insurance+gate+road-access
+# (~USD 150 ≈ R2 600). These are ESTIMATES anchored to client-reported real costs
+# (NA≈R697, BW≈R700, ZW≈R3 850) — validate against actual invoices; DB rows override.
+_SACU_CROSSING_FEE = 350   # SACU corridor — reduced (no full foreign permit regime)
 _FALLBACK_BORDER_FEES: dict[str, int] = {
-    # SA exits — official 2025 CBRTA rates (application + 14-day Class 1 permit)
-    'SA-ZW': _CBRTA_SA_BORDER_FEE,  # Beitbridge
-    'SA-BW': _CBRTA_SA_BORDER_FEE,  # Kopfontein / Ramatlabama
-    'SA-NA': _CBRTA_SA_BORDER_FEE,  # Vioolsdrift / Nakop
-    'SA-MZ': _CBRTA_SA_BORDER_FEE,  # Lebombo / Komatipoort
-    'SA-LS': _CBRTA_SA_BORDER_FEE,  # Maseru Bridge / Caledonspoort
-    'SA-SZ': _CBRTA_SA_BORDER_FEE,  # Oshoek / Ngwenya
-    # SA re-entries — same CBRTA permit required on return
-    'ZW-SA': _CBRTA_SA_BORDER_FEE,
-    'BW-SA': _CBRTA_SA_BORDER_FEE,
-    'NA-SA': _CBRTA_SA_BORDER_FEE,
-    'MZ-SA': _CBRTA_SA_BORDER_FEE,
-    'LS-SA': _CBRTA_SA_BORDER_FEE,
-    'SZ-SA': _CBRTA_SA_BORDER_FEE,
-    # Multi-hop crossings — 2024 industry estimates (non-SA, not in gazette)
+    # Non-SACU SA exits — CBRTA permit + destination entry (carbon/insurance/gate/road)
+    'SA-ZW': 2600,  # Beitbridge (Zimbabwe is the most expensive corridor)
+    'SA-MZ': 2200,  # Lebombo / Komatipoort
+    # SACU SA exits — reduced
+    'SA-BW': _SACU_CROSSING_FEE,  # Kopfontein / Ramatlabama
+    'SA-NA': _SACU_CROSSING_FEE,  # Vioolsdrift / Nakop
+    'SA-LS': _SACU_CROSSING_FEE,  # Maseru Bridge / Caledonspoort
+    'SA-SZ': _SACU_CROSSING_FEE,  # Oshoek / Ngwenya
+    # SA re-entries — same cost class on return
+    'ZW-SA': 2600, 'MZ-SA': 2200,
+    'BW-SA': _SACU_CROSSING_FEE, 'NA-SA': _SACU_CROSSING_FEE,
+    'LS-SA': _SACU_CROSSING_FEE, 'SZ-SA': _SACU_CROSSING_FEE,
+    # Multi-hop crossings — industry estimates (non-SA, not in SA gazette)
     'ZW-ZM': 900, 'ZW-MW': 850,
     'ZM-TZ': 1200, 'TZ-KE': 1100,
 }
@@ -66,9 +71,10 @@ _FALLBACK_WEIGHBRIDGE: dict[str, int] = {
     'ZW': 250, 'BW': 200, 'NA': 180, 'MZ': 220,
     'ZM': 280, 'MW': 260, 'TZ': 320, 'KE': 300, 'LS': 150, 'SZ': 160,
 }
+# Foreign in-country toll/transit rate (ZAR/km). Zimbabwe transit ≈ USD1/10km ≈ R0.90/km.
 _FALLBACK_TOLL_RATE: dict[str, float] = {
-    'ZW': 0.45, 'BW': 0.30, 'NA': 0.25, 'MZ': 0.40,
-    'ZM': 0.50, 'MW': 0.45, 'TZ': 0.55, 'KE': 0.60, 'LS': 0.20, 'SZ': 0.22,
+    'ZW': 0.90, 'BW': 0.30, 'NA': 0.25, 'MZ': 0.55,
+    'ZM': 0.60, 'MW': 0.55, 'TZ': 0.60, 'KE': 0.65, 'LS': 0.20, 'SZ': 0.22,
 }
 # Approximate km from Johannesburg to SA border post for each neighbour
 _FALLBACK_SA_BORDER_KM: dict[str, float] = {
@@ -311,11 +317,11 @@ def calculate_sa_tolls_for_cross_border(
     if not highway:
         return {'toll_zar': 0.0, 'breakdown': [], 'route': None}
 
-    from core.services.toll_calculator import TRUCK_TYPE_TO_CLASS, VEHICLE_TO_TOLL_TYPE_LOOKUP
+    from core.services.toll_calculator import TRUCK_TYPE_TO_CLASS, resolve_toll_truck_type
     try:
         from core.models.toll_plaza import TollPlaza
 
-        toll_truck = VEHICLE_TO_TOLL_TYPE_LOOKUP.get(vehicle_type, 'combination')
+        toll_truck = resolve_toll_truck_type(vehicle_type)
         vehicle_class = TRUCK_TYPE_TO_CLASS.get(toll_truck, 5)
 
         # For SZ via N4 only charge plazas within SA portion (~100km before Oshoek)
