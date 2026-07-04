@@ -20,6 +20,43 @@ from core.services.quote_ml import QuoteMLModel
 logger = logging.getLogger(__name__)
 
 
+def _sg_float(v, default=0.0):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _sg_int(v, default=0):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _sg_clamp(v, lo, hi):
+    return max(lo, min(hi, v))
+
+
+def _sg_extract_json(text):
+    """Best-effort parse of the first JSON object in an LLM reply (or None)."""
+    if not text:
+        return None
+    import json
+    import re
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    m = re.search(r'\{.*\}', text, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except Exception:
+            return None
+    return None
+
+
 class FuelPriceCurrentView(APIView):
     """GET /api/v1/fuel-prices/current/ — returns current diesel price with staleness check."""
     permission_classes = [IsAuthenticated]
@@ -28,12 +65,16 @@ class FuelPriceCurrentView(APIView):
         try:
             fuel_price = fetch_fuel_prices()
 
-            # Check staleness: if fuel price is >7 days old
+            # Stale if: source is a fallback (live scrape failed), or data is >35 days old
             days_old = (timezone.now().date() - fuel_price.date).days
-            is_stale = days_old > 7
+            is_fallback = fuel_price.source in ('FALLBACK', 'FALLBACK_LATEST')
+            is_stale = is_fallback or days_old > 35
             stale_warning = None
             if is_stale:
-                stale_warning = f"Last update {days_old} days ago; consider manual refresh"
+                if is_fallback:
+                    stale_warning = "Live price fetch failed — showing estimated price. Update via Admin > Fuel Prices."
+                else:
+                    stale_warning = f"Last update {days_old} days ago; consider manual refresh"
 
             return Response({
                 'success': True,
@@ -55,6 +96,31 @@ class FuelPriceCurrentView(APIView):
                 'success': False,
                 'error': str(e),
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    def post(self, request):
+        """Admin override: POST {diesel_inland, diesel_coastal} to set current month's price."""
+        if not request.user.is_staff:
+            return Response({'error': 'Staff only'}, status=status.HTTP_403_FORBIDDEN)
+
+        diesel_inland = request.data.get('diesel_inland')
+        diesel_coastal = request.data.get('diesel_coastal')
+        if not diesel_inland:
+            return Response({'error': 'diesel_inland is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        from decimal import Decimal
+        from datetime import date
+        from core.models.fuel_price import FuelPrice
+
+        today = date.today().replace(day=1)
+        FuelPrice.objects.update_or_create(
+            date=today,
+            defaults={
+                'diesel_inland': Decimal(str(diesel_inland)),
+                'diesel_coastal': Decimal(str(diesel_coastal or diesel_inland)),
+                'source': 'MANUAL',
+            }
+        )
+        return Response({'success': True, 'date': today.isoformat(), 'diesel_inland': float(diesel_inland)})
 
 
 class AIQuoteSuggestionView(APIView):
@@ -85,126 +151,138 @@ class AIQuoteSuggestionView(APIView):
                     'error': 'actual_cost must be > 0',
                 }, status=status.HTTP_400_BAD_REQUEST)
 
-            model = QuoteMLModel()
-            if not model.is_trained():
-                # Rule-based fallback: SA trucking industry standard margins
-                # 15–18% for standard loads, adjusted for distance
-                distance_km = float(data.get('distance_km', 0))
-                margin = 0.18 if distance_km > 500 else 0.15
-                suggested_price = round(actual_cost * (1 + margin), 2)
-                return Response({
-                    'success': True,
-                    'suggested_price': suggested_price,
-                    'margin_pct': round(margin * 100, 1),
-                    'confidence': 0.55,
-                    'margin_range': {'lower': 10.0, 'upper': 22.0},
-                    'top_features': [
-                        {'feature': 'distance_km', 'importance': 0.4},
-                        {'feature': 'fuel_cost', 'importance': 0.3},
-                        {'feature': 'toll_cost', 'importance': 0.2},
-                    ],
-                    'source': 'rule_based',
-                    'note': 'Rule-based estimate (ML model not yet trained)',
-                })
+            # The LightGBM margin model is OPTIONAL. If its libraries are missing or
+            # it isn't trained, we DON'T error — we ground the suggestion in the real
+            # cost breakdown + real lane market rate + the expected-profit optimiser,
+            # and let OpenAI produce/justify the price (validated so it stays real).
+            distance_km = _sg_float(data.get('distance_km'), 0.0)
+            fuel_cost = _sg_float(data.get('fuel_cost'), 0.0)
+            toll_cost = _sg_float(data.get('toll_cost'), 0.0)
+            driver_cost = _sg_float(data.get('driver_cost'), 0.0)
+            client_tier = _sg_int(data.get('client_tier'), 1)
+            days_until = _sg_int(data.get('days_until_departure'), 7)
+            hist = _sg_clamp(_sg_float(data.get('historical_acceptance_rate'), 0.5), 0.0, 1.0)
 
-            # Build feature dict — fill in defaults for missing features
-            features = {
-                'route_id': int(data.get('route_id', 0)),
-                'distance_km': float(data.get('distance_km', 0)),
-                'truck_type': int(data.get('truck_type', 0)),
-                'load_type': int(data.get('load_type', 0)),
-                'load_weight': float(data.get('load_weight', 0)),
-                'fuel_price': float(data.get('fuel_price', 22.0)),
-                'toll_cost': float(data.get('toll_cost', 0)),
-                'driver_cost': float(data.get('driver_cost', 0)),
-                'client_tier': int(data.get('client_tier', 1)),
-                'historical_acceptance_rate': float(data.get('historical_acceptance_rate', 0.7)),
-                'day_of_week': int(date.today().weekday()),
-                'month': int(date.today().month),
-                'is_holiday': int(data.get('is_holiday', 0)),
-                'is_return_load': int(data.get('is_return_load', 0)),
-                'competitor_quote': float(data.get('competitor_quote', 0)),
-                'urgency': int(data.get('urgency', 1)),
-                'route_popularity': float(data.get('route_popularity', 0.5)),
-                'weather_risk': float(data.get('weather_risk', 0)),
-                'historical_margin_avg': float(data.get('historical_margin_avg', 0.18)),
-                'fleet_utilization': float(data.get('fleet_utilization', 0.75)),
-                'deadhead_prob': float(data.get('deadhead_prob', 0.3)),
-                'load_value_zar': float(data.get('load_value_zar', 0)),
-            }
+            from core.views import resolve_user_company
+            company = resolve_user_company(request.user)
 
-            prediction = model.predict_optimal_margin(features, actual_cost, top_n=5)
-            if not prediction:
-                return Response({
-                    'success': False,
-                    'error': 'Prediction failed',
-                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            # 1) Real lane market rate (cross-platform -> own quotes -> SA estimate -> cost anchor).
+            origin = str(data.get('origin') or '').strip()
+            destination = str(data.get('destination') or '').strip()
+            vehicle_type = str(data.get('vehicle_type') or '').strip()
+            market_rate, market_rate_source = 0.0, 'none'
+            try:
+                from core.services.lane_benchmark import resolve_market_rate
+                rate, src = resolve_market_rate(origin, destination, vehicle_type or None, company=company)
+                if rate and rate > 0:
+                    market_rate, market_rate_source = float(rate), src
+            except Exception as exc:
+                logger.warning('suggest: market-rate resolve failed: %s', exc)
+            if market_rate <= 0:
+                market_rate = actual_cost * 1.25
+                market_rate_source = 'cost_anchor'
 
-            # Calculate win probability (Sprint 1)
+            # 2) Deterministic, grounded expected-profit optimum (anchor + sane band).
+            from core.services.margin_optimizer import optimize_price
+            opt = optimize_price(
+                total_cost=actual_cost, market_rate=market_rate,
+                client_tier=client_tier, days_until_departure=days_until,
+                historical_acceptance_rate=hist,
+            )
+            anchor_price = _sg_float(opt.get('optimal_price'), 0.0) or round(actual_cost * 1.18, 2)
+            curve = opt.get('curve') or []
+            band_low = min((p['price'] for p in curve), default=round(actual_cost * 1.05, 2))
+            band_high = max((p['price'] for p in curve), default=round(actual_cost * 1.45, 2))
+
+            suggested_price = anchor_price
+            confidence = 0.7
+            rationale = ''
+            source = 'optimizer'
+
+            # 3) OpenAI layer — reasons over the REAL numbers; output validated + clamped.
+            try:
+                from core.services import agent as agent_svc
+                if agent_svc._provider():
+                    import json
+                    payload = {
+                        'actual_cost': round(actual_cost, 2),
+                        'distance_km': distance_km,
+                        'fuel_cost': round(fuel_cost, 2),
+                        'toll_cost': round(toll_cost, 2),
+                        'driver_cost': round(driver_cost, 2),
+                        'market_rate': round(market_rate, 2),
+                        'market_rate_source': market_rate_source,
+                        'optimizer_anchor_price': round(anchor_price, 2),
+                        'price_band': {'low': round(band_low, 2), 'high': round(band_high, 2)},
+                        'client_tier': client_tier,
+                        'days_until_departure': days_until,
+                    }
+                    sys_prompt = (
+                        "You are a pricing analyst for a South African road-freight operator. "
+                        "Suggest ONE quote price in ZAR that balances winning the load against margin, "
+                        "grounded ONLY in the numbers provided (real cost breakdown, real market rate, "
+                        "and the optimiser anchor/band). Never invent figures. The price MUST be >= "
+                        "actual_cost and SHOULD stay within price_band. Reply with STRICT JSON only: "
+                        '{"suggested_price": number, "confidence": number between 0 and 1, '
+                        '"rationale": "one or two sentences"}'
+                    )
+                    raw = agent_svc._llm_generate(
+                        sys_prompt, [{'role': 'user', 'content': json.dumps(payload)}]
+                    )
+                    parsed = _sg_extract_json(raw)
+                    if parsed and parsed.get('suggested_price') is not None:
+                        lo = max(actual_cost, band_low, anchor_price * 0.90)
+                        hi = max(lo, min(band_high, anchor_price * 1.10))
+                        suggested_price = _sg_clamp(_sg_float(parsed.get('suggested_price'), anchor_price), lo, hi)
+                        confidence = _sg_clamp(_sg_float(parsed.get('confidence'), 0.7), 0.3, 0.95)
+                        rationale = str(parsed.get('rationale') or '').strip()[:400]
+                        source = 'openai'
+            except Exception as exc:
+                logger.warning('suggest: OpenAI layer failed, using optimizer: %s', exc)
+
+            # 4) Win probabilities at the chosen price (and +/-5%). Heuristic-safe.
+            win_probability = win_low = win_high = None
             try:
                 from core.services.quote_ml import WinProbabilityModel
+                try:
+                    win_model = WinProbabilityModel()
+                except Exception:
+                    class _HeuristicWin:
+                        model = None
+                    win_model = _HeuristicWin()
+                    win_model.predict_proba = WinProbabilityModel.predict_proba.__get__(win_model)
 
-                suggested_price = prediction.recommended_price
-                market_rate = 43800  # Default market rate (JHB-CPT interlink)
-                price_ratio = suggested_price / market_rate if market_rate > 0 else 1.0
+                def _pw(price):
+                    ratio = (price / market_rate) if market_rate > 0 else 1.0
+                    return round(float(win_model.predict_proba(
+                        price_ratio=ratio, client_tier=client_tier,
+                        days_until_departure=days_until, historical_acceptance_rate=hist,
+                    )), 2)
+                win_probability = _pw(suggested_price)
+                win_low = _pw(suggested_price * 0.95)
+                win_high = _pw(suggested_price * 1.05)
+            except Exception as exc:
+                logger.warning('suggest: win-probability failed: %s', exc)
 
-                client_tier = int(data.get('client_tier', 1))
-                days_until_departure = int(data.get('days_until_departure', 2))
-
-                win_model = WinProbabilityModel()
-                win_probability = win_model.predict_proba(
-                    price_ratio=price_ratio,
-                    client_tier=client_tier,
-                    days_until_departure=days_until_departure,
-                    historical_acceptance_rate=features['historical_acceptance_rate'],
-                    month=features['month'],
-                    day_of_week=features['day_of_week'],
-                    route_popularity=features['route_popularity'],
-                )
-
-                # Calculate win probability at ±5%
-                win_probability_at_lower_price = win_model.predict_proba(
-                    price_ratio=(suggested_price * 0.95) / market_rate,
-                    client_tier=client_tier,
-                    days_until_departure=days_until_departure,
-                    historical_acceptance_rate=features['historical_acceptance_rate'],
-                    month=features['month'],
-                    day_of_week=features['day_of_week'],
-                    route_popularity=features['route_popularity'],
-                )
-
-                win_probability_at_higher_price = win_model.predict_proba(
-                    price_ratio=(suggested_price * 1.05) / market_rate,
-                    client_tier=client_tier,
-                    days_until_departure=days_until_departure,
-                    historical_acceptance_rate=features['historical_acceptance_rate'],
-                    month=features['month'],
-                    day_of_week=features['day_of_week'],
-                    route_popularity=features['route_popularity'],
-                )
-            except Exception as win_err:
-                # If win probability fails, continue without it
-                win_probability = None
-                win_probability_at_lower_price = None
-                win_probability_at_higher_price = None
+            margin_pct = round((suggested_price - actual_cost) / actual_cost * 100, 1) if actual_cost else 0.0
+            margin_lower = round((band_low - actual_cost) / actual_cost * 100, 1) if actual_cost else 5.0
+            margin_upper = round((band_high - actual_cost) / actual_cost * 100, 1) if actual_cost else 45.0
 
             response_data = {
                 'success': True,
-                'suggested_price': prediction.recommended_price,
-                'margin_pct': prediction.predicted_margin_pct * 100,
-                'confidence': prediction.confidence,
-                'margin_range': {
-                    'lower': prediction.margin_lower * 100,
-                    'upper': prediction.margin_upper * 100,
-                },
-                'top_features': prediction.feature_importances,
+                'suggested_price': round(suggested_price, 2),
+                'margin_pct': margin_pct,
+                'confidence': round(confidence, 2),
+                'margin_range': {'lower': margin_lower, 'upper': margin_upper},
+                'source': source,
+                'rationale': rationale,
+                'market_rate': round(market_rate, 2),
+                'market_rate_source': market_rate_source,
             }
-
-            # Add win probability fields if available
             if win_probability is not None:
-                response_data['win_probability'] = round(win_probability, 2)
-                response_data['win_probability_at_lower_price'] = round(win_probability_at_lower_price, 2)
-                response_data['win_probability_at_higher_price'] = round(win_probability_at_higher_price, 2)
+                response_data['win_probability'] = win_probability
+                response_data['win_probability_at_lower_price'] = win_low
+                response_data['win_probability_at_higher_price'] = win_high
 
             return Response(response_data)
 
@@ -246,106 +324,65 @@ class RevenueGuardView(APIView):
                     'error': 'total_cost and quote_price must be > 0',
                 }, status=status.HTTP_400_BAD_REQUEST)
 
-            margin = (quote_price - total_cost) / quote_price
-            margin_pct = margin * 100
-
-            # Read thresholds from company settings (fall back to defaults if no company)
             company = getattr(request.user, 'company', None)
-            at_risk_threshold = float(company.margin_at_risk_pct) if company else 5.0
-            caution_threshold = float(company.margin_caution_pct) if company else 12.0
-            target_margin = float(company.margin_target_pct) if company else 10.0
-
-            # Initialize explanations and suggestions
-            explanations = []
-            suggestions = []
-
-            # Risk thresholds
-            if margin_pct < at_risk_threshold:
-                risk_level = 'AT_RISK'
-                color = 'danger'
-                explanations.append(f"Margin is below {at_risk_threshold:.0f}% safety threshold ({margin_pct:.1f}%)")
-            elif margin_pct < caution_threshold:
-                risk_level = 'CAUTION'
-                color = 'warning'
-                explanations.append(f"Margin is below {caution_threshold:.0f}% — limited buffer for unexpected costs ({margin_pct:.1f}%)")
-            else:
-                risk_level = 'SAFE'
-                color = 'success'
-                explanations.append(f"Margin is healthy at {margin_pct:.1f}%")
-
-            # Enhanced analysis if quote_id provided
+            quote = None
             if quote_id:
                 try:
-                    quote = Quote.objects.get(id=quote_id, company=request.user.company)
-
-                    # Fuel risk analysis
-                    if quote.fuel_price_at_creation:
-                        current_fuel = fetch_fuel_prices()
-                        fuel_current = float(current_fuel.diesel_inland)
-                        fuel_at_creation = float(quote.fuel_price_at_creation)
-                        if fuel_at_creation > 0:
-                            delta_pct = ((fuel_current - fuel_at_creation) / fuel_at_creation) * 100
-                            if delta_pct > 3:
-                                delta_zar = fuel_current - fuel_at_creation
-                                explanations.append(f"Fuel cost has increased R{delta_zar:.2f}/L since your last quote on this route")
-                                surcharge = int(fuel_cost * (delta_pct / 100))
-                                suggestions.append(f"Add a fuel surcharge of R{surcharge} to restore margin to 12%")
-
-                    # Client payment history risk
-                    if quote.customer:
-                        late_invoices = Invoice.objects.filter(
-                            customer=quote.customer,
-                            status='paid',
-                            actual_payment_date__gt=F('due_date')
-                        ).count()
-                        total_invoices = Invoice.objects.filter(
-                            customer=quote.customer,
-                            status='paid'
-                        ).count()
-
-                        if late_invoices > 2 and total_invoices > 0:
-                            explanations.append(f"This client has paid late on {late_invoices} of last {total_invoices} invoices")
-                            suggestions.append("Require 50% upfront deposit given client payment history")
-
-                    # CPK analysis
-                    if distance_km > 0:
-                        cpk = total_cost / distance_km
-                        # Get fleet average (mock for now)
-                        fleet_avg_cpk = 19.80
-                        if cpk > fleet_avg_cpk * 1.1:
-                            explanations.append(f"Your CPK on this route is R{cpk:.2f} — above fleet average of R{fleet_avg_cpk:.2f}")
-                            suggestions.append("Review your cost model — this route may need a base rate increase")
-
+                    quote = Quote.objects.get(id=quote_id, company=company)
                 except Quote.DoesNotExist:
-                    pass
-                except Exception:
-                    pass
+                    quote = None
 
-            # Price adjustment suggestion
-            if margin_pct < at_risk_threshold:
-                t = target_margin / 100
-                increase_needed = total_cost * t / (1 - t) - quote_price
-                suggestions.append(f"Current margin is {margin_pct:.1f}%. Consider increasing price by R{int(increase_needed)} to reach {target_margin:.0f}% margin")
+            from core.services.quote_analysis import assess_revenue_guard
+            result = assess_revenue_guard(
+                total_cost=total_cost, quote_price=quote_price,
+                distance_km=distance_km, fuel_cost=fuel_cost,
+                company=company, quote=quote,
+            )
+            result.setdefault('factors', [])  # legacy field
+            return Response(result)
 
-            # Margin floor calculation
-            margin_floor = int(total_cost)
-            margin_floor_display = f"R{margin_floor:,}"
-
+        except Exception as e:
             return Response({
-                'success': True,
-                'status': risk_level,
-                'margin_pct': round(margin_pct, 2),
-                'factors': [],  # Legacy field
-                'explanations': explanations,
-                'suggestions': suggestions,
-                'margin_floor': margin_floor,
-                'margin_floor_display': margin_floor_display,
-                # Legacy fields
-                'risk_level': risk_level,
-                'color': color,
-                'warnings': explanations if risk_level != 'SAFE' else [],
-            })
+                'success': False,
+                'error': str(e),
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+
+class AIQuoteAnalyzeView(APIView):
+    """POST /api/v1/quotes/analyze/ — one comprehensive AI analysis of a quote.
+
+    Synthesises cost correctness, fuel freshness/usage, profit optimisation and
+    market context into a single response, plus an LLM narrative + suggested
+    price. Consumes the Step 1 + Step 2 data the New Quote flow already has.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        try:
+            data = request.data
+            payload = {
+                'quote_total': data.get('quote_total'),
+                'direct_cost': data.get('direct_cost'),
+                'distance_km': data.get('distance_km'),
+                'origin': data.get('origin'),
+                'destination': data.get('destination'),
+                'vehicle_type': data.get('vehicle_type'),
+                'weight': data.get('weight'),
+                'fuel_cost': data.get('fuel_cost'),
+                'toll_cost': data.get('toll_cost'),
+                'driver_cost': data.get('driver_cost'),
+                'fuel_usage_litres': data.get('fuel_usage_litres'),
+                'fuel_price_used': data.get('fuel_price_used'),
+                'market_rate': data.get('market_rate'),
+                'client_tier': data.get('client_tier', 'standard'),
+                'days_until_departure': data.get('days_until_departure', 7),
+            }
+            company = getattr(request.user, 'company', None)
+            from core.services.quote_analysis import analyze_quote
+            result = analyze_quote(payload, company=company)
+            if not result.get('success'):
+                return Response(result, status=status.HTTP_400_BAD_REQUEST)
+            return Response(result)
         except Exception as e:
             return Response({
                 'success': False,
@@ -535,27 +572,53 @@ class AIVoiceQuoteView(APIView):
             if not audio_file:
                 return Response({'success': False, 'error': 'No audio file provided'}, status=400)
 
-            # Try OpenAI Whisper
             import os
             openai_key = os.environ.get('OPENAI_API_KEY')
-            if openai_key:
-                import openai
-                client = openai.OpenAI(api_key=openai_key)
-                transcript = client.audio.transcriptions.create(
-                    model='whisper-1',
-                    file=audio_file,
-                )
-                return Response({
-                    'success': True,
-                    'text': transcript.text,
-                })
-            else:
+            if not openai_key:
                 return Response({
                     'success': False,
                     'error': 'Voice transcription not configured (no OpenAI key)',
                 }, status=503)
 
+            # Read the upload up front so we can reject empty/too-short clips with a
+            # clear message instead of letting Whisper 400 (a common cause: the mic
+            # button was tapped and released before any audio was captured).
+            audio_bytes = audio_file.read()
+            if not audio_bytes:
+                return Response({
+                    'success': False,
+                    'error': 'Recording was empty — hold the mic, speak, then stop.',
+                }, status=400)
+
+            import openai
+            client = openai.OpenAI(api_key=openai_key)
+            # Explicit (name, bytes, content_type) tuple so Whisper detects the
+            # format from the extension. The frontend always sends a webm blob.
+            try:
+                transcript = client.audio.transcriptions.create(
+                    model='whisper-1',
+                    file=('recording.webm', audio_bytes, 'audio/webm'),
+                )
+            except openai.OpenAIError as oe:
+                # Whisper rejected the audio (too short, undecodable format, etc.).
+                # Surface its message and log the details for diagnosis.
+                msg = getattr(oe, 'message', None) or str(oe)
+                logger.warning(
+                    'Whisper rejected audio (%d bytes, upload content_type=%s): %s',
+                    len(audio_bytes), getattr(audio_file, 'content_type', None), msg,
+                )
+                return Response({
+                    'success': False,
+                    'error': f'Could not transcribe the recording: {msg}',
+                }, status=502)
+
+            return Response({
+                'success': True,
+                'text': transcript.text,
+            })
+
         except Exception as e:
+            logger.exception('Voice transcription failed')
             return Response({
                 'success': False,
                 'error': str(e),

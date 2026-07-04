@@ -235,8 +235,25 @@ class InvoicePDFGenerator:
         elements.append(Paragraph("ITEMS:", self.styles['SectionHeader']))
         elements.append(Spacer(1, 3*mm))
 
-        # Header row
-        data = [['Description', 'Quantity', 'Unit Price', 'Amount']]
+        # Paragraph styles for wrapping cell content
+        desc_style = ParagraphStyle(
+            'ItemDesc',
+            parent=self.styles['Normal'],
+            fontSize=9,
+            leading=12,
+            wordWrap='LTR',
+        )
+        header_desc_style = ParagraphStyle(
+            'ItemDescHeader',
+            parent=self.styles['Normal'],
+            fontSize=10,
+            fontName='Helvetica-Bold',
+            textColor=colors.white,
+            leading=13,
+        )
+
+        # Header row — wrap header in Paragraph too so styles apply consistently
+        data = [[Paragraph('Description', header_desc_style), 'Quantity', 'Unit Price', 'Amount']]
 
         # Line items
         line_items = self.invoice.line_items or []
@@ -249,7 +266,7 @@ class InvoicePDFGenerator:
 
         for item in line_items:
             data.append([
-                item.get('description', ''),
+                Paragraph(str(item.get('description', '')), desc_style),
                 str(item.get('quantity', 1)),
                 f"R {_num(item.get('unit_price')):,.2f}",
                 f"R {_num(item.get('amount')):,.2f}",
@@ -257,8 +274,12 @@ class InvoicePDFGenerator:
 
         # If no line items, show basic freight charge
         if not line_items:
+            if self.invoice.load:
+                desc_text = f"Freight Charge - {self.invoice.load.pickup_location} → {self.invoice.load.delivery_location}"
+            else:
+                desc_text = "Freight Charge - Service"
             data.append([
-                f"Freight Charge - {self.invoice.load.pickup_location + ' → ' + self.invoice.load.delivery_location if self.invoice.load else 'Service'}",
+                Paragraph(desc_text, desc_style),
                 '1',
                 f"R {self.invoice.subtotal:,.2f}",
                 f"R {self.invoice.subtotal:,.2f}",
@@ -303,24 +324,34 @@ class InvoicePDFGenerator:
         if self.invoice.discount > 0:
             data.append(['Discount:', f"R -{self.invoice.discount:,.2f}"])
 
-        data.append(['<b>TOTAL:</b>', f"<b>R {self.invoice.total_amount:,.2f}</b>"])
+        total_row = len(data)
+        data.append(['TOTAL:', f"R {self.invoice.total_amount:,.2f}"])
 
-        if self.invoice.paid_amount > 0:
+        has_balance = self.invoice.paid_amount > 0
+        if has_balance:
             data.append(['Paid:', f"R {self.invoice.paid_amount:,.2f}"])
-            data.append(['<b>Balance Due:</b>', f"<b>R {self.invoice.balance:,.2f}</b>"])
+            data.append(['Balance Due:', f"R {self.invoice.balance:,.2f}"])
 
-        table = Table(data, colWidths=[140*mm, 35*mm])
-        table.setStyle(TableStyle([
-            ('FONTNAME', (0, 0), (0, -1), 'Helvetica'),
+        bold_rows = [total_row]
+        if has_balance:
+            bold_rows.append(len(data) - 1)
+
+        style = [
+            ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
             ('FONTSIZE', (0, 0), (-1, -1), 10),
             ('ALIGN', (0, 0), (0, -1), 'RIGHT'),
             ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
-            # Last row (total) styling
-            ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, -1), (-1, -1), 12),
-            ('LINEABOVE', (0, -1), (-1, -1), 1.5, colors.HexColor('#1e3a8a')),
-            ('TOPPADDING', (0, -1), (-1, -1), 8),
-        ]))
+        ]
+        for r in bold_rows:
+            style += [
+                ('FONTNAME', (0, r), (-1, r), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, r), (-1, r), 12),
+                ('LINEABOVE', (0, r), (-1, r), 1.5, colors.HexColor('#1e3a8a')),
+                ('TOPPADDING', (0, r), (-1, r), 8),
+            ]
+
+        table = Table(data, colWidths=[140*mm, 35*mm])
+        table.setStyle(TableStyle(style))
 
         elements.append(table)
         return elements

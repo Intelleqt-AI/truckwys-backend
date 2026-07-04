@@ -3,6 +3,7 @@
 import csv
 import json
 import logging
+import math
 import os
 from dataclasses import dataclass
 from datetime import datetime
@@ -532,25 +533,27 @@ class WinProbabilityModel:
             Probability [0.0, 1.0]
         """
         if self.model is None:
-            # Return heuristic if model not trained
-            # Simple heuristic: lower price = higher win prob
-            base_prob = 0.5
-            if price_ratio < 0.9:
-                base_prob = 0.75
-            elif price_ratio < 0.95:
-                base_prob = 0.65
-            elif price_ratio > 1.1:
-                base_prob = 0.35
-            elif price_ratio > 1.05:
-                base_prob = 0.45
+            # Smooth heuristic used until a model is trained on real QuoteOutcome
+            # data. A logistic (sigmoid) curve in price-vs-market: at market price
+            # (ratio = 1.0) win ~ 0.5, falling smoothly as you price above market
+            # and rising below it. Being smooth & monotonic (no hardcoded buckets)
+            # means the margin optimiser finds a genuine interior optimum instead
+            # of snapping to a bucket edge. Then nudge by the real signals.
+            STEEPNESS = 7.0  # how sharply win-prob reacts to price vs market
+            base_prob = 1.0 / (1.0 + math.exp(STEEPNESS * (float(price_ratio) - 1.0)))
 
-            # Adjust for client tier
-            if client_tier == 2:  # VIP
-                base_prob += 0.05
-            elif client_tier == 0:  # New
-                base_prob -= 0.05
+            # Urgency: the closer to departure, the more a shipper will accept
+            # (capacity gets scarce). Bounded nudge.
+            urgency_adj = max(-0.05, min(0.10, (7 - int(days_until_departure)) * 0.01))
 
-            return max(0.0, min(1.0, base_prob))
+            # Client tier: VIP relationships convert better, new clients worse.
+            tier_adj = {0: -0.05, 1: 0.0, 2: 0.07}.get(int(client_tier), 0.0)
+
+            # Anchor mildly toward the client's own historical acceptance rate.
+            hist_adj = (float(historical_acceptance_rate) - 0.5) * 0.10
+
+            prob = base_prob + urgency_adj + tier_adj + hist_adj
+            return max(0.02, min(0.98, prob))
 
         # Use trained model
         X = np.array([[

@@ -7,11 +7,13 @@ case "$ROLE" in
   web)
     python manage.py migrate --noinput
     python manage.py collectstatic --noinput
-    exec gunicorn config.wsgi:application \
+    exec gunicorn config.asgi:application \
+      -k uvicorn.workers.UvicornWorker \
       --bind "0.0.0.0:${PORT:-8000}" \
-      --workers "${WEB_CONCURRENCY:-3}" \
+      --workers 1 \
       --timeout 120 \
-      --access-logfile - --error-logfile -
+      --access-logfile - --error-logfile - \
+      --log-level debug
     ;;
   worker)
     exec celery -A config worker --loglevel=info --concurrency="${CELERY_CONCURRENCY:-2}"

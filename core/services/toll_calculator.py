@@ -15,6 +15,8 @@ Usage::
 """
 
 import logging
+import math as _math
+import re as _re
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Optional
@@ -47,6 +49,55 @@ VEHICLE_TO_TOLL_TYPE_LOOKUP: dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
+# City alias normaliser — maps suburbs/metro areas to their parent city name.
+# Applied before keyword matching so that "Amanzimtoti" is treated as "durban",
+# "Sandton" as "johannesburg", etc.
+# ---------------------------------------------------------------------------
+
+_CITY_ALIASES: dict[str, str] = {
+    # Durban / eThekwini metro
+    'amanzimtoti': 'durban', 'pinetown': 'durban', 'umhlanga': 'durban',
+    'ballito': 'durban', 'tongaat': 'durban', 'ethekwini': 'durban',
+    'westville': 'durban', 'berea': 'durban', 'overport': 'durban',
+    'umlazi': 'durban', 'isipingo': 'durban', 'prospecton': 'durban',
+    'kwadukuza': 'durban', 'stanger': 'durban',
+    'durban harbour': 'durban', 'point': 'durban',
+    # Cape Town metro
+    'pinelands': 'cape town', 'bellville': 'cape town', 'goodwood': 'cape town',
+    'parow': 'cape town', 'tygervalley': 'cape town', 'tyger valley': 'cape town',
+    'stellenbosch': 'cape town', 'somerset west': 'cape town', 'strand': 'cape town',
+    'athlone': 'cape town', 'mitchells plain': 'cape town', 'khayelitsha': 'cape town',
+    'wynberg': 'cape town', 'claremont': 'cape town', 'southern suburbs': 'cape town',
+    # Johannesburg / Gauteng metro
+    'sandton': 'johannesburg', 'randburg': 'johannesburg', 'midrand': 'johannesburg',
+    'soweto': 'johannesburg', 'alberton': 'johannesburg', 'germiston': 'johannesburg',
+    'benoni': 'johannesburg', 'boksburg': 'johannesburg', 'ekurhuleni': 'johannesburg',
+    'kempton park': 'johannesburg', 'edenvale': 'johannesburg', 'roodepoort': 'johannesburg',
+    'krugersdorp': 'johannesburg', 'randfontein': 'johannesburg',
+    # Pretoria metro
+    'centurion': 'pretoria', 'soshanguve': 'pretoria', 'mamelodi': 'pretoria',
+    'hatfield': 'pretoria', 'menlyn': 'pretoria', 'tshwane': 'pretoria',
+    # Other aliases
+    'gqeberha': 'port elizabeth',
+    'mbombela': 'nelspruit',
+    'emalahleni': 'witbank',
+    'pmb': 'pietermaritzburg',
+    'bhisho': 'east london',
+}
+
+
+def _normalise_location(location: str) -> str:
+    """Expand suburbs/aliases to their canonical city name so keyword matching works.
+    Uses word-boundary matching so 'pe' never matches inside 'cape'."""
+    loc = location.lower().strip()
+    extras: list[str] = []
+    for alias, canonical in _CITY_ALIASES.items():
+        if _re.search(r'\b' + _re.escape(alias) + r'\b', loc) and canonical not in loc:
+            extras.append(canonical)
+    return loc + (' ' + ' '.join(extras) if extras else '')
+
+
+# ---------------------------------------------------------------------------
 # Route detection — maps keyword sets to route codes.
 # Each inner set must be fully covered by the combined origin+destination
 # strings for the route to be considered a match.
@@ -74,7 +125,6 @@ _ROUTE_KEYWORDS: dict[str, list[set[str]]] = {
         {'knysna', 'port elizabeth'},
         {'storms river', 'cape town'},
         {'tsitsikamma', 'cape town'},
-        {'cape town', 'pe'},
     ],
     'N3': [
         {'johannesburg', 'durban'},
@@ -104,6 +154,20 @@ _ROUTE_KEYWORDS: dict[str, list[set[str]]] = {
         {'vryburg', 'johannesburg'},
         {'kuruman', 'johannesburg'},
         {'lichtenburg', 'johannesburg'},
+    ],
+    'N17': [
+        {'johannesburg', 'ermelo'},
+        {'joburg', 'ermelo'},
+        {'johannesburg', 'swaziland'},
+        {'johannesburg', 'eswatini'},
+        {'johannesburg', 'secunda'},
+        {'johannesburg', 'standerton'},
+        {'springs', 'ermelo'},
+    ],
+    'R30': [
+        {'bloemfontein', 'brandfort'},
+        {'bloemfontein', 'winburg'},
+        {'bloemfontein', 'theunissen'},
     ],
 }
 
@@ -138,8 +202,8 @@ class TollResult:
 
 def _detect_routes(origin: str, destination: str) -> list[str]:
     """Return list of route codes that connect origin to destination."""
-    origin_lc = origin.lower().strip()
-    destination_lc = destination.lower().strip()
+    origin_lc = _normalise_location(origin)
+    destination_lc = _normalise_location(destination)
 
     matched = []
     for route_code, keyword_pairs in _ROUTE_KEYWORDS.items():
@@ -243,4 +307,133 @@ def calculate_tolls(
         routes_used=routes,
         total_zar=total,
         breakdown=breakdown,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Geofence-based toll calculation (preferred when TomTom geometry is available)
+# ---------------------------------------------------------------------------
+
+def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Straight-line distance in metres between two WGS84 points."""
+    R = 6_371_000.0
+    phi1, phi2 = _math.radians(lat1), _math.radians(lat2)
+    dphi = _math.radians(lat2 - lat1)
+    dlam = _math.radians(lon2 - lon1)
+    a = _math.sin(dphi / 2) ** 2 + _math.cos(phi1) * _math.cos(phi2) * _math.sin(dlam / 2) ** 2
+    return R * 2 * _math.atan2(_math.sqrt(a), _math.sqrt(1 - a))
+
+
+def calculate_tolls_by_geometry(
+    route_points: list,
+    truck_type: str,
+) -> TollResult:
+    """Geofence-based toll calculation using TomTom route geometry.
+
+    Parameters
+    ----------
+    route_points:
+        List of ``{"lat": float, "lon": float}`` dicts from TomTom's polyline.
+    truck_type:
+        Same values as :func:`calculate_tolls`.
+
+    Returns
+    -------
+    :class:`TollResult` with every plaza whose geofence the route passes through.
+    Falls back to an empty result (R0, warning) when no points are provided or
+    no plaza has coordinates seeded yet.
+
+    Notes
+    -----
+    Each plaza is checked at most once — the first route point inside its
+    ``radius_meters`` triggers it and the loop moves on, preventing double-charging.
+    To handle sparse TomTom polyline segments (rural stretches can be 300–500 m apart)
+    consecutive points are interpolated at 250 m intervals before matching.
+    """
+    from core.models.toll_plaza import TollPlaza
+
+    truck_type_lc = truck_type.lower().strip()
+    if truck_type_lc not in TRUCK_TYPE_TO_CLASS:
+        raise ValueError(
+            f"Unknown truck_type {truck_type!r}. "
+            f"Valid options: {sorted(TRUCK_TYPE_TO_CLASS)}"
+        )
+    vehicle_class = TRUCK_TYPE_TO_CLASS[truck_type_lc]
+
+    if not route_points:
+        return TollResult(
+            origin='', destination='', truck_type=truck_type,
+            vehicle_class=vehicle_class, routes_used=[],
+            total_zar=Decimal('0.00'),
+            warning='No route geometry provided — cannot geofence tolls',
+        )
+
+    plazas = list(
+        TollPlaza.objects
+        .filter(is_active=True)
+        .exclude(lat__isnull=True)
+        .exclude(lng__isnull=True)
+    )
+    if not plazas:
+        return TollResult(
+            origin='', destination='', truck_type=truck_type,
+            vehicle_class=vehicle_class, routes_used=[],
+            total_zar=Decimal('0.00'),
+            warning='No toll plazas with GPS coordinates seeded — run seed_toll_data --force',
+        )
+
+    # Densify the polyline: insert midpoints on segments longer than 250 m so
+    # sparse rural stretches do not skip over a plaza's geofence.
+    INTERP_STEP_M = 250.0
+    dense: list[tuple[float, float]] = []
+    for i, pt in enumerate(route_points):
+        lat, lon = float(pt['lat']), float(pt['lon'])
+        dense.append((lat, lon))
+        if i + 1 < len(route_points):
+            nxt = route_points[i + 1]
+            nlat, nlon = float(nxt['lat']), float(nxt['lon'])
+            seg_m = _haversine_m(lat, lon, nlat, nlon)
+            steps = int(seg_m // INTERP_STEP_M)
+            for s in range(1, steps):
+                frac = s / (steps)
+                dense.append((lat + frac * (nlat - lat), lon + frac * (nlon - lon)))
+
+    matched: list[TollBreakdownItem] = []
+    routes_hit: set[str] = set()
+    total = Decimal('0.00')
+
+    for plaza in plazas:
+        plaza_lat = float(plaza.lat)
+        plaza_lng = float(plaza.lng)
+        radius = plaza.radius_meters or 500
+
+        for (lat, lon) in dense:
+            if _haversine_m(lat, lon, plaza_lat, plaza_lng) <= radius:
+                tariff = plaza.get_tariff(vehicle_class)
+                matched.append(TollBreakdownItem(
+                    plaza_name=plaza.name,
+                    route=plaza.route,
+                    location_km=plaza.location_km,
+                    tariff=tariff,
+                ))
+                routes_hit.add(plaza.route)
+                total += tariff
+                break  # plaza matched — move to next plaza, no double-charge
+
+    matched.sort(key=lambda x: (x.route, x.location_km))
+
+    logger.info(
+        'Geofence tolls (%s / class %d): R%.2f across %d plaza(s) on %s '
+        '(checked %d densified points vs %d plazas)',
+        truck_type, vehicle_class, total, len(matched),
+        ', '.join(sorted(routes_hit)) or 'no SANRAL routes',
+        len(dense), len(plazas),
+    )
+
+    return TollResult(
+        origin='', destination='', truck_type=truck_type,
+        vehicle_class=vehicle_class,
+        routes_used=sorted(routes_hit),
+        total_zar=total,
+        breakdown=matched,
     )

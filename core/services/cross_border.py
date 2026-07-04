@@ -35,9 +35,31 @@ DIRECT_ROUTES = ['ZW', 'MZ', 'BW', 'NA', 'LS', 'SZ']
 # ---------------------------------------------------------------------------
 # Hardcoded fallbacks (used when DB has no matching record)
 # ---------------------------------------------------------------------------
+# SA border fees: CBRTA application fee (R 798) + 14-day Class 1 permit (R 1 050)
+# = R 1 848 per SA crossing. Source: Government Gazette No. 52198, 28 Feb 2025
+# (Cross-Border Road Transport Act Amended Regulations, 2025), effective 1 Apr 2025.
+# Non-SA multi-hop crossings remain 2024 industry estimates (not covered by SA gazette).
+_CBRTA_APPLICATION_FEE = 798    # Schedule 1, Part B
+_CBRTA_PERMIT_14DAY_CLASS1 = 1_050  # Schedule 2, Part B, Class 1, 14 days
+_CBRTA_SA_BORDER_FEE = _CBRTA_APPLICATION_FEE + _CBRTA_PERMIT_14DAY_CLASS1  # 1 848
+
 _FALLBACK_BORDER_FEES: dict[str, int] = {
-    'SA-ZW': 850, 'SA-BW': 650, 'SA-NA': 600, 'SA-MZ': 750,
-    'SA-LS': 300, 'SA-SZ': 250, 'ZW-ZM': 900, 'ZW-MW': 850,
+    # SA exits — official 2025 CBRTA rates (application + 14-day Class 1 permit)
+    'SA-ZW': _CBRTA_SA_BORDER_FEE,  # Beitbridge
+    'SA-BW': _CBRTA_SA_BORDER_FEE,  # Kopfontein / Ramatlabama
+    'SA-NA': _CBRTA_SA_BORDER_FEE,  # Vioolsdrift / Nakop
+    'SA-MZ': _CBRTA_SA_BORDER_FEE,  # Lebombo / Komatipoort
+    'SA-LS': _CBRTA_SA_BORDER_FEE,  # Maseru Bridge / Caledonspoort
+    'SA-SZ': _CBRTA_SA_BORDER_FEE,  # Oshoek / Ngwenya
+    # SA re-entries — same CBRTA permit required on return
+    'ZW-SA': _CBRTA_SA_BORDER_FEE,
+    'BW-SA': _CBRTA_SA_BORDER_FEE,
+    'NA-SA': _CBRTA_SA_BORDER_FEE,
+    'MZ-SA': _CBRTA_SA_BORDER_FEE,
+    'LS-SA': _CBRTA_SA_BORDER_FEE,
+    'SZ-SA': _CBRTA_SA_BORDER_FEE,
+    # Multi-hop crossings — 2024 industry estimates (non-SA, not in gazette)
+    'ZW-ZM': 900, 'ZW-MW': 850,
     'ZM-TZ': 1200, 'TZ-KE': 1100,
 }
 _FALLBACK_WEIGHBRIDGE: dict[str, int] = {
@@ -108,41 +130,81 @@ def _extract_country(location: str) -> str:
         'PRETORIA', 'PTA', 'BLOEMFONTEIN', 'BFN', 'PORT ELIZABETH',
         'GQEBERHA', 'EAST LONDON', 'NELSPRUIT', 'MBOMBELA', 'POLOKWANE',
         'RUSTENBURG', 'KIMBERLEY', 'GEORGE', 'SOUTH AFRICA',
+        # Major SA cities/areas not in the short list above
+        'KEMPTON PARK', 'EKURHULENI', 'SANDTON', 'MIDRAND', 'CENTURION',
+        'BOKSBURG', 'GERMISTON', 'BENONI', 'SOWETO', 'ROODEPOORT',
+        'RANDBURG', 'KRUGERSDORP', 'WITBANK', 'EMALAHLENI', 'SECUNDA',
+        'PIETERMARITZBURG', 'PMB', 'RICHARDS BAY', 'NEWCASTLE', 'VEREENIGING',
+        'VANDERBIJLPARK', 'SASOLBURG', 'UPINGTON', 'SPRINGBOK', 'VREDENDAL',
+        'WORCESTER', 'STELLENBOSCH', 'PAARL', 'MALMESBURY', 'BEAUFORT WEST',
+        'OR TAMBO', 'KING SHAKA', 'BRAM FISCHER', 'LANSERIA',
     ]):
         return 'SA'
 
-    if any(kw in loc for kw in ['HARARE', 'BULAWAYO', 'MUTARE', 'ZIMBABWE', ', ZW']):
+    # NOTE: Do NOT use short country-code suffixes like ', KE' or ', ZW' here —
+    # they are substrings of SA place names (e.g. ', KE' matches ', KEMPTON',
+    # ', ZW' matches ', ZWELITSHA', ', NA' matches ', NAPIER'). Use full city
+    # or country names only.
+    if any(kw in loc for kw in ['HARARE', 'BULAWAYO', 'MUTARE', 'ZIMBABWE']):
         return 'ZW'
-    if any(kw in loc for kw in ['LUSAKA', 'NDOLA', 'KITWE', 'ZAMBIA', ', ZM']):
+    if any(kw in loc for kw in ['LUSAKA', 'NDOLA', 'KITWE', 'LIVINGSTONE', 'ZAMBIA']):
         return 'ZM'
-    if any(kw in loc for kw in ['MAPUTO', 'BEIRA', 'NAMPULA', 'MOZAMBIQUE', ', MZ']):
+    if any(kw in loc for kw in ['MAPUTO', 'BEIRA', 'NAMPULA', 'MOZAMBIQUE']):
         return 'MZ'
-    if any(kw in loc for kw in ['GABORONE', 'FRANCISTOWN', 'MAUN', 'BOTSWANA', ', BW']):
+    if any(kw in loc for kw in ['GABORONE', 'FRANCISTOWN', 'MAUN', 'BOTSWANA']):
         return 'BW'
-    if any(kw in loc for kw in ['WINDHOEK', 'WALVIS BAY', 'SWAKOPMUND', 'NAMIBIA', ', NA']):
+    if any(kw in loc for kw in ['WINDHOEK', 'WALVIS BAY', 'SWAKOPMUND', 'NAMIBIA']):
         return 'NA'
-    if any(kw in loc for kw in ['LILONGWE', 'BLANTYRE', 'MALAWI', ', MW']):
+    if any(kw in loc for kw in ['LILONGWE', 'BLANTYRE', 'MALAWI']):
         return 'MW'
-    if any(kw in loc for kw in ['DAR ES SALAAM', 'DODOMA', 'ARUSHA', 'TANZANIA', ', TZ']):
+    if any(kw in loc for kw in ['DAR ES SALAAM', 'DODOMA', 'ARUSHA', 'TANZANIA']):
         return 'TZ'
-    if any(kw in loc for kw in ['NAIROBI', 'MOMBASA', 'KISUMU', 'KENYA', ', KE']):
+    if any(kw in loc for kw in ['NAIROBI', 'MOMBASA', 'KISUMU', 'KENYA']):
         return 'KE'
-    if any(kw in loc for kw in ['MASERU', 'LESOTHO', ', LS']):
+    if any(kw in loc for kw in ['MASERU', 'LESOTHO']):
         return 'LS'
-    if any(kw in loc for kw in ['MBABANE', 'MANZINI', 'ESWATINI', 'SWAZILAND', ', SZ']):
+    if any(kw in loc for kw in ['MBABANE', 'MANZINI', 'ESWATINI', 'SWAZILAND']):
         return 'SZ'
 
     return 'SA'
 
 
-def detect_countries(origin: str, destination: str) -> list[str] | None:
+# TomTom ISO 2/3-letter → internal 2-letter codes used throughout this service
+_ISO_TO_INTERNAL: dict[str, str] = {
+    'ZA': 'SA', 'ZAF': 'SA',
+    'SZ': 'SZ', 'SWZ': 'SZ', 'ESW': 'SZ',
+    'MZ': 'MZ', 'MOZ': 'MZ',
+    'ZW': 'ZW', 'ZWE': 'ZW',
+    'BW': 'BW', 'BWA': 'BW',
+    'NA': 'NA', 'NAM': 'NA',
+    'LS': 'LS', 'LSO': 'LS',
+    'ZM': 'ZM', 'ZMB': 'ZM',
+    'MW': 'MW', 'MWI': 'MW',
+    'TZ': 'TZ', 'TZA': 'TZ',
+    'KE': 'KE', 'KEN': 'KE',
+}
+
+
+def detect_countries(
+    origin: str,
+    destination: str,
+    origin_iso: str = '',
+    dest_iso: str = '',
+) -> list[str] | None:
     """
-    Detect route countries from resolved address strings.
+    Detect route countries from resolved address strings or ISO country codes.
+
+    Pass ``origin_iso`` / ``dest_iso`` (TomTom ``address.countryCode``) when
+    available — they take precedence over keyword matching and eliminate the
+    risk of a city name not being in the keyword list.
 
     Returns list of country codes in order, or None for domestic SA.
     """
-    origin_country = _extract_country(origin)
-    dest_country   = _extract_country(destination)
+    origin_country = _ISO_TO_INTERNAL.get(origin_iso.upper()) if origin_iso else None
+    origin_country = origin_country or _extract_country(origin)
+
+    dest_country = _ISO_TO_INTERNAL.get(dest_iso.upper()) if dest_iso else None
+    dest_country = dest_country or _extract_country(destination)
 
     if origin_country == 'SA' and dest_country == 'SA':
         return None

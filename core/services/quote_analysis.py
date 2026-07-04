@@ -1,0 +1,330 @@
+"""Comprehensive AI quote analysis.
+
+Synthesises the cost / fuel / profit / market pieces the New Quote flow already
+has into one response, plus an LLM narrative + suggested-price rationale. This is
+pure synthesis over existing services — it never raises: every section is wrapped
+and degrades to a safe default so the API stays stable.
+
+LLM narrative uses the project's configured provider via core.services.agent
+(OpenAI / gpt-4o in this deployment); with no key it falls back to a rule-based
+summary.
+"""
+import logging
+
+from django.utils import timezone
+
+logger = logging.getLogger(__name__)
+
+
+def _f(v, default=0.0):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _i(v, default=0):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
+
+
+# ---------------------------------------------------------------------------
+# Cost correctness / revenue guard — shared by RevenueGuardView and analyze_quote
+# ---------------------------------------------------------------------------
+def assess_revenue_guard(*, total_cost, quote_price, distance_km=0.0,
+                         fuel_cost=0.0, company=None, quote=None):
+    """Assess margin health for a quote.
+
+    total_cost = direct operating cost; quote_price = price being charged.
+    `company` supplies margin thresholds (falls back to sane defaults); `quote`
+    (a saved Quote) enables the fuel-delta / client-history / CPK analysis.
+    Returns a dict (always includes success + the display fields the frontend
+    already consumes). Never raises.
+    """
+    total_cost = _f(total_cost)
+    quote_price = _f(quote_price)
+    distance_km = _f(distance_km)
+    fuel_cost = _f(fuel_cost)
+
+    if total_cost <= 0 or quote_price <= 0:
+        return {'success': False, 'error': 'total_cost and quote_price must be > 0'}
+
+    margin_pct = (quote_price - total_cost) / quote_price * 100
+
+    at_risk_threshold = _f(getattr(company, 'margin_at_risk_pct', None), 5.0) or 5.0
+    caution_threshold = _f(getattr(company, 'margin_caution_pct', None), 12.0) or 12.0
+    target_margin = _f(getattr(company, 'margin_target_pct', None), 10.0) or 10.0
+
+    explanations, suggestions = [], []
+
+    if margin_pct < at_risk_threshold:
+        risk_level, color = 'AT_RISK', 'danger'
+        explanations.append(f"Margin is below {at_risk_threshold:.0f}% safety threshold ({margin_pct:.1f}%)")
+    elif margin_pct < caution_threshold:
+        risk_level, color = 'CAUTION', 'warning'
+        explanations.append(f"Margin is below {caution_threshold:.0f}% — limited buffer for unexpected costs ({margin_pct:.1f}%)")
+    else:
+        risk_level, color = 'SAFE', 'success'
+        explanations.append(f"Margin is healthy at {margin_pct:.1f}%")
+
+    cost_per_km = round(total_cost / distance_km, 2) if distance_km > 0 else None
+    fleet_avg_cpk = 19.80
+    if cost_per_km is not None and cost_per_km > fleet_avg_cpk * 1.1:
+        explanations.append(f"Cost-per-km on this route is R{cost_per_km:.2f} — above the fleet average of R{fleet_avg_cpk:.2f}")
+        suggestions.append("Review your cost model — this route may need a base rate increase")
+
+    # Enhanced analysis for an already-saved quote (fuel delta, client history).
+    if quote is not None:
+        try:
+            from core.models import Invoice
+            from core.services.fuel_price import fetch_fuel_prices
+            from django.db.models import F
+
+            if getattr(quote, 'fuel_price_at_creation', None):
+                fuel_at_creation = _f(quote.fuel_price_at_creation)
+                if fuel_at_creation > 0:
+                    fuel_current = _f(fetch_fuel_prices().diesel_inland)
+                    delta_pct = ((fuel_current - fuel_at_creation) / fuel_at_creation) * 100
+                    if delta_pct > 3:
+                        delta_zar = fuel_current - fuel_at_creation
+                        explanations.append(f"Fuel has risen R{delta_zar:.2f}/L since this quote was created")
+                        surcharge = int(fuel_cost * (delta_pct / 100))
+                        suggestions.append(f"Add a fuel surcharge of R{surcharge} to protect the margin")
+
+            if getattr(quote, 'customer', None):
+                late = Invoice.objects.filter(
+                    customer=quote.customer, status='paid',
+                    actual_payment_date__gt=F('due_date'),
+                ).count()
+                total_inv = Invoice.objects.filter(customer=quote.customer, status='paid').count()
+                if late > 2 and total_inv > 0:
+                    explanations.append(f"This client paid late on {late} of {total_inv} recent invoices")
+                    suggestions.append("Consider requiring a 50% upfront deposit given payment history")
+        except Exception as exc:  # never break the assessment
+            logger.warning('revenue-guard enhanced analysis failed: %s', exc)
+
+    if margin_pct < at_risk_threshold:
+        t = target_margin / 100
+        increase_needed = total_cost * t / (1 - t) - quote_price
+        if increase_needed > 0:
+            suggestions.append(f"Increase price by ~R{int(increase_needed)} to reach a {target_margin:.0f}% margin")
+
+    margin_floor = int(total_cost)
+    return {
+        'success': True,
+        'status': risk_level,
+        'risk_level': risk_level,
+        'color': color,
+        'margin_pct': round(margin_pct, 2),
+        'cost_per_km': cost_per_km,
+        'explanations': explanations,
+        'suggestions': suggestions,
+        'margin_floor': margin_floor,
+        'margin_floor_display': f"R{margin_floor:,}",
+        'target_margin_pct': target_margin,
+        'warnings': explanations if risk_level != 'SAFE' else [],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Section builders
+# ---------------------------------------------------------------------------
+def _fuel_analysis(fuel_cost, fuel_usage_litres, fuel_price_used, quote_total):
+    """Current diesel price + freshness, and this quote's fuel usage/cost."""
+    out = {
+        'fuel_cost_zar': round(fuel_cost, 2),
+        'fuel_usage_litres': round(fuel_usage_litres, 2) if fuel_usage_litres else None,
+        'fuel_price_used': round(fuel_price_used, 2) if fuel_price_used else None,
+        'fuel_pct_of_total': round(fuel_cost / quote_total * 100, 1) if quote_total > 0 else None,
+        'current_price': None,
+        'is_stale': False,
+        'last_updated': None,
+        'stale_warning': None,
+        'price_note': None,
+    }
+    try:
+        from core.services.fuel_price import fetch_fuel_prices
+        fp = fetch_fuel_prices()
+        current = _f(fp.diesel_inland)
+        days_old = (timezone.now().date() - fp.date).days
+        out['current_price'] = round(current, 2)
+        out['last_updated'] = fp.date.isoformat()
+        out['source'] = fp.source
+        if days_old > 7:
+            out['is_stale'] = True
+            out['stale_warning'] = f"Diesel price last updated {days_old} days ago — consider refreshing."
+        # Flag a meaningful gap between the price used and the live price.
+        if fuel_price_used and current and abs(current - fuel_price_used) / current > 0.02:
+            direction = 'higher' if current > fuel_price_used else 'lower'
+            out['price_note'] = (
+                f"The price used (R{fuel_price_used:.2f}/L) is {direction} than the live price "
+                f"(R{current:.2f}/L) — fuel cost may be off."
+            )
+    except Exception as exc:
+        logger.warning('fuel analysis failed: %s', exc)
+    return out
+
+
+def _market_analysis(origin, destination, vehicle_type, company, market_rate, quote_total):
+    """Resolve a real lane market rate and compare the quote to it."""
+    out = {'market_rate': round(market_rate, 2) if market_rate else None,
+           'source': 'client' if market_rate else 'none',
+           'your_vs_market_pct': None}
+    try:
+        if origin and destination:
+            from core.services.lane_benchmark import resolve_market_rate
+            rate, src = resolve_market_rate(origin, destination, vehicle_type or None, company=company)
+            if rate and rate > 0:
+                out['market_rate'] = round(float(rate), 2)
+                out['source'] = src
+        if not out['market_rate'] or out['market_rate'] <= 0:
+            out['market_rate'] = round(quote_total * 1.25, 2) if quote_total > 0 else None
+            out['source'] = 'cost_anchor'
+        if out['market_rate'] and quote_total > 0:
+            out['your_vs_market_pct'] = round((quote_total - out['market_rate']) / out['market_rate'] * 100, 1)
+    except Exception as exc:
+        logger.warning('market analysis failed: %s', exc)
+    return out
+
+
+def _optimization(quote_total, market_rate, client_tier, days):
+    try:
+        from core.services.margin_optimizer import optimize_price
+        return optimize_price(
+            total_cost=quote_total,
+            market_rate=market_rate or (quote_total * 1.25 if quote_total else 0),
+            client_tier=client_tier,
+            days_until_departure=days,
+        )
+    except Exception as exc:
+        logger.warning('price optimization failed: %s', exc)
+        return {
+            'optimal_price': round(quote_total * 1.15, 2) if quote_total else 0.0,
+            'optimal_margin_pct': 15.0,
+            'win_probability_at_optimal': None,
+            'expected_profit': 0.0,
+            'curve': [],
+        }
+
+
+# ---------------------------------------------------------------------------
+# Narrative
+# ---------------------------------------------------------------------------
+def _rule_based_narrative(cost, fuel, opt, market, suggested_price, quote_total):
+    parts = []
+    if cost.get('success'):
+        parts.append(f"Margin is {cost['margin_pct']:.1f}% ({cost['risk_level'].replace('_', ' ').lower()}).")
+    if suggested_price:
+        delta = suggested_price - quote_total
+        move = 'above' if delta >= 0 else 'below'
+        parts.append(
+            f"Suggested price R{suggested_price:,.0f}"
+            + (f" ({opt['optimal_margin_pct']:.0f}% margin" if opt.get('optimal_margin_pct') is not None else "")
+            + (f", {round((opt['win_probability_at_optimal'] or 0) * 100)}% win chance)" if opt.get('win_probability_at_optimal') is not None else ")" if opt.get('optimal_margin_pct') is not None else "")
+            + f" — R{abs(delta):,.0f} {move} your current total."
+        )
+    if market.get('market_rate') and market.get('your_vs_market_pct') is not None:
+        vs = market['your_vs_market_pct']
+        rel = 'above' if vs >= 0 else 'below'
+        parts.append(f"Market rate ~R{market['market_rate']:,.0f} (you're {abs(vs):.0f}% {rel} market).")
+    if fuel.get('is_stale'):
+        parts.append(fuel.get('stale_warning') or "Fuel price may be out of date.")
+    elif fuel.get('price_note'):
+        parts.append(fuel['price_note'])
+    return " ".join(parts) or "Analysis complete."
+
+
+def _llm_narrative(structured):
+    """OpenAI (via agent._llm_generate) narrative grounded in the structured numbers.
+    Returns text or None (caller falls back to the rule-based summary)."""
+    import json
+    from core.services import agent
+    if not agent._llm_enabled():
+        return None
+    system = (
+        "You are a South African road-freight pricing analyst. Given a JSON analysis of a "
+        "single freight quote (all amounts in ZAR / R), write a concise 2–4 sentence summary a "
+        "dispatcher can act on: whether the cost looks right for the route, the fuel situation, the "
+        "profit/margin picture, and a one-line justification for the suggested price. Ground EVERY "
+        "figure ONLY in the JSON — never invent numbers, never add VAT or derived math. Be direct.\n\n"
+        f"Analysis JSON:\n{json.dumps(structured, default=str)}"
+    )
+    convo = [{"role": "user", "content": "Summarise this quote analysis and justify the suggested price."}]
+    try:
+        text = agent._llm_generate(system, convo)
+        return text.strip() or None
+    except Exception as exc:
+        logger.warning('LLM narrative failed, using rule-based: %s', exc)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Public entry point
+# ---------------------------------------------------------------------------
+def analyze_quote(payload, company=None):
+    """Run the full analysis. Never raises.
+
+    Expected payload keys (all optional-safe):
+      quote_total, direct_cost, distance_km, origin, destination, vehicle_type,
+      weight, fuel_cost, toll_cost, driver_cost, fuel_usage_litres,
+      fuel_price_used, market_rate, client_tier, days_until_departure
+    """
+    payload = payload or {}
+    quote_total = _f(payload.get('quote_total'))
+    direct_cost = _f(payload.get('direct_cost'))
+    distance_km = _f(payload.get('distance_km'))
+    fuel_cost = _f(payload.get('fuel_cost'))
+    fuel_usage_litres = _f(payload.get('fuel_usage_litres'))
+    fuel_price_used = _f(payload.get('fuel_price_used'))
+    origin = str(payload.get('origin') or '').strip()
+    destination = str(payload.get('destination') or '').strip()
+    vehicle_type = str(payload.get('vehicle_type') or '').strip()
+    client_tier = payload.get('client_tier') or 'standard'
+    days = _i(payload.get('days_until_departure'), 7)
+    market_rate = _f(payload.get('market_rate'))
+
+    if quote_total <= 0:
+        return {'success': False, 'error': 'quote_total must be > 0'}
+
+    market = _market_analysis(origin, destination, vehicle_type, company, market_rate, quote_total)
+    opt = _optimization(quote_total, market.get('market_rate'), client_tier, days)
+    cost = assess_revenue_guard(
+        total_cost=direct_cost or quote_total, quote_price=quote_total,
+        distance_km=distance_km, fuel_cost=fuel_cost, company=company,
+    )
+    fuel = _fuel_analysis(fuel_cost, fuel_usage_litres, fuel_price_used, quote_total)
+
+    suggested_price = _f(opt.get('optimal_price')) or round(quote_total * 1.15, 2)
+
+    structured = {
+        'route': f"{origin} → {destination}" if origin and destination else None,
+        'quote_total': round(quote_total, 2),
+        'cost_analysis': cost,
+        'fuel_analysis': fuel,
+        'price_optimization': opt,
+        'market_analysis': market,
+        'suggested_price': round(suggested_price, 2),
+    }
+
+    narrative = _llm_narrative(structured)
+    narrative_source = 'llm' if narrative else 'rules'
+    if not narrative:
+        narrative = _rule_based_narrative(cost, fuel, opt, market, suggested_price, quote_total)
+
+    rationale = None
+    if opt.get('optimal_margin_pct') is not None:
+        rationale = (
+            f"Maximises expected profit at a {opt['optimal_margin_pct']:.0f}% margin"
+            + (f" with a {round((opt['win_probability_at_optimal'] or 0) * 100)}% win probability."
+               if opt.get('win_probability_at_optimal') is not None else ".")
+        )
+
+    return {
+        'success': True,
+        **structured,
+        'suggested_price_rationale': rationale,
+        'narrative': narrative,
+        'narrative_source': narrative_source,
+    }

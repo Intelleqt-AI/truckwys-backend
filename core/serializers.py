@@ -30,6 +30,18 @@ class UserSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at', 'updated_at', 'last_active']
         extra_kwargs = {'password': {'write_only': True, 'required': False}}
 
+    def validate_email(self, value):
+        # Login and password reset treat an email as one identity across all
+        # accounts, so API-created users (e.g. drivers) must not reuse one.
+        if not value:
+            return value
+        qs = User.objects.filter(email__iexact=value)
+        if self.instance is not None:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError('An account with this email already exists.')
+        return value
+
     def create(self, validated_data):
         # Without this, password was silently dropped, leaving every API-created
         # user (e.g. drivers) unable to log in.
@@ -122,6 +134,7 @@ class VehicleSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'company', 'vin', 'make', 'model', 'driver', 'vehicle_type',
             'year', 'plate', 'type', 'capacity', 'status', 'fuel_type', 'mileage',
+            'service_interval_km', 'last_service_mileage',
             'last_maintenance_date', 'next_maintenance_due', 'insurance_expiry',
             'registration_expiry', 'ai_health_score', 'fuel_efficiency_score',
             'uptime_score', 'maintenance_score', 'uptime_percentage', 'cost_per_km',
@@ -163,11 +176,12 @@ class VehicleTypeSerializer(serializers.ModelSerializer):
     class Meta:
         model = VehicleType
         fields = '__all__'
-        read_only_fields = ['id', 'created_at', 'updated_at']
-        # Optional on quick-add; sensible defaults keep the directory add simple.
+        read_only_fields = ['id', 'company', 'created_at', 'updated_at']
         extra_kwargs = {
-            'max_distance': {'required': False, 'default': 0},
             'description': {'required': False, 'allow_blank': True, 'default': ''},
+            'capacity': {'required': False, 'default': 0},
+            'max_distance': {'required': False, 'default': 0},
+            'base_rate': {'required': False, 'default': 0},
         }
 
 
@@ -215,6 +229,10 @@ class LoadSerializer(serializers.ModelSerializer):
 # Quote Serializer
 class QuoteSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source='customer.name', read_only=True)
+    customer_email = serializers.CharField(source='customer.email', read_only=True)
+    customer_phone = serializers.CharField(source='customer.phone', read_only=True)
+    customer_company = serializers.CharField(source='customer.company_name', read_only=True)
+    customer_city = serializers.CharField(source='customer.city', read_only=True)
     created_by_name = serializers.CharField(source='created_by.username', read_only=True)
     quote_number = serializers.CharField(required=False, allow_blank=True)
     vehicle_display = serializers.SerializerMethodField()
@@ -427,8 +445,19 @@ class IntegrationAPIKeySerializer(serializers.ModelSerializer):
             'id', 'name', 'key', 'key_type', 'active',
             'created_at', 'last_used_at',
             'usage_count', 'monthly_quota', 'quota_used',
+            'allowed_ips', 'webhook_url',
         ]
         read_only_fields = ['id', 'key', 'created_at', 'last_used_at', 'usage_count', 'quota_used']
+
+
+class APICallLogSerializer(serializers.ModelSerializer):
+    """Serializer for per-key API call log entries."""
+
+    class Meta:
+        from core.models.integration_api_key import APICallLog
+        model = APICallLog
+        fields = ['id', 'scored_at', 'invoice_amount', 'risk_tier', 'score', 'eligible', 'caller_ip']
+        read_only_fields = fields
 
 
 class ActivityEventSerializer(serializers.ModelSerializer):

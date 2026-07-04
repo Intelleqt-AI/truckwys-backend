@@ -210,6 +210,66 @@ def compute_lane_benchmark(origin, destination, vehicle_type=None,
         return {'available': False, 'reason': 'error', 'sample_size': 0}
 
 
+# Coarse SA market averages (ZAR) used only as a last-resort honest estimate
+# when there's no real won-quote data on a lane yet.
+_SA_MARKET_ESTIMATES = {
+    ('JHB', 'CPT', 'interlink'): 43800, ('JHB', 'DBN', 'interlink'): 17000,
+    ('CPT', 'DBN', 'interlink'): 52000, ('JHB', 'CPT', 'truck'): 38900,
+    ('JHB', 'DBN', 'truck'): 15000,
+}
+
+
+def resolve_market_rate(origin, destination, vehicle_type=None, company=None):
+    """Resolve a REAL market/benchmark rate for a lane, with provenance.
+
+    Cascade (most-trustworthy first): cross-platform anonymized benchmark ->
+    lane-level cross-platform -> this operator's own won quotes -> coarse SA
+    estimate -> None. Returns (rate: float|None, source: str). Never raises.
+    `source` is one of: platform | platform_lane | company | estimate | none.
+    """
+    origin = (origin or '').strip()
+    destination = (destination or '').strip()
+    if not origin or not destination:
+        return None, 'none'
+    o, d = origin.upper(), destination.upper()
+    vt = (vehicle_type or '').strip().lower() or None
+
+    # 1-2) Cross-platform anonymized benchmark (vehicle-specific, then lane-level).
+    try:
+        b = compute_lane_benchmark(o, d, vt)
+        if b.get('available') and b.get('market_avg_rate'):
+            return float(b['market_avg_rate']), 'platform'
+        b = compute_lane_benchmark(o, d)
+        if b.get('available') and b.get('market_avg_rate'):
+            return float(b['market_avg_rate']), 'platform_lane'
+    except Exception as exc:  # never raise
+        logger.warning('resolve_market_rate: platform lookup failed: %s', exc)
+
+    # 3) This operator's own won quotes on the lane (point-in-time, not anonymized).
+    try:
+        from core.models import Quote
+        from django.db.models import Avg
+        qs = Quote.objects.filter(
+            origin__iexact=o, destination__iexact=d, status__in=WON_STATUSES,
+        )
+        if company is not None:
+            qs = qs.filter(company=company)
+        if vt:
+            qs = qs.filter(vehicle_type__icontains=vt)
+        agg = qs.exclude(total_amount__isnull=True).aggregate(a=Avg('total_amount'), n=Count('id'))
+        if (agg['n'] or 0) >= 3 and agg['a']:
+            return float(agg['a']), 'company'
+    except Exception as exc:  # never raise
+        logger.warning('resolve_market_rate: company lookup failed: %s', exc)
+
+    # 4) Coarse SA estimate (honest last resort).
+    for key in ((o, d, vt), (o, d, 'truck'), (o, d, 'interlink')):
+        if key in _SA_MARKET_ESTIMATES:
+            return float(_SA_MARKET_ESTIMATES[key]), 'estimate'
+
+    return None, 'none'
+
+
 def lane_index(days=180, k_anonymity=5):
     """
     Return the top lanes by won-quote volume, each with its benchmark.

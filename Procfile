@@ -1,1 +1,4 @@
-web: gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 3
+release: python manage.py migrate --noinput && python manage.py seed_toll_data
+web: gunicorn config.asgi:application -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:${PORT:-8000} --workers 2 --timeout 120
+worker: celery -A config worker --loglevel=info --concurrency=2
+beat: celery -A config beat --loglevel=info

@@ -17,11 +17,13 @@ class TollPlaza(models.Model):
     """
 
     ROUTE_CHOICES = [
-        ('N1',  'N1 — Cape Town to Johannesburg'),
+        ('N1',  'N1 — Cape Town to Johannesburg / Polokwane'),
         ('N2',  'N2 — Cape Town to Durban (coastal)'),
         ('N3',  'N3 — Johannesburg to Durban'),
-        ('N4',  'N4 — Pretoria to Maputo (TRAC concession)'),
+        ('N4',  'N4 — Pretoria to Maputo'),
         ('N14', 'N14 — Johannesburg to Springbok'),
+        ('N17', 'N17 — Johannesburg to Ermelo / Swaziland'),
+        ('R30', 'R30/R730/R34 — Bloemfontein region'),
     ]
 
     name = models.CharField(max_length=100, help_text='Official SANRAL plaza name')
@@ -53,6 +55,18 @@ class TollPlaza(models.Model):
     tariff_year = models.PositiveSmallIntegerField(
         default=2024,
         help_text='Tariff revision year (SANRAL announces increases annually)',
+    )
+    lat = models.DecimalField(
+        max_digits=9, decimal_places=6, null=True, blank=True,
+        help_text='Plaza GPS latitude (WGS84) for geofence matching',
+    )
+    lng = models.DecimalField(
+        max_digits=9, decimal_places=6, null=True, blank=True,
+        help_text='Plaza GPS longitude (WGS84) for geofence matching',
+    )
+    radius_meters = models.IntegerField(
+        default=500,
+        help_text='Geofence trigger radius in metres (default 500 m to tolerate GPS uncertainty)',
     )
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)

@@ -13,17 +13,33 @@
 #   implicit company scoping through related objects ✓
 # - UserViewSet: Admin-only, filters all users (needs multi-tenancy if non-admin users access) ⚠️
 
+import logging as _logging
 from rest_framework import viewsets, status, filters
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
+from rest_framework.views import exception_handler as _drf_exception_handler
+
+_exc_logger = _logging.getLogger(__name__)
+
+def custom_exception_handler(exc, context):
+    """Return JSON for every error — never let Django's HTML debug page leak to the API."""
+    response = _drf_exception_handler(exc, context)
+    if response is not None:
+        return response
+    # Unhandled exception (e.g. OperationalError, AttributeError) — log and return 500 JSON.
+    _exc_logger.exception('Unhandled exception in %s', context.get('view', ''))
+    return Response(
+        {'error': 'An unexpected server error occurred. Please try again.'},
+        status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+    )
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
-from rest_framework.authtoken.models import Token
 from django.contrib.auth import authenticate
 from django_filters.rest_framework import DjangoFilterBackend
 from django.utils import timezone
+from django.conf import settings
 from decouple import config
 
 
@@ -58,8 +74,10 @@ import threading
 
 from .models import (
     User, Customer, Driver, Vehicle, VehicleLog, VehicleType, Load,
-    Quote, Invoice, Payment, Expense, Settlement, Notification, Company, ActivityEvent
+    Quote, Invoice, Payment, Expense, Settlement, Notification, Company, ActivityEvent,
+    UserSession
 )
+from .utils.request_meta import parse_device, client_ip, mask_email
 from .serializers import (
     UserSerializer, CustomerSerializer, DriverSerializer,
     VehicleSerializer, VehicleTypeSerializer, VehicleLogSerializer, LoadSerializer,
@@ -92,7 +110,7 @@ class RegisterView(APIView):
         if not email or not password:
             return Response({'detail': 'email and password are required.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        if User.objects.filter(email=email).exists():
+        if User.objects.filter(email__iexact=email).exists():
             return Response({'detail': 'An account with this email already exists.'}, status=status.HTTP_400_BAD_REQUEST)
 
         # Store registration data in cache — account is created only after OTP verification
@@ -108,7 +126,7 @@ class RegisterView(APIView):
         otp_code = str(secrets.randbelow(900000) + 100000)
         cache.set(f'email_verify_{email}', otp_code, timeout=600)
         from core.tasks import send_verification_email_task
-        send_verification_email_task.delay(email, otp_code, first_name or username)
+        send_verification_email_task(email, otp_code, first_name or username)
 
         return Response({
             'message': 'Please check your email for a verification code.',
@@ -140,6 +158,10 @@ class EmailVerifyView(APIView):
         if not pending:
             return Response({'detail': 'Registration session expired. Please register again.'}, status=status.HTTP_400_BAD_REQUEST)
 
+        # The email may have been taken between registration and verification
+        if User.objects.filter(email__iexact=email).exists():
+            return Response({'detail': 'An account with this email already exists.'}, status=status.HTTP_400_BAD_REQUEST)
+
         # Create user now that email is verified
         user = User.objects.create(
             email=pending['email'],
@@ -161,8 +183,13 @@ class EmailVerifyView(APIView):
         cache.delete(f'email_verify_{email}')
         cache.delete(f'pending_registration_{email}')
 
-        token, _ = Token.objects.get_or_create(user=user)
-        return Response({'token': token.key, 'user': UserSerializer(user).data})
+        session = UserSession.objects.create(
+            user=user,
+            device=parse_device(request),
+            user_agent=(request.META.get('HTTP_USER_AGENT', '') or '')[:512],
+            ip_address=client_ip(request),
+        )
+        return Response({'token': session.key, 'user': UserSerializer(user).data})
 
 
 class ResendVerificationView(APIView):
@@ -187,8 +214,66 @@ class ResendVerificationView(APIView):
         otp_code = str(secrets.randbelow(900000) + 100000)
         cache.set(f'email_verify_{email}', otp_code, timeout=600)
         from core.tasks import send_verification_email_task
-        send_verification_email_task.delay(email, otp_code, pending.get('first_name') or pending.get('username') or email)
+        send_verification_email_task(email, otp_code, pending.get('first_name') or pending.get('username') or email)
         return Response({'detail': 'Verification code resent. Please check your email.'})
+
+
+# --- Two-factor (email OTP) login helpers -------------------------------------
+# The pending challenge lives in the cache, keyed by an opaque token bound to a
+# user_id (emails aren't unique, so we never key by email). NOTE: a multi-worker
+# deployment must use a shared cache (Redis) — see LOGIN_2FA_ENABLED in settings.
+OTP_TTL = 600            # seconds a sign-in challenge stays valid
+OTP_MAX_ATTEMPTS = 5     # wrong-code guesses before the challenge is burned
+OTP_MAX_RESENDS = 3      # resends before the user must start over
+OTP_RESEND_COOLDOWN = 60  # seconds between resends
+
+
+def _gen_otp():
+    import secrets
+    return str(secrets.randbelow(900000) + 100000)
+
+
+def _dispatch_login_otp(user, otp):
+    """Email the sign-in OTP (best-effort). In DEBUG, also log it so local dev
+    works without a live email provider. Returns True if the email was sent."""
+    from core.tasks import send_login_otp_email_task
+    sent = send_login_otp_email_task(user.email, otp, user.first_name or user.username)
+    if settings.DEBUG:
+        _exc_logger.info('Login OTP for %s: %s', user.email, otp)
+    return sent
+
+
+def complete_login(user, request):
+    """Create a per-device session, fire the new-device alert if opted in, and
+    return the auth-token response. Shared by the direct-login path and the 2FA
+    OTP-verify path (which is why the new-device check must precede the insert)."""
+    device = parse_device(request)
+    ip = client_ip(request)
+    # "New device" = a device+IP fingerprint this user has never signed in from.
+    # Tracked persistently on the user so it survives logout (unlike active
+    # sessions) — matching "a device that signed in before → no alert".
+    fingerprint = f"{device}|{ip or 'Unknown'}"
+    known = user.known_devices or []
+    is_new_device = fingerprint not in known
+    if is_new_device:
+        # Record it regardless of the alert preference, so turning alerts on
+        # later doesn't fire for already-familiar devices.
+        user.known_devices = (known + [fingerprint])[-100:]
+        user.save(update_fields=['known_devices'])
+    session = UserSession.objects.create(
+        user=user,
+        device=device,
+        user_agent=(request.META.get('HTTP_USER_AGENT', '') or '')[:512],
+        ip_address=ip,
+    )
+    if is_new_device and (user.security_settings or {}).get('login_alerts', True):
+        from core.tasks import send_login_alert_email_task
+        send_login_alert_email_task(
+            user.email, user.first_name or user.username,
+            device, ip or 'Unknown',
+            timezone.localtime().strftime('%d %b %Y, %H:%M'),
+        )
+    return Response({'token': session.key, 'user': UserSerializer(user).data})
 
 
 class LoginView(APIView):
@@ -199,6 +284,10 @@ class LoginView(APIView):
     throttle_scope = 'login'
 
     def post(self, request):
+        import secrets
+        import time
+        from django.core.cache import cache
+
         identifier = request.data.get('username') or request.data.get('email')
         password = request.data.get('password')
 
@@ -215,23 +304,132 @@ class LoginView(APIView):
                     user = candidate
                     break
 
-        if user:
-            token, created = Token.objects.get_or_create(user=user)
-            return Response({
-                'token': token.key,
-                'user': UserSerializer(user).data
-            })
-        return Response(
-            {'error': 'Invalid credentials'},
-            status=status.HTTP_401_UNAUTHORIZED
-        )
+        # Identical response for both 2FA-on and 2FA-off users — never branch on
+        # 2FA before the password check (no account/2FA enumeration).
+        if not user:
+            return Response({'error': 'Invalid credentials'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        # If 2FA is enabled (globally + for this user), issue an email OTP
+        # challenge instead of a token. Nothing is created until it's verified.
+        two_factor_on = settings.LOGIN_2FA_ENABLED and (user.security_settings or {}).get('two_factor', True)
+        if not two_factor_on:
+            return complete_login(user, request)
+
+        otp = _gen_otp()
+        sent = _dispatch_login_otp(user, otp)
+        if not sent and not settings.DEBUG:
+            # Fail closed: don't hand out a challenge for a code that never arrived.
+            return Response(
+                {'error': 'Could not send your verification code. Please try again.'},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        pending_token = secrets.token_urlsafe(32)
+        cache.set(f'login_pending_{pending_token}', {
+            'user_id': user.id,
+            'otp': otp,
+            'attempts': 0,
+            'resends': 0,
+            'last_sent': time.time(),
+        }, timeout=OTP_TTL)
+        return Response({
+            'otp_required': True,
+            'pending_token': pending_token,
+            'email': mask_email(user.email),
+        })
+
+
+class LoginVerifyOtpView(APIView):
+    """Step 2 of a 2FA login: exchange {pending_token, code} for an auth token."""
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'otp_verify'
+
+    def post(self, request):
+        import hmac
+        from django.core.cache import cache
+        from .models import User
+
+        pending_token = (request.data.get('pending_token') or '').strip()
+        code = (request.data.get('code') or '').strip()
+        if not pending_token or not code:
+            return Response({'detail': 'pending_token and code are required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        key = f'login_pending_{pending_token}'
+        challenge = cache.get(key)
+        if not challenge:
+            return Response({'detail': 'Your sign-in session has expired. Please log in again.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not hmac.compare_digest(str(challenge.get('otp')), str(code)):
+            challenge['attempts'] = challenge.get('attempts', 0) + 1
+            if challenge['attempts'] >= OTP_MAX_ATTEMPTS:
+                cache.delete(key)
+                return Response({'detail': 'Too many incorrect attempts. Please log in again.'}, status=status.HTTP_400_BAD_REQUEST)
+            cache.set(key, challenge, timeout=OTP_TTL)
+            return Response({'detail': 'Invalid or expired code.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Correct code — burn the challenge and complete the login.
+        cache.delete(key)
+        user = User.objects.filter(id=challenge.get('user_id')).first()
+        if not user or not user.is_active:
+            return Response({'detail': 'Account unavailable. Please log in again.'}, status=status.HTTP_400_BAD_REQUEST)
+        return complete_login(user, request)
+
+
+class LoginResendOtpView(APIView):
+    """Resend the 2FA sign-in code for an in-flight login challenge."""
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'otp_resend'
+
+    def post(self, request):
+        import time
+        from django.core.cache import cache
+        from .models import User
+
+        pending_token = (request.data.get('pending_token') or '').strip()
+        if not pending_token:
+            return Response({'detail': 'pending_token is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        key = f'login_pending_{pending_token}'
+        challenge = cache.get(key)
+        if not challenge:
+            return Response({'detail': 'Your sign-in session has expired. Please log in again.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        now = time.time()
+        if now - challenge.get('last_sent', 0) < OTP_RESEND_COOLDOWN:
+            return Response({'detail': 'Please wait a moment before requesting another code.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+        if challenge.get('resends', 0) >= OTP_MAX_RESENDS:
+            cache.delete(key)
+            return Response({'detail': 'Too many code requests. Please log in again.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        user = User.objects.filter(id=challenge.get('user_id')).first()
+        if not user or not user.is_active:
+            cache.delete(key)
+            return Response({'detail': 'Account unavailable. Please log in again.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        otp = _gen_otp()
+        sent = _dispatch_login_otp(user, otp)
+        if not sent and not settings.DEBUG:
+            return Response({'error': 'Could not send your verification code. Please try again.'}, status=status.HTTP_502_BAD_GATEWAY)
+        challenge.update({
+            'otp': otp,
+            'attempts': 0,
+            'resends': challenge.get('resends', 0) + 1,
+            'last_sent': now,
+        })
+        cache.set(key, challenge, timeout=OTP_TTL)
+        return Response({'detail': 'A new code has been sent.'})
 
 
 class LogoutView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        request.user.auth_token.delete()
+        # Log out only the current device's session. request.auth is None under
+        # SessionAuthentication (admin/browsable API), so guard the type.
+        session = request.auth
+        if isinstance(session, UserSession):
+            session.delete()
         return Response({'message': 'Successfully logged out'})
 
 
@@ -268,35 +466,36 @@ class UserProfileView(APIView):
 
 
 class SessionsView(APIView):
-    """Active sessions for the authenticated user.
+    """List and revoke the authenticated user's per-device sessions.
 
-    We use DRF token auth (one token per user), so we surface the current
-    session derived from the live request. Returns a list the Security
-    Settings panel can render directly.
+    Each login creates a UserSession, so this lists every active device and
+    marks the one making the request as ``current``. DELETE revokes a session
+    by its public id, killing that device's token immediately.
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        ua = request.META.get('HTTP_USER_AGENT', '') or ''
-        device = 'This device'
-        low = ua.lower()
-        if 'iphone' in low or 'android' in low or 'mobile' in low:
-            device = 'Mobile device'
-        elif 'mac' in low:
-            device = 'Mac'
-        elif 'windows' in low:
-            device = 'Windows PC'
-        ip = request.META.get('HTTP_X_FORWARDED_FOR', '') or request.META.get('REMOTE_ADDR', '') or ''
-        ip = ip.split(',')[0].strip()
-        last_login = getattr(request.user, 'last_login', None)
-        return Response([{
-            'id': 'current',
-            'device': device,
-            'location': ip or 'Unknown',
-            'time': last_login.isoformat() if last_login else 'Now',
-            'current': True,
-        }])
-    
+        current = request.auth if isinstance(request.auth, UserSession) else None
+        current_key = getattr(current, 'key', None)
+        data = [{
+            'id': str(s.id),
+            'device': s.device or 'Unknown device',
+            'location': s.ip_address or 'Unknown',
+            'time': (s.last_activity or s.created_at).isoformat(),
+            'current': s.key == current_key,
+        } for s in request.user.sessions.all()]
+        return Response(data)
+
+    def delete(self, request, session_id):
+        # Scope the lookup to the user's own sessions — a missing or non-owned
+        # id both return 404 (no existence leak).
+        try:
+            session = request.user.sessions.get(id=session_id)
+        except UserSession.DoesNotExist:
+            return Response({'detail': 'Session not found.'}, status=status.HTTP_404_NOT_FOUND)
+        session.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
 
 
 class NotificationSettingsView(APIView):
@@ -331,6 +530,35 @@ class NotificationSettingsView(APIView):
         user.notification_settings = settings
         user.save()
         return Response(user.notification_settings)
+
+
+class SecuritySettingsView(APIView):
+    """Security preference toggles (2FA, session timeout, login alerts).
+
+    Persists the user's preference only — enforcement (actual OTP challenge,
+    inactivity timeout, login-alert emails) is a separate concern.
+    """
+    permission_classes = [IsAuthenticated]
+
+    DEFAULTS = {
+        "two_factor": True,
+        "session_timeout": True,
+        "login_alerts": True,
+    }
+
+    def get(self, request):
+        settings = {**self.DEFAULTS, **(request.user.security_settings or {})}
+        return Response(settings)
+
+    def patch(self, request):
+        user = request.user
+        settings = {**self.DEFAULTS, **(user.security_settings or {})}
+        for key in self.DEFAULTS:
+            if key in request.data:
+                settings[key] = bool(request.data[key])
+        user.security_settings = settings
+        user.save(update_fields=['security_settings', 'updated_at'])
+        return Response(settings)
 
 
 class IsAdmin(IsAuthenticated):
@@ -498,12 +726,20 @@ class FleetOverviewView(APIView):
         
         # Banner message data
         margin_change = 2.3
-        flagged_vehicles = Vehicle.objects.filter(
+        # Vehicles flagged by km-based service (within 10% of interval or overdue)
+        # plus those with expiring registration/insurance.
+        company_vehicles = Vehicle.objects.filter(company=request.user.company)
+        km_flagged = sum(
+            1 for v in company_vehicles
+            if v.service_interval_km and v.last_service_mileage is not None and v.mileage is not None
+            and (float(v.mileage) - float(v.last_service_mileage)) >= float(v.service_interval_km) * 0.9
+        )
+        date_flagged = company_vehicles.filter(
             Q(next_maintenance_due__lte=now + timedelta(days=30)) |
             Q(insurance_expiry__lte=now + timedelta(days=30)) |
-            Q(registration_expiry__lte=now + timedelta(days=30)),
-            company=request.user.company
+            Q(registration_expiry__lte=now + timedelta(days=30))
         ).count()
+        flagged_vehicles = km_flagged + date_flagged
         
         return Response({
             'header': {
@@ -1197,7 +1433,7 @@ class UserViewSet(viewsets.ModelViewSet):
         if not email:
             return Response({'error': 'Email is required'}, status=status.HTTP_400_BAD_REQUEST)
 
-        if User.objects.filter(email=email).exists():
+        if User.objects.filter(email__iexact=email).exists():
             return Response({'error': 'User with this email already exists'}, status=status.HTTP_400_BAD_REQUEST)
 
         # Generate secure token
@@ -1317,6 +1553,28 @@ class VehicleViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     search_fields = ['vin', 'plate', 'make', 'model']
     ordering_fields = ['created_at', 'make', 'model', 'year']
 
+    def create(self, request, *args, **kwargs):
+        from django.db import IntegrityError
+        from rest_framework.exceptions import ValidationError as DRFValidationError
+        try:
+            return super().create(request, *args, **kwargs)
+        except IntegrityError as exc:
+            msg = str(exc)
+            if 'plate' in msg.lower():
+                detail = 'A vehicle with this plate number already exists.'
+            elif 'vin' in msg.lower():
+                detail = 'A vehicle with this VIN already exists.'
+            else:
+                detail = f'Database constraint violated: {msg}'
+            return Response({'error': detail}, status=status.HTTP_400_BAD_REQUEST)
+        except DRFValidationError:
+            raise
+        except Exception as exc:
+            return Response(
+                {'error': f'Could not create vehicle: {exc}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
     def perform_create(self, serializer):
         """Check plan limits before creating vehicle"""
         from core.middleware.plan_limits import check_vehicle_limit
@@ -1365,6 +1623,9 @@ class VehicleTypeViewSet(viewsets.ModelViewSet):
         return VehicleType.objects.filter(
             Q(company=None) | Q(company=user.company)
         )
+
+    def perform_create(self, serializer):
+        serializer.save(company=self.request.user.company)
 
 
 class VehicleLogViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
@@ -1526,6 +1787,28 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     search_fields = ['quote_number', 'customer__name', 'pickup_location', 'delivery_location']
     ordering_fields = ['created_at', 'valid_until']
 
+    def create(self, request, *args, **kwargs):
+        from django.db import IntegrityError
+        from rest_framework.exceptions import ValidationError as DRFValidationError
+        try:
+            return super().create(request, *args, **kwargs)
+        except IntegrityError as exc:
+            msg = str(exc)
+            if 'quote_number' in msg.lower():
+                detail = 'A quote with this number already exists.'
+            elif 'customer' in msg.lower():
+                detail = 'Invalid customer reference.'
+            else:
+                detail = f'Database constraint violated: {msg}'
+            return Response({'error': detail}, status=status.HTTP_400_BAD_REQUEST)
+        except DRFValidationError:
+            raise
+        except Exception as exc:
+            return Response(
+                {'error': f'Could not create quote: {exc}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
     def perform_create(self, serializer):
         from django.utils import timezone
         import secrets
@@ -1644,135 +1927,13 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=['get'])
     def generate_pdf(self, request, pk=None):
         """Generate a PDF quote document."""
-        from reportlab.lib.pagesizes import A4
-        from reportlab.lib import colors
-        from reportlab.lib.units import mm
-        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-        from reportlab.lib.enums import TA_RIGHT, TA_CENTER
-        import io
         from django.http import HttpResponse
+        from core.services.quote_pdf import generate_quote_pdf_bytes
 
         quote = self.get_object()
-        buf = io.BytesIO()
-        doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=20*mm, leftMargin=20*mm, topMargin=20*mm, bottomMargin=20*mm)
+        pdf_bytes = generate_quote_pdf_bytes(quote)
 
-        styles = getSampleStyleSheet()
-        accent = colors.HexColor('#2563EB')
-        dark = colors.HexColor('#0F172A')
-        mid = colors.HexColor('#64748B')
-
-        title_style = ParagraphStyle('title', fontSize=24, textColor=dark, spaceAfter=4, fontName='Helvetica-Bold')
-        sub_style = ParagraphStyle('sub', fontSize=10, textColor=mid, spaceAfter=2)
-        label_style = ParagraphStyle('label', fontSize=9, textColor=mid, fontName='Helvetica')
-        value_style = ParagraphStyle('value', fontSize=10, textColor=dark, fontName='Helvetica-Bold')
-        normal = styles['Normal']
-
-        story = []
-
-        # Header
-        story.append(Paragraph('TRUCKWYS', title_style))
-        story.append(Paragraph('Road Freight Intelligence Platform', sub_style))
-        story.append(Spacer(1, 8*mm))
-
-        # Quote title
-        story.append(Paragraph(f'FREIGHT QUOTE', ParagraphStyle('qt', fontSize=16, textColor=accent, fontName='Helvetica-Bold', spaceAfter=2)))
-        story.append(Paragraph(f'{quote.quote_number}', ParagraphStyle('qn', fontSize=12, textColor=mid, spaceAfter=6)))
-        story.append(Spacer(1, 4*mm))
-
-        # Quote meta table
-        cname = quote.customer.name if quote.customer else 'Direct Customer'
-        meta = [
-            ['Customer', cname, 'Status', quote.status],
-            ['Valid Until', str(quote.valid_until) if quote.valid_until else 'N/A', 'Created', str(quote.created_at.date())],
-            ['Confidence', f'{quote.confidence or 0}%', 'Vehicle Type', quote.vehicle_type or 'Standard'],
-        ]
-        meta_table = Table(meta, colWidths=[35*mm, 65*mm, 35*mm, 35*mm])
-        meta_table.setStyle(TableStyle([
-            ('BACKGROUND', (0,0), (0,-1), colors.HexColor('#F1F5F9')),
-            ('BACKGROUND', (2,0), (2,-1), colors.HexColor('#F1F5F9')),
-            ('FONTNAME', (0,0), (-1,-1), 'Helvetica'),
-            ('FONTSIZE', (0,0), (-1,-1), 9),
-            ('TEXTCOLOR', (0,0), (0,-1), mid),
-            ('TEXTCOLOR', (2,0), (2,-1), mid),
-            ('FONTNAME', (1,0), (1,-1), 'Helvetica-Bold'),
-            ('FONTNAME', (3,0), (3,-1), 'Helvetica-Bold'),
-            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#E2E8F0')),
-            ('PADDING', (0,0), (-1,-1), 6),
-        ]))
-        story.append(meta_table)
-        story.append(Spacer(1, 6*mm))
-
-        # Route
-        story.append(Paragraph('ROUTE', ParagraphStyle('section', fontSize=10, textColor=mid, fontName='Helvetica-Bold', spaceAfter=3)))
-        route_data = [
-            ['Pickup', quote.pickup_location or quote.origin or '—', 'Distance', f'{quote.distance or 0} km'],
-            ['Delivery', quote.delivery_location or quote.destination or '—', 'SLA', f'{quote.sla_hours or 48}h'],
-            ['Cargo', quote.cargo_description or '—', 'Weight', f'{quote.weight or 0} kg'],
-        ]
-        route_table = Table(route_data, colWidths=[30*mm, 80*mm, 30*mm, 30*mm])
-        route_table.setStyle(TableStyle([
-            ('BACKGROUND', (0,0), (0,-1), colors.HexColor('#F1F5F9')),
-            ('BACKGROUND', (2,0), (2,-1), colors.HexColor('#F1F5F9')),
-            ('FONTNAME', (0,0), (-1,-1), 'Helvetica'),
-            ('FONTSIZE', (0,0), (-1,-1), 9),
-            ('TEXTCOLOR', (0,0), (0,-1), mid),
-            ('TEXTCOLOR', (2,0), (2,-1), mid),
-            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#E2E8F0')),
-            ('PADDING', (0,0), (-1,-1), 6),
-        ]))
-        story.append(route_table)
-        story.append(Spacer(1, 6*mm))
-
-        # Cost breakdown
-        story.append(Paragraph('COST BREAKDOWN', ParagraphStyle('section', fontSize=10, textColor=mid, fontName='Helvetica-Bold', spaceAfter=3)))
-        def zar(v):
-            try: return f'R {float(v):,.2f}'
-            except: return 'R 0.00'
-
-        cost_data = [
-            ['Description', 'Amount'],
-            ['Base Rate', zar(quote.base_rate)],
-            ['Fuel Surcharge', zar(quote.fuel_surcharge)],
-            ['Toll Charges', zar(quote.toll_charges or 0)],
-            ['Driver Allowance', zar(quote.driver_allowance or 0)],
-            ['Additional Charges', zar(quote.additional_charges or 0)],
-            ['TOTAL (excl. VAT)', zar(quote.total_amount)],
-        ]
-        cost_table = Table(cost_data, colWidths=[120*mm, 50*mm])
-        cost_table.setStyle(TableStyle([
-            ('BACKGROUND', (0,0), (-1,0), accent),
-            ('TEXTCOLOR', (0,0), (-1,0), colors.white),
-            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-            ('FONTNAME', (0,1), (-1,-2), 'Helvetica'),
-            ('FONTNAME', (0,-1), (-1,-1), 'Helvetica-Bold'),
-            ('BACKGROUND', (0,-1), (-1,-1), colors.HexColor('#F1F5F9')),
-            ('FONTSIZE', (0,0), (-1,-1), 10),
-            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#E2E8F0')),
-            ('ALIGN', (1,0), (1,-1), 'RIGHT'),
-            ('PADDING', (0,0), (-1,-1), 7),
-        ]))
-        story.append(cost_table)
-        story.append(Spacer(1, 6*mm))
-
-        # Notes
-        if quote.notes:
-            story.append(Paragraph('NOTES', ParagraphStyle('section', fontSize=10, textColor=mid, fontName='Helvetica-Bold', spaceAfter=3)))
-            story.append(Paragraph(quote.notes, ParagraphStyle('notes', fontSize=9, textColor=dark, spaceAfter=4)))
-
-        # T&C
-        story.append(Spacer(1, 4*mm))
-        story.append(Paragraph('Terms & Conditions', ParagraphStyle('tc', fontSize=9, textColor=mid, fontName='Helvetica-Bold', spaceAfter=2)))
-        story.append(Paragraph(
-            'This quote is valid for the period indicated. Prices subject to fuel surcharge adjustments. '
-            'Payment terms: 30 days from invoice date. All rates in South African Rand (ZAR) excl. VAT.',
-            ParagraphStyle('tcbody', fontSize=8, textColor=mid)
-        ))
-
-        doc.build(story)
-        buf.seek(0)
-
-        response = HttpResponse(buf.read(), content_type='application/pdf')
+        response = HttpResponse(pdf_bytes, content_type='application/pdf')
         response['Content-Disposition'] = f'attachment; filename="Quote-{quote.quote_number}.pdf"'
         return response
 
@@ -1780,6 +1941,7 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     def send_to_customer(self, request, pk=None):
         """Generate shareable link for customer to view and respond to quote"""
         from django.conf import settings
+        from core.services.email_service import send_quote_share_email
         quote = self.get_object()
 
         # Update status to SENT
@@ -1793,10 +1955,17 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:3701')
         share_url = f"{frontend_url}/quotes/view/{quote.id}/{quote.token}"
 
+        # Email the link to the customer; the share URL is returned regardless
+        recipient = quote.customer.email if quote.customer else None
+        email_sent = send_quote_share_email(quote, share_url) if recipient else False
+
         return Response({
             'share_url': share_url,
             'quote_number': quote.quote_number,
-            'status': quote.status
+            'status': quote.status,
+            'email_sent': email_sent,
+            'customer_email': recipient,
+            'email_skipped_reason': None if recipient else 'no_customer_email',
         })
 
 
@@ -1886,6 +2055,20 @@ class PublicQuoteRespondView(APIView):
                 quote.status = 'ACCEPTED'
                 quote.save()
                 # TODO: Optionally auto-create load here
+
+                # Confirmation email with quote PDF — must never block the acceptance
+                try:
+                    from core.services.email_service import send_quote_accepted_email
+                    from core.services.quote_pdf import generate_quote_pdf_bytes
+                    try:
+                        pdf_bytes = generate_quote_pdf_bytes(quote)
+                    except Exception:
+                        _exc_logger.exception(f"Quote PDF generation failed for {quote.quote_number}")
+                        pdf_bytes = None
+                    send_quote_accepted_email(quote, pdf_bytes)
+                except Exception:
+                    _exc_logger.exception(f"Quote accepted email failed for {quote.quote_number}")
+
                 return Response({
                     'message': 'Quote accepted — your operator will be in touch',
                     'status': quote.status
@@ -1903,6 +2086,51 @@ class PublicQuoteRespondView(APIView):
                 {'error': 'Quote not found'},
                 status=status.HTTP_404_NOT_FOUND
             )
+
+
+class PublicInvoiceView(APIView):
+    """Public invoice view — customers can view invoice details without a TruckWys account."""
+    permission_classes = [AllowAny]
+
+    def get(self, request, invoice_id, token):
+        import hmac as _hmac
+        try:
+            invoice = Invoice.objects.select_related('customer', 'company').get(id=invoice_id)
+        except Invoice.DoesNotExist:
+            return Response({'error': 'Invoice not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if not invoice.view_token or not _hmac.compare_digest(invoice.view_token, token):
+            return Response({'error': 'Invalid invoice link'}, status=status.HTTP_404_NOT_FOUND)
+
+        # Mark as viewed if still in SENT state
+        if invoice.status == 'SENT':
+            invoice.status = 'VIEWED'
+            invoice.viewed_at = timezone.now()
+            invoice.save(update_fields=['status', 'viewed_at'])
+
+        company = invoice.company
+        contact = company.contact if company and company.contact else {}
+
+        return Response({
+            'invoice_number': invoice.invoice_number,
+            'issue_date': str(invoice.issue_date),
+            'due_date': str(invoice.due_date),
+            'status': invoice.status,
+            'customer_name': invoice.customer.name,
+            'subtotal': str(invoice.subtotal),
+            'vat_amount': str(invoice.vat_amount),
+            'discount': str(invoice.discount),
+            'total_amount': str(invoice.total_amount),
+            'paid_amount': str(invoice.paid_amount),
+            'balance': str(invoice.balance),
+            'notes': invoice.notes,
+            'line_items': invoice.line_items or [],
+            'description': getattr(invoice, 'description', '') or '',
+            'company_name': company.company_name if company else 'TruckWys',
+            'company_phone': contact.get('phone', ''),
+            'company_email': contact.get('email', ''),
+            'company_address': contact.get('address', ''),
+        })
 
 
 class InvoiceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
@@ -2077,7 +2305,7 @@ class RouteCalculatorView(APIView):
     def post(self, request):
         from core.services.cross_border import detect_countries, calculate_cross_border_costs, calculate_sa_tolls_for_cross_border, get_cross_border_warnings
         from core.services.fuel_price import fetch_fuel_prices
-        from core.services.toll_calculator import calculate_tolls
+        from core.services.toll_calculator import calculate_tolls, calculate_tolls_by_geometry
 
         data = request.data
         origin = data.get('origin', '')
@@ -2104,16 +2332,29 @@ class RouteCalculatorView(APIView):
             if not d:
                 return Response({'success': False, 'error': f'Cannot geocode: {destination}'}, status=400)
 
-        # TomTom route
-        route = self._route(o, d, weight_kg)
-        if route:
-            distance_km = route['distance_km']
-            duration_min = route['duration_min']
+        # TomTom route(s) — best + up to 2 alternatives. routes_raw[0] is TomTom's best.
+        routes_raw = self._route(o, d, weight_kg)
+        if routes_raw:
+            best = routes_raw[0]
+            distance_km = best['distance_km']
+            duration_min = best['duration_min']
             source = 'tomtom'
         else:
             distance_km = self._haversine(o['lat'], o['lon'], d['lat'], d['lon']) * 1.3
             duration_min = (distance_km / 80) * 60
             source = 'estimated'
+            # Single estimated route so the response shape stays consistent.
+            routes_raw = [{
+                'distance_km': round(distance_km, 1),
+                'duration_min': duration_min,
+                'duration_minutes': int(round(duration_min)),
+                'traffic_delay_minutes': None, 'no_traffic_minutes': None,
+                'historic_minutes': None, 'live_minutes': None,
+                'departure_time': None, 'arrival_time': None,
+                'sections': [],
+                'geometry': [{'lat': o['lat'], 'lon': o['lon']},
+                             {'lat': d['lat'], 'lon': d['lon']}],
+            }]
 
         # Get live fuel price
         try:
@@ -2138,34 +2379,49 @@ class RouteCalculatorView(APIView):
         fuel_litres = round(distance_km * fuel_rate, 2)
         fuel_zar = round(fuel_litres * diesel_price, 2)
 
-        # Use resolved labels for country detection (fix 1)
+        # Use resolved labels + TomTom country codes for country detection
         origin_label = o.get('label', origin)
         dest_label   = d.get('label', destination)
+        origin_iso   = o.get('country_code', '')
+        dest_iso     = d.get('country_code', '')
 
-        # Detect cross-border route
-        countries    = detect_countries(origin_label, dest_label)
+        # Detect cross-border route — ISO codes take precedence over keyword matching
+        countries    = detect_countries(origin_label, dest_label, origin_iso, dest_iso)
         cross_border = countries is not None and len(countries) > 1
 
         # Toll cost
         toll_breakdown   = []
         toll_routes_used = []
+        geometry         = []
 
         if not cross_border:
-            # Domestic: query SANRAL plaza DB, fall back to flat rate
             toll_truck_type = self.VEHICLE_TO_TOLL_TYPE.get(vehicle_type, 'combination')
             try:
-                toll_result = calculate_tolls(origin_label, dest_label, toll_truck_type)
-                if toll_result.total_zar > 0:
-                    toll_zar         = float(toll_result.total_zar)
-                    toll_routes_used = toll_result.routes_used
-                    toll_breakdown   = [
-                        {'plaza': item.plaza_name, 'route': item.route, 'tariff': float(item.tariff)}
-                        for item in toll_result.breakdown
-                    ]
+                # Prefer geofence matching when TomTom geometry is available.
+                # Fall back to keyword matching for estimated routes (no geometry).
+                geometry = routes_raw[0].get('geometry', []) if routes_raw else []
+                if geometry:
+                    toll_result = calculate_tolls_by_geometry(geometry, toll_truck_type)
+                    # If geofence found nothing, retry with keyword matching — the
+                    # coordinates may not yet be verified for this corridor.
+                    if not toll_result.routes_used:
+                        toll_origin = f"{origin} {origin_label}"
+                        toll_dest   = f"{destination} {dest_label}"
+                        toll_result = calculate_tolls(toll_origin, toll_dest, toll_truck_type)
+                        toll_result.warning = (toll_result.warning or '') + ' (geofence found 0 plazas — fell back to keyword matching)'
                 else:
-                    toll_zar = round(distance_km * self.TOLL_ZAR_KM_FALLBACK, 2)
+                    toll_origin = f"{origin} {origin_label}"
+                    toll_dest   = f"{destination} {dest_label}"
+                    toll_result = calculate_tolls(toll_origin, toll_dest, toll_truck_type)
+
+                toll_zar         = float(toll_result.total_zar)
+                toll_routes_used = toll_result.routes_used
+                toll_breakdown   = [
+                    {'plaza': item.plaza_name, 'route': item.route, 'tariff': float(item.tariff)}
+                    for item in toll_result.breakdown
+                ]
             except Exception:
-                toll_zar = round(distance_km * self.TOLL_ZAR_KM_FALLBACK, 2)
+                toll_zar = 0.00
         else:
             # Cross-border: charge SA-side SANRAL plazas where data exists (fix 4)
             sa_toll = calculate_sa_tolls_for_cross_border(countries, vehicle_type)
@@ -2184,7 +2440,6 @@ class RouteCalculatorView(APIView):
                 'non_sa_tolls':     cb_costs['non_sa_tolls'],
             }
             warnings  = get_cross_border_warnings(countries)
-            toll_zar += cb_costs['non_sa_tolls']
 
         response_data = {
             'success': True,
@@ -2195,7 +2450,7 @@ class RouteCalculatorView(APIView):
             'fuel_cost_zar': fuel_zar,
             'fuel_rate_l_per_100km': round(fuel_rate * 100, 1),
             'toll_cost_zar': round(toll_zar, 2),
-            'toll_source': 'sanral' if toll_routes_used else 'estimated',
+            'toll_source': 'geofence' if (toll_routes_used and geometry) else ('sanral' if toll_routes_used else 'estimated'),
             'toll_routes': toll_routes_used,
             'toll_breakdown': toll_breakdown,
             'total_cost_zar': round(fuel_zar + toll_zar + sum(additional_costs.values()), 2),
@@ -2212,6 +2467,63 @@ class RouteCalculatorView(APIView):
             response_data['additional_costs'] = additional_costs
             if warnings:
                 response_data['warnings'] = warnings
+
+        # Per-route breakdown (best + alternatives). Fuel/total are distance-based.
+        # Toll cost strategy depends on source:
+        #   geofence  → geofence already matched exact plazas on the best route geometry;
+        #               use toll_zar directly for all route options (same corridor = same plazas).
+        #   keyword   → scale proportionally by TomTom plaza count vs matched plaza count so
+        #               alternatives with fewer toll sections cost less.
+        toll_source_is_geofence = bool(geometry and toll_routes_used)
+        sanral_plaza_count = len(toll_breakdown) if toll_breakdown else 0
+        extra_costs = sum(additional_costs.values()) if additional_costs else 0
+        routes_out = []
+        for i, rt in enumerate(routes_raw):
+            r_litres = round(rt['distance_km'] * fuel_rate, 2)
+            r_fuel = round(r_litres * diesel_price, 2)
+            analysis = self._analyze_route(rt)
+            terrain = self._infer_terrain(rt['geometry'], origin, destination)
+            rt_toll_count = analysis['toll_count']
+            if toll_source_is_geofence:
+                # Geofence result is authoritative — same plazas on same corridor
+                rt_toll_zar = round(toll_zar, 2)
+            elif sanral_plaza_count > 0:
+                # Keyword fallback: scale by this route's plaza count vs matched total
+                rt_toll_zar = round(toll_zar * rt_toll_count / sanral_plaza_count, 2)
+            else:
+                rt_toll_zar = 0.00
+            routes_out.append({
+                'index': i,
+                'is_best': i == 0,
+                'label': 'Best Routes' if i == 0 else f'Alternative {i}',
+                'distance_km': rt['distance_km'],
+                'duration_minutes': rt['duration_minutes'],
+                'traffic_delay_minutes': rt['traffic_delay_minutes'],
+                'no_traffic_minutes': rt['no_traffic_minutes'],
+                'historic_minutes': rt['historic_minutes'],
+                'live_minutes': rt['live_minutes'],
+                'departure_time': rt['departure_time'],
+                'arrival_time': rt['arrival_time'],
+                'fuel_usage_litres': r_litres,
+                'fuel_cost_zar': r_fuel,
+                'toll_cost_zar': rt_toll_zar,
+                'total_cost_zar': round(r_fuel + rt_toll_zar + extra_costs, 2),
+                # Rich route metadata from section analysis
+                'toll_count': analysis['toll_count'],
+                'has_tunnel': analysis['has_tunnel'],
+                'motorway_pct': analysis['motorway_pct'],
+                'road_type': analysis['road_type'],
+                'max_traffic_severity': analysis['max_traffic_severity'],
+                'traffic_status': analysis['traffic_status'],
+                'traffic_vs_historic': analysis['traffic_vs_historic'],
+                'congested_km': analysis['congested_km'],
+                'country_codes': analysis['country_codes'],
+                'terrain': terrain,
+                'sections': rt['sections'],
+                'geometry': rt['geometry'],
+            })
+        response_data['routes'] = routes_out
+        response_data['best_index'] = 0
 
         return Response(response_data)
 
@@ -2233,7 +2545,8 @@ class RouteCalculatorView(APIView):
                     if -36 <= lat <= -10 and 10 <= lon <= 45:
                         addr = result.get('address', {})
                         label = addr.get('freeformAddress') or addr.get('municipality') or query
-                        return {'lat': lat, 'lon': lon, 'label': label}
+                        country_code = addr.get('countryCode', '')
+                        return {'lat': lat, 'lon': lon, 'label': label, 'country_code': country_code}
             # Fallback: append South Africa to query and retry
             r2 = http_requests.get(
                 f'https://api.tomtom.com/search/2/geocode/{query}, South Africa.json',
@@ -2248,26 +2561,191 @@ class RouteCalculatorView(APIView):
                     if -36 <= lat <= -10 and 10 <= lon <= 45:
                         addr = result.get('address', {})
                         label = addr.get('freeformAddress') or query
-                        return {'lat': lat, 'lon': lon, 'label': label}
+                        country_code = addr.get('countryCode', '')
+                        return {'lat': lat, 'lon': lon, 'label': label, 'country_code': country_code}
         except Exception:
             pass
         return None
 
     def _route(self, o, d, weight_kg):
+        """Call TomTom calculateRoute for the best route + up to 2 alternatives.
+
+        Returns a list of parsed route dicts (index 0 = TomTom's own best) with
+        geometry + summary fields, or None on failure. No custom ranking — order
+        is exactly what TomTom returns (routeType=fastest)."""
         try:
             url = f"https://api.tomtom.com/routing/1/calculateRoute/{o['lat']},{o['lon']}:{d['lat']},{d['lon']}/json"
             r = http_requests.get(url, params={
-                'key': self.TOMTOM_API_KEY, 'travelMode': 'truck',
-                'vehicleWeight': weight_kg, 'traffic': 'true',
-            }, timeout=15)
+                'key': self.TOMTOM_API_KEY,
+                'travelMode': 'truck',
+                'vehicleWeight': weight_kg,
+                'traffic': 'true',
+                'routeType': 'fastest',
+                'maxAlternatives': 2,
+                'computeTravelTimeFor': 'all',
+                'sectionType': ['traffic', 'toll', 'motorway', 'tunnel', 'country'],
+            }, timeout=20)
             if r.status_code == 200:
-                routes = r.json().get('routes', [])
-                if routes:
-                    s = routes[0]['summary']
-                    return {'distance_km': s['lengthInMeters'] / 1000, 'duration_min': s['travelTimeInSeconds'] / 60}
+                parsed = [self._parse_route(rt) for rt in r.json().get('routes', [])]
+                parsed = [p for p in parsed if p]
+                if parsed:
+                    return parsed
         except Exception:
             pass
         return None
+
+    @staticmethod
+    def _parse_route(rt):
+        """Normalise one TomTom route into our per-route shape (summary + geometry + sections)."""
+        try:
+            s = rt.get('summary', {})
+
+            geometry = [
+                {'lat': p['latitude'], 'lon': p['longitude']}
+                for leg in rt.get('legs', [])
+                for p in leg.get('points', [])
+            ]
+
+            sections = []
+            for sec in rt.get('sections', []):
+                item = {'type': sec.get('sectionType'),
+                        'start': sec.get('startPointIndex'),
+                        'end': sec.get('endPointIndex')}
+                if sec.get('simpleCategory') is not None:
+                    item['category'] = sec.get('simpleCategory')
+                if sec.get('effectiveSpeedInKmh') is not None:
+                    item['effective_speed_kmh'] = sec.get('effectiveSpeedInKmh')
+                if sec.get('delayInSeconds') is not None:
+                    item['delay_seconds'] = sec.get('delayInSeconds')
+                if sec.get('magnitudeOfDelay') is not None:
+                    item['magnitude'] = sec.get('magnitudeOfDelay')
+                sections.append(item)
+
+            def _to_min(key):
+                v = s.get(key)
+                return round(v / 60, 1) if v is not None else None
+
+            duration_min = s.get('travelTimeInSeconds', 0) / 60
+            congested_km = round(s.get('trafficLengthInMeters', 0) / 1000, 1)
+            return {
+                'distance_km': round(s.get('lengthInMeters', 0) / 1000, 1),
+                'duration_min': duration_min,
+                'duration_minutes': int(round(duration_min)),
+                'traffic_delay_minutes': _to_min('trafficDelayInSeconds'),
+                'no_traffic_minutes': _to_min('noTrafficTravelTimeInSeconds'),
+                'historic_minutes': _to_min('historicTrafficTravelTimeInSeconds'),
+                'live_minutes': _to_min('liveTrafficIncidentsTravelTimeInSeconds'),
+                'departure_time': s.get('departureTime'),
+                'arrival_time': s.get('arrivalTime'),
+                'congested_km': congested_km,
+                'sections': sections,
+                'geometry': geometry,
+            }
+        except Exception:
+            return None
+
+    @staticmethod
+    def _analyze_route(rt):
+        """Derive rich metadata from a parsed route dict (sections + summary fields)."""
+        sections = rt.get('sections', [])
+        geometry = rt.get('geometry', [])
+        total_pts = max(len(geometry) - 1, 1)
+
+        toll_count = sum(1 for s in sections if s.get('type') == 'TOLL')
+        has_tunnel = any(s.get('type') == 'TUNNEL' for s in sections)
+
+        motorway_pts = sum(
+            max(s.get('end', 0) - s.get('start', 0), 0)
+            for s in sections if s.get('type') == 'MOTORWAY'
+        )
+        motorway_pct = round(min(motorway_pts / total_pts * 100, 100))
+
+        max_severity = max(
+            (s.get('magnitude', 0) for s in sections if s.get('type') == 'TRAFFIC'),
+            default=0,
+        )
+        severity_labels = {0: 'Clear', 1: 'Minor delays', 2: 'Moderate delays',
+                           3: 'Heavy traffic', 4: 'Very heavy traffic'}
+        traffic_status = severity_labels.get(max_severity, 'Unknown')
+
+        historic = rt.get('historic_minutes')
+        live = rt.get('live_minutes')
+        traffic_vs_historic = None
+        if historic and live:
+            traffic_vs_historic = round(live - historic, 1)
+
+        country_codes = list({
+            s['country_code'] for s in sections
+            if s.get('type') == 'COUNTRY' and s.get('country_code')
+        })
+
+        if motorway_pct >= 70:
+            road_type = 'Mostly Highway'
+        elif motorway_pct >= 35:
+            road_type = 'Mixed Roads'
+        else:
+            road_type = 'Mostly Arterial'
+
+        congested_km = rt.get('congested_km', 0)
+
+        return {
+            'toll_count': toll_count,
+            'has_tunnel': has_tunnel,
+            'motorway_pct': motorway_pct,
+            'road_type': road_type,
+            'max_traffic_severity': max_severity,
+            'traffic_status': traffic_status,
+            'traffic_vs_historic': traffic_vs_historic,
+            'congested_km': congested_km,
+            'country_codes': country_codes,
+        }
+
+    @staticmethod
+    def _infer_terrain(geometry, origin='', destination=''):
+        """Heuristic terrain labels from route geometry and city names."""
+        if not geometry:
+            return ['Unknown']
+
+        # Sample every 10th point for speed
+        sample = geometry[::10] or geometry
+
+        coastal_cities = {
+            'cape town', 'durban', 'port elizabeth', 'gqeberha', 'east london',
+            'george', 'knysna', 'mossel bay', 'jeffreys bay', 'port shepstone',
+            'richards bay', 'maputo', 'beira',
+        }
+        origin_lc = origin.lower()
+        dest_lc = destination.lower()
+        is_coastal = any(c in origin_lc or c in dest_lc for c in coastal_cities)
+
+        terrain = []
+        if is_coastal:
+            terrain.append('Coastal')
+
+        for p in sample:
+            lat, lon = p['lat'], p['lon']
+            # Western Cape mountain passes (Hex River, Du Toitskloof, Outeniqua)
+            if -34.5 < lat < -32.5 and 18.5 < lon < 22.0:
+                if 'Mountain Passes' not in terrain:
+                    terrain.append('Mountain Passes')
+            # Drakensberg / KZN Midlands (N3 corridor)
+            if -30.5 < lat < -27.5 and 28.0 < lon < 30.5:
+                if 'Mountain Passes' not in terrain:
+                    terrain.append('Mountain Passes')
+            # Karoo semi-desert
+            if -33.0 < lat < -30.0 and 21.0 < lon < 26.5:
+                if 'Karoo' not in terrain:
+                    terrain.append('Karoo')
+            # Mpumalanga Escarpment / Lowveld
+            if -26.5 < lat < -24.0 and 30.0 < lon < 33.0:
+                if 'Escarpment' not in terrain:
+                    terrain.append('Escarpment')
+            # Limpopo / Bushveld
+            if -24.0 < lat < -21.0 and 27.0 < lon < 32.0:
+                if 'Bushveld' not in terrain:
+                    terrain.append('Bushveld')
+
+        return terrain if terrain else ['Highveld / Flat']
 
     def _haversine(self, lat1, lon1, lat2, lon2):
         R = 6371
@@ -2291,7 +2769,13 @@ class LocationSuggestView(APIView):
         try:
             r = http_requests.get(
                 f'https://api.tomtom.com/search/2/search/{query}.json',
-                params={'key': self.TOMTOM_API_KEY, 'limit': 5, 'language': 'en-US'},
+                params={
+                    'key': self.TOMTOM_API_KEY,
+                    'limit': 6,
+                    'language': 'en-US',
+                    'countrySet': 'ZA',
+                    'typeahead': 'true',
+                },
                 timeout=4,
             )
             if r.status_code != 200:
@@ -2301,10 +2785,10 @@ class LocationSuggestView(APIView):
                 addr = result.get('address', {})
                 pos = result.get('position', {})
                 label = addr.get('freeformAddress', '')
-                country = addr.get('country', '')
+                municipality = addr.get('municipality', '')
                 if not label:
                     continue
-                display = f"{label}, {country}" if country and country not in label else label
+                display = f"{label}, {municipality}" if municipality and municipality not in label else label
                 suggestions.append({'label': display, 'lat': pos.get('lat'), 'lon': pos.get('lon')})
             return Response(suggestions)
         except Exception:
@@ -2526,7 +3010,7 @@ class PasswordResetRequestView(APIView):
                 cache.set(f'pwd_reset_{email}', code, timeout=3600)  # 1hr
 
                 from core.tasks import send_password_reset_email_task
-                send_password_reset_email_task.delay(email, user.first_name or user.username, code)
+                send_password_reset_email_task(email, user.first_name or user.username, code)
         except Exception as e:
             pass
 
@@ -2559,12 +3043,16 @@ class PasswordResetConfirmView(APIView):
         if not stored_code or not _hmac.compare_digest(str(stored_code), str(code)):
             return Response({'code': ['Invalid or expired reset code.']}, status=400)
 
-        user = User.objects.filter(email__iexact=email).first()
-        if not user:
+        # Emails aren't unique: the code proved ownership of the inbox, so reset
+        # every account tied to it — otherwise login (which tries all matches)
+        # still accepts the old password on the untouched accounts.
+        users = list(User.objects.filter(email__iexact=email))
+        if not users:
             return Response({'detail': 'Invalid or expired reset code.'}, status=400)
 
-        user.set_password(new_password)
-        user.save()
+        for user in users:
+            user.set_password(new_password)
+            user.save(update_fields=['password'])
         cache.delete(f'pwd_reset_{email}')
 
         return Response({'detail': 'Password has been reset. You can now log in.'})
@@ -2614,7 +3102,7 @@ class InviteView(APIView):
             return Response({'error': 'Email is required'}, status=status.HTTP_400_BAD_REQUEST)
 
         # Check if user already exists
-        if User.objects.filter(email=email).exists():
+        if User.objects.filter(email__iexact=email).exists():
             return Response({'error': 'User with this email already exists'}, status=status.HTTP_400_BAD_REQUEST)
 
         company = resolve_user_company(request.user)
@@ -2659,7 +3147,7 @@ class InviteView(APIView):
 
         from core.tasks import send_invite_email_task
         invite_url = f"{settings.FRONTEND_URL}/invite/{token}"
-        send_invite_email_task.delay(email, invited_by_name, company.company_name, invite_url, role)
+        send_invite_email_task(email, invited_by_name, company.company_name, invite_url, role)
 
         return Response(
             {'success': True, 'message': 'Invite sent', 'token': token},
@@ -2731,11 +3219,16 @@ class InviteTokenView(APIView):
         # Delete invite token
         cache.delete(f'invite_{token}')
 
-        # Generate auth token
-        token_obj, created = Token.objects.get_or_create(user=user)
+        # Generate a per-device session (auto-login after accepting the invite)
+        session = UserSession.objects.create(
+            user=user,
+            device=parse_device(request),
+            user_agent=(request.META.get('HTTP_USER_AGENT', '') or '')[:512],
+            ip_address=client_ip(request),
+        )
 
         return Response({
-            'token': token_obj.key,
+            'token': session.key,
             'user': UserSerializer(user).data
         }, status=status.HTTP_200_OK)
 
@@ -2775,7 +3268,7 @@ class InviteResendView(APIView):
         invite_url = f"{settings.FRONTEND_URL}/invite/{new_token}"
         invited_by_name = request.user.get_full_name() or request.user.username
         company_name = request.user.company.company_name if request.user.company else "TruckWys"
-        send_invite_email_task.delay(invite_data.get('email'), invited_by_name, company_name, invite_url, invite_data.get('role'))
+        send_invite_email_task(invite_data.get('email'), invited_by_name, company_name, invite_url, invite_data.get('role'))
 
         return Response({'success': True, 'message': 'Invite resent', 'token': new_token}, status=status.HTTP_200_OK)
 
@@ -2826,8 +3319,9 @@ class IntegrationAPIKeyViewSet(viewsets.ModelViewSet):
     list: Get all API keys for current user
     create: Create new API key
     retrieve: Get API key detail
-    update/partial_update: Update API key (name, active status)
+    update/partial_update: Update API key (name, quota, allowed_ips, webhook_url, active)
     destroy: Delete/revoke API key
+    calls: GET paginated call log for this key
     """
     permission_classes = [IsAuthenticated]
 
@@ -2841,6 +3335,15 @@ class IntegrationAPIKeyViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(operator=self.request.user)
+
+    @action(detail=True, methods=['get'], url_path='calls')
+    def calls(self, request, pk=None):
+        from core.models.integration_api_key import APICallLog
+        from core.serializers import APICallLogSerializer
+        api_key = self.get_object()
+        logs = APICallLog.objects.filter(api_key=api_key).order_by('-scored_at')[:100]
+        serializer = APICallLogSerializer(logs, many=True)
+        return Response(serializer.data)
 
 
 class ActivityEventViewSet(viewsets.ReadOnlyModelViewSet):

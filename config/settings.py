@@ -165,8 +165,12 @@ MEDIA_ROOT = BASE_DIR / 'media'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 REST_FRAMEWORK = {
+    'EXCEPTION_HANDLER': 'core.views.custom_exception_handler',
     'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework.authentication.TokenAuthentication',
+        # Per-device token auth (one UserSession row per login), so devices can
+        # be listed and revoked individually. Replaces the old single shared
+        # authtoken Token. SessionAuthentication stays for admin/browsable API.
+        'core.auth.session_auth.UserSessionTokenAuthentication',
         'rest_framework.authentication.SessionAuthentication',
     ],
     'DEFAULT_PERMISSION_CLASSES': [
@@ -190,9 +194,21 @@ REST_FRAMEWORK = {
         'anon': '20/minute',
         'user': '60/minute',
         'login': '5/minute',  # Stricter rate for login/signup
+        'otp_verify': '10/minute',  # 2FA code verification (per-challenge cap of 5 also applies)
+        'otp_resend': '3/minute',   # 2FA code resend (plus a per-challenge 60s cooldown)
         'lender': '120/minute',  # Per-API-key cap for the lender API
     }
 }
+
+# Two-factor authentication (email OTP) at login. Master kill-switch: when False,
+# login completes in one step regardless of each user's `two_factor` preference.
+# NOTE: the 2-step OTP flow stores the challenge in the cache, so a multi-worker
+# deployment MUST use a shared cache (Redis) — the base config uses LocMemCache.
+LOGIN_2FA_ENABLED = config('LOGIN_2FA_ENABLED', default=True, cast=bool)
+
+# Minutes of inactivity after which a session is auto-expired, for users who have
+# the "Session timeout" security setting enabled. Enforced in core.auth.session_auth.
+SESSION_IDLE_TIMEOUT_MINUTES = config('SESSION_IDLE_TIMEOUT_MINUTES', default=30, cast=int)
 
 # OpenAPI/Swagger Configuration
 SPECTACULAR_SETTINGS = {
@@ -216,6 +232,7 @@ CORS_ALLOW_HEADERS = [
     'dnt',
     'origin',
     'user-agent',
+    'x-api-key',
     'x-csrftoken',
     'x-requested-with',
 ]
@@ -237,6 +254,17 @@ DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='Truckwys <noreply@tru
 # Resend Configuration
 RESEND_API_KEY = config('RESEND_API_KEY', default='')
 EMAIL_FROM = config('EMAIL_FROM', default='TruckWys <noreply@mail.baselinq.ai>')
+
+# RAG / embeddings (Copilot retrieval). OpenAI provides the embeddings; Claude
+# (ANTHROPIC_API_KEY) does the generation. Without OPENAI_API_KEY, RAG degrades
+# to the snapshot-only prompt.
+OPENAI_API_KEY = config('OPENAI_API_KEY', default='')
+EMBEDDING_MODEL = config('EMBEDDING_MODEL', default='text-embedding-3-small')
+# Copilot generation: which model writes the answer, and which provider to use.
+# COPILOT_LLM_PROVIDER: 'auto' (prefer Anthropic if its key is set, else OpenAI),
+# 'openai', or 'anthropic'. With only OPENAI_API_KEY set, 'auto' uses OpenAI.
+OPENAI_CHAT_MODEL = config('OPENAI_CHAT_MODEL', default='gpt-4o')
+COPILOT_LLM_PROVIDER = config('COPILOT_LLM_PROVIDER', default='auto')
 
 # Frontend URL for email links
 FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:3701')
@@ -273,29 +301,42 @@ PAYFAST_SANDBOX = config('PAYFAST_SANDBOX', default=True, cast=bool)
 CONTROLFLEET_WEBHOOK_KEY = config('CONTROLFLEET_WEBHOOK_KEY', default='')
 CONTROLFLEET_API_KEY = config('CONTROLFLEET_API_KEY', default='')
 
-# Celery / Redis (async tasks). Connection is lazy — no broker needed for the
-# web process unless a task is actually dispatched.
+# Redis — used by Django Channels (WebSocket channel layer)
 REDIS_URL = config('REDIS_URL', default='redis://localhost:6379/0')
-CELERY_BROKER_URL = config('CELERY_BROKER_URL', default=REDIS_URL)
-CELERY_RESULT_BACKEND = config('CELERY_RESULT_BACKEND', default=REDIS_URL)
-CELERY_TASK_ALWAYS_EAGER = config('CELERY_TASK_ALWAYS_EAGER', default=False, cast=bool)
-CELERY_ACCEPT_CONTENT = ['json']
-CELERY_TASK_SERIALIZER = 'json'
-CELERY_RESULT_SERIALIZER = 'json'
 
-# Nightly vehicle score recomputation (runs at 02:00 every day)
-from celery.schedules import crontab
-CELERY_BEAT_SCHEDULE = {
-    'vehicle-scores-nightly': {
-        'task': 'core.tasks.compute_all_vehicle_scores',
-        'schedule': crontab(hour=2, minute=0),
-    },
-    'driver-scores-nightly': {
-        'task': 'core.tasks.compute_all_driver_scores',
-        'schedule': crontab(hour=2, minute=10),
-    },
+# Shared cache across gunicorn workers. Django's implicit default is per-process
+# LocMemCache, which breaks cache-based OTP (email verification + 2FA login) under
+# multiple workers — a code written on one worker is invisible to another.
+# We use the Postgres-backed DatabaseCache rather than Redis: the database is always
+# reachable in production (Channels' Redis is not guaranteed to be, and putting an
+# unreachable Redis on the DRF-throttle path 500s every request). The cache table is
+# created by the create_cache_table migration (and `manage.py createcachetable`).
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.db.DatabaseCache',
+        'LOCATION': 'tw_cache_table',
+    }
 }
 
 # ZAR diesel price used for cost/margin calculations.
 # Update this periodically to match the current pump price.
 FUEL_PRICE_ZAR = 22.50
+
+# ---------------------------------------------------------------------------
+# Celery
+# ---------------------------------------------------------------------------
+CELERY_BROKER_URL = REDIS_URL
+CELERY_RESULT_BACKEND = REDIS_URL
+CELERY_TIMEZONE = 'Africa/Johannesburg'
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_ACCEPT_CONTENT = ['json']
+
+from celery.schedules import crontab  # noqa: E402
+CELERY_BEAT_SCHEDULE = {
+    # SA diesel prices change on the first Wednesday of each month.
+    # Run on 3rd and 10th to catch it; task retries 3× with 6h gaps if scrape fails.
+    'refresh-fuel-price': {
+        'task': 'core.tasks.refresh_fuel_price',
+        'schedule': crontab(day_of_month='3,10', hour='6', minute='0'),
+    },
+}

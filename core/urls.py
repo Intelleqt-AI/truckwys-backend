@@ -1,26 +1,25 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from rest_framework.authtoken.views import obtain_auth_token
 from .views_billing import (
     SubscribeView, CancelSubscriptionView, BillingStatusView,
-    BillingHistoryView, PayFastITNView,
+    BillingHistoryView, PayFastITNView, ConfirmPaymentView,
 )
 from .views import (
     UserViewSet, CustomerViewSet, DriverViewSet,
     VehicleViewSet, VehicleTypeViewSet, VehicleLogViewSet, LoadViewSet,
     QuoteViewSet, InvoiceViewSet, PaymentViewSet,
     ExpenseViewSet, SettlementViewSet, NotificationViewSet, WebhookViewSet,
-    RegisterView, LoginView, LogoutView, ChangePasswordView, UserProfileView, SessionsView,
+    RegisterView, LoginView, LoginVerifyOtpView, LoginResendOtpView, LogoutView, ChangePasswordView, UserProfileView, SessionsView,
     FleetOverviewView, VehicleInsightsView, VehicleIntelligenceFeedView, VehicleActionView,
     DriverOverviewView, DriverPerformanceLeaderboardView,
-    QuotesPipelineOverviewView, NotificationSettingsView,
+    QuotesPipelineOverviewView, NotificationSettingsView, SecuritySettingsView,
     CompanyProfileView, CompanyLogoUploadView, DashboardOverviewView, ActivityEventViewSet,
     TestEmailView, InviteView, InviteTokenView, InviteResendView,
-    PublicQuoteView, PublicQuoteRespondView,
+    PublicQuoteView, PublicQuoteRespondView, PublicInvoiceView,
     EmailVerifyView, ResendVerificationView,
 )
 from .views_ai_quote import (
-    AIChatQuoteView, AIQuoteSuggestionView, AIVoiceQuoteView,
+    AIChatQuoteView, AIQuoteAnalyzeView, AIQuoteSuggestionView, AIVoiceQuoteView,
     FuelPriceCurrentView, FuelPriceSurchargeCheckView,
     QuoteBenchmarkView, QuoteFuelAlertView, QuoteModelStatsView,
     QuoteOutcomeView, QuoteWinProbabilityView, RevenueGuardView
@@ -66,7 +65,7 @@ from .views_risk_api import (
 from .views_invite import (
     InviteCreateView, InviteValidateView, InviteAcceptView
 )
-from .views_ai_insights import DashboardBriefingView, RiskScoreExplainView, AgentChatView, CopilotConversationsView, CopilotConversationDetailView
+from .views_ai_insights import DashboardBriefingView, RiskScoreExplainView, AgentChatView, CopilotConversationsView, CopilotConversationDetailView, ConversationChatView
 from .views_quote_optimize import AIPriceOptimizeView
 from .views_risk_score_api import RiskUnderwriteView
 
@@ -112,6 +111,8 @@ urlpatterns = [
     # Authentication endpoints (must come before router)
     path('auth/register/', RegisterView.as_view(), name='register'),
     path('auth/login/', LoginView.as_view(), name='login'),
+    path('auth/login/verify-otp/', LoginVerifyOtpView.as_view(), name='login-verify-otp'),
+    path('auth/login/resend-otp/', LoginResendOtpView.as_view(), name='login-resend-otp'),
     path('auth/logout/', LogoutView.as_view(), name='logout'),
     path('auth/change-password/', ChangePasswordView.as_view(), name='change-password'),
     # Billing (PayFast) — views were imported but never routed
@@ -120,8 +121,10 @@ urlpatterns = [
     path('billing/subscribe/', SubscribeView.as_view(), name='billing-subscribe'),
     path('billing/cancel/', CancelSubscriptionView.as_view(), name='billing-cancel'),
     path('billing/itn/', PayFastITNView.as_view(), name='billing-itn'),
+    path('billing/confirm/', ConfirmPaymentView.as_view(), name='billing-confirm'),
     path('auth/me/', UserProfileView.as_view(), name='user-profile'),
     path('auth/sessions/', SessionsView.as_view(), name='auth-sessions'),
+    path('auth/sessions/<uuid:session_id>/', SessionsView.as_view(), name='auth-session-detail'),
     path('auth/password-reset/', PasswordResetRequestView.as_view(), name='password-reset'),
     path('auth/password-reset/confirm/', PasswordResetConfirmView.as_view(), name='password-reset-confirm'),
     path('auth/verify-email/', EmailVerifyView.as_view(), name='verify-email'),
@@ -146,6 +149,7 @@ urlpatterns = [
     
     # Notification Settings endpoint
     path('notifications/settings/', NotificationSettingsView.as_view(), name='notification-settings'),
+    path('auth/security-settings/', SecuritySettingsView.as_view(), name='security-settings'),
     
     # Company Settings endpoints
     path('company/profile/', CompanyProfileView.as_view(), name='company-profile'),
@@ -159,7 +163,9 @@ urlpatterns = [
     path('agent/chat/', AgentChatView.as_view(), name='agent-chat'),
     path('agent/conversations/', CopilotConversationsView.as_view(), name='agent-conversations'),
     path('agent/conversations/<int:pk>/', CopilotConversationDetailView.as_view(), name='agent-conversation-detail'),
+    path('agent/conversations/<int:pk>/chat/', ConversationChatView.as_view(), name='agent-conversation-chat'),
     path('quotes/optimize/', AIPriceOptimizeView.as_view(), name='quote-optimize'),
+    path('quotes/analyze/', AIQuoteAnalyzeView.as_view(), name='quote-analyze'),
     path('risk/underwrite/', RiskUnderwriteView.as_view(), name='risk-underwrite'),
     path('risk/score/<int:pk>/explain/', RiskScoreExplainView.as_view(), name='risk-score-explain'),
     path('dashboard/overview/', DashboardOverviewView.as_view(), name='dashboard-overview'),
@@ -200,9 +206,10 @@ urlpatterns = [
     path('route/calculate/', RouteCalculatorView.as_view(), name='route-calculate'),
     path('location/suggest/', LocationSuggestView.as_view(), name='location-suggest'),
 
-    # Public Quote endpoints (no auth required)
+    # Public endpoints (no auth required)
     path('quotes/public/<int:quote_id>/<str:token>/', PublicQuoteView.as_view(), name='public-quote-view'),
     path('quotes/public/<int:quote_id>/<str:token>/respond/', PublicQuoteRespondView.as_view(), name='public-quote-respond'),
+    path('invoices/public/<int:invoice_id>/<str:token>/', PublicInvoiceView.as_view(), name='public-invoice-view'),
 
     # AI Quote & Revenue Guard endpoints (Phase 2 + Sprint 1)
     path('fuel-prices/current/', FuelPriceCurrentView.as_view(), name='fuel-prices-current'),

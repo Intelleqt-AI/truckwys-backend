@@ -4,8 +4,10 @@ from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
-from rest_framework.authtoken.models import Token
 from django.contrib.auth import authenticate
+
+from core.models import UserSession
+from core.utils.request_meta import parse_device, client_ip
 
 
 class PartnerLoginView(APIView):
@@ -57,11 +59,16 @@ class PartnerLoginView(APIView):
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        # Get or create token
-        token, _ = Token.objects.get_or_create(user=user)
+        # Create a per-device session token
+        session = UserSession.objects.create(
+            user=user,
+            device=parse_device(request),
+            user_agent=(request.META.get('HTTP_USER_AGENT', '') or '')[:512],
+            ip_address=client_ip(request),
+        )
 
         return Response({
-            'token': token.key,
+            'token': session.key,
             'user': {
                 'id': user.id,
                 'email': user.email,

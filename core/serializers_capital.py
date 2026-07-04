@@ -109,6 +109,7 @@ class AdvanceRequestSerializer(serializers.ModelSerializer):
         read_only=True
     )
     customer_name = serializers.CharField(source='invoice.customer.name', read_only=True)
+    invoice_due_date = serializers.DateField(source='invoice.due_date', read_only=True)
     facility_limit = serializers.DecimalField(
         source='facility.limit',
         max_digits=12,
@@ -127,6 +128,7 @@ class AdvanceRequestSerializer(serializers.ModelSerializer):
             'invoice',
             'invoice_number',
             'invoice_total',
+            'invoice_due_date',
             'customer_name',
             'facility',
             'facility_limit',

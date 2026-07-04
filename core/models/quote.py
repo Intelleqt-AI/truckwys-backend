@@ -25,6 +25,11 @@ class Quote(models.Model):
         ('rejected', 'Rejected'),
         ('expired', 'Expired'),
     ]
+
+    TRIP_TYPE_CHOICES = [
+        ('ONE_WAY', 'One Way'),
+        ('ROUND_TRIP', 'Round Trip'),
+    ]
     
     company = models.ForeignKey("Company", on_delete=models.CASCADE, null=True, blank=True, related_name="quotes")
     
@@ -33,7 +38,11 @@ class Quote(models.Model):
     
     pickup_location = models.CharField(max_length=500)
     delivery_location = models.CharField(max_length=500)
-    
+    pickup_lat = models.DecimalField(max_digits=12, decimal_places=7, null=True, blank=True)
+    pickup_lng = models.DecimalField(max_digits=12, decimal_places=7, null=True, blank=True)
+    delivery_lat = models.DecimalField(max_digits=12, decimal_places=7, null=True, blank=True)
+    delivery_lng = models.DecimalField(max_digits=12, decimal_places=7, null=True, blank=True)
+
     origin = models.CharField(max_length=50, blank=True)  # e.g., "JHB", "CPT"
     destination = models.CharField(max_length=50, blank=True)  # e.g., "DUR", "PE"
     
@@ -43,7 +52,8 @@ class Quote(models.Model):
     vehicle_type = models.CharField(max_length=50, blank=True, default='')
     
     sla_hours = models.IntegerField(default=48, help_text="Service Level Agreement in hours")
-    
+    estimated_duration_minutes = models.IntegerField(null=True, blank=True, help_text="Travel time of the chosen TomTom route at quote creation (minutes)")
+
     base_rate = models.DecimalField(max_digits=10, decimal_places=2)
     fuel_surcharge = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     toll_charges = models.DecimalField(max_digits=10, decimal_places=2, default=0)
@@ -68,6 +78,18 @@ class Quote(models.Model):
     rejected_at = models.DateTimeField(null=True, blank=True, help_text="Timestamp when quote was rejected")
     fuel_price_at_creation = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True, help_text="Fuel price snapshot at quote creation time")
     win_probability = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True, help_text="Predicted win probability (0-100)")
+
+    # Round trip support
+    trip_type = models.CharField(max_length=20, choices=TRIP_TYPE_CHOICES, default='ONE_WAY')
+    # Return leg fields — only used when trip_type = ROUND_TRIP
+    return_location = models.CharField(max_length=500, blank=True)
+    return_lat = models.DecimalField(max_digits=12, decimal_places=7, null=True, blank=True)
+    return_lng = models.DecimalField(max_digits=12, decimal_places=7, null=True, blank=True)
+    return_cargo = models.TextField(blank=True)  # empty = truck returns empty
+    return_distance = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    return_date = models.DateField(null=True, blank=True)
+    return_base_rate = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    return_notes = models.TextField(blank=True)
 
     vehicle = models.ForeignKey('Vehicle', on_delete=models.SET_NULL, null=True, blank=True, related_name='quotes')
     driver = models.ForeignKey('Driver', on_delete=models.SET_NULL, null=True, blank=True, related_name='quotes')

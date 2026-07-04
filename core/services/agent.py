@@ -23,13 +23,53 @@ try:
 except ImportError:  # pragma: no cover
     ANTHROPIC_AVAILABLE = False
 
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    OPENAI_AVAILABLE = False
+
 AGENT_MODEL = os.environ.get("CLAUDE_AGENT_MODEL", "claude-opus-4-8")
+OPENAI_CHAT_MODEL = (
+    os.environ.get("OPENAI_CHAT_MODEL") or getattr(settings, "OPENAI_CHAT_MODEL", "") or "gpt-4o"
+)
+
+
+def _anthropic_key() -> str:
+    return os.environ.get("ANTHROPIC_API_KEY") or getattr(settings, "ANTHROPIC_API_KEY", "")
+
+
+def _openai_key() -> str:
+    return os.environ.get("OPENAI_API_KEY") or getattr(settings, "OPENAI_API_KEY", "")
+
+
+def _provider() -> str:
+    """Which LLM provider generates the reply, based on configured keys.
+
+    COPILOT_LLM_PROVIDER ('auto'|'openai'|'anthropic') can force one. In 'auto'
+    (default) Anthropic is preferred when its key is set — preserving existing
+    installs — otherwise OpenAI. Returns '' when neither is usable (→ rules).
+    Generation and embeddings are independent: this only picks the generator.
+    """
+    pref = (os.environ.get("COPILOT_LLM_PROVIDER")
+            or getattr(settings, "COPILOT_LLM_PROVIDER", "auto") or "auto").lower()
+    has_anthropic = ANTHROPIC_AVAILABLE and bool(_anthropic_key())
+    has_openai = OPENAI_AVAILABLE and bool(_openai_key())
+
+    if pref == "anthropic":
+        return "anthropic" if has_anthropic else ""
+    if pref == "openai":
+        return "openai" if has_openai else ""
+    # auto
+    if has_anthropic:
+        return "anthropic"
+    if has_openai:
+        return "openai"
+    return ""
 
 
 def _llm_enabled() -> bool:
-    return ANTHROPIC_AVAILABLE and bool(
-        os.environ.get("ANTHROPIC_API_KEY") or getattr(settings, "ANTHROPIC_API_KEY", "")
-    )
+    return bool(_provider())
 
 
 def _money(v) -> float:
@@ -41,7 +81,7 @@ def _money(v) -> float:
 
 def build_agent_context(company) -> dict:
     """Assemble a compact, real snapshot of the company for grounding the agent."""
-    from core.models import Invoice, Quote, Vehicle, Customer
+    from core.models import Invoice, Quote, Vehicle, Customer, Driver
 
     today = timezone.now().date()
 
@@ -89,6 +129,70 @@ def build_agent_context(company) -> dict:
     ]
     top_customers = sorted(top_customers, key=lambda x: x['outstanding'], reverse=True)[:5]
 
+    # Contact information — all customers with their contact details
+    contacts = [
+        {
+            "name": c.name,
+            "company": c.company_name or "",
+            "email": c.email,
+            "phone": c.phone,
+            "city": c.city,
+            "payment_terms": c.payment_terms_default,
+            "credit_limit": _money(c.credit_limit) if c.credit_limit else None,
+            "status": "active" if c.is_active else "inactive",
+        }
+        for c in Customer.objects.filter(company=company).order_by('name')[:100]
+    ]
+
+    # Recent quote line items — last 25 quotes with full route and pricing detail
+    recent_quotes = [
+        {
+            "quote_number": q.quote_number,
+            "customer": q.customer.name if q.customer else "—",
+            "pickup": q.pickup_location,
+            "delivery": q.delivery_location,
+            "cargo": q.cargo_description,
+            "weight_kg": float(q.weight) if q.weight else None,
+            "vehicle_type": q.vehicle_type or "—",
+            "distance_km": float(q.distance) if q.distance else None,
+            "base_rate": _money(q.base_rate),
+            "fuel_surcharge": _money(q.fuel_surcharge),
+            "toll_charges": _money(q.toll_charges),
+            "total": _money(q.total_amount),
+            "margin_pct": float(q.margin_percentage) if q.margin_percentage else 0,
+            "status": q.status,
+            "valid_until": q.valid_until.isoformat() if q.valid_until else None,
+            "trip_type": q.trip_type,
+            "created": q.created_at.date().isoformat() if q.created_at else None,
+        }
+        for q in quotes.select_related('customer').order_by('-created_at')[:25]
+    ]
+
+    # Driver details — all drivers for this company
+    drivers = []
+    try:
+        for d in Driver.objects.filter(company=company).select_related('user').order_by('user__first_name'):
+            drivers.append({
+                "name": d.user.get_full_name() if d.user else "—",
+                "email": d.user.email if d.user else "—",
+                "license_number": d.license_number,
+                "license_expiry": d.license_expiry.isoformat() if d.license_expiry else None,
+                "status": d.status,
+                "experience_years": d.experience_years,
+                "efficiency_score": d.efficiency_score,
+                "on_time_rate": float(d.on_time_rate),
+                "safety_score": d.safety_score,
+                "trips_this_month": d.trips_this_month,
+                "violations": d.violation_count,
+                "accidents": d.accident_history,
+            })
+    except Exception as exc:
+        logger.warning('driver data for agent failed: %s', exc)
+
+    # Company banking details (stored in contact JSONField under "banking" key)
+    contact_json = getattr(company, 'contact', {}) or {}
+    banking = contact_json.get('banking', {})
+
     return {
         "company_name": getattr(company, "company_name", "Your company"),
         "currency": "ZAR (R)",
@@ -104,6 +208,7 @@ def build_agent_context(company) -> dict:
         "quotes": {
             "total": quotes.count(),
             "by_status": quote_counts,
+            "recent": recent_quotes,
         },
         "fleet": {
             "total": vehicles.count(),
@@ -116,6 +221,9 @@ def build_agent_context(company) -> dict:
         },
         "billing_audit": billing,
         "top_customers_by_outstanding": top_customers,
+        "contacts": contacts,
+        "drivers": drivers,
+        "banking": banking,
     }
 
 
@@ -154,7 +262,7 @@ def _capital_summary(company):
         return count, _money(value), (eligible[0] if eligible else None)
     except Exception as exc:
         logger.warning("capital summary failed for agent: %s", exc)
-        return 0, 0.0
+        return 0, 0.0, None
 
 
 # ---------------------------------------------------------------------------
@@ -211,8 +319,9 @@ def _fallback_reply(ctx: dict, user_text: str) -> str:
     if not t or any(w in t for w in ["help", "what can you", "hello", "hi ", "hey"]):
         return (
             f"I'm your TruckWys copilot for {ctx['company_name']}. I can answer questions about your "
-            f"cash position, overdue invoices, quotes pipeline, fleet status and fast-pay eligibility. "
-            f"Try: \"What's overdue?\", \"How much can I advance?\", \"How's my pipeline?\" or \"Fleet status\"."
+            f"cash position, overdue invoices, quotes pipeline, fleet status, fast-pay eligibility, "
+            f"customer contacts, driver details and banking info. "
+            f"Try: \"What's overdue?\", \"Show me driver performance\", \"Contact details for [customer]\" or \"Fleet status\"."
         )
 
     if any(w in t for w in ["overdue", "late", "collect", "debtor"]):
@@ -265,16 +374,44 @@ def _fallback_reply(ctx: dict, user_text: str) -> str:
         return (f"I found {fmt(rec)} of recoverable cash: " + "; ".join(bits)
                 + ". Open Invoices to bill and chase it.")
 
-    if any(w in t for w in ["fleet", "vehicle", "truck", "driver"]):
+    if any(w in t for w in ["fleet", "vehicle", "truck"]):
         by = fleet["by_status"]
         parts = ", ".join(f"{v} {k.replace('_',' ').lower()}" for k, v in by.items()) or "none"
         return f"Your fleet has {fleet['total']} vehicles ({parts})."
+
+    if any(w in t for w in ["driver", "drivers"]):
+        drivers = ctx.get("drivers") or []
+        if not drivers:
+            return "No drivers are recorded for your company yet."
+        lines = [f"You have {len(drivers)} driver(s):"]
+        for d in drivers[:5]:
+            lines.append(
+                f"• {d['name']} — {d['status']}, license {d['license_number']}, "
+                f"on-time {d['on_time_rate']:.0%}, safety score {d['safety_score']}"
+            )
+        return " ".join(lines)
+
+    if any(w in t for w in ["contact", "customer email", "customer phone", "phone number", "email address"]):
+        contacts = ctx.get("contacts") or []
+        if not contacts:
+            return "No contacts found."
+        lines = [f"You have {len(contacts)} contact(s) on record:"]
+        for c in contacts[:5]:
+            lines.append(f"• {c['name']} ({c['company'] or '—'}) — {c['phone']}, {c['email']}, {c['city']}")
+        return " ".join(lines)
+
+    if any(w in t for w in ["bank", "banking", "account number", "branch"]):
+        banking = ctx.get("banking") or {}
+        if not banking:
+            return "No banking details are saved on your company profile yet. Update them in Settings."
+        parts = [f"{k.replace('_', ' ').title()}: {v}" for k, v in banking.items()]
+        return "Banking details: " + " | ".join(parts)
 
     # Default: give the cash headline and point to insights.
     return (
         f"Here's the headline for {ctx['company_name']}: {fmt(inv['outstanding_total'])} outstanding, "
         f"{fmt(inv['overdue_total'])} overdue, {cap['eligible_invoices']} invoice(s) ready for fast pay. "
-        f"Ask me about overdue accounts, fast-pay capacity, your quotes pipeline or fleet status."
+        f"Ask me about overdue accounts, fast-pay capacity, your quotes pipeline, contacts, drivers or fleet status."
     )
 
 
@@ -322,13 +459,133 @@ def _propose_action(ctx: dict, user_text: str):
     return None
 
 
-def agent_respond(company, messages: list) -> dict:
-    """Return {reply, source, ai_available, actions, proposed_action}. Never raises.
+def _retrieved_block(company, query: str) -> str:
+    """Per-account RAG: pull the invoices most relevant to the question and render
+    them as a grounding block. Empty string if RAG is unavailable (graceful fallback)."""
+    if not query:
+        return ""
+    try:
+        from core.services import rag
+        hits = rag.retrieve(company, query, k=8)
+    except Exception as exc:  # pragma: no cover - never break the chat
+        logger.warning("RAG retrieve failed, continuing without it: %s", exc)
+        return ""
+    if not hits:
+        return ""
+    docs = "\n".join(f"- {h['content']}" for h in hits)
+    return (
+        "\n\nRetrieved invoice records (account-scoped, most relevant to the question — "
+        "prefer these exact figures when answering):\n" + docs
+    )
+
+
+def _llm_generate(system: str, convo: list) -> str:
+    """Generate a reply from the selected provider. Caller handles exceptions.
+
+    Both providers receive the same instructions + grounding: Anthropic takes the
+    system prompt as a top-level param; OpenAI takes it as the first message. That
+    message-shape difference is the only divergence.
+    """
+    provider = _provider()
+    if provider == "anthropic":
+        client = anthropic.Anthropic()
+        response = client.messages.create(
+            model=AGENT_MODEL,
+            max_tokens=700,
+            system=system,
+            messages=convo,
+        )
+        return next((b.text for b in response.content if b.type == "text"), "").strip()
+    if provider == "openai":
+        client = OpenAI(api_key=_openai_key())
+        response = client.chat.completions.create(
+            model=OPENAI_CHAT_MODEL,
+            max_tokens=700,
+            temperature=0,  # grounding: quote the provided figures exactly, don't "helpfully" derive
+            messages=[{"role": "system", "content": system}, *convo],
+        )
+        return (response.choices[0].message.content or "").strip()
+    return ""
+
+
+# Appended to the system prompt when the agent is allowed to create quotes.
+QUOTE_TOOL_SYSTEM = (
+    "\n\nYOU CAN CREATE FREIGHT QUOTES. When the user wants a quote, collect: customer name, pickup "
+    "location, delivery location, cargo description, weight, and (optionally) vehicle type. You must NEVER "
+    "decide or invent the price — always ASK the user what price to quote. Only once you have the customer, "
+    "pickup, delivery, cargo, weight, AND a price the user has explicitly given, call the create_quote tool. "
+    "A new customer is created automatically. After the tool returns, tell the user the new quote number and "
+    "total in one short sentence. Do not call the tool before you have a user-provided price."
+)
+
+
+def _openai_tool_loop(system: str, convo: list, company, user):
+    """OpenAI function-calling loop exposing the create_quote tool.
+
+    Returns (reply_text, created_quote_or_None). The caller wraps this in try/except
+    so any failure degrades to the rules reply.
+    """
+    from core.services import quote_agent
+    client = OpenAI(api_key=_openai_key())
+    messages = [{"role": "system", "content": system}, *convo]
+    created_quote = None
+    for _ in range(4):  # cap the tool loop
+        response = client.chat.completions.create(
+            model=OPENAI_CHAT_MODEL,
+            max_tokens=700,
+            temperature=0,
+            tools=[quote_agent.CREATE_QUOTE_TOOL],
+            messages=messages,
+        )
+        msg = response.choices[0].message
+        if not getattr(msg, "tool_calls", None):
+            return (msg.content or "").strip(), created_quote
+        # Echo the assistant's tool-call request, then answer each call.
+        messages.append({
+            "role": "assistant",
+            "content": msg.content or "",
+            "tool_calls": [
+                {"id": tc.id, "type": "function",
+                 "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                for tc in msg.tool_calls
+            ],
+        })
+        for tc in msg.tool_calls:
+            if tc.function.name == "create_quote":
+                if created_quote:
+                    # Idempotent within a turn: never create a second quote — return the
+                    # one already made so the model can confirm without duplicating.
+                    result = created_quote
+                else:
+                    try:
+                        args = json.loads(tc.function.arguments or "{}")
+                        result = quote_agent.create_quote(company, user, **args)
+                        created_quote = result
+                    except Exception as exc:  # surface a tool error back to the model
+                        result = {"error": str(exc)}
+            else:
+                result = {"error": f"unknown tool {tc.function.name}"}
+            messages.append({"role": "tool", "tool_call_id": tc.id,
+                             "content": json.dumps(result, default=str)})
+    if created_quote:
+        return (f"Created quote {created_quote['quote_number']} "
+                f"(R{created_quote['total_amount']:,.2f}) for {created_quote['customer_name']}."), created_quote
+    return "Tell me the remaining details and I'll create the quote.", created_quote
+
+
+def agent_respond(company, messages: list, *, query: str = None, user=None, enable_tools: bool = False) -> dict:
+    """Return {reply, source, ai_available, actions, proposed_action, ...}. Never raises.
 
     messages: [{"role": "user"|"assistant", "content": str}, ...]
+    query: the current user question to retrieve account records for (RAG). Falls back
+        to the last user message when omitted.
+    user: the acting user (required for write actions like creating a quote).
+    enable_tools: when True (and the OpenAI provider is active), the agent can CREATE
+        quotes via function-calling. Read-only callers leave this False.
     """
     ctx = build_agent_context(company)
     last_user = next((m.get("content", "") for m in reversed(messages or []) if m.get("role") == "user"), "")
+    rag_query = query if query is not None else last_user
     actions = _suggest_actions(last_user)
     proposed_action = _propose_action(ctx, last_user)
 
@@ -341,16 +598,31 @@ def agent_respond(company, messages: list) -> dict:
             "proposed_action": proposed_action,
         }
 
+    tools_on = bool(enable_tools and _provider() == "openai")
+
     try:
-        client = anthropic.Anthropic()
+        readonly_clause = (
+            "You can CREATE freight quotes for the user via the quote tool below; apart from that you are "
+            "read-only and must never claim to have changed other data."
+            if tools_on else
+            "You are read-only: suggest what the user should do, but never claim to have changed anything."
+        )
         system = (
             "You are the TruckWys copilot — an AI agent for a South African road-freight operator. "
             "TruckWys is a fleet finance/data/AI platform (quotes, bookings, invoicing, and a Capital "
             "fast-pay/factoring product). Answer concisely and practically, grounded ONLY in the JSON "
-            "company snapshot provided — never invent figures. Use ZAR (R). When a number isn't in the "
-            "snapshot, say you don't have it rather than guessing. You are read-only: suggest what the "
-            "user should do, but never claim to have changed anything. Keep replies under ~120 words."
-            f"\n\nCompany snapshot:\n{json.dumps(ctx, default=str)}"
+            "company snapshot and the retrieved invoice records provided — never invent figures. Use "
+            "ZAR (R). When a number isn't in the snapshot or retrieved records, say you don't have it "
+            "rather than guessing. Quote amounts and dates EXACTLY as they appear — do not add VAT, "
+            "interest, or any derived calculation unless the user explicitly asks. A PAID invoice is "
+            "settled (balance 0) and is never overdue. "
+            "The snapshot includes: invoices, quotes (with individual line items in quotes.recent), "
+            "fleet, capital/fast-pay, billing audit, customer contacts (contacts[]), driver details "
+            "(drivers[]), and company banking info (banking{}). Use these to answer questions about "
+            "specific customers, routes, drivers, or bank details when asked. " + readonly_clause + " Keep replies under ~120 words."
+            + (QUOTE_TOOL_SYSTEM if tools_on else "")
+            + f"\n\nCompany snapshot:\n{json.dumps(ctx, default=str)}"
+            + f"{_retrieved_block(company, rag_query)}"
         )
         convo = [
             {"role": m["role"], "content": str(m.get("content", ""))}
@@ -359,14 +631,28 @@ def agent_respond(company, messages: list) -> dict:
         ][-12:]
         if not convo:
             convo = [{"role": "user", "content": "Give me a quick status of my business."}]
-        response = client.messages.create(
-            model=AGENT_MODEL,
-            max_tokens=700,
-            system=system,
-            messages=convo,
-        )
-        reply = next((b.text for b in response.content if b.type == "text"), "").strip()
-        return {"reply": reply, "source": "llm", "ai_available": True, "actions": actions, "proposed_action": proposed_action}
+
+        created_quote = None
+        if tools_on:
+            reply, created_quote = _openai_tool_loop(system, convo, company, user)
+        else:
+            reply = _llm_generate(system, convo)
+
+        result = {
+            "reply": reply,
+            "source": "llm",
+            "ai_available": True,
+            "provider": _provider(),
+            "actions": list(actions),
+            "proposed_action": proposed_action,
+        }
+        if created_quote and created_quote.get("quote_id"):
+            result["created_quote"] = created_quote
+            result["actions"] = [{
+                "label": f"Open quote {created_quote['quote_number']}",
+                "route": f"/quotes/{created_quote['quote_id']}",
+            }] + list(actions)
+        return result
     except Exception as exc:
         logger.warning("agent LLM failed, using fallback: %s", exc)
         return {

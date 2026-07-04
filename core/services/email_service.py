@@ -4,6 +4,7 @@ and transactional auth emails (verification, etc.) via Resend.
 """
 
 from typing import Optional
+from django.core.mail import EmailMultiAlternatives
 from django.utils.html import strip_tags
 from django.conf import settings
 from django.utils import timezone
@@ -14,6 +15,22 @@ import os
 from core.models import Invoice, Company
 
 logger = logging.getLogger(__name__)
+
+
+def _send_html_email(subject: str, html_content: str, to_email: str) -> bool:
+    """Send an HTML email via Django's configured EMAIL_BACKEND (SMTP in this
+    project's .env). Use this instead of Resend when we want to honour the
+    operator's mail backend. Returns True on success; never raises."""
+    try:
+        msg = EmailMultiAlternatives(
+            subject, strip_tags(html_content) or subject,
+            settings.DEFAULT_FROM_EMAIL, [to_email],
+        )
+        msg.attach_alternative(html_content, 'text/html')
+        return msg.send() > 0
+    except Exception as e:
+        logger.error(f"Failed to send email to {to_email}: {e}")
+        return False
 
 from core.models import Invoice, Company
 
@@ -124,15 +141,15 @@ def send_verification_email(email: str, code: str, first_name: str) -> bool:
         return False
 
 
-def send_password_reset_email(email: str, first_name: str, reset_code: str) -> bool:
-    """Send password reset OTP via Django SMTP backend."""
-    subject = "Your TruckWys password reset code"
+def send_login_otp_email(email: str, code: str, first_name: str) -> bool:
+    """Send a login two-factor sign-in OTP via Resend."""
+    subject = "Your TruckWys sign-in code"
     html_content = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Reset your TruckWys password</title>
+  <title>Your TruckWys sign-in code</title>
 </head>
 <body style="margin:0;padding:0;background:#0F172A;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
   <table width="100%" cellpadding="0" cellspacing="0" style="background:#0F172A;padding:48px 16px;">
@@ -147,10 +164,76 @@ def send_password_reset_email(email: str, first_name: str, reset_code: str) -> b
                    alt="TruckWys" width="140" style="display:block;border:0;max-height:40px;width:auto;" />
             </td>
             <td align="right">
-              <div style="font-size:11px;color:#475569;font-family:monospace;letter-spacing:0.08em;">PASSWORD RESET</div>
+              <div style="font-size:11px;color:#475569;font-family:monospace;letter-spacing:0.08em;">TWO-FACTOR SIGN-IN</div>
             </td>
           </tr></table>
         </td></tr>
+
+        <!-- Body -->
+        <tr><td style="padding:36px;">
+          <p style="margin:0 0 6px;font-size:22px;font-weight:600;color:#F8FAFC;text-align:center;">Confirm it's you</p>
+          <p style="margin:0 0 32px;font-size:14px;color:#94A3B8;line-height:1.6;text-align:center;">
+            Hi <strong style="color:#F8FAFC;">{first_name}</strong>, enter the code below to finish signing in to TruckWys.
+          </p>
+
+          <!-- OTP Box -->
+          <div style="background:#0F172A;border:1px solid #38BDF8;border-radius:8px;padding:28px 24px;text-align:center;margin-bottom:28px;">
+            <div style="font-size:11px;color:#64748B;letter-spacing:0.12em;font-family:monospace;margin-bottom:12px;">YOUR SIGN-IN CODE</div>
+            <div style="font-size:42px;font-weight:700;letter-spacing:0.22em;color:#38BDF8;font-family:monospace;">{code}</div>
+            <div style="margin-top:14px;display:inline-block;background:#1E3A4A;border:1px solid #334155;border-radius:4px;padding:4px 12px;">
+              <span style="font-size:11px;color:#64748B;font-family:monospace;letter-spacing:0.08em;">Expires in 10 minutes</span>
+            </div>
+          </div>
+
+          <p style="margin:0;font-size:12px;color:#475569;line-height:1.7;text-align:center;">
+            If you didn't try to sign in, someone may have your password — change it right away from your Security Settings.
+          </p>
+        </td></tr>
+
+        <!-- Footer -->
+        <tr><td style="padding:20px 36px 24px;border-top:1px solid #334155;background:#0F172A;">
+          <p style="margin:0;font-size:11px;color:#334155;text-align:center;letter-spacing:0.04em;">
+            TruckWys &nbsp;&bull;&nbsp; Road Freight Intelligence &nbsp;&bull;&nbsp; South Africa
+          </p>
+          <p style="margin:6px 0 0;font-size:10px;color:#1E293B;text-align:center;font-family:monospace;letter-spacing:0.06em;">
+            DO NOT REPLY TO THIS EMAIL
+          </p>
+        </td></tr>
+
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+    try:
+        resend.api_key = settings.RESEND_API_KEY
+        resend.Emails.send({
+            "from": settings.EMAIL_FROM,
+            "to": [email],
+            "subject": subject,
+            "html": html_content,
+        })
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send login OTP email to {email}: {e}")
+        return False
+
+
+def send_password_reset_email(email: str, first_name: str, reset_code: str) -> bool:
+    """Send password reset OTP via Django SMTP backend."""
+    subject = "Your TruckWys password reset code"
+    html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reset your TruckWys password</title>
+</head>
+<body style="margin:0;padding:0;background:#0F172A;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0F172A;padding:48px 16px;">
+    <tr><td align="center">
+      <table width="500" cellpadding="0" cellspacing="0" style="background:#1E293B;border-radius:12px;overflow:hidden;border:1px solid #334155;">
+{_quote_email_header('PASSWORD RESET')}
 
         <!-- Body -->
         <tr><td style="padding:36px;">
@@ -216,6 +299,94 @@ def send_password_reset_email(email: str, first_name: str, reset_code: str) -> b
     except Exception as e:
         logger.error(f"Failed to send password reset email to {email}: {e}")
         return False
+
+
+def send_login_alert_email(email: str, first_name: str, device: str, ip_address: str, when: str) -> bool:
+    """Send a 'new device sign-in' alert via Resend."""
+    subject = "New sign-in to your TruckWys account"
+    security_url = f"{settings.FRONTEND_URL.rstrip('/')}/settings/security"
+    html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>New sign-in to your TruckWys account</title>
+</head>
+<body style="margin:0;padding:0;background:#0F172A;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0F172A;padding:48px 16px;">
+    <tr><td align="center">
+      <table width="500" cellpadding="0" cellspacing="0" style="background:#1E293B;border-radius:12px;overflow:hidden;border:1px solid #334155;">
+
+        <!-- Header -->
+        <tr><td style="background:#0F172A;padding:28px 36px;border-bottom:1px solid #334155;">
+          <table width="100%" cellpadding="0" cellspacing="0"><tr>
+            <td>
+              <img src="{settings.FRONTEND_URL}/brand/truckwys-logo-transparent.png"
+                   alt="TruckWys" width="140" style="display:block;border:0;max-height:40px;width:auto;" />
+            </td>
+            <td align="right">
+              <div style="font-size:11px;color:#475569;font-family:monospace;letter-spacing:0.08em;">SECURITY ALERT</div>
+            </td>
+          </tr></table>
+        </td></tr>
+
+        <!-- Body -->
+        <tr><td style="padding:36px;">
+          <p style="margin:0 0 6px;font-size:22px;font-weight:600;color:#F8FAFC;text-align:center;">New sign-in detected</p>
+          <p style="margin:0 0 28px;font-size:14px;color:#94A3B8;line-height:1.6;text-align:center;">
+            Hi <strong style="color:#F8FAFC;">{first_name}</strong>, your TruckWys account was just signed in to from a new device.
+          </p>
+
+          <!-- Details box -->
+          <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;">
+            <tr><td style="background:#0F172A;border:1px solid #38BDF8;border-radius:8px;padding:20px 24px;">
+              <table width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td width="90" style="font-size:11px;color:#64748B;font-family:monospace;letter-spacing:0.08em;padding:4px 0;vertical-align:top;">DEVICE</td>
+                  <td style="font-size:14px;color:#F8FAFC;padding:4px 0;">{device}</td>
+                </tr>
+                <tr>
+                  <td width="90" style="font-size:11px;color:#64748B;font-family:monospace;letter-spacing:0.08em;padding:4px 0;vertical-align:top;">IP ADDRESS</td>
+                  <td style="font-size:14px;color:#F8FAFC;padding:4px 0;font-family:monospace;">{ip_address}</td>
+                </tr>
+                <tr>
+                  <td width="90" style="font-size:11px;color:#64748B;font-family:monospace;letter-spacing:0.08em;padding:4px 0;vertical-align:top;">TIME</td>
+                  <td style="font-size:14px;color:#F8FAFC;padding:4px 0;">{when}</td>
+                </tr>
+              </table>
+            </td></tr>
+          </table>
+
+          <div style="text-align:center;margin-bottom:28px;">
+            <a href="{security_url}"
+               style="display:inline-block;background:#38BDF8;color:#0F172A;text-decoration:none;padding:14px 36px;border-radius:6px;font-weight:700;font-size:14px;letter-spacing:0.04em;">
+              REVIEW ACTIVE SESSIONS
+            </a>
+          </div>
+
+          <p style="margin:0;font-size:12px;color:#475569;line-height:1.7;text-align:center;">
+            If this was you, no action is needed. If you don't recognise this activity, change your password and revoke the session from your Security Settings.
+          </p>
+        </td></tr>
+
+        <!-- Footer -->
+        <tr><td style="padding:20px 36px 24px;border-top:1px solid #334155;background:#0F172A;">
+          <p style="margin:0;font-size:11px;color:#334155;text-align:center;letter-spacing:0.04em;">
+            TruckWys &nbsp;&bull;&nbsp; Road Freight Intelligence &nbsp;&bull;&nbsp; South Africa
+          </p>
+          <p style="margin:6px 0 0;font-size:10px;color:#1E293B;text-align:center;font-family:monospace;letter-spacing:0.06em;">
+            DO NOT REPLY TO THIS EMAIL
+          </p>
+        </td></tr>
+
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+    # Sent via Django's configured mail backend (SMTP) rather than Resend, so it
+    # honours the operator's EMAIL_* settings and actually delivers.
+    return _send_html_email(subject, html_content, email)
 
 
 def send_invite_email(invite_email: str, invited_by_name: str, company_name: str, invite_url: str, role: str) -> bool:
@@ -303,6 +474,231 @@ def send_invite_email(invite_email: str, invited_by_name: str, company_name: str
         return False
 
 
+def _zar(v) -> str:
+    try:
+        return f'R {float(v):,.2f}'
+    except Exception:
+        return 'R 0.00'
+
+
+def _fmt_weight(v) -> str:
+    try:
+        return f'{float(v):,.0f} kg'
+    except Exception:
+        return f'{v} kg' if v else '—'
+
+
+def _quote_email_header(badge: str) -> str:
+    """Card top for quote emails: cyan accent bar + text wordmark (no <img> —
+    image URLs are unreachable from email clients in dev)."""
+    return f"""
+        <!-- Accent bar -->
+        <tr><td style="height:4px;background:#38BDF8;font-size:0;line-height:0;">&nbsp;</td></tr>
+
+        <!-- Header -->
+        <tr><td style="background:#0F172A;padding:26px 36px;border-bottom:1px solid #334155;">
+          <table width="100%" cellpadding="0" cellspacing="0"><tr>
+            <td>
+              <div style="font-size:20px;font-weight:800;letter-spacing:0.03em;color:#F8FAFC;">TRUCK<span style="color:#38BDF8;">WYS</span></div>
+              <div style="font-size:9px;color:#64748B;letter-spacing:0.22em;margin-top:3px;">ROAD FREIGHT INTELLIGENCE</div>
+            </td>
+            <td align="right" valign="top">
+              <div style="font-size:11px;color:#475569;font-family:monospace;letter-spacing:0.08em;">{badge}</div>
+            </td>
+          </tr></table>
+        </td></tr>"""
+
+
+def _quote_email_footer() -> str:
+    return """
+        <!-- Footer -->
+        <tr><td style="padding:20px 36px 24px;border-top:1px solid #334155;background:#0F172A;">
+          <p style="margin:0;font-size:11px;color:#334155;text-align:center;letter-spacing:0.04em;">
+            TruckWys &nbsp;&bull;&nbsp; Road Freight Intelligence &nbsp;&bull;&nbsp; South Africa
+          </p>
+          <p style="margin:6px 0 0;font-size:10px;color:#1E293B;text-align:center;font-family:monospace;letter-spacing:0.06em;">
+            DO NOT REPLY TO THIS EMAIL
+          </p>
+        </td></tr>"""
+
+
+def _quote_number_pill(quote_number: str) -> str:
+    return f"""
+          <div style="text-align:center;margin:0 0 20px;">
+            <span style="display:inline-block;border:1px solid #334155;border-radius:999px;padding:6px 16px;font-family:monospace;font-size:13px;color:#38BDF8;letter-spacing:0.06em;">{quote_number}</span>
+          </div>"""
+
+
+def _quote_summary_box(rows, total_label: str, total_value: str) -> str:
+    """Details box: nowrap label column so long addresses can't collapse it,
+    values wrap on the right, emphasized total row at the bottom."""
+    row_cells = []
+    for i, (label, value) in enumerate(rows):
+        border = 'border-bottom:1px solid #1E293B;' if i < len(rows) - 1 else ''
+        row_cells.append(f"""
+              <tr>
+                <td style="color:#64748B;font-size:13px;white-space:nowrap;vertical-align:top;padding:9px 16px 9px 0;{border}">{label}</td>
+                <td align="right" style="color:#F8FAFC;font-size:13px;line-height:1.5;padding:9px 0;{border}">{value}</td>
+              </tr>""")
+    return f"""
+          <div style="background:#0F172A;border:1px solid #334155;border-radius:8px;padding:8px 20px 14px;margin-bottom:28px;">
+            <table width="100%" cellpadding="0" cellspacing="0">{''.join(row_cells)}
+              <tr>
+                <td style="color:#94A3B8;font-size:13px;font-weight:600;white-space:nowrap;vertical-align:middle;padding:14px 16px 2px 0;border-top:1px solid #334155;">{total_label}</td>
+                <td align="right" style="color:#38BDF8;font-size:18px;font-weight:700;padding:14px 0 2px;border-top:1px solid #334155;">{total_value}</td>
+              </tr>
+            </table>
+          </div>"""
+
+
+def send_quote_share_email(quote, share_url: str) -> bool:
+    """Email the customer their freight quote with a link to view and respond. Via Resend."""
+    if not quote.customer or not quote.customer.email:
+        logger.warning(f"Quote {quote.quote_number}: no customer email, skipping share email")
+        return False
+
+    to_email = quote.customer.email
+    customer_name = quote.customer.name or 'there'
+    valid_until = str(quote.valid_until) if quote.valid_until else 'N/A'
+    summary = _quote_summary_box([
+        ('From', quote.pickup_location or quote.origin or '—'),
+        ('To', quote.delivery_location or quote.destination or '—'),
+        ('Cargo', quote.cargo_description or '—'),
+        ('Weight', _fmt_weight(quote.weight)),
+        ('Valid until', valid_until),
+    ], 'Total excl. VAT', _zar(quote.total_amount))
+    subject = f"Your freight quote {quote.quote_number} from TruckWys"
+    html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Your freight quote from TruckWys</title>
+</head>
+<body style="margin:0;padding:0;background:#0F172A;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0F172A;padding:48px 16px;">
+    <tr><td align="center">
+      <table width="500" cellpadding="0" cellspacing="0" style="background:#1E293B;border-radius:12px;overflow:hidden;border:1px solid #334155;">
+{_quote_email_header('FREIGHT QUOTE')}
+
+        <!-- Body -->
+        <tr><td style="padding:36px;">
+          <p style="margin:0 0 16px;font-size:22px;font-weight:600;color:#F8FAFC;text-align:center;">Your quote is ready</p>
+{_quote_number_pill(quote.quote_number)}
+          <p style="margin:0 0 28px;font-size:14px;color:#94A3B8;line-height:1.6;text-align:center;">
+            Hi <strong style="color:#F8FAFC;">{customer_name}</strong>, you've received a new freight quote from TruckWys.
+            Review the details below and respond online.
+          </p>
+{summary}
+          <div style="text-align:center;margin-bottom:28px;">
+            <a href="{share_url}"
+               style="display:inline-block;background:#38BDF8;color:#0F172A;text-decoration:none;padding:14px 36px;border-radius:6px;font-weight:700;font-size:14px;letter-spacing:0.04em;">
+              VIEW &amp; RESPOND TO QUOTE
+            </a>
+          </div>
+
+          <p style="margin:0;font-size:12px;color:#475569;line-height:1.7;text-align:center;">
+            This quote is valid until {valid_until}. You can accept or decline directly from the link above.
+          </p>
+        </td></tr>
+{_quote_email_footer()}
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+    try:
+        resend.api_key = settings.RESEND_API_KEY
+        resend.Emails.send({
+            "from": settings.EMAIL_FROM,
+            "to": [to_email],
+            "subject": subject,
+            "html": html_content,
+        })
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send quote share email for {quote.quote_number} to {to_email}: {e}")
+        return False
+
+
+def send_quote_accepted_email(quote, pdf_bytes: Optional[bytes] = None) -> bool:
+    """Email the customer confirmation that their quote was accepted, with the quote PDF attached. Via Resend."""
+    import base64
+
+    if not quote.customer or not quote.customer.email:
+        logger.warning(f"Quote {quote.quote_number}: no customer email, skipping accepted email")
+        return False
+
+    to_email = quote.customer.email
+    customer_name = quote.customer.name or 'there'
+    summary = _quote_summary_box([
+        ('From', quote.pickup_location or quote.origin or '—'),
+        ('To', quote.delivery_location or quote.destination or '—'),
+        ('SLA', f'{quote.sla_hours or 48}h'),
+    ], 'Total excl. VAT', _zar(quote.total_amount))
+    attachment_note = (
+        '<p style="margin:0 0 28px;font-size:13px;color:#94A3B8;line-height:1.6;text-align:center;">'
+        '&#128206; A PDF copy of your quote is attached for your records.</p>'
+        if pdf_bytes else ''
+    )
+    subject = f"Quote {quote.quote_number} accepted — confirmation attached"
+    html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Quote accepted</title>
+</head>
+<body style="margin:0;padding:0;background:#0F172A;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0F172A;padding:48px 16px;">
+    <tr><td align="center">
+      <table width="500" cellpadding="0" cellspacing="0" style="background:#1E293B;border-radius:12px;overflow:hidden;border:1px solid #334155;">
+{_quote_email_header('QUOTE ACCEPTED')}
+
+        <!-- Body -->
+        <tr><td style="padding:36px;">
+          <div style="text-align:center;margin:0 0 16px;">
+            <span style="display:inline-block;background:rgba(52,211,153,0.12);border:1px solid rgba(52,211,153,0.4);border-radius:999px;padding:6px 16px;font-size:12px;font-weight:700;color:#34D399;letter-spacing:0.08em;">&#10003; ACCEPTED</span>
+          </div>
+          <p style="margin:0 0 16px;font-size:22px;font-weight:600;color:#F8FAFC;text-align:center;">Thank you — quote accepted</p>
+{_quote_number_pill(quote.quote_number)}
+          <p style="margin:0 0 28px;font-size:14px;color:#94A3B8;line-height:1.6;text-align:center;">
+            Hi <strong style="color:#F8FAFC;">{customer_name}</strong>, you've accepted this quote.
+            Your operator will be in touch to arrange pickup.
+          </p>
+{summary}
+          {attachment_note}
+
+          <p style="margin:0;font-size:12px;color:#475569;line-height:1.7;text-align:center;">
+            TruckWys is South Africa's road freight intelligence platform — AI-powered quoting, fleet management, and instant invoice financing.
+          </p>
+        </td></tr>
+{_quote_email_footer()}
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+    try:
+        resend.api_key = settings.RESEND_API_KEY
+        payload = {
+            "from": settings.EMAIL_FROM,
+            "to": [to_email],
+            "subject": subject,
+            "html": html_content,
+        }
+        if pdf_bytes:
+            payload["attachments"] = [{
+                "filename": f"Quote-{quote.quote_number}.pdf",
+                "content": base64.b64encode(pdf_bytes).decode(),
+            }]
+        resend.Emails.send(payload)
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send quote accepted email for {quote.quote_number} to {to_email}: {e}")
+        return False
+
+
 def send_welcome_email(email: str, first_name: str) -> bool:
     """Stub — welcome email via SMTP."""
     return True
@@ -330,76 +726,58 @@ class InvoiceEmailService:
         pdf_path: Optional[str] = None,
         additional_recipients: Optional[list] = None
     ) -> bool:
-        """
-        Send invoice email to customer.
+        """Send invoice email to customer via Resend with optional PDF attachment."""
+        import base64
 
-        Args:
-            pdf_path: Path to the PDF file to attach
-            additional_recipients: Additional email addresses to send to
-
-        Returns:
-            bool: True if email sent successfully, False otherwise
-        """
-        # Get recipient email
         to_email = self.invoice.customer.email
         if not to_email:
             raise ValueError(f"Customer {self.invoice.customer.name} has no email address")
 
-        # Build recipient list
         recipients = [to_email]
         if additional_recipients:
             recipients.extend(additional_recipients)
 
-        # Get company details for from address
         try:
-            company = Company.objects.first()
-            from_email = company.contact.get('email', settings.DEFAULT_FROM_EMAIL) if company and company.contact else settings.DEFAULT_FROM_EMAIL
+            company = Company.objects.filter(users=self.invoice.company.users.first()).first() if hasattr(self.invoice, 'company') and self.invoice.company else Company.objects.first()
             company_name = company.company_name if company else "TruckWys"
-        except (Company.DoesNotExist, AttributeError):
-            from_email = settings.DEFAULT_FROM_EMAIL
+        except Exception:
             company_name = "TruckWys"
 
-        # Build subject
         subject = f"Invoice {self.invoice.invoice_number} from {company_name}"
-
-        # Build HTML content
         html_content = self._build_html_content()
-        text_content = strip_tags(html_content)
 
-        # Create email
-        email = EmailMultiAlternatives(
-            subject=subject,
-            body=text_content,
-            from_email=from_email,
-            to=recipients,
-        )
-        email.attach_alternative(html_content, "text/html")
-
-        # Attach PDF if provided
+        # Build attachments list for Resend
+        attachments = []
         if pdf_path:
             pdf_full_path = os.path.join(settings.MEDIA_ROOT, pdf_path)
             if os.path.exists(pdf_full_path):
                 with open(pdf_full_path, 'rb') as f:
-                    email.attach(
-                        f"Invoice_{self.invoice.invoice_number}.pdf",
-                        f.read(),
-                        'application/pdf'
-                    )
+                    attachments.append({
+                        "filename": f"Invoice_{self.invoice.invoice_number}.pdf",
+                        "content": base64.b64encode(f.read()).decode(),
+                    })
 
-        # Send email
         try:
-            email.send(fail_silently=False)
+            resend.api_key = settings.RESEND_API_KEY
+            payload = {
+                "from": settings.EMAIL_FROM,
+                "to": recipients,
+                "subject": subject,
+                "html": html_content,
+            }
+            if attachments:
+                payload["attachments"] = attachments
+            resend.Emails.send(payload)
 
-            # Update invoice sent timestamp
+            # Mark invoice as sent
             if self.invoice.status == 'DRAFT':
                 self.invoice.status = 'SENT'
             self.invoice.sent_at = timezone.now()
-            self.invoice.save()
+            self.invoice.save(update_fields=['status', 'sent_at'])
 
             return True
         except Exception as e:
-            # Log error (in production, use proper logging)
-            print(f"Error sending invoice email: {str(e)}")
+            logger.error(f"Failed to send invoice email {self.invoice.invoice_number}: {e}")
             return False
 
     def _build_html_content(self) -> str:
@@ -415,8 +793,10 @@ class InvoiceEmailService:
         except Company.DoesNotExist:
             company = None
 
-        # Build portal link (placeholder for now)
-        portal_link = f"{settings.FRONTEND_URL if hasattr(settings, 'FRONTEND_URL') else 'https://app.truckwys.co.za'}/invoices/{self.invoice.invoice_number}"
+        # Public view link — no login required for customer
+        frontend_url = settings.FRONTEND_URL.rstrip('/')
+        view_token = getattr(self.invoice, 'view_token', '') or ''
+        portal_link = f"{frontend_url}/invoice/view/{self.invoice.id}/{view_token}" if view_token else frontend_url
 
         # Calculate days until due
         days_until_due = self.invoice.days_until_due

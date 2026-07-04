@@ -1,7 +1,12 @@
 """
 Management command: seed_cross_border_data
 
-Seeds BorderCrossingFee and CountryTransitRate tables with 2024 SADC values.
+Seeds BorderCrossingFee and CountryTransitRate tables with SADC values.
+
+SA border fees updated to official 2025 CBRTA rates (effective 1 April 2025):
+  Government Gazette No. 52198, 28 February 2025 — Cross-Border Road Transport Act
+  Amended Regulations.  Per SA crossing: application fee R 798 (Schedule 1, Part B)
+  + 14-day temporary permit R 1 050 (Schedule 2, Part B, Class 1) = R 1 848.
 
 Usage:
     python manage.py seed_cross_border_data
@@ -12,25 +17,28 @@ from decimal import Decimal
 from django.core.management.base import BaseCommand
 
 # ---------------------------------------------------------------------------
-# Border crossing fees (ZAR, one-way, 2024 estimates)
-# Sources: SADC official tariff schedules, haulier industry averages
+# Border crossing fees (ZAR, one-way)
+# SA exits/re-entries: official 2025 CBRTA rates (application R 798 + 14-day Class 1 permit R 1 050)
+# Multi-hop internal crossings: 2024 industry estimates (not covered by SA gazette)
 # ---------------------------------------------------------------------------
+_SA_CBRTA_FEE = Decimal('1848.00')  # R 798 application + R 1 050 permit (Gazette No. 52198)
+
 _BORDER_FEES = [
-    # SA exits
-    {'from_country': 'SA', 'to_country': 'ZW', 'fee_zar': Decimal('850.00'),  'notes': 'Beitbridge — includes customs processing'},
-    {'from_country': 'SA', 'to_country': 'BW', 'fee_zar': Decimal('650.00'),  'notes': 'Kopfontein / Ramatlabama'},
-    {'from_country': 'SA', 'to_country': 'NA', 'fee_zar': Decimal('600.00'),  'notes': 'Vioolsdrift / Nakop'},
-    {'from_country': 'SA', 'to_country': 'MZ', 'fee_zar': Decimal('750.00'),  'notes': 'Lebombo / Komatipoort'},
-    {'from_country': 'SA', 'to_country': 'LS', 'fee_zar': Decimal('300.00'),  'notes': 'Maseru Bridge / Caledonspoort'},
-    {'from_country': 'SA', 'to_country': 'SZ', 'fee_zar': Decimal('250.00'),  'notes': 'Oshoek / Ngwenya'},
-    # SA re-entries
-    {'from_country': 'ZW', 'to_country': 'SA', 'fee_zar': Decimal('850.00'),  'notes': ''},
-    {'from_country': 'BW', 'to_country': 'SA', 'fee_zar': Decimal('650.00'),  'notes': ''},
-    {'from_country': 'NA', 'to_country': 'SA', 'fee_zar': Decimal('600.00'),  'notes': ''},
-    {'from_country': 'MZ', 'to_country': 'SA', 'fee_zar': Decimal('750.00'),  'notes': ''},
-    {'from_country': 'LS', 'to_country': 'SA', 'fee_zar': Decimal('300.00'),  'notes': ''},
-    {'from_country': 'SZ', 'to_country': 'SA', 'fee_zar': Decimal('250.00'),  'notes': ''},
-    # Multi-hop internal crossings
+    # SA exits — official 2025 CBRTA rates
+    {'from_country': 'SA', 'to_country': 'ZW', 'fee_zar': _SA_CBRTA_FEE, 'notes': 'Beitbridge — CBRTA permit (Gazette No. 52198, eff. 1 Apr 2025)'},
+    {'from_country': 'SA', 'to_country': 'BW', 'fee_zar': _SA_CBRTA_FEE, 'notes': 'Kopfontein / Ramatlabama — CBRTA permit'},
+    {'from_country': 'SA', 'to_country': 'NA', 'fee_zar': _SA_CBRTA_FEE, 'notes': 'Vioolsdrift / Nakop — CBRTA permit'},
+    {'from_country': 'SA', 'to_country': 'MZ', 'fee_zar': _SA_CBRTA_FEE, 'notes': 'Lebombo / Komatipoort — CBRTA permit'},
+    {'from_country': 'SA', 'to_country': 'LS', 'fee_zar': _SA_CBRTA_FEE, 'notes': 'Maseru Bridge / Caledonspoort — CBRTA permit'},
+    {'from_country': 'SA', 'to_country': 'SZ', 'fee_zar': _SA_CBRTA_FEE, 'notes': 'Oshoek / Ngwenya — CBRTA permit'},
+    # SA re-entries — same CBRTA permit required on return
+    {'from_country': 'ZW', 'to_country': 'SA', 'fee_zar': _SA_CBRTA_FEE, 'notes': ''},
+    {'from_country': 'BW', 'to_country': 'SA', 'fee_zar': _SA_CBRTA_FEE, 'notes': ''},
+    {'from_country': 'NA', 'to_country': 'SA', 'fee_zar': _SA_CBRTA_FEE, 'notes': ''},
+    {'from_country': 'MZ', 'to_country': 'SA', 'fee_zar': _SA_CBRTA_FEE, 'notes': ''},
+    {'from_country': 'LS', 'to_country': 'SA', 'fee_zar': _SA_CBRTA_FEE, 'notes': ''},
+    {'from_country': 'SZ', 'to_country': 'SA', 'fee_zar': _SA_CBRTA_FEE, 'notes': ''},
+    # Multi-hop internal crossings — 2024 estimates (non-SA, not in gazette)
     {'from_country': 'ZW', 'to_country': 'ZM', 'fee_zar': Decimal('900.00'),  'notes': 'Chirundu / Kariba'},
     {'from_country': 'ZW', 'to_country': 'MW', 'fee_zar': Decimal('850.00'),  'notes': 'Forbes / Nyamapanda'},
     {'from_country': 'ZM', 'to_country': 'TZ', 'fee_zar': Decimal('1200.00'), 'notes': 'Nakonde / Tunduma — COMESA'},
@@ -106,7 +114,7 @@ _COUNTRY_RATES = [
 
 
 class Command(BaseCommand):
-    help = 'Seed BorderCrossingFee and CountryTransitRate tables with 2024 SADC values.'
+    help = 'Seed BorderCrossingFee and CountryTransitRate tables with SADC values (SA fees: 2025 CBRTA gazette rates).'
 
     def add_arguments(self, parser):
         parser.add_argument('--force', action='store_true', help='Overwrite existing records')
@@ -143,5 +151,6 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(
             f'BorderCrossingFee: {fee_created} created, {fee_updated} skipped.\n'
             f'CountryTransitRate: {rate_created} created, {rate_updated} skipped.\n'
+            f'SA fees: R 1 848/crossing (Gazette No. 52198, eff. 1 Apr 2025).\n'
             f'Re-run with --force to overwrite existing records.'
         ))

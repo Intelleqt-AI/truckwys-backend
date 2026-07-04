@@ -38,6 +38,13 @@ _FALLBACK_PRICES: dict[tuple[int, int], tuple[str, str, str, str]] = {
     (2025, 1):  ('20.4400', '19.8200', '21.6000', '20.8300'),
     (2025, 2):  ('20.6900', '20.0700', '21.9100', '21.1400'),
     (2025, 3):  ('21.1800', '20.5600', '22.4400', '21.6700'),
+    (2025, 4):  ('21.4600', '20.8400', '22.7200', '21.9500'),
+    (2025, 5):  ('21.0500', '20.4300', '22.3100', '21.5400'),
+    (2025, 6):  ('20.6900', '20.0700', '21.8800', '21.1100'),
+    (2025, 7):  ('20.2200', '19.6100', '21.3400', '20.5700'),
+    (2025, 8):  ('20.2000', '19.5900', '21.3200', '20.5500'),
+    # NOTE: Prices from Sep 2025 onwards must be updated manually via Django Admin
+    # (/admin/core/fuelprice/) or by running: manage.py shell -c "from core.services.fuel_price import fetch_fuel_prices; fetch_fuel_prices(force_update=True)"
 }
 
 
@@ -58,77 +65,98 @@ _HEADERS = {
     ),
 }
 
+_PRICE_RE = re.compile(r'\b(1[5-9]\.\d{2,4}|2\d\.\d{2,4}|3[0-5]\.\d{2,4})\b')
+
+
+def _extract_prices_from_soup(soup) -> Optional[dict]:
+    """
+    Walk all table rows and labelled elements looking for SA fuel price labels
+    alongside price values. Returns a dict or None.
+    """
+    prices: dict[str, Decimal] = {}
+
+    # Strategy: scan every row/element for a label+value pair
+    for el in soup.find_all(['tr', 'li', 'div', 'p']):
+        text = el.get_text(separator=' ', strip=True)
+        text_lc = text.lower()
+        m = _PRICE_RE.search(text)
+        if not m:
+            continue
+        val = Decimal(m.group(1))
+
+        if 'inland' in text_lc and 'diesel' in text_lc and 'diesel_inland' not in prices:
+            prices['diesel_inland'] = val
+        elif 'coastal' in text_lc and 'diesel' in text_lc and 'diesel_coastal' not in prices:
+            prices['diesel_coastal'] = val
+        elif '95' in text_lc and ('petrol' in text_lc or 'unleaded' in text_lc) and 'petrol_95' not in prices:
+            prices['petrol_95'] = val
+        elif '93' in text_lc and ('petrol' in text_lc or 'unleaded' in text_lc) and 'petrol_93' not in prices:
+            prices['petrol_93'] = val
+
+    if 'diesel_inland' not in prices:
+        return None
+
+    # Fill missing values from typical inland/coastal differential (~R0.62)
+    prices.setdefault('diesel_coastal', prices['diesel_inland'] - Decimal('0.62'))
+    prices.setdefault('petrol_95', prices['diesel_inland'] + Decimal('1.30'))
+    prices.setdefault('petrol_93', prices['diesel_inland'] + Decimal('0.55'))
+    return prices
+
+
+def _fetch_from_aa_sa() -> Optional[dict]:
+    """Scrape AA South Africa fuel prices page (most reliable free source)."""
+    try:
+        from bs4 import BeautifulSoup
+        url = 'https://www.aa.co.za/fuel/'
+        r = requests.get(url, headers=_HEADERS, timeout=10)
+        r.raise_for_status()
+        soup = BeautifulSoup(r.text, 'lxml')
+        prices = _extract_prices_from_soup(soup)
+        if prices:
+            prices['source'] = 'AA_SA'
+            return prices
+    except ImportError:
+        logger.warning('beautifulsoup4/lxml not installed; AA SA scrape skipped')
+    except Exception as exc:
+        logger.debug('AA SA scrape failed: %s', exc)
+    return None
+
 
 def _fetch_from_sapia() -> Optional[dict]:
-    """
-    Attempt to scrape SAPIA's fuel price page.
-    Returns a dict with keys: diesel_inland, diesel_coastal, petrol_95, petrol_93, source.
-    Returns None on any failure.
-    """
+    """Scrape SAPIA fuel prices page."""
     try:
+        from bs4 import BeautifulSoup
         url = 'https://www.sapia.org.za/fuel-prices/'
-        response = requests.get(url, headers=_HEADERS, timeout=10)
-        response.raise_for_status()
-        html = response.text
-
-        # SAPIA tables contain prices like "21.74" in table cells alongside labels.
-        # We look for inland diesel (50ppm) and coastal diesel rows.
-        # Pattern: numbers like 21.74 or 21.7400 near "Diesel" / "Inland" / "Coastal"
-        # This is best-effort — structure may change.
-
-        # Extract all decimal values that look like fuel prices (15–35 ZAR range)
-        price_pattern = re.compile(r'\b(1[5-9]|2\d|3[0-5])\.\d{2,4}\b')
-        candidates = [Decimal(m.group()) for m in price_pattern.finditer(html)]
-
-        if len(candidates) < 4:
-            return None
-
-        # Heuristic: coastal diesel < inland diesel; petrol_95 > diesel_inland
-        # Sort and assign conservatively
-        candidates_sorted = sorted(candidates)
-        if len(candidates_sorted) >= 4:
-            diesel_coastal = candidates_sorted[0]
-            diesel_inland = candidates_sorted[1]
-            petrol_93 = candidates_sorted[2]
-            petrol_95 = candidates_sorted[3]
-            return {
-                'diesel_inland': diesel_inland,
-                'diesel_coastal': diesel_coastal,
-                'petrol_95': petrol_95,
-                'petrol_93': petrol_93,
-                'source': 'SAPIA',
-            }
+        r = requests.get(url, headers=_HEADERS, timeout=10)
+        r.raise_for_status()
+        soup = BeautifulSoup(r.text, 'lxml')
+        prices = _extract_prices_from_soup(soup)
+        if prices:
+            prices['source'] = 'SAPIA'
+            return prices
+    except ImportError:
+        pass
     except Exception as exc:
         logger.debug('SAPIA scrape failed: %s', exc)
     return None
 
 
-def _fetch_from_doe() -> Optional[dict]:
-    """
-    Attempt to fetch prices from the SA Department of Energy fuel page.
-    Returns a dict or None.
-    """
+def _fetch_from_dmre() -> Optional[dict]:
+    """Scrape DMRE (Dept of Mineral Resources & Energy) fuel prices page."""
     try:
-        url = 'https://www.energy.gov.za/files/esources/petroleum/petroleum_prices.html'
-        response = requests.get(url, headers=_HEADERS, timeout=10)
-        response.raise_for_status()
-        html = response.text
-
-        price_pattern = re.compile(r'\b(1[5-9]|2\d|3[0-5])\.\d{2,4}\b')
-        candidates = sorted({Decimal(m.group()) for m in price_pattern.finditer(html)})
-
-        if len(candidates) < 4:
-            return None
-
-        return {
-            'diesel_inland': candidates[1],
-            'diesel_coastal': candidates[0],
-            'petrol_95': candidates[3],
-            'petrol_93': candidates[2],
-            'source': 'DOE',
-        }
+        from bs4 import BeautifulSoup
+        url = 'https://www.dmre.gov.za/energy/petroleum-and-liquid-fuels/fuel-prices'
+        r = requests.get(url, headers=_HEADERS, timeout=10)
+        r.raise_for_status()
+        soup = BeautifulSoup(r.text, 'lxml')
+        prices = _extract_prices_from_soup(soup)
+        if prices:
+            prices['source'] = 'DMRE'
+            return prices
+    except ImportError:
+        pass
     except Exception as exc:
-        logger.debug('DOE scrape failed: %s', exc)
+        logger.debug('DMRE scrape failed: %s', exc)
     return None
 
 
@@ -164,8 +192,8 @@ def fetch_fuel_prices(
         logger.info('FuelPrice for %s already exists — skipping fetch', target_date)
         return existing
 
-    # Attempt live sources
-    data = _fetch_from_sapia() or _fetch_from_doe()
+    # Attempt live sources in priority order
+    data = _fetch_from_aa_sa() or _fetch_from_sapia() or _fetch_from_dmre()
 
     if data is None:
         # Fall back to seeded table
