@@ -17,6 +17,7 @@ import logging
 from decimal import Decimal
 from datetime import date
 
+from celery import shared_task
 from django.db.models import Sum
 
 logger = logging.getLogger(__name__)
@@ -449,3 +450,35 @@ def compute_all_driver_scores():
         compute_driver_scores(did)
     logger.info('compute_all_driver_scores: processed %d drivers', len(ids))
     return len(ids)
+
+
+# ---------------------------------------------------------------------------
+# Fuel price refresh (Celery Beat — runs 3rd and 10th of every month)
+# ---------------------------------------------------------------------------
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=21_600, name='core.tasks.refresh_fuel_price')
+def refresh_fuel_price(self):
+    """
+    Fetch current SA diesel price from live sources (AA SA → SAPIA → DMRE).
+    Retries up to 3× with 6-hour gaps if all live sources fail.
+    SA prices are announced on the first Wednesday of each month.
+    """
+    try:
+        from core.services.fuel_price import fetch_fuel_prices
+        fp = fetch_fuel_prices(force_update=True)
+        if fp.source in ('FALLBACK', 'FALLBACK_LATEST'):
+            logger.warning(
+                'refresh_fuel_price: all live sources failed — will retry (attempt %d/3)',
+                self.request.retries + 1,
+            )
+            raise self.retry()
+        logger.info(
+            'Fuel price refreshed: diesel_inland=R%.4f source=%s date=%s',
+            fp.diesel_inland, fp.source, fp.date,
+        )
+        return {'diesel_inland': float(fp.diesel_inland), 'source': fp.source}
+    except self.MaxRetriesExceededError:
+        logger.error('refresh_fuel_price: max retries exceeded — manual update required via Admin > Fuel Prices')
+    except Exception as exc:
+        logger.exception('refresh_fuel_price unexpected error: %s', exc)
+        raise self.retry(exc=exc)

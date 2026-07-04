@@ -2292,20 +2292,14 @@ class RouteCalculatorView(APIView):
     }
 
     # Maps frontend vehicle_type → SANRAL truck class used by toll_calculator.
-    # Box Truck = 2-axle rigid (Class 3/heavy); everything else is a semi/combination.
-    VEHICLE_TO_TOLL_TYPE: dict = {
-        'Flatbed':      'combination',
-        'Tautliner':    'combination',
-        'Refrigerated': 'combination',
-        'Tanker':       'combination',
-        'Danger Load':  'combination',
-        'Box Truck':    'heavy',
-    }
+    # Single source of truth lives in toll_calculator (imported below) so the class
+    # mapping can't drift between the two modules.
+    from core.services.toll_calculator import VEHICLE_TO_TOLL_TYPE_LOOKUP as VEHICLE_TO_TOLL_TYPE
 
     def post(self, request):
-        from core.services.cross_border import detect_countries, calculate_cross_border_costs, calculate_sa_tolls_for_cross_border, get_cross_border_warnings
+        from core.services.cross_border import detect_countries, calculate_cross_border_costs, get_cross_border_warnings
         from core.services.fuel_price import fetch_fuel_prices
-        from core.services.toll_calculator import calculate_tolls
+        from core.services.toll_calculator import calculate_tolls, calculate_tolls_by_geometry, resolve_toll_truck_type
 
         data = request.data
         origin = data.get('origin', '')
@@ -2317,9 +2311,17 @@ class RouteCalculatorView(APIView):
         weight_kg = int(data.get('weight_kg') or data.get('weight') or 20000)
         vehicle_type = data.get('vehicle_type', 'Flatbed')
 
+        # Country ISO from the picked suggestion (frontend). When coords are passed
+        # directly we skip geocoding, so without this the country is unknown and
+        # cross-border detection wrongly treats a foreign drop as domestic.
+        origin_country = (data.get('origin_country') or '').strip()
+        dest_country = (data.get('dest_country') or '').strip()
+
         # Geocode if no coords
         if origin_lat and origin_lon:
             o = {'lat': float(origin_lat), 'lon': float(origin_lon)}
+            if origin_country:
+                o['country_code'] = origin_country
         else:
             o = self._geocode(origin)
             if not o:
@@ -2327,6 +2329,8 @@ class RouteCalculatorView(APIView):
 
         if dest_lat and dest_lon:
             d = {'lat': float(dest_lat), 'lon': float(dest_lon)}
+            if dest_country:
+                d['country_code'] = dest_country
         else:
             d = self._geocode(destination)
             if not d:
@@ -2385,36 +2389,60 @@ class RouteCalculatorView(APIView):
         origin_iso   = o.get('country_code', '')
         dest_iso     = d.get('country_code', '')
 
-        # Detect cross-border route — ISO codes take precedence over keyword matching
-        countries    = detect_countries(origin_label, dest_label, origin_iso, dest_iso)
+        # Detect cross-border route. Primary source is the TomTom route's own COUNTRY
+        # sections (authoritative — knows every country the road actually crosses),
+        # which works even when the endpoints came from a map click with no ISO. Falls
+        # back to endpoint ISO / keyword matching when the route carries no country
+        # sections (e.g. estimated haversine route).
+        from core.services.cross_border import _ISO_TO_INTERNAL
+        route_countries = []
+        if routes_raw:
+            for sec in sorted(
+                (s for s in routes_raw[0].get('sections', []) if s.get('type') == 'COUNTRY' and s.get('country_code')),
+                key=lambda s: s.get('start', 0),
+            ):
+                internal = _ISO_TO_INTERNAL.get(sec['country_code'].upper())
+                if internal and (not route_countries or route_countries[-1] != internal):
+                    route_countries.append(internal)
+
+        if len(route_countries) > 1:
+            countries = route_countries
+        else:
+            countries = detect_countries(origin_label, dest_label, origin_iso, dest_iso)
         cross_border = countries is not None and len(countries) > 1
 
-        # Toll cost
-        toll_breakdown   = []
-        toll_routes_used = []
+        # Toll cost — matched PER ROUTE via point-to-polyline plaza matching.
+        # resolve_toll_truck_type handles exact names, DB VehicleType names
+        # ("Medium Truck (4–8 tonnes)"), and free-form UI values by keyword.
+        toll_truck_type = resolve_toll_truck_type(vehicle_type)
 
-        if not cross_border:
-            # Domestic: query SANRAL plaza DB, fall back to flat rate
-            toll_truck_type = self.VEHICLE_TO_TOLL_TYPE.get(vehicle_type, 'combination')
-            try:
-                toll_result = calculate_tolls(origin_label, dest_label, toll_truck_type)
-                if toll_result.total_zar > 0:
-                    toll_zar         = float(toll_result.total_zar)
-                    toll_routes_used = toll_result.routes_used
-                    toll_breakdown   = [
-                        {'plaza': item.plaza_name, 'route': item.route, 'tariff': float(item.tariff)}
-                        for item in toll_result.breakdown
-                    ]
-                else:
-                    toll_zar = round(distance_km * self.TOLL_ZAR_KM_FALLBACK, 2)
-            except Exception:
-                toll_zar = round(distance_km * self.TOLL_ZAR_KM_FALLBACK, 2)
-        else:
-            # Cross-border: charge SA-side SANRAL plazas where data exists (fix 4)
-            sa_toll = calculate_sa_tolls_for_cross_border(countries, vehicle_type)
-            toll_zar         = sa_toll['toll_zar']
-            toll_breakdown   = sa_toll['breakdown']
-            toll_routes_used = [sa_toll['route']] if sa_toll['route'] else []
+        def _toll_for_route(geom):
+            """(toll_zar, breakdown, routes_used) for one route polyline.
+
+            Geometry present → authoritative point-to-polyline geofence: only SA plazas
+            the route actually passes are charged. For cross-border only SA plazas exist
+            in the DB, so this also windows SA-side tolls to the driven SA portion.
+            No geometry (estimated route) → keyword best-effort. There is deliberately NO
+            'geofence-found-0 → keyword' fallback: 0 matched plazas means the route
+            genuinely has none (e.g. Pretoria↔Johannesburg = R0)."""
+            if geom:
+                try:
+                    res = calculate_tolls_by_geometry(geom, toll_truck_type)
+                except Exception:
+                    return 0.0, [], []
+            else:
+                try:
+                    res = calculate_tolls(f"{origin} {origin_label}",
+                                          f"{destination} {dest_label}", toll_truck_type)
+                except Exception:
+                    return 0.0, [], []
+            bd = [{'plaza': it.plaza_name, 'route': it.route,
+                   'location_km': float(it.location_km), 'tariff': float(it.tariff)}
+                  for it in res.breakdown]
+            return float(res.total_zar), bd, list(res.routes_used)
+
+        geometry = routes_raw[0].get('geometry', []) if routes_raw else []
+        toll_zar, toll_breakdown, toll_routes_used = _toll_for_route(geometry)
 
         # Cross-border costs
         additional_costs = {}
@@ -2427,7 +2455,6 @@ class RouteCalculatorView(APIView):
                 'non_sa_tolls':     cb_costs['non_sa_tolls'],
             }
             warnings  = get_cross_border_warnings(countries)
-            toll_zar += cb_costs['non_sa_tolls']
 
         response_data = {
             'success': True,
@@ -2438,7 +2465,7 @@ class RouteCalculatorView(APIView):
             'fuel_cost_zar': fuel_zar,
             'fuel_rate_l_per_100km': round(fuel_rate * 100, 1),
             'toll_cost_zar': round(toll_zar, 2),
-            'toll_source': 'sanral' if toll_routes_used else 'estimated',
+            'toll_source': 'geofence' if geometry else 'estimated',
             'toll_routes': toll_routes_used,
             'toll_breakdown': toll_breakdown,
             'total_cost_zar': round(fuel_zar + toll_zar + sum(additional_costs.values()), 2),
@@ -2457,10 +2484,8 @@ class RouteCalculatorView(APIView):
                 response_data['warnings'] = warnings
 
         # Per-route breakdown (best + alternatives). Fuel/total are distance-based.
-        # Toll cost is scaled per route: SANRAL gives a per-plaza breakdown for the
-        # O/D pair; TomTom's section analysis gives each alternative's plaza count.
-        # We scale proportionally so a route with fewer toll plazas costs less.
-        sanral_plaza_count = len(toll_breakdown) if toll_breakdown else 0
+        # Toll is matched against EACH route's own geometry so alternatives that use
+        # different plazas are priced correctly (index 0 reuses the values above).
         extra_costs = sum(additional_costs.values()) if additional_costs else 0
         routes_out = []
         for i, rt in enumerate(routes_raw):
@@ -2468,13 +2493,11 @@ class RouteCalculatorView(APIView):
             r_fuel = round(r_litres * diesel_price, 2)
             analysis = self._analyze_route(rt)
             terrain = self._infer_terrain(rt['geometry'], origin, destination)
-            rt_toll_count = analysis['toll_count']
-            if sanral_plaza_count > 0:
-                # Scale SANRAL cost by this route's plaza count vs expected total
-                rt_toll_zar = round(toll_zar * rt_toll_count / sanral_plaza_count, 2)
+            if i == 0:
+                rt_toll_zar, rt_breakdown = round(toll_zar, 2), toll_breakdown
             else:
-                # Fallback: scale flat-rate estimate by route distance
-                rt_toll_zar = round(rt['distance_km'] * self.TOLL_ZAR_KM_FALLBACK, 2)
+                _tz, rt_breakdown, _ru = _toll_for_route(rt.get('geometry', []))
+                rt_toll_zar = round(_tz, 2)
             routes_out.append({
                 'index': i,
                 'is_best': i == 0,
@@ -2490,6 +2513,7 @@ class RouteCalculatorView(APIView):
                 'fuel_usage_litres': r_litres,
                 'fuel_cost_zar': r_fuel,
                 'toll_cost_zar': rt_toll_zar,
+                'toll_breakdown': rt_breakdown,
                 'total_cost_zar': round(r_fuel + rt_toll_zar + extra_costs, 2),
                 # Rich route metadata from section analysis
                 'toll_count': analysis['toll_count'],
@@ -2516,7 +2540,8 @@ class RouteCalculatorView(APIView):
             # First try with SA country bias
             r = http_requests.get(url, params={
                 'key': self.TOMTOM_API_KEY,
-                'countrySet': 'ZAF,ZWE,MOZ,BWA,NAM,ZMB,MWI',
+                # SA + supported cross-border neighbours only (NA, BW, ZW, MZ, LS, SZ, ZM).
+                'countrySet': 'ZAF,NAM,BWA,ZWE,MOZ,LSO,SWZ,ZMB',
                 'limit': 5,
             }, timeout=10)
             if r.status_code == 200:
@@ -2602,6 +2627,10 @@ class RouteCalculatorView(APIView):
                     item['delay_seconds'] = sec.get('delayInSeconds')
                 if sec.get('magnitudeOfDelay') is not None:
                     item['magnitude'] = sec.get('magnitudeOfDelay')
+                # COUNTRY sections carry the ISO code — needed for the route card's
+                # country list / cross-border flag. Without this it was always empty.
+                if sec.get('countryCode'):
+                    item['country_code'] = sec.get('countryCode')
                 sections.append(item)
 
             def _to_min(key):
@@ -2756,7 +2785,8 @@ class LocationSuggestView(APIView):
                     'key': self.TOMTOM_API_KEY,
                     'limit': 6,
                     'language': 'en-US',
-                    'countrySet': 'ZA',
+                    # SA + supported cross-border neighbours only (NA, BW, ZW, MZ, LS, SZ, ZM).
+                    'countrySet': 'ZA,NA,BW,ZW,MZ,LS,SZ,ZM',
                     'typeahead': 'true',
                 },
                 timeout=4,
@@ -2772,7 +2802,17 @@ class LocationSuggestView(APIView):
                 if not label:
                     continue
                 display = f"{label}, {municipality}" if municipality and municipality not in label else label
-                suggestions.append({'label': display, 'lat': pos.get('lat'), 'lon': pos.get('lon')})
+                # Expose country + a cross-border flag so the UI can tag non-SA
+                # suggestions. TomTom gives countryCode (ISO2) and countryCodeISO3.
+                iso = (addr.get('countryCode') or addr.get('countryCodeISO3') or '').upper()
+                suggestions.append({
+                    'label': display,
+                    'lat': pos.get('lat'),
+                    'lon': pos.get('lon'),
+                    'country': addr.get('country', ''),
+                    'country_code': iso,
+                    'cross_border': bool(iso) and iso not in ('ZA', 'ZAF'),
+                })
             return Response(suggestions)
         except Exception:
             return Response([])

@@ -37,6 +37,8 @@ from django.core.management.base import BaseCommand
 _PLAZA_DATA = [
     # ------------------------------------------------------------------
     # N1 — Cape Town → Johannesburg → Polokwane
+    # Coordinates: best-estimate from public sources (±500 m accuracy).
+    # Verify against OpenStreetMap / Google Maps before tightening radius_meters.
     # ------------------------------------------------------------------
     {
         'name': 'Huguenot',
@@ -48,6 +50,7 @@ _PLAZA_DATA = [
         'tariff_class_4': Decimal('236.00'),
         'tariff_class_5': Decimal('383.00'),
         'tariff_year': 2026,
+        'lat': Decimal('-33.742680'), 'lng': Decimal('19.019860'), 'radius_meters': 500,
     },
     {
         'name': 'Verkeerdevlei',
@@ -59,6 +62,7 @@ _PLAZA_DATA = [
         'tariff_class_4': Decimal('236.00'),
         'tariff_class_5': Decimal('331.00'),
         'tariff_year': 2026,
+        'lat': Decimal('-28.798780'), 'lng': Decimal('26.690570'), 'radius_meters': 500,
     },
     {
         'name': 'Grasmere',
@@ -70,6 +74,7 @@ _PLAZA_DATA = [
         'tariff_class_4': Decimal('96.00'),
         'tariff_class_5': Decimal('126.00'),
         'tariff_year': 2026,
+        'lat': Decimal('-26.417110'), 'lng': Decimal('27.880750'), 'radius_meters': 500,
     },
     {
         'name': 'Vaal',
@@ -81,6 +86,7 @@ _PLAZA_DATA = [
         'tariff_class_4': Decimal('207.00'),
         'tariff_class_5': Decimal('275.00'),
         'tariff_year': 2026,
+        'lat': Decimal('-26.856450'), 'lng': Decimal('27.635300'), 'radius_meters': 500,
     },
     {
         'name': 'Pumulani',
@@ -92,6 +98,7 @@ _PLAZA_DATA = [
         'tariff_class_4': Decimal('47.00'),
         'tariff_class_5': Decimal('57.00'),
         'tariff_year': 2026,
+        'lat': Decimal('-25.639400'), 'lng': Decimal('28.275280'), 'radius_meters': 500,
     },
     {
         'name': 'Carousel',
@@ -103,6 +110,7 @@ _PLAZA_DATA = [
         'tariff_class_4': Decimal('224.00'),
         'tariff_class_5': Decimal('258.00'),
         'tariff_year': 2026,
+        'lat': Decimal('-25.324970'), 'lng': Decimal('28.297710'), 'radius_meters': 500,
     },
     {
         'name': 'Kranskop',
@@ -114,6 +122,7 @@ _PLAZA_DATA = [
         'tariff_class_4': Decimal('210.00'),
         'tariff_class_5': Decimal('257.00'),
         'tariff_year': 2026,
+        'lat': Decimal('-24.781570'), 'lng': Decimal('28.471460'), 'radius_meters': 500,
     },
     {
         'name': 'Nyl',
@@ -125,6 +134,7 @@ _PLAZA_DATA = [
         'tariff_class_4': Decimal('180.00'),
         'tariff_class_5': Decimal('241.00'),
         'tariff_year': 2026,
+        'lat': Decimal('-24.289710'), 'lng': Decimal('28.979280'), 'radius_meters': 500,
     },
     {
         'name': 'Capricorn',
@@ -136,6 +146,7 @@ _PLAZA_DATA = [
         'tariff_class_4': Decimal('205.00'),
         'tariff_class_5': Decimal('256.00'),
         'tariff_year': 2026,
+        'lat': Decimal('-23.366900'), 'lng': Decimal('29.775020'), 'radius_meters': 500,
     },
     {
         'name': 'Baobab',
@@ -147,6 +158,7 @@ _PLAZA_DATA = [
         'tariff_class_4': Decimal('231.00'),
         'tariff_class_5': Decimal('278.00'),
         'tariff_year': 2026,
+        'lat': Decimal('-22.647050'), 'lng': Decimal('29.918120'), 'radius_meters': 500,
     },
 
     # ------------------------------------------------------------------
@@ -162,6 +174,7 @@ _PLAZA_DATA = [
         'tariff_class_4': Decimal('438.00'),
         'tariff_class_5': Decimal('619.00'),
         'tariff_year': 2026,
+        'lat': Decimal('-33.950380'), 'lng': Decimal('23.623240'), 'radius_meters': 500,
     },
     {
         'name': 'Oribi',
@@ -173,6 +186,7 @@ _PLAZA_DATA = [
         'tariff_class_4': Decimal('100.00'),
         'tariff_class_5': Decimal('162.00'),
         'tariff_year': 2026,
+        'lat': Decimal('-30.754340'), 'lng': Decimal('30.432010'), 'radius_meters': 500,
     },
     {
         'name': 'Othongathi',
@@ -184,6 +198,7 @@ _PLAZA_DATA = [
         'tariff_class_4': Decimal('42.00'),
         'tariff_class_5': Decimal('62.00'),
         'tariff_year': 2026,
+        'lat': Decimal('-29.588210'), 'lng': Decimal('31.141160'), 'radius_meters': 500,
     },
     {
         'name': 'Mvoti',
@@ -195,6 +210,7 @@ _PLAZA_DATA = [
         'tariff_class_4': Decimal('70.00'),
         'tariff_class_5': Decimal('104.00'),
         'tariff_year': 2026,
+        'lat': Decimal('-29.403460'), 'lng': Decimal('31.285550'), 'radius_meters': 500,
     },
     {
         'name': 'Mtunzini',
@@ -206,6 +222,7 @@ _PLAZA_DATA = [
         'tariff_class_4': Decimal('146.00'),
         'tariff_class_5': Decimal('217.00'),
         'tariff_year': 2026,
+        'lat': Decimal('-28.957210'), 'lng': Decimal('31.737570'), 'radius_meters': 500,
     },
 
     # ------------------------------------------------------------------
@@ -221,6 +238,7 @@ _PLAZA_DATA = [
         'tariff_class_4': Decimal('160.00'),
         'tariff_class_5': Decimal('230.00'),
         'tariff_year': 2026,
+        'lat': Decimal('-26.663930'), 'lng': Decimal('28.389920'), 'radius_meters': 500,
     },
     {
         'name': 'Wilge',
@@ -232,6 +250,7 @@ _PLAZA_DATA = [
         'tariff_class_4': Decimal('215.00'),
         'tariff_class_5': Decimal('304.00'),
         'tariff_year': 2026,
+        'lat': Decimal('-27.040490'), 'lng': Decimal('28.626240'), 'radius_meters': 500,
     },
     {
         'name': 'Tugela',
@@ -243,6 +262,7 @@ _PLAZA_DATA = [
         'tariff_class_4': Decimal('260.00'),
         'tariff_class_5': Decimal('359.00'),
         'tariff_year': 2026,
+        'lat': Decimal('-28.462330'), 'lng': Decimal('29.561560'), 'radius_meters': 500,
     },
     {
         'name': 'Mooi',
@@ -254,6 +274,7 @@ _PLAZA_DATA = [
         'tariff_class_4': Decimal('240.00'),
         'tariff_class_5': Decimal('324.00'),
         'tariff_year': 2026,
+        'lat': Decimal('-29.218020'), 'lng': Decimal('30.003960'), 'radius_meters': 500,
     },
     {
         'name': 'Mariannhill',
@@ -265,6 +286,7 @@ _PLAZA_DATA = [
         'tariff_class_4': Decimal('37.00'),
         'tariff_class_5': Decimal('57.00'),
         'tariff_year': 2026,
+        'lat': Decimal('-29.823020'), 'lng': Decimal('30.802760'), 'radius_meters': 500,
     },
 
     # ------------------------------------------------------------------
@@ -280,6 +302,7 @@ _PLAZA_DATA = [
         'tariff_class_4': Decimal('58.00'),
         'tariff_class_5': Decimal('70.00'),
         'tariff_year': 2026,
+        'lat': Decimal('-25.643430'), 'lng': Decimal('28.253730'), 'radius_meters': 500,
     },
     {
         'name': 'Diamond Hill',
@@ -291,6 +314,7 @@ _PLAZA_DATA = [
         'tariff_class_4': Decimal('133.00'),
         'tariff_class_5': Decimal('220.00'),
         'tariff_year': 2026,
+        'lat': Decimal('-25.797930'), 'lng': Decimal('28.550420'), 'radius_meters': 500,
     },
     {
         'name': 'Middelburg',
@@ -302,6 +326,7 @@ _PLAZA_DATA = [
         'tariff_class_4': Decimal('277.00'),
         'tariff_class_5': Decimal('365.00'),
         'tariff_year': 2026,
+        'lat': Decimal('-25.865920'), 'lng': Decimal('29.363820'), 'radius_meters': 500,
     },
     {
         'name': 'Machadodorp',
@@ -313,6 +338,7 @@ _PLAZA_DATA = [
         'tariff_class_4': Decimal('510.00'),
         'tariff_class_5': Decimal('729.00'),
         'tariff_year': 2026,
+        'lat': Decimal('-25.627770'), 'lng': Decimal('30.258220'), 'radius_meters': 500,
     },
     {
         'name': 'Nkomazi',
@@ -324,6 +350,7 @@ _PLAZA_DATA = [
         'tariff_class_4': Decimal('281.00'),
         'tariff_class_5': Decimal('405.00'),
         'tariff_year': 2026,
+        'lat': Decimal('-25.536260'), 'lng': Decimal('31.344420'), 'radius_meters': 500,
     },
 
     # ------------------------------------------------------------------
@@ -339,6 +366,7 @@ _PLAZA_DATA = [
         'tariff_class_4': Decimal('50.00'),
         'tariff_class_5': Decimal('69.00'),
         'tariff_year': 2026,
+        'lat': Decimal('-26.251260'), 'lng': Decimal('28.142930'), 'radius_meters': 500,
     },
     {
         'name': 'Dalpark',
@@ -350,6 +378,7 @@ _PLAZA_DATA = [
         'tariff_class_4': Decimal('42.00'),
         'tariff_class_5': Decimal('58.00'),
         'tariff_year': 2026,
+        'lat': Decimal('-26.256180'), 'lng': Decimal('28.327670'), 'radius_meters': 500,
     },
     {
         'name': 'Leandra',
@@ -361,6 +390,7 @@ _PLAZA_DATA = [
         'tariff_class_4': Decimal('190.00'),
         'tariff_class_5': Decimal('253.00'),
         'tariff_year': 2026,
+        'lat': Decimal('-26.398530'), 'lng': Decimal('28.949250'), 'radius_meters': 500,
     },
     {
         'name': 'Trichardt',
@@ -372,6 +402,7 @@ _PLAZA_DATA = [
         'tariff_class_4': Decimal('96.00'),
         'tariff_class_5': Decimal('127.00'),
         'tariff_year': 2026,
+        'lat': Decimal('-26.483680'), 'lng': Decimal('29.326080'), 'radius_meters': 500,
     },
     {
         'name': 'Ermelo',
@@ -383,6 +414,7 @@ _PLAZA_DATA = [
         'tariff_class_4': Decimal('170.00'),
         'tariff_class_5': Decimal('226.00'),
         'tariff_year': 2026,
+        'lat': Decimal('-26.505560'), 'lng': Decimal('29.865970'), 'radius_meters': 500,
     },
 
     # ------------------------------------------------------------------
@@ -398,6 +430,7 @@ _PLAZA_DATA = [
         'tariff_class_4': Decimal('188.00'),
         'tariff_class_5': Decimal('265.00'),
         'tariff_year': 2026,
+        'lat': Decimal('-28.902210'), 'lng': Decimal('26.337950'), 'radius_meters': 500,
     },
 ]
 
