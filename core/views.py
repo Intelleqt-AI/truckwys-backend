@@ -1653,7 +1653,11 @@ class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     def perform_create(self, serializer):
         # Creation notification is raised by the Load post_save signal
         # (notify_company), which covers all creation paths, not just this view.
-        serializer.save(created_by=self.request.user)
+        # company must be set explicitly: this override replaces
+        # CompanyFilterMixin.perform_create, which would otherwise have set it —
+        # without it loads are created with company=NULL and vanish from
+        # company-scoped queries.
+        serializer.save(created_by=self.request.user, company=self.request.user.company)
 
     @action(detail=True, methods=['patch'])
     def update_status(self, request, pk=None):

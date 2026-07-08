@@ -22,6 +22,7 @@ from .webhook import Webhook
 from .integration_api_key import IntegrationAPIKey, APICallLog
 from .activity_event import ActivityEvent
 from .copilot_message import CopilotMessage, CopilotConversation
+from .copilot_proposal import CopilotProposal
 from .webhook_subscription import WebhookSubscription
 from .billing import BillingTransaction
 from .invite_token import InviteToken
@@ -59,6 +60,7 @@ __all__ = [
     'APICallLog',
     'CopilotMessage',
     'CopilotConversation',
+    'CopilotProposal',
     'ActivityEvent',
     'WebhookSubscription',
     'BillingTransaction',

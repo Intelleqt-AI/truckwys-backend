@@ -9,6 +9,7 @@ from django.utils.html import strip_tags
 from django.conf import settings
 from django.utils import timezone
 import logging
+import re
 import resend
 import os
 
@@ -696,6 +697,67 @@ def send_quote_accepted_email(quote, pdf_bytes: Optional[bytes] = None) -> bool:
         return True
     except Exception as e:
         logger.error(f"Failed to send quote accepted email for {quote.quote_number} to {to_email}: {e}")
+        return False
+
+
+# The template already wraps the AI-drafted body with its own "Hi {name}," opener
+# and "Regards, {company}" signature — strip any greeting/sign-off the model added
+# anyway (despite being told not to) so the two don't render duplicated.
+_GREETING_RE = re.compile(r'\A\s*(?:hi|hello|hey|dear)\b[^\n]*\n+', re.IGNORECASE)
+_SIGNOFF_RE = re.compile(
+    r'\n+\s*(?:regards|best regards|kind regards|warm regards|sincerely|best)\s*,?\s*\n?.*\Z',
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _strip_ai_boilerplate(body: str) -> str:
+    body = _GREETING_RE.sub('', body, count=1)
+    body = _SIGNOFF_RE.sub('', body, count=1)
+    return body.strip()
+
+
+def send_agent_composed_email(to_email: str, to_name: str, subject: str, body: str, company=None) -> bool:
+    """Send a Copilot-drafted, user-confirmed email to a known contact. Via Resend."""
+    from django.utils.html import escape
+
+    company_name = getattr(company, 'company_name', '') or 'TruckWys'
+    safe_body = escape(_strip_ai_boilerplate(body)).replace('\n', '<br>')
+    html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{escape(subject)}</title>
+</head>
+<body style="margin:0;padding:0;background:#0F172A;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0F172A;padding:48px 16px;">
+    <tr><td align="center">
+      <table width="500" cellpadding="0" cellspacing="0" style="background:#1E293B;border-radius:12px;overflow:hidden;border:1px solid #334155;">
+{_quote_email_header(f'MESSAGE FROM {company_name.upper()}')}
+
+        <!-- Body -->
+        <tr><td style="padding:36px;">
+          <p style="margin:0 0 20px;font-size:14px;color:#F8FAFC;line-height:1.7;">Hi {escape(to_name or 'there')},</p>
+          <p style="margin:0 0 20px;font-size:14px;color:#CBD5E1;line-height:1.7;">{safe_body}</p>
+          <p style="margin:24px 0 0;font-size:13px;color:#94A3B8;">Regards,<br>{escape(company_name)}</p>
+        </td></tr>
+{_quote_email_footer()}
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+    try:
+        resend.api_key = settings.RESEND_API_KEY
+        resend.Emails.send({
+            "from": settings.EMAIL_FROM,
+            "to": [to_email],
+            "subject": subject,
+            "html": html_content,
+        })
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send agent-composed email to {to_email}: {e}")
         return False
 
 

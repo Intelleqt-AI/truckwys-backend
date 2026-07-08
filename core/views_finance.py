@@ -437,54 +437,14 @@ class PaymentFinanceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         - Payment amount doesn't exceed invoice balance
         - Updates invoice status
         """
-        import random
-        from django.db import transaction
+        from core.services.payments import record_payment, PaymentError
 
-        invoice_id = request.data.get('invoice')
-        amount = Decimal(str(request.data.get('amount', '0')))
-
-        if amount <= 0:
-            return Response(
-                {'error': 'Payment amount must be greater than zero'},
-                status=status.HTTP_400_BAD_REQUEST
+        try:
+            serializer = record_payment(
+                request.user.company, request.user, dict(request.data.items())
             )
-
-        # Lock the invoice row so two concurrent payments can't both pass the
-        # balance check and overpay.
-        with transaction.atomic():
-            try:
-                invoice = Invoice.objects.select_for_update().get(id=invoice_id)
-            except Invoice.DoesNotExist:
-                return Response({'error': 'Invoice not found'}, status=status.HTTP_404_NOT_FOUND)
-
-            if amount > invoice.balance:
-                return Response(
-                    {'error': f'Payment amount (R {amount}) exceeds invoice balance (R {invoice.balance})'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-            # Fill in what the client shouldn't have to: customer (from the
-            # invoice), an auto payment_number, and accept the UI's 'reference'.
-            data = {k: v for k, v in request.data.items()}
-            data['invoice'] = invoice.id
-            data.setdefault('customer', invoice.customer_id)
-            if not data.get('payment_number'):
-                data['payment_number'] = f"PAY-{timezone.now():%Y%m%d}-{random.randint(1000, 9999)}"
-            if data.get('reference') and not data.get('reference_number'):
-                data['reference_number'] = data['reference']
-
-            serializer = self.get_serializer(data=data)
-            serializer.is_valid(raise_exception=True)
-            serializer.save()
-
-            invoice.paid_amount += amount
-            invoice.balance -= amount
-            if invoice.balance == 0:
-                invoice.status = 'PAID'
-                invoice.paid_at = timezone.now()
-            elif invoice.paid_amount > 0:
-                invoice.status = 'PARTIALLY_PAID'
-            invoice.save()
+        except PaymentError as e:
+            return Response({'error': str(e)}, status=e.status_code)
 
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 

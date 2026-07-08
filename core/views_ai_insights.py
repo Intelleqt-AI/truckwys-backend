@@ -5,7 +5,7 @@ from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 
 from core.services.llm_insights import executive_briefing, explain_risk_score
-from core.services.agent import agent_respond
+from core.services.agent import agent_respond, generate_conversation_title
 
 
 class AgentChatView(APIView):
@@ -52,7 +52,7 @@ class AgentChatView(APIView):
             if last_user:
                 CopilotMessage.objects.create(user=request.user, conversation=conv, role='user', content=str(last_user)[:8000])
                 if not conv.title:
-                    conv.title = str(last_user)[:80]
+                    conv.title = generate_conversation_title(str(last_user))
             reply = result.get('reply')
             if reply:
                 CopilotMessage.objects.create(user=request.user, conversation=conv, role='assistant', content=str(reply)[:8000])
@@ -98,11 +98,12 @@ class ConversationChatView(APIView):
             return Response({'error': 'message is required'}, status=status.HTTP_400_BAD_REQUEST)
         text = str(text).strip()
 
-        # Server-side history (last 12 turns) loaded from the DB, then the new user turn.
+        # Server-side history (last 30 turns — guided data entry spans many short
+        # question/answer turns) loaded from the DB, then the new user turn.
         history = [
             {'role': m.role, 'content': m.content}
             for m in conv.messages.order_by('created_at')[:300]
-        ][-12:]
+        ][-30:]
         history.append({'role': 'user', 'content': text})
 
         # Keep this account's invoice index fresh (cheap: skips unchanged rows), then
@@ -114,8 +115,12 @@ class ConversationChatView(APIView):
             pass
 
         try:
-            # enable_tools=True lets the agent CREATE quotes (function-calling) from chat.
-            result = agent_respond(company, history, query=text, user=request.user, enable_tools=True)
+            # enable_tools=True lets the agent query the database and prepare
+            # confirm-first create/update/delete proposals from chat.
+            result = agent_respond(
+                company, history, query=text, user=request.user,
+                enable_tools=True, conversation=conv,
+            )
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -123,11 +128,15 @@ class ConversationChatView(APIView):
         try:
             CopilotMessage.objects.create(user=request.user, conversation=conv, role='user', content=text[:8000])
             if not conv.title:
-                conv.title = text[:80]
+                conv.title = generate_conversation_title(text)
             reply = result.get('reply')
             if reply:
+                metadata = {}
+                if result.get('proposal'):
+                    metadata['proposal_id'] = result['proposal']['id']
                 CopilotMessage.objects.create(
-                    user=request.user, conversation=conv, role='assistant', content=str(reply)[:8000]
+                    user=request.user, conversation=conv, role='assistant',
+                    content=str(reply)[:8000], metadata=metadata,
                 )
             conv.save()  # bump updated_at + title
         except Exception:
@@ -165,20 +174,114 @@ class CopilotConversationDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, pk):
-        from core.models import CopilotConversation
+        from core.models import CopilotConversation, CopilotProposal
+        from core.services.copilot_tools import proposal_public
         conv = CopilotConversation.objects.filter(id=pk, user=request.user).first()
         if not conv:
             return Response({'error': 'Not found'}, status=status.HTTP_404_NOT_FOUND)
-        msgs = conv.messages.order_by('created_at')[:300]
-        return Response({
-            'id': conv.id, 'title': conv.title,
-            'messages': [{'role': m.role, 'content': m.content, 'created_at': m.created_at.isoformat()} for m in msgs],
-        })
+        msgs = list(conv.messages.order_by('created_at')[:300])
+
+        # Rehydrate proposal cards with their LIVE status (pending/executed/…).
+        proposal_ids = [m.metadata.get('proposal_id') for m in msgs
+                        if isinstance(m.metadata, dict) and m.metadata.get('proposal_id')]
+        proposals = {p.id: proposal_public(p)
+                     for p in CopilotProposal.objects.filter(id__in=proposal_ids, user=request.user)}
+
+        out = []
+        for m in msgs:
+            row = {'role': m.role, 'content': m.content, 'created_at': m.created_at.isoformat()}
+            meta = m.metadata if isinstance(m.metadata, dict) else {}
+            pid = meta.get('proposal_id')
+            if pid and pid in proposals and not meta.get('is_outcome'):
+                row['proposal'] = proposals[pid]
+            if meta.get('action'):
+                row['actions'] = [meta['action']]
+            out.append(row)
+        return Response({'id': conv.id, 'title': conv.title, 'messages': out})
 
     def delete(self, request, pk):
         from core.models import CopilotConversation
         CopilotConversation.objects.filter(id=pk, user=request.user).delete()
         return Response({'deleted': True})
+
+
+class ProposalExecuteView(APIView):
+    """POST /api/v1/agent/proposals/<id>/execute/ — perform a confirmed copilot write.
+
+    The proposal id is the whole contract: the client never supplies an endpoint
+    or payload. Owner + company scoped; RBAC is re-checked inside execute_proposal.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        from core.views import resolve_user_company
+        from core.models import CopilotProposal, CopilotMessage
+        from core.services.copilot_tools import execute_proposal
+
+        company = resolve_user_company(request.user)
+        proposal = CopilotProposal.objects.filter(
+            id=pk, user=request.user, company=company
+        ).first()
+        if proposal is None:
+            return Response({'error': 'Proposal not found'}, status=status.HTTP_404_NOT_FOUND)
+        if proposal.status != 'PENDING':
+            # proposal_status lets the client show the true state (e.g. a second
+            # tab confirming a card that already executed must not render "Failed").
+            return Response(
+                {'error': f'This proposal was already {proposal.status.lower()}',
+                 'proposal_status': proposal.status.lower()},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        ok, payload = execute_proposal(proposal, request.user, company)
+        if not ok:
+            proposal.refresh_from_db()
+            return Response(
+                {'status': 'failed', 'proposal_status': proposal.status.lower(), **payload},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Record the outcome in the thread so the LLM's history replay knows the
+        # write actually happened (and reload shows it).
+        try:
+            if proposal.conversation_id:
+                metadata = {'proposal_id': proposal.id, 'is_outcome': True}
+                # Persist the nav chip (e.g. "Open Quote QT-…") so it survives a
+                # reload — the HTTP response alone doesn't outlive this request.
+                if payload.get('action'):
+                    metadata['action'] = payload['action']
+                CopilotMessage.objects.create(
+                    user=request.user, conversation=proposal.conversation,
+                    role='assistant', content=payload['message'],
+                    # is_outcome: history replay still sees the write happened, but
+                    # the detail GET won't inline a second card for the same proposal.
+                    metadata=metadata,
+                )
+                proposal.conversation.save()  # bump updated_at
+        except Exception:
+            pass
+
+        return Response({'status': 'executed', **payload})
+
+
+class ProposalDismissView(APIView):
+    """POST /api/v1/agent/proposals/<id>/dismiss/ — decline a pending proposal."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        from core.views import resolve_user_company
+        from core.models import CopilotProposal
+
+        company = resolve_user_company(request.user)
+        proposal = CopilotProposal.objects.filter(
+            id=pk, user=request.user, company=company
+        ).first()
+        if proposal is None:
+            return Response({'error': 'Proposal not found'}, status=status.HTTP_404_NOT_FOUND)
+        if proposal.status == 'PENDING':
+            proposal.status = 'DISMISSED'
+            proposal.save(update_fields=['status'])
+        return Response({'status': 'dismissed'})
 
 
 class DashboardBriefingView(APIView):
