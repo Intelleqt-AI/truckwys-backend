@@ -488,9 +488,16 @@ def _fmt_weight(v) -> str:
         return f'{v} kg' if v else '—'
 
 
-def _quote_email_header(badge: str) -> str:
-    """Card top for quote emails: cyan accent bar + text wordmark (no <img> —
-    image URLs are unreachable from email clients in dev)."""
+def _quote_email_header(badge: str, company_name: Optional[str] = None, logo_url: Optional[str] = None) -> str:
+    """Card top for quote emails — branded with the freight company's own name
+    (and logo image when a reachable absolute URL is available)."""
+    if logo_url:
+        brand = f'<img src="{logo_url}" alt="{company_name or ""}" style="max-height:36px;max-width:200px;display:block;border:0;" />'
+    elif company_name:
+        brand = f'<div style="font-size:20px;font-weight:800;letter-spacing:0.01em;color:#F8FAFC;">{company_name}</div>'
+    else:
+        brand = ('<div style="font-size:20px;font-weight:800;letter-spacing:0.03em;color:#F8FAFC;">'
+                 'TRUCK<span style="color:#38BDF8;">WYS</span></div>')
     return f"""
         <!-- Accent bar -->
         <tr><td style="height:4px;background:#38BDF8;font-size:0;line-height:0;">&nbsp;</td></tr>
@@ -499,8 +506,7 @@ def _quote_email_header(badge: str) -> str:
         <tr><td style="background:#0F172A;padding:26px 36px;border-bottom:1px solid #334155;">
           <table width="100%" cellpadding="0" cellspacing="0"><tr>
             <td>
-              <div style="font-size:20px;font-weight:800;letter-spacing:0.03em;color:#F8FAFC;">TRUCK<span style="color:#38BDF8;">WYS</span></div>
-              <div style="font-size:9px;color:#64748B;letter-spacing:0.22em;margin-top:3px;">ROAD FREIGHT INTELLIGENCE</div>
+              {brand}
             </td>
             <td align="right" valign="top">
               <div style="font-size:11px;color:#475569;font-family:monospace;letter-spacing:0.08em;">{badge}</div>
@@ -514,7 +520,7 @@ def _quote_email_footer() -> str:
         <!-- Footer -->
         <tr><td style="padding:20px 36px 24px;border-top:1px solid #334155;background:#0F172A;">
           <p style="margin:0;font-size:11px;color:#334155;text-align:center;letter-spacing:0.04em;">
-            TruckWys &nbsp;&bull;&nbsp; Road Freight Intelligence &nbsp;&bull;&nbsp; South Africa
+            Powered by TruckWys
           </p>
           <p style="margin:6px 0 0;font-size:10px;color:#1E293B;text-align:center;font-family:monospace;letter-spacing:0.06em;">
             DO NOT REPLY TO THIS EMAIL
@@ -559,15 +565,18 @@ def send_quote_share_email(quote, share_url: str) -> bool:
 
     to_email = quote.customer.email
     customer_name = quote.customer.name or 'there'
+    company_name = quote.company.company_name if quote.company else None
     valid_until = str(quote.valid_until) if quote.valid_until else 'N/A'
     summary = _quote_summary_box([
         ('From', quote.pickup_location or quote.origin or '—'),
         ('To', quote.delivery_location or quote.destination or '—'),
         ('Cargo', quote.cargo_description or '—'),
         ('Weight', _fmt_weight(quote.weight)),
+        ('Collection date', str(quote.pickup_date) if quote.pickup_date else 'To be confirmed'),
+        ('Delivery date', str(quote.delivery_date) if quote.delivery_date else 'To be confirmed'),
         ('Valid until', valid_until),
     ], 'Total excl. VAT', _zar(quote.total_amount))
-    subject = f"Your freight quote {quote.quote_number} from TruckWys"
+    subject = f"Your freight quote {quote.quote_number} from {company_name or 'TruckWys'}"
     html_content = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -579,14 +588,14 @@ def send_quote_share_email(quote, share_url: str) -> bool:
   <table width="100%" cellpadding="0" cellspacing="0" style="background:#0F172A;padding:48px 16px;">
     <tr><td align="center">
       <table width="500" cellpadding="0" cellspacing="0" style="background:#1E293B;border-radius:12px;overflow:hidden;border:1px solid #334155;">
-{_quote_email_header('FREIGHT QUOTE')}
+{_quote_email_header('FREIGHT QUOTE', company_name)}
 
         <!-- Body -->
         <tr><td style="padding:36px;">
           <p style="margin:0 0 16px;font-size:22px;font-weight:600;color:#F8FAFC;text-align:center;">Your quote is ready</p>
 {_quote_number_pill(quote.quote_number)}
           <p style="margin:0 0 28px;font-size:14px;color:#94A3B8;line-height:1.6;text-align:center;">
-            Hi <strong style="color:#F8FAFC;">{customer_name}</strong>, you've received a new freight quote from TruckWys.
+            Hi <strong style="color:#F8FAFC;">{customer_name}</strong>, you've received a new freight quote from {company_name or 'TruckWys'}.
             Review the details below and respond online.
           </p>
 {summary}
@@ -631,10 +640,12 @@ def send_quote_accepted_email(quote, pdf_bytes: Optional[bytes] = None) -> bool:
 
     to_email = quote.customer.email
     customer_name = quote.customer.name or 'there'
+    company_name = quote.company.company_name if quote.company else None
     summary = _quote_summary_box([
         ('From', quote.pickup_location or quote.origin or '—'),
         ('To', quote.delivery_location or quote.destination or '—'),
-        ('SLA', f'{quote.sla_hours or 48}h'),
+        ('Collection date', str(quote.pickup_date) if quote.pickup_date else 'To be confirmed'),
+        ('Delivery date', str(quote.delivery_date) if quote.delivery_date else 'To be confirmed'),
     ], 'Total excl. VAT', _zar(quote.total_amount))
     attachment_note = (
         '<p style="margin:0 0 28px;font-size:13px;color:#94A3B8;line-height:1.6;text-align:center;">'
@@ -653,7 +664,7 @@ def send_quote_accepted_email(quote, pdf_bytes: Optional[bytes] = None) -> bool:
   <table width="100%" cellpadding="0" cellspacing="0" style="background:#0F172A;padding:48px 16px;">
     <tr><td align="center">
       <table width="500" cellpadding="0" cellspacing="0" style="background:#1E293B;border-radius:12px;overflow:hidden;border:1px solid #334155;">
-{_quote_email_header('QUOTE ACCEPTED')}
+{_quote_email_header('QUOTE ACCEPTED', company_name)}
 
         <!-- Body -->
         <tr><td style="padding:36px;">
@@ -670,7 +681,7 @@ def send_quote_accepted_email(quote, pdf_bytes: Optional[bytes] = None) -> bool:
           {attachment_note}
 
           <p style="margin:0;font-size:12px;color:#475569;line-height:1.7;text-align:center;">
-            TruckWys is South Africa's road freight intelligence platform — AI-powered quoting, fleet management, and instant invoice financing.
+            Thank you for your business. {company_name or 'Your operator'} will be in touch shortly to confirm the details.
           </p>
         </td></tr>
 {_quote_email_footer()}
@@ -737,11 +748,8 @@ class InvoiceEmailService:
         if additional_recipients:
             recipients.extend(additional_recipients)
 
-        try:
-            company = Company.objects.filter(users=self.invoice.company.users.first()).first() if hasattr(self.invoice, 'company') and self.invoice.company else Company.objects.first()
-            company_name = company.company_name if company else "TruckWys"
-        except Exception:
-            company_name = "TruckWys"
+        company = getattr(self.invoice, 'company', None)
+        company_name = company.company_name if company else "TruckWys"
 
         subject = f"Invoice {self.invoice.invoice_number} from {company_name}"
         html_content = self._build_html_content()
@@ -787,11 +795,8 @@ class InvoiceEmailService:
         Returns:
             str: HTML content for email
         """
-        # Get company details
-        try:
-            company = Company.objects.first()
-        except Company.DoesNotExist:
-            company = None
+        # Use the invoice's own company (tenant) — never a global first()
+        company = getattr(self.invoice, 'company', None)
 
         # Public view link — no login required for customer
         frontend_url = settings.FRONTEND_URL.rstrip('/')
@@ -958,10 +963,7 @@ class InvoiceEmailService:
 
         <div class="banking-details">
             <h3>Banking Details for Payment</h3>
-            <p><strong>Bank:</strong> First National Bank (FNB)</p>
-            <p><strong>Account Name:</strong> TruckWys (Pty) Ltd</p>
-            <p><strong>Account Number:</strong> 62 XXXX XXXX</p>
-            <p><strong>Branch Code:</strong> 250 655</p>
+            <p>Please contact <strong>{company.company_name if company else 'us'}</strong> for banking details.</p>
             <p><strong>Reference:</strong> {self.invoice.invoice_number}</p>
         </div>
 
@@ -978,6 +980,7 @@ class InvoiceEmailService:
             <p>{company.company_name if company else 'TruckWys'}</p>
             {f"<p>{company.contact.get('phone', '')} | {company.contact.get('email', '')}</p>" if company and company.contact else ''}
             <p style="margin-top: 10px; font-size: 11px;">This is an automated email. Please do not reply directly to this message.</p>
+            <p style="margin-top: 8px; font-size: 10px; color: #94a3b8;">Powered by TruckWys</p>
         </div>
     </div>
 </body>
