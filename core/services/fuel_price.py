@@ -186,11 +186,14 @@ def fetch_fuel_prices(
         today = date.today()
         target_date = today.replace(day=1)
 
-    # Return existing record unless forced
+    # Return existing record unless forced or it was stored as a fallback
+    # (fallback means live sources were unavailable at the time — retry now).
     existing = FuelPrice.objects.filter(date=target_date).first()
     if existing and not force_update:
-        logger.info('FuelPrice for %s already exists — skipping fetch', target_date)
-        return existing
+        if existing.source not in ('FALLBACK', 'FALLBACK_LATEST'):
+            logger.info('FuelPrice for %s already exists — skipping fetch', target_date)
+            return existing
+        logger.info('FuelPrice for %s is a fallback — retrying live sources', target_date)
 
     # Attempt live sources in priority order
     data = _fetch_from_aa_sa() or _fetch_from_sapia() or _fetch_from_dmre()
