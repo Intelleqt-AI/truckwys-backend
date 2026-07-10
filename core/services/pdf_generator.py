@@ -116,11 +116,25 @@ class InvoicePDFGenerator:
         """Build PDF header with company logo and details."""
         elements = []
 
-        # Get company details
-        try:
-            company = Company.objects.first()
-        except Company.DoesNotExist:
-            company = None
+        # Use the invoice's own company (tenant) — never a global first()
+        company = getattr(self.invoice, 'company', None)
+
+        # Company logo, if one has been uploaded
+        if company and getattr(company, 'logo', None):
+            try:
+                logo = Image(company.logo.path)
+                max_h = 20 * mm
+                max_w = 60 * mm
+                iw, ih = logo.imageWidth, logo.imageHeight
+                if iw and ih:
+                    scale = min(max_w / iw, max_h / ih)
+                    logo.drawWidth = iw * scale
+                    logo.drawHeight = ih * scale
+                logo.hAlign = 'LEFT'
+                elements.append(logo)
+                elements.append(Spacer(1, 3*mm))
+            except Exception:
+                pass
 
         # Company name
         company_name = company.company_name if company else "TruckWys"
@@ -366,21 +380,28 @@ class InvoicePDFGenerator:
             elements.append(Paragraph(self.invoice.notes, self.styles['Normal']))
             elements.append(Spacer(1, 5*mm))
 
-        # Banking details
+        # Banking details — kept off the document; the customer contacts the
+        # company directly so bank details aren't exposed on the PDF.
+        company = getattr(self.invoice, 'company', None)
+        company_name = company.company_name if company else 'the company'
         elements.append(Paragraph("<b>BANKING DETAILS:</b>", self.styles['SectionHeader']))
-        banking_info = [
-            "Bank: First National Bank (FNB)",
-            "Account Name: TruckWys (Pty) Ltd",
-            "Account Number: 62 XXXX XXXX",
-            "Branch Code: 250 655",
-            "Swift Code: FIRNZAJJ",
-        ]
-        elements.append(Paragraph("<br/>".join(banking_info), self.styles['Normal']))
+        elements.append(Paragraph(
+            f"Please contact {company_name} for banking details.",
+            self.styles['Normal']
+        ))
         elements.append(Spacer(1, 5*mm))
 
         # Footer text
         footer_text = "Please use the invoice number as payment reference. Thank you for your business!"
         elements.append(Paragraph(footer_text, self.styles['Normal']))
+
+        # Platform attribution
+        elements.append(Spacer(1, 6*mm))
+        elements.append(Paragraph(
+            "Powered by TruckWys",
+            ParagraphStyle('Attribution', parent=self.styles['Normal'],
+                           fontSize=7, textColor=colors.HexColor('#94a3b8'), alignment=TA_CENTER)
+        ))
 
         return elements
 
