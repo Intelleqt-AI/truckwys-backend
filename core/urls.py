@@ -32,7 +32,7 @@ from .views_finance import (
 )
 from .views_capital import (
     FacilityViewSet, RiskScoreViewSet, AdvanceRequestViewSet,
-    CapitalDashboardViewSet, CapitalEligibleInvoicesView
+    CapitalDashboardViewSet, CapitalEligibleInvoicesView, CustomerRiskProfileView
 )
 from .views_partner import (
     PartnerAdvanceViewSet, PartnerOperatorViewSet, PartnerRiskScoreViewSet
@@ -238,6 +238,7 @@ urlpatterns = [
 
     # Capital eligible invoices for operators (Sprint A4)
     path('capital/eligible/', CapitalEligibleInvoicesView.as_view(), name='capital-eligible'),
+    path('customers/<int:pk>/risk-profile/', CustomerRiskProfileView.as_view(), name='customer-risk-profile'),
 
     # Fleet Management API endpoints (outbound + inbound webhooks)
     path('fleet/trips/sync/', FleetTripSyncAPIView.as_view(), name='fleet-trip-sync'),
