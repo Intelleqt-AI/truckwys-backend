@@ -199,13 +199,15 @@ def fetch_fuel_prices(
         today = date.today()
         target_date = today.replace(day=1)
 
-    # Return existing record unless forced or it was stored as a fallback
-    # (fallback means live sources were unavailable at the time — retry now).
+    # Return existing record unless forced or it was stored as a fallback.
+    # Fallback records are always overwritten — live sources may have recovered.
     existing = FuelPrice.objects.filter(date=target_date).first()
-    if existing and not force_update:
-        if existing.source not in ('FALLBACK', 'FALLBACK_LATEST'):
-            logger.info('FuelPrice for %s already exists — skipping fetch', target_date)
-            return existing
+    is_stale_fallback = existing and existing.source in ('FALLBACK', 'FALLBACK_LATEST')
+    if existing and not force_update and not is_stale_fallback:
+        logger.info('FuelPrice for %s already exists — skipping fetch', target_date)
+        return existing
+    if is_stale_fallback:
+        force_update = True  # ensure we overwrite rather than try to create
         logger.info('FuelPrice for %s is a fallback — retrying live sources', target_date)
 
     # Attempt live sources in priority order
