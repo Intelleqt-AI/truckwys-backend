@@ -333,10 +333,10 @@ CELERY_ACCEPT_CONTENT = ['json']
 
 from celery.schedules import crontab  # noqa: E402
 CELERY_BEAT_SCHEDULE = {
-    # SA diesel prices change on the first Wednesday of each month.
-    # Run on 3rd and 10th to catch it; task retries 3× with 6h gaps if scrape fails.
+    # Refresh SA diesel price daily at 06:00 SAST.
+    # force_update=True so a previously-stored fallback gets overwritten once live sources come back.
     'refresh-fuel-price': {
         'task': 'core.tasks.refresh_fuel_price',
-        'schedule': crontab(day_of_month='3,10', hour='6', minute='0'),
+        'schedule': crontab(hour='6', minute='0'),
     },
 }
