@@ -50,6 +50,10 @@ class Quote(models.Model):
     weight = models.DecimalField(max_digits=10, decimal_places=2)
     distance = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     vehicle_type = models.CharField(max_length=50, blank=True, default='')
+
+    # Estimated collection & delivery dates shown to the customer on the quote
+    pickup_date = models.DateField(null=True, blank=True, help_text="Estimated collection date")
+    delivery_date = models.DateField(null=True, blank=True, help_text="Estimated delivery date")
     
     sla_hours = models.IntegerField(default=48, help_text="Service Level Agreement in hours")
     estimated_duration_minutes = models.IntegerField(null=True, blank=True, help_text="Travel time of the chosen TomTom route at quote creation (minutes)")
