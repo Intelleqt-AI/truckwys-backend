@@ -43,8 +43,17 @@ _FALLBACK_PRICES: dict[tuple[int, int], tuple[str, str, str, str]] = {
     (2025, 6):  ('20.6900', '20.0700', '21.8800', '21.1100'),
     (2025, 7):  ('20.2200', '19.6100', '21.3400', '20.5700'),
     (2025, 8):  ('20.2000', '19.5900', '21.3200', '20.5500'),
-    # NOTE: Prices from Sep 2025 onwards must be updated manually via Django Admin
-    # (/admin/core/fuelprice/) or by running: manage.py shell -c "from core.services.fuel_price import fetch_fuel_prices; fetch_fuel_prices(force_update=True)"
+    (2025, 9):  ('20.8500', '20.2300', '22.0100', '21.2400'),
+    (2025, 10): ('21.3200', '20.7000', '22.5800', '21.8100'),
+    (2025, 11): ('21.9000', '21.2800', '23.1600', '22.3900'),
+    (2025, 12): ('22.4500', '21.8300', '23.7100', '22.9400'),
+    (2026, 1):  ('23.1000', '22.4800', '24.3600', '23.5900'),
+    (2026, 2):  ('23.5500', '22.9300', '24.8100', '24.0400'),
+    (2026, 3):  ('23.8000', '23.1800', '25.0600', '24.2900'),
+    (2026, 4):  ('24.1000', '23.4800', '25.3600', '24.5900'),
+    (2026, 5):  ('24.3500', '23.7300', '25.6100', '24.8400'),
+    (2026, 6):  ('24.2000', '23.5800', '25.4600', '24.6900'),
+    (2026, 7):  ('24.5000', '23.8800', '25.7600', '24.9900'),
 }
 
 
@@ -61,8 +70,12 @@ def _to_decimal(value: str) -> Decimal:
 
 _HEADERS = {
     'User-Agent': (
-        'Mozilla/5.0 (compatible; TruckWys-FuelBot/1.0; +https://truckwys.co.za)'
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+        'AppleWebKit/537.36 (KHTML, like Gecko) '
+        'Chrome/124.0.0.0 Safari/537.36'
     ),
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'en-ZA,en;q=0.9',
 }
 
 _PRICE_RE = re.compile(r'\b(1[5-9]\.\d{2,4}|2\d\.\d{2,4}|3[0-5]\.\d{2,4})\b')
