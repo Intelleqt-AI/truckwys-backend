@@ -1614,14 +1614,17 @@ class VehicleTypeViewSet(viewsets.ModelViewSet):
     ordering_fields = ['name', 'capacity', 'base_rate']
 
     def get_queryset(self):
-        from django.db.models import Q
+        from django.db.models import Q, Count
         user = self.request.user
         if not user.is_authenticated:
             return VehicleType.objects.none()
         if user.is_superuser:
-            return VehicleType.objects.all()
-        return VehicleType.objects.filter(
-            Q(company=None) | Q(company=user.company)
+            qs = VehicleType.objects.all()
+        else:
+            qs = VehicleType.objects.filter(Q(company=None) | Q(company=user.company))
+        # Annotate count of AVAILABLE vehicles per type (read by the serializer)
+        return qs.annotate(
+            avail_count=Count('vehicles', filter=Q(vehicles__status='AVAILABLE'))
         )
 
     def perform_create(self, serializer):
