@@ -34,6 +34,9 @@ class CopilotMessage(models.Model):
     )
     role = models.CharField(max_length=12, choices=ROLE_CHOICES)
     content = models.TextField()
+    # Structured extras that must survive reload (e.g. {"proposal_id": 12} so the
+    # confirm card rehydrates when a conversation is reopened).
+    metadata = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

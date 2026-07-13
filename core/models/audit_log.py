@@ -28,6 +28,7 @@ class AuditLog(models.Model):
         ('CANCEL', 'Cancel'),
         ('EXPORT', 'Export'),
         ('IMPORT', 'Import'),
+        ('EMAIL', 'Email'),
         ('OTHER', 'Other'),
     ]
 

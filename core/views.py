@@ -1614,14 +1614,17 @@ class VehicleTypeViewSet(viewsets.ModelViewSet):
     ordering_fields = ['name', 'capacity', 'base_rate']
 
     def get_queryset(self):
-        from django.db.models import Q
+        from django.db.models import Q, Count
         user = self.request.user
         if not user.is_authenticated:
             return VehicleType.objects.none()
         if user.is_superuser:
-            return VehicleType.objects.all()
-        return VehicleType.objects.filter(
-            Q(company=None) | Q(company=user.company)
+            qs = VehicleType.objects.all()
+        else:
+            qs = VehicleType.objects.filter(Q(company=None) | Q(company=user.company))
+        # Annotate count of AVAILABLE vehicles per type (read by the serializer)
+        return qs.annotate(
+            avail_count=Count('vehicles', filter=Q(vehicles__status='AVAILABLE'))
         )
 
     def perform_create(self, serializer):
@@ -1653,7 +1656,11 @@ class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     def perform_create(self, serializer):
         # Creation notification is raised by the Load post_save signal
         # (notify_company), which covers all creation paths, not just this view.
-        serializer.save(created_by=self.request.user)
+        # company must be set explicitly: this override replaces
+        # CompanyFilterMixin.perform_create, which would otherwise have set it —
+        # without it loads are created with company=NULL and vanish from
+        # company-scoped queries.
+        serializer.save(created_by=self.request.user, company=self.request.user.company)
 
     @action(detail=True, methods=['patch'])
     def update_status(self, request, pk=None):
@@ -1983,9 +1990,24 @@ class PublicQuoteView(APIView):
                     status=status.HTTP_404_NOT_FOUND
                 )
 
+            # Customer-facing branding — the freight company's own name/logo
+            company = quote.company
+            company_logo_url = None
+            if company and getattr(company, 'logo', None):
+                try:
+                    logo_url = company.logo.url
+                    company_logo_url = request.build_absolute_uri(logo_url)
+                except Exception:
+                    company_logo_url = None
+
+            # NOTE: Cost breakdown (base rate, fuel, tolls, driver allowance,
+            # margin) and driver details are intentionally NOT returned — the
+            # customer only ever sees route, cargo, dates and the final price.
             return Response({
                 'quote_number': quote.quote_number,
                 'customer_name': quote.customer.name if quote.customer else '',
+                'company_name': company.company_name if company else '',
+                'company_logo_url': company_logo_url,
                 'pickup_location': quote.pickup_location,
                 'delivery_location': quote.delivery_location,
                 'origin': quote.origin,
@@ -1994,24 +2016,16 @@ class PublicQuoteView(APIView):
                 'weight': str(quote.weight),
                 'distance': str(quote.distance) if quote.distance else None,
                 'vehicle_type': quote.vehicle_type,
-                'vehicle_display': (
-                    f"{quote.vehicle.make} {quote.vehicle.model} ({quote.vehicle.plate})"
-                    if quote.vehicle else None
-                ),
-                'driver_display': (
-                    (f"{quote.driver.user.first_name} {quote.driver.user.last_name}".strip()
-                     or quote.driver.user.username)
-                    if quote.driver else None
-                ),
-                'base_rate': str(quote.base_rate),
-                'fuel_surcharge': str(quote.fuel_surcharge),
-                'toll_charges': str(quote.toll_charges),
-                'driver_allowance': str(quote.driver_allowance),
-                'additional_charges': str(quote.additional_charges),
+                'pickup_date': str(quote.pickup_date) if quote.pickup_date else None,
+                'delivery_date': str(quote.delivery_date) if quote.delivery_date else None,
                 'total_amount': str(quote.total_amount),
                 'valid_until': str(quote.valid_until),
                 'status': quote.status,
                 'sla_hours': quote.sla_hours,
+                'trip_type': quote.trip_type,
+                'return_location': quote.return_location,
+                'return_cargo': quote.return_cargo,
+                'return_date': str(quote.return_date) if quote.return_date else None,
             })
         except Quote.DoesNotExist:
             return Response(
@@ -2110,6 +2124,12 @@ class PublicInvoiceView(APIView):
 
         company = invoice.company
         contact = company.contact if company and company.contact else {}
+        company_logo_url = None
+        if company and getattr(company, 'logo', None):
+            try:
+                company_logo_url = request.build_absolute_uri(company.logo.url)
+            except Exception:
+                company_logo_url = None
 
         return Response({
             'invoice_number': invoice.invoice_number,
@@ -2127,6 +2147,7 @@ class PublicInvoiceView(APIView):
             'line_items': invoice.line_items or [],
             'description': getattr(invoice, 'description', '') or '',
             'company_name': company.company_name if company else 'TruckWys',
+            'company_logo_url': company_logo_url,
             'company_phone': contact.get('phone', ''),
             'company_email': contact.get('email', ''),
             'company_address': contact.get('address', ''),

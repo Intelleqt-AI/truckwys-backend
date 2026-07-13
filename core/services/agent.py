@@ -79,8 +79,12 @@ def _money(v) -> float:
         return 0.0
 
 
-def build_agent_context(company) -> dict:
-    """Assemble a compact, real snapshot of the company for grounding the agent."""
+def build_agent_context(company, user=None) -> dict:
+    """Assemble a compact, real snapshot of the company for grounding the agent.
+
+    When a user is given, snapshot sections are stripped to what their role may
+    read (mirrors the copilot entity permissions) so e.g. a VIEWER never gets
+    invoice balances or banking details in the prompt."""
     from core.models import Invoice, Quote, Vehicle, Customer, Driver
 
     today = timezone.now().date()
@@ -193,7 +197,7 @@ def build_agent_context(company) -> dict:
     contact_json = getattr(company, 'contact', {}) or {}
     banking = contact_json.get('banking', {})
 
-    return {
+    ctx = {
         "company_name": getattr(company, "company_name", "Your company"),
         "currency": "ZAR (R)",
         "today": today.isoformat(),
@@ -225,6 +229,22 @@ def build_agent_context(company) -> dict:
         "drivers": drivers,
         "banking": banking,
     }
+
+    if user is not None and not getattr(user, 'is_superuser', False):
+        from core.services.copilot_entities import role_can
+        if not role_can(user, 'invoices', 'read'):
+            for key in ('invoices', 'capital', 'billing_audit',
+                        'top_customers_by_outstanding', 'banking'):
+                ctx.pop(key, None)
+        if not role_can(user, 'drivers', 'read'):
+            ctx.pop('drivers', None)
+        if not role_can(user, 'customers', 'read'):
+            ctx.pop('contacts', None)
+        if not role_can(user, 'quotes', 'read'):
+            ctx.pop('quotes', None)
+        if not role_can(user, 'vehicles', 'read'):
+            ctx.pop('fleet', None)
+    return ctx
 
 
 def _capital_summary(company):
@@ -508,38 +528,116 @@ def _llm_generate(system: str, convo: list) -> str:
     return ""
 
 
-# Appended to the system prompt when the agent is allowed to create quotes.
-QUOTE_TOOL_SYSTEM = (
-    "\n\nYOU CAN CREATE FREIGHT QUOTES. When the user wants a quote, collect: customer name, pickup "
-    "location, delivery location, cargo description, weight, and (optionally) vehicle type. You must NEVER "
-    "decide or invent the price — always ASK the user what price to quote. Only once you have the customer, "
-    "pickup, delivery, cargo, weight, AND a price the user has explicitly given, call the create_quote tool. "
-    "A new customer is created automatically. After the tool returns, tell the user the new quote number and "
-    "total in one short sentence. Do not call the tool before you have a user-provided price."
+_TITLE_SYSTEM = (
+    "Summarize the user's message as a short chat title: 3-6 words, Title Case, no quotes, "
+    "no trailing punctuation, no generic filler like 'Chat' or 'Conversation'. Reply with ONLY the title."
 )
 
 
-def _openai_tool_loop(system: str, convo: list, company, user):
-    """OpenAI function-calling loop exposing the create_quote tool.
+def generate_conversation_title(text: str) -> str:
+    """A short, human-readable title for a new conversation, from its first message.
+    Never raises — falls back to a truncated/cleaned version of the text itself."""
+    fallback = ' '.join((text or '').strip().split())[:60] or 'New conversation'
+    if not _llm_enabled():
+        return fallback
+    try:
+        title = _llm_generate(_TITLE_SYSTEM, [{"role": "user", "content": text[:500]}])
+        title = title.strip().strip('"\'').split('\n')[0].rstrip('.!, ')
+        return title[:60] if title else fallback
+    except Exception as exc:
+        logger.warning("conversation title generation failed, using fallback: %s", exc)
+        return fallback
 
-    Returns (reply_text, created_quote_or_None). The caller wraps this in try/except
+
+def _capability_block(user) -> str:
+    """Role-aware description of the copilot's database tools for the system prompt."""
+    from core.services import copilot_entities as entities
+
+    read_tables = entities.allowed_tables(user, 'read')
+    create_tables = entities.allowed_tables(user, 'create')
+    update_tables = entities.allowed_tables(user, 'update')
+    delete_tables = entities.allowed_tables(user, 'delete')
+    role = (getattr(user, 'role', '') or 'user').upper()
+
+    parts = [
+        "\n\nDATA TOOLS: Use query_records to answer from the database precisely — lists, "
+        f"lookups, counts and sums the snapshot lacks. Readable tables: {', '.join(read_tables)}. "
+        "Never invent ids or figures; if a query errors, read the error and adjust.",
+        "\nSCHEMA REFERENCE (fields you may set; * = required to create; [rcud] = your "
+        "read/create/update/delete rights):\n" + entities.build_schema_reference(user),
+    ]
+    if create_tables or update_tables or delete_tables:
+        parts.append(
+            "\nWRITE RULES: Prepare writes with propose_create"
+            + (f" ({', '.join(create_tables)})" if create_tables else "")
+            + ", propose_update"
+            + (f" ({', '.join(update_tables)})" if update_tables else "")
+            + " and propose_delete"
+            + (f" ({', '.join(delete_tables)})" if delete_tables else "")
+            + ". A proposal is NOT saved until the user confirms the card shown in the UI. "
+            "After a propose tool succeeds, tell the user to review and confirm the card — NEVER say "
+            "a record was saved, changed or deleted. One proposal per message. "
+            "\nGUIDED ENTRY: To create a record, collect the required fields by asking ONE question at a "
+            "time in the schema order (accept several answers at once when the user volunteers them). "
+            "Prices, rates and amounts must always come from the user — never compute or guess them. "
+            "Resolve references (customer/driver/vehicle/invoice) by name with query_records first; when "
+            "several match, list the candidates and ask which one. "
+            f"\nIf asked to change a table your tools don't cover, say plainly that the {role} role "
+            "doesn't permit it and suggest asking an admin."
+        )
+    else:
+        parts.append(
+            f"\nYou are read-only for this user (role {role}): suggest what they should do in the app, "
+            "but never claim to have changed anything."
+        )
+
+    if entities.can_send_email(user):
+        parts.append(
+            "\nEMAIL: You can send an email to a known Customer or Driver contact via "
+            "propose_send_email. NEVER invent or accept an email address from the user — always "
+            "resolve the recipient by name with query_records('customers'|'drivers', ...) first, "
+            "then pass recipient_type + recipient_id. Before drafting a reminder, follow-up, or "
+            "analysis email (e.g. about overdue invoices or payment history), first research the "
+            "relevant context with query_records (invoices/payments/loads) and summarize what you "
+            "found in analysis_summary so the user sees why you wrote what you wrote. Keep the email "
+            "professional, concise (under ~200 words), and specific to the real data — never invent "
+            "figures. The `body` must be ONLY the message content — do NOT include a greeting line "
+            "(e.g. 'Dear X,' / 'Hi X,') or a sign-off/closing (e.g. 'Regards,' / 'Best regards,' / "
+            "'Sincerely,'), since the email template already adds a greeting at the top and a signature "
+            "at the bottom automatically — including your own would duplicate them. "
+            "propose_send_email only drafts the email for confirmation — after calling it, "
+            "tell the user to review and confirm the card; NEVER claim an email was sent."
+        )
+    return ''.join(parts)
+
+
+def _openai_tool_loop(system: str, convo: list, company, user, conversation=None):
+    """OpenAI function-calling loop over the copilot database tools.
+
+    Returns (reply_text, proposal_or_None). The caller wraps this in try/except
     so any failure degrades to the rules reply.
     """
-    from core.services import quote_agent
+    from core.services.copilot_entities import build_tool_schemas
+    from core.services.copilot_tools import TOOL_HANDLERS
+
+    tools = build_tool_schemas(user)
+    if not tools:
+        return _llm_generate(system, convo), None
+
     client = OpenAI(api_key=_openai_key())
     messages = [{"role": "system", "content": system}, *convo]
-    created_quote = None
-    for _ in range(4):  # cap the tool loop
+    proposal_id = None
+    for _ in range(6):  # cap the tool loop (query rounds + one propose)
         response = client.chat.completions.create(
             model=OPENAI_CHAT_MODEL,
             max_tokens=700,
             temperature=0,
-            tools=[quote_agent.CREATE_QUOTE_TOOL],
+            tools=tools,
             messages=messages,
         )
         msg = response.choices[0].message
         if not getattr(msg, "tool_calls", None):
-            return (msg.content or "").strip(), created_quote
+            return (msg.content or "").strip(), _load_proposal(proposal_id)
         # Echo the assistant's tool-call request, then answer each call.
         messages.append({
             "role": "assistant",
@@ -551,39 +649,49 @@ def _openai_tool_loop(system: str, convo: list, company, user):
             ],
         })
         for tc in msg.tool_calls:
-            if tc.function.name == "create_quote":
-                if created_quote:
-                    # Idempotent within a turn: never create a second quote — return the
-                    # one already made so the model can confirm without duplicating.
-                    result = created_quote
-                else:
-                    try:
-                        args = json.loads(tc.function.arguments or "{}")
-                        result = quote_agent.create_quote(company, user, **args)
-                        created_quote = result
-                    except Exception as exc:  # surface a tool error back to the model
-                        result = {"error": str(exc)}
-            else:
+            handler = TOOL_HANDLERS.get(tc.function.name)
+            if handler is None:
                 result = {"error": f"unknown tool {tc.function.name}"}
+            else:
+                try:
+                    args = json.loads(tc.function.arguments or "{}")
+                except ValueError:
+                    args = {}
+                try:
+                    result = handler(company, user, conversation, args)
+                except Exception as exc:  # surface a tool error back to the model
+                    logger.exception("copilot tool %s failed", tc.function.name)
+                    result = {"error": str(exc)}
+                if isinstance(result, dict) and result.get('proposal_id') and proposal_id is None:
+                    proposal_id = result['proposal_id']
             messages.append({"role": "tool", "tool_call_id": tc.id,
                              "content": json.dumps(result, default=str)})
-    if created_quote:
-        return (f"Created quote {created_quote['quote_number']} "
-                f"(R{created_quote['total_amount']:,.2f}) for {created_quote['customer_name']}."), created_quote
-    return "Tell me the remaining details and I'll create the quote.", created_quote
+    if proposal_id:
+        return ("I've prepared it — please review and confirm the card above.",
+                _load_proposal(proposal_id))
+    return "Tell me the remaining details and I'll prepare it for your confirmation.", None
 
 
-def agent_respond(company, messages: list, *, query: str = None, user=None, enable_tools: bool = False) -> dict:
-    """Return {reply, source, ai_available, actions, proposed_action, ...}. Never raises.
+def _load_proposal(proposal_id):
+    if not proposal_id:
+        return None
+    from core.models import CopilotProposal
+    return CopilotProposal.objects.filter(id=proposal_id).first()
+
+
+def agent_respond(company, messages: list, *, query: str = None, user=None,
+                  enable_tools: bool = False, conversation=None) -> dict:
+    """Return {reply, source, ai_available, actions, proposed_action, proposal?, ...}. Never raises.
 
     messages: [{"role": "user"|"assistant", "content": str}, ...]
     query: the current user question to retrieve account records for (RAG). Falls back
         to the last user message when omitted.
-    user: the acting user (required for write actions like creating a quote).
-    enable_tools: when True (and the OpenAI provider is active), the agent can CREATE
-        quotes via function-calling. Read-only callers leave this False.
+    user: the acting user (required for database tools — permissions come from their role).
+    enable_tools: when True (and the OpenAI provider is active), the agent can query the
+        database and prepare confirm-first create/update/delete proposals.
+    conversation: the CopilotConversation the turn belongs to (proposals attach to it).
     """
-    ctx = build_agent_context(company)
+    ctx = build_agent_context(company, user=user)
     last_user = next((m.get("content", "") for m in reversed(messages or []) if m.get("role") == "user"), "")
     rag_query = query if query is not None else last_user
     actions = _suggest_actions(last_user)
@@ -598,43 +706,61 @@ def agent_respond(company, messages: list, *, query: str = None, user=None, enab
             "proposed_action": proposed_action,
         }
 
-    tools_on = bool(enable_tools and _provider() == "openai")
+    tools_on = bool(enable_tools and user is not None and _provider() == "openai")
 
     try:
-        readonly_clause = (
-            "You can CREATE freight quotes for the user via the quote tool below; apart from that you are "
-            "read-only and must never claim to have changed other data."
-            if tools_on else
-            "You are read-only: suggest what the user should do, but never claim to have changed anything."
+        if tools_on:
+            capability_clause = _capability_block(user)
+        elif enable_tools and user is not None:
+            capability_clause = (
+                " Database write tools are unavailable right now (the OpenAI provider is not "
+                "configured) — you are read-only: suggest what the user should do, but never "
+                "claim to have changed anything."
+            )
+        else:
+            capability_clause = (
+                " You are read-only: suggest what the user should do, but never claim to have "
+                "changed anything."
+            )
+
+        # RAG retrieval surfaces invoice records — only for roles that may read them.
+        rag_block = ''
+        if user is None or ctx.get('invoices') is not None:
+            rag_block = _retrieved_block(company, rag_query)
+
+        user_name = (getattr(user, 'first_name', '') or '').strip() if user is not None else ''
+        name_clause = (
+            f"\n\nThe user you are talking to is named {user_name}. Address them naturally by "
+            "first name occasionally — e.g. in a greeting or when wrapping up — not in every reply."
+            if user_name else ""
         )
+
         system = (
             "You are the TruckWys copilot — an AI agent for a South African road-freight operator. "
             "TruckWys is a fleet finance/data/AI platform (quotes, bookings, invoicing, and a Capital "
             "fast-pay/factoring product). Answer concisely and practically, grounded ONLY in the JSON "
-            "company snapshot and the retrieved invoice records provided — never invent figures. Use "
-            "ZAR (R). When a number isn't in the snapshot or retrieved records, say you don't have it "
-            "rather than guessing. Quote amounts and dates EXACTLY as they appear — do not add VAT, "
-            "interest, or any derived calculation unless the user explicitly asks. A PAID invoice is "
-            "settled (balance 0) and is never overdue. "
-            "The snapshot includes: invoices, quotes (with individual line items in quotes.recent), "
-            "fleet, capital/fast-pay, billing audit, customer contacts (contacts[]), driver details "
-            "(drivers[]), and company banking info (banking{}). Use these to answer questions about "
-            "specific customers, routes, drivers, or bank details when asked. " + readonly_clause + " Keep replies under ~120 words."
-            + (QUOTE_TOOL_SYSTEM if tools_on else "")
+            "company snapshot, the retrieved records, and your database tool results — never invent "
+            "figures. Use ZAR (R). When a number isn't available, say you don't have it rather than "
+            "guessing. Quote amounts and dates EXACTLY as they appear — do not add VAT, interest, or "
+            "any derived calculation unless the user explicitly asks. A PAID invoice is settled "
+            "(balance 0) and is never overdue. Format tabular answers as markdown tables. "
+            "Keep replies under ~120 words."
+            + capability_clause
+            + name_clause
             + f"\n\nCompany snapshot:\n{json.dumps(ctx, default=str)}"
-            + f"{_retrieved_block(company, rag_query)}"
+            + rag_block
         )
         convo = [
             {"role": m["role"], "content": str(m.get("content", ""))}
             for m in (messages or [])
             if m.get("role") in ("user", "assistant") and m.get("content")
-        ][-12:]
+        ][-30:]
         if not convo:
             convo = [{"role": "user", "content": "Give me a quick status of my business."}]
 
-        created_quote = None
+        proposal = None
         if tools_on:
-            reply, created_quote = _openai_tool_loop(system, convo, company, user)
+            reply, proposal = _openai_tool_loop(system, convo, company, user, conversation)
         else:
             reply = _llm_generate(system, convo)
 
@@ -646,12 +772,9 @@ def agent_respond(company, messages: list, *, query: str = None, user=None, enab
             "actions": list(actions),
             "proposed_action": proposed_action,
         }
-        if created_quote and created_quote.get("quote_id"):
-            result["created_quote"] = created_quote
-            result["actions"] = [{
-                "label": f"Open quote {created_quote['quote_number']}",
-                "route": f"/quotes/{created_quote['quote_id']}",
-            }] + list(actions)
+        if proposal is not None:
+            from core.services.copilot_tools import proposal_public
+            result["proposal"] = proposal_public(proposal)
         return result
     except Exception as exc:
         logger.warning("agent LLM failed, using fallback: %s", exc)

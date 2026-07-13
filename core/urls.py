@@ -32,7 +32,7 @@ from .views_finance import (
 )
 from .views_capital import (
     FacilityViewSet, RiskScoreViewSet, AdvanceRequestViewSet,
-    CapitalDashboardViewSet, CapitalEligibleInvoicesView
+    CapitalDashboardViewSet, CapitalEligibleInvoicesView, CustomerRiskProfileView
 )
 from .views_partner import (
     PartnerAdvanceViewSet, PartnerOperatorViewSet, PartnerRiskScoreViewSet
@@ -65,7 +65,7 @@ from .views_risk_api import (
 from .views_invite import (
     InviteCreateView, InviteValidateView, InviteAcceptView
 )
-from .views_ai_insights import DashboardBriefingView, RiskScoreExplainView, AgentChatView, CopilotConversationsView, CopilotConversationDetailView, ConversationChatView
+from .views_ai_insights import DashboardBriefingView, RiskScoreExplainView, AgentChatView, CopilotConversationsView, CopilotConversationDetailView, ConversationChatView, ProposalExecuteView, ProposalDismissView
 from .views_quote_optimize import AIPriceOptimizeView
 from .views_risk_score_api import RiskUnderwriteView
 
@@ -164,6 +164,8 @@ urlpatterns = [
     path('agent/conversations/', CopilotConversationsView.as_view(), name='agent-conversations'),
     path('agent/conversations/<int:pk>/', CopilotConversationDetailView.as_view(), name='agent-conversation-detail'),
     path('agent/conversations/<int:pk>/chat/', ConversationChatView.as_view(), name='agent-conversation-chat'),
+    path('agent/proposals/<int:pk>/execute/', ProposalExecuteView.as_view(), name='agent-proposal-execute'),
+    path('agent/proposals/<int:pk>/dismiss/', ProposalDismissView.as_view(), name='agent-proposal-dismiss'),
     path('quotes/optimize/', AIPriceOptimizeView.as_view(), name='quote-optimize'),
     path('quotes/analyze/', AIQuoteAnalyzeView.as_view(), name='quote-analyze'),
     path('risk/underwrite/', RiskUnderwriteView.as_view(), name='risk-underwrite'),
@@ -236,6 +238,7 @@ urlpatterns = [
 
     # Capital eligible invoices for operators (Sprint A4)
     path('capital/eligible/', CapitalEligibleInvoicesView.as_view(), name='capital-eligible'),
+    path('customers/<int:pk>/risk-profile/', CustomerRiskProfileView.as_view(), name='customer-risk-profile'),
 
     # Fleet Management API endpoints (outbound + inbound webhooks)
     path('fleet/trips/sync/', FleetTripSyncAPIView.as_view(), name='fleet-trip-sync'),

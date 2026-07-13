@@ -173,6 +173,10 @@ class VehicleSerializer(serializers.ModelSerializer):
 
 # VehicleType Serializer
 class VehicleTypeSerializer(serializers.ModelSerializer):
+    # Number of AVAILABLE vehicles of this type — used to hide types the
+    # company can't actually fulfil when creating a quote.
+    available_vehicle_count = serializers.SerializerMethodField()
+
     class Meta:
         model = VehicleType
         fields = '__all__'
@@ -183,6 +187,17 @@ class VehicleTypeSerializer(serializers.ModelSerializer):
             'max_distance': {'required': False, 'default': 0},
             'base_rate': {'required': False, 'default': 0},
         }
+
+    def get_available_vehicle_count(self, obj):
+        # Prefer the annotated value (set in VehicleTypeViewSet.get_queryset) to
+        # avoid an N+1; fall back to a direct count for un-annotated instances.
+        val = getattr(obj, 'avail_count', None)
+        if val is not None:
+            return val
+        try:
+            return obj.vehicles.filter(status='AVAILABLE').count()
+        except Exception:
+            return 0
 
 
 # VehicleLog Serializer
