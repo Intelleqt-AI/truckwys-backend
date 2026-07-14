@@ -482,3 +482,45 @@ def refresh_fuel_price(self):
     except Exception as exc:
         logger.exception('refresh_fuel_price unexpected error: %s', exc)
         raise self.retry(exc=exc)
+
+
+# ---------------------------------------------------------------------------
+# Win-probability model retraining (Celery Beat — nightly)
+# ---------------------------------------------------------------------------
+
+@shared_task(name='core.tasks.retrain_win_model')
+def retrain_win_model():
+    """Nightly retrain of the quote win-probability model from captured
+    QuoteOutcome data. Idempotent: no-ops with a clear reason until enough
+    outcomes exist (WIN_MODEL_MIN_SAMPLES)."""
+    from core.services.quote_training import retrain_win_model as _retrain
+    result = _retrain()
+    if result.get('trained'):
+        logger.info(
+            'Win model retrained on %s outcomes (accuracy=%s, auc=%s)',
+            result.get('samples'), result.get('accuracy'), result.get('auc'),
+        )
+    else:
+        logger.info('Win model not retrained: %s', result.get('reason'))
+    return result
+
+
+@shared_task(name='core.tasks.reindex_copilot_rag')
+def reindex_copilot_rag():
+    """Refresh the Copilot RAG invoice embeddings for every company off the chat
+    request path. Incremental: index_company_invoices skips unchanged invoices
+    (source_hash), so this is cheap between real changes. No-ops when RAG is
+    disabled (OPENAI_API_KEY / openai / numpy missing)."""
+    from core.models import Company
+    from core.services import rag
+    if not rag.rag_enabled():
+        logger.info('Copilot RAG reindex skipped: RAG not enabled.')
+        return {'indexed': 0, 'enabled': False}
+    total = 0
+    for company in Company.objects.all():
+        try:
+            total += rag.index_company_invoices(company)
+        except Exception:
+            logger.exception('Copilot RAG reindex failed for company %s', company.id)
+    logger.info('Copilot RAG reindex complete: %s invoice embeddings written.', total)
+    return {'indexed': total, 'enabled': True}

@@ -569,17 +569,31 @@ class IsAdmin(IsAuthenticated):
 def resolve_user_company(user):
     """Return the user's own Company, creating+binding one if they have none yet
     (legacy/seed accounts). This replaces the old global Company id=1 singleton so
-    each tenant reads/writes ONLY their own company record."""
+    each tenant reads/writes ONLY their own company record.
+
+    Race-safe: several requests from a company-less user can land concurrently
+    (e.g. the New Quote page fires model-stats + profile on mount), so the
+    create path locks the user row — losers return the winner's company instead
+    of each creating an orphan."""
     company = getattr(user, 'company', None)
     if company:
         return company
-    company = Company.objects.create(
-        company_name=f"{(user.first_name or user.username)}'s Company",
-        address={},
-        contact={},
-    )
-    user.company = company
-    user.save(update_fields=['company'])
+
+    from django.db import transaction
+    with transaction.atomic():
+        locked = type(user).objects.select_for_update().get(pk=user.pk)
+        if locked.company_id:
+            user.company = locked.company
+            return locked.company
+        company = Company.objects.create(
+            company_name=f"{(user.first_name or user.username)}'s Company",
+            address={},
+            contact={},
+        )
+        locked.company = company
+        locked.save(update_fields=['company'])
+        user.company = company
+
     from core.services.company_setup import seed_default_vehicle_types
     seed_default_vehicle_types(company)
     return company
@@ -1862,6 +1876,16 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         
         quote.status = new_status
         quote.save()
+
+        # Status changes that decide the quote are ML training labels too.
+        if new_status in ('ACCEPTED', 'IT', 'DECLINED'):
+            from core.services.quote_outcome_capture import record_quote_outcome
+            record_quote_outcome(
+                quote,
+                'accepted' if new_status in ('ACCEPTED', 'IT') else 'rejected',
+                rejection_reason=str(request.data.get('rejection_reason') or ''),
+            )
+
         if new_status in ('ACCEPTED', 'IT'):
             try:
                 from core.services.notify import notify_company
@@ -1927,6 +1951,11 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         # Update quote status to In-Transit
         quote.status = 'IT'
         quote.save()
+
+        # Converting to a load IS a win — capture the ML label (idempotent:
+        # no-ops when the quote was already recorded as accepted).
+        from core.services.quote_outcome_capture import record_quote_outcome
+        record_quote_outcome(quote, 'accepted')
 
         serializer = LoadSerializer(load)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
@@ -2048,7 +2077,9 @@ class PublicQuoteRespondView(APIView):
                     status=status.HTTP_404_NOT_FOUND
                 )
 
-            if quote.status in ['ACCEPTED', 'DECLINED']:
+            # IT/COMPLETED are decided too — a stale link must never re-decide
+            # a quote that is already being executed.
+            if quote.status in ['ACCEPTED', 'DECLINED', 'IT', 'COMPLETED']:
                 return Response(
                     {
                         'error': 'This quote has already been responded to',
@@ -2070,6 +2101,11 @@ class PublicQuoteRespondView(APIView):
                 quote.save()
                 # TODO: Optionally auto-create load here
 
+                # Customer-link decisions are the cleanest ML training labels —
+                # record them (never blocks the acceptance).
+                from core.services.quote_outcome_capture import record_quote_outcome
+                record_quote_outcome(quote, 'accepted')
+
                 # Confirmation email with quote PDF — must never block the acceptance
                 try:
                     from core.services.email_service import send_quote_accepted_email
@@ -2090,6 +2126,11 @@ class PublicQuoteRespondView(APIView):
             else:  # decline
                 quote.status = 'DECLINED'
                 quote.save()
+                from core.services.quote_outcome_capture import record_quote_outcome
+                record_quote_outcome(
+                    quote, 'rejected',
+                    rejection_reason=str(request.data.get('reason') or 'Declined via client link'),
+                )
                 return Response({
                     'message': 'Quote declined',
                     'status': quote.status

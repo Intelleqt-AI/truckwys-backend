@@ -153,7 +153,11 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 LANGUAGE_CODE = 'en-us'
-TIME_ZONE = 'UTC'
+# South African operator: use SAST so "today", overdue math and reporting windows
+# roll over at local midnight, not 02:00 SAST (which UTC caused). Storage stays
+# UTC (USE_TZ=True); this only sets the app's local reference time. Matches
+# CELERY_TIMEZONE below.
+TIME_ZONE = config('TIME_ZONE', default='Africa/Johannesburg')
 USE_I18N = True
 USE_TZ = True
 
@@ -197,6 +201,9 @@ REST_FRAMEWORK = {
         'otp_verify': '10/minute',  # 2FA code verification (per-challenge cap of 5 also applies)
         'otp_resend': '3/minute',   # 2FA code resend (plus a per-challenge 60s cooldown)
         'lender': '120/minute',  # Per-API-key cap for the lender API
+        # Copilot chat is far more expensive than a normal API call (LLM + RAG +
+        # snapshot). A tighter per-user cap prevents runaway OpenAI spend.
+        'copilot': config('COPILOT_THROTTLE_RATE', default='15/minute'),
     }
 }
 
@@ -338,5 +345,18 @@ CELERY_BEAT_SCHEDULE = {
     'refresh-fuel-price': {
         'task': 'core.tasks.refresh_fuel_price',
         'schedule': crontab(hour='6', minute='0'),
+    },
+    # Retrain the quote win-probability model nightly at 03:00 SAST.
+    # Idempotent — no-ops until WIN_MODEL_MIN_SAMPLES outcomes exist.
+    'retrain-win-model': {
+        'task': 'core.tasks.retrain_win_model',
+        'schedule': crontab(hour='3', minute='0'),
+    },
+    # Rebuild the Copilot RAG invoice embeddings for every company every 15 min so
+    # retrieval stays fresh WITHOUT indexing on the chat request path. Incremental:
+    # skips unchanged invoices (source_hash), so it's cheap between real changes.
+    'reindex-copilot-rag': {
+        'task': 'core.tasks.reindex_copilot_rag',
+        'schedule': crontab(minute='*/15'),
     },
 }

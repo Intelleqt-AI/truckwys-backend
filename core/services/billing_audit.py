@@ -72,8 +72,10 @@ def audit_billing(company, underbill_tolerance: float = 1.0) -> dict:
                     })
 
             # Short-paid / outstanding: balance still owed on a sent/overdue invoice.
+            # NOTE: the model status is 'PARTIALLY_PAID' (not 'PARTIAL') — using the
+            # wrong value silently dropped every partially-paid invoice from the audit.
             balance = _f(inv.balance)
-            if balance > 0 and inv.status in ('SENT', 'VIEWED', 'OVERDUE', 'PARTIAL'):
+            if balance > 0 and inv.status in ('SENT', 'VIEWED', 'OVERDUE', 'PARTIALLY_PAID', 'DISPUTED'):
                 days_overdue = (today - inv.due_date).days if inv.due_date else 0
                 shortpaid.append({
                     'invoice_id': inv.id,

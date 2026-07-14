@@ -33,6 +33,11 @@ AGENT_MODEL = os.environ.get("CLAUDE_AGENT_MODEL", "claude-opus-4-8")
 OPENAI_CHAT_MODEL = (
     os.environ.get("OPENAI_CHAT_MODEL") or getattr(settings, "OPENAI_CHAT_MODEL", "") or "gpt-4o"
 )
+# Hard wall-clock cap per LLM call so a slow/hung provider can't pin a worker
+# indefinitely (the OpenAI SDK default is 600s). One retry keeps transient blips
+# from failing the turn while still bounding total wait.
+LLM_TIMEOUT_SECONDS = float(os.environ.get("COPILOT_LLM_TIMEOUT", "30") or 30)
+LLM_MAX_RETRIES = 1
 
 
 def _anthropic_key() -> str:
@@ -72,6 +77,33 @@ def _llm_enabled() -> bool:
     return bool(_provider())
 
 
+_TOOLS_DISABLED_WARNED = False
+
+
+def _warn_tools_disabled_once() -> None:
+    """Copilot database tools (query/create/update/delete/email + guided entry)
+    only run under the OpenAI provider. If a deployment sets ANTHROPIC_API_KEY,
+    _provider() 'auto' silently switches to Anthropic and ALL tools go dark with
+    no user-visible error. Log this loudly once per process so operators can spot
+    the misconfiguration (fix: set COPILOT_LLM_PROVIDER=openai + OPENAI_API_KEY)."""
+    global _TOOLS_DISABLED_WARNED
+    if _TOOLS_DISABLED_WARNED:
+        return
+    _TOOLS_DISABLED_WARNED = True
+    logger.warning(
+        "Copilot tools requested but the active provider is %r, not 'openai' — "
+        "database tools/proposals/guided-entry are DISABLED. Set "
+        "COPILOT_LLM_PROVIDER=openai and OPENAI_API_KEY to enable them.",
+        _provider() or 'rules',
+    )
+
+
+# Invoice statuses that are NOT collectable receivables and must be excluded from
+# "outstanding"/"overdue"/top-debtor math: PAID (settled), CANCELLED (void),
+# DRAFT (never issued). Mirrors customer_risk._EXCLUDED_STATUSES + PAID.
+_NON_OUTSTANDING = ('PAID', 'CANCELLED', 'DRAFT')
+
+
 def _money(v) -> float:
     try:
         return round(float(v or 0), 2)
@@ -90,10 +122,17 @@ def build_agent_context(company, user=None) -> dict:
     today = timezone.now().date()
 
     invoices = Invoice.objects.filter(company=company)
-    outstanding = invoices.exclude(status='PAID').aggregate(s=Sum('balance'))['s'] or Decimal('0')
-    overdue_qs = invoices.filter(due_date__lt=today).exclude(status='PAID')
+    # Only real receivables count as money owed: PAID is settled, CANCELLED is
+    # void, and DRAFT was never issued — including any of them overstates what the
+    # company is owed and can make the copilot chase invoices that don't exist.
+    outstanding_qs = invoices.exclude(status__in=_NON_OUTSTANDING)
+    outstanding = outstanding_qs.aggregate(s=Sum('balance'))['s'] or Decimal('0')
+    overdue_qs = outstanding_qs.filter(due_date__lt=today)
     overdue = overdue_qs.aggregate(s=Sum('balance'))['s'] or Decimal('0')
-    collected = invoices.filter(status='PAID').aggregate(s=Sum('total_amount'))['s'] or Decimal('0')
+    # Cash collected = every rand actually received, including partial payments,
+    # not just fully-PAID invoices' face value.
+    collected = (invoices.exclude(status='CANCELLED')
+                 .aggregate(s=Sum('paid_amount'))['s'] or Decimal('0'))
 
     quotes = Quote.objects.filter(company=company)
     quote_counts = {row['status']: row['n'] for row in quotes.values('status').annotate(n=Count('id'))}
@@ -125,15 +164,23 @@ def build_agent_context(company, user=None) -> dict:
         for inv in overdue_qs.select_related('customer').order_by('due_date')[:5]
     ]
 
+    # Biggest debtors in a SINGLE grouped query over ALL customers — the old
+    # code sliced the first 50 customers alphabetically and sorted AFTER, so the
+    # true top debtor was silently dropped for any company with >50 customers
+    # (and it cost one query per customer).
     top_customers = [
-        {"name": c.name, "outstanding": _money(
-            invoices.filter(customer=c).exclude(status='PAID').aggregate(s=Sum('balance'))['s'] or 0
-        )}
-        for c in Customer.objects.filter(company=company)[:50]
+        {"name": row['customer__name'] or "—", "outstanding": _money(row['outstanding'])}
+        for row in (outstanding_qs.values('customer__name')
+                    .annotate(outstanding=Sum('balance'))
+                    .order_by('-outstanding')[:5])
+        if row['outstanding']
     ]
-    top_customers = sorted(top_customers, key=lambda x: x['outstanding'], reverse=True)[:5]
 
-    # Contact information — all customers with their contact details
+    # Contact information — first 100 customers by name (a sample, NOT the full
+    # book; customers_total below tells the model the real count so it never
+    # states the capped list length as a total).
+    customers_qs = Customer.objects.filter(company=company)
+    customers_total = customers_qs.count()
     contacts = [
         {
             "name": c.name,
@@ -145,7 +192,7 @@ def build_agent_context(company, user=None) -> dict:
             "credit_limit": _money(c.credit_limit) if c.credit_limit else None,
             "status": "active" if c.is_active else "inactive",
         }
-        for c in Customer.objects.filter(company=company).order_by('name')[:100]
+        for c in customers_qs.order_by('name')[:100]
     ]
 
     # Recent quote line items — last 25 quotes with full route and pricing detail
@@ -225,6 +272,7 @@ def build_agent_context(company, user=None) -> dict:
         },
         "billing_audit": billing,
         "top_customers_by_outstanding": top_customers,
+        "customers_total": customers_total,
         "contacts": contacts,
         "drivers": drivers,
         "banking": banking,
@@ -240,6 +288,7 @@ def build_agent_context(company, user=None) -> dict:
             ctx.pop('drivers', None)
         if not role_can(user, 'customers', 'read'):
             ctx.pop('contacts', None)
+            ctx.pop('customers_total', None)
         if not role_can(user, 'quotes', 'read'):
             ctx.pop('quotes', None)
         if not role_can(user, 'vehicles', 'read'):
@@ -248,6 +297,27 @@ def build_agent_context(company, user=None) -> dict:
 
 
 def _capital_summary(company):
+    """Eligible-invoice summary + best advanceable invoice, cached per company.
+
+    This is the most expensive part of the snapshot — it runs the RiskEngine per
+    candidate invoice (up to 25). Underwriting inputs (RiskScore) are ~24h-valid,
+    so caching the result for a few minutes bounds the cost to once per window
+    instead of once per chat message, without changing any figure the user sees."""
+    from django.core.cache import cache
+    ck = f'copilot_capital_{getattr(company, "id", "0")}'
+    cached = cache.get(ck)
+    if cached is not None:
+        return cached['count'], cached['value'], cached['top']
+    count, value, top = _capital_summary_uncached(company)
+    try:
+        cache.set(ck, {'count': count, 'value': value, 'top': top},
+                  int(os.environ.get('COPILOT_CAPITAL_TTL', '300') or 300))
+    except Exception:
+        pass
+    return count, value, top
+
+
+def _capital_summary_uncached(company):
     """Eligible-invoice summary + the single best advanceable invoice (best-effort)."""
     from core.models import Invoice, Facility
     try:
@@ -328,13 +398,16 @@ def _suggest_actions(text: str) -> list:
 # ---------------------------------------------------------------------------
 def _fallback_reply(ctx: dict, user_text: str) -> str:
     t = (user_text or "").lower().strip()
-    inv = ctx["invoices"]
-    cap = ctx["capital"]
-    fleet = ctx["fleet"]
-    quotes = ctx["quotes"]
+    # Sections may be absent when the snapshot was role-stripped (VIEWER/DRIVER).
+    # Use .get so a restricted role gets a helpful answer, never a KeyError → 500.
+    inv = ctx.get("invoices") or {}
+    cap = ctx.get("capital") or {}
+    fleet = ctx.get("fleet") or {}
+    quotes = ctx.get("quotes") or {}
+    no_access = "You don't have access to that information — ask an admin if you need it."
 
     def fmt(n):
-        return f"R{n:,.0f}"
+        return f"R{n or 0:,.0f}"
 
     if not t or any(w in t for w in ["help", "what can you", "hello", "hi ", "hey"]):
         return (
@@ -345,26 +418,32 @@ def _fallback_reply(ctx: dict, user_text: str) -> str:
         )
 
     if any(w in t for w in ["overdue", "late", "collect", "debtor"]):
-        if inv["overdue_count"]:
-            lines = [f"You have {inv['overdue_count']} overdue invoice(s) totalling {fmt(inv['overdue_total'])}."]
-            for o in inv["top_overdue"][:3]:
+        if not inv:
+            return no_access
+        if inv.get("overdue_count"):
+            lines = [f"You have {inv['overdue_count']} overdue invoice(s) totalling {fmt(inv.get('overdue_total'))}."]
+            for o in inv.get("top_overdue", [])[:3]:
                 lines.append(f"• {o['invoice']} — {o['customer']}: {fmt(o['balance'])}, {o['days_overdue']} days overdue.")
             lines.append("Chasing the oldest first usually recovers cash fastest.")
             return " ".join(lines)
         return "Good news — nothing is overdue right now."
 
-    if any(w in t for w in ["outstanding", "owed", "receivable", "cash position", "how much.*owed"]):
+    if any(w in t for w in ["outstanding", "owed", "receivable", "cash position"]):
+        if not inv:
+            return no_access
         return (
-            f"{fmt(inv['outstanding_total'])} is outstanding across {inv['count']} invoices "
-            f"({fmt(inv['overdue_total'])} overdue). {fmt(inv['revenue_collected'])} has been collected to date."
+            f"{fmt(inv.get('outstanding_total'))} is outstanding across {inv.get('count', 0)} invoices "
+            f"({fmt(inv.get('overdue_total'))} overdue). {fmt(inv.get('revenue_collected'))} has been collected to date."
         )
 
     if any(w in t for w in ["advance", "fast pay", "capital", "factor"]):
-        if cap["eligible_invoices"]:
+        if not cap:
+            return no_access
+        if cap.get("eligible_invoices"):
             top = cap.get("top_eligible")
             msg = (
                 f"{cap['eligible_invoices']} invoice(s) are eligible for fast pay right now, "
-                f"worth about {fmt(cap['eligible_value'])} in net advances."
+                f"worth about {fmt(cap.get('eligible_value'))} in net advances."
             )
             if top:
                 msg += (
@@ -375,11 +454,13 @@ def _fallback_reply(ctx: dict, user_text: str) -> str:
         return "No invoices are currently eligible for fast pay (they need a delivered load with proof of delivery)."
 
     if any(w in t for w in ["quote", "pipeline", "pricing"]):
-        by = quotes["by_status"]
+        if not quotes:
+            return no_access
+        by = quotes.get("by_status", {})
         parts = ", ".join(f"{v} {k.lower()}" for k, v in by.items()) or "none yet"
-        return f"Your pipeline has {quotes['total']} quotes ({parts}). I can open the board or start a new quote."
+        return f"Your pipeline has {quotes.get('total', 0)} quotes ({parts}). I can open the board or start a new quote."
 
-    if any(w in t for w in ["bill", "unbilled", "short pay", "short-pay", "underbilled", "recover", "owed", "uninvoiced", "audit"]):
+    if any(w in t for w in ["bill", "unbilled", "short pay", "short-pay", "underbilled", "recover", "uninvoiced", "audit"]):
         b = ctx.get("billing_audit") or {}
         rec = b.get("total_recoverable", 0)
         if not rec:
@@ -395,19 +476,25 @@ def _fallback_reply(ctx: dict, user_text: str) -> str:
                 + ". Open Invoices to bill and chase it.")
 
     if any(w in t for w in ["fleet", "vehicle", "truck"]):
-        by = fleet["by_status"]
+        if not fleet:
+            return no_access
+        by = fleet.get("by_status", {})
         parts = ", ".join(f"{v} {k.replace('_',' ').lower()}" for k, v in by.items()) or "none"
-        return f"Your fleet has {fleet['total']} vehicles ({parts})."
+        return f"Your fleet has {fleet.get('total', 0)} vehicles ({parts})."
 
     if any(w in t for w in ["driver", "drivers"]):
+        if "drivers" not in ctx:
+            return no_access
         drivers = ctx.get("drivers") or []
         if not drivers:
             return "No drivers are recorded for your company yet."
         lines = [f"You have {len(drivers)} driver(s):"]
         for d in drivers[:5]:
+            # on_time_rate is already a percentage value (e.g. 95.0) — format as
+            # a plain number with a % sign; ':.0%' would multiply by 100 → "9500%".
             lines.append(
                 f"• {d['name']} — {d['status']}, license {d['license_number']}, "
-                f"on-time {d['on_time_rate']:.0%}, safety score {d['safety_score']}"
+                f"on-time {d['on_time_rate']:.0f}%, safety score {d['safety_score']}"
             )
         return " ".join(lines)
 
@@ -427,10 +514,16 @@ def _fallback_reply(ctx: dict, user_text: str) -> str:
         parts = [f"{k.replace('_', ' ').title()}: {v}" for k, v in banking.items()]
         return "Banking details: " + " | ".join(parts)
 
-    # Default: give the cash headline and point to insights.
+    # Default: give the cash headline and point to insights (only for roles that
+    # can see finances; others get a capability prompt instead of a KeyError).
+    if not inv:
+        return (
+            f"I'm your TruckWys copilot for {ctx['company_name']}. Ask me about your fleet status, "
+            "quotes, drivers or contacts — whatever your role has access to."
+        )
     return (
-        f"Here's the headline for {ctx['company_name']}: {fmt(inv['outstanding_total'])} outstanding, "
-        f"{fmt(inv['overdue_total'])} overdue, {cap['eligible_invoices']} invoice(s) ready for fast pay. "
+        f"Here's the headline for {ctx['company_name']}: {fmt(inv.get('outstanding_total'))} outstanding, "
+        f"{fmt(inv.get('overdue_total'))} overdue, {cap.get('eligible_invoices', 0)} invoice(s) ready for fast pay. "
         f"Ask me about overdue accounts, fast-pay capacity, your quotes pipeline, contacts, drivers or fleet status."
     )
 
@@ -494,8 +587,11 @@ def _retrieved_block(company, query: str) -> str:
         return ""
     docs = "\n".join(f"- {h['content']}" for h in hits)
     return (
-        "\n\nRetrieved invoice records (account-scoped, most relevant to the question — "
-        "prefer these exact figures when answering):\n" + docs
+        "\n\nRetrieved invoice records (account-scoped, most relevant to the question). "
+        "These are INDEXED records that may lag the live data — use them to locate the "
+        "right invoices and their descriptive detail, but whenever a figure here (balance, "
+        "paid amount, status, days overdue) disagrees with the company snapshot above, "
+        "TRUST THE SNAPSHOT: it is computed live this request.\n" + docs
     )
 
 
@@ -508,7 +604,7 @@ def _llm_generate(system: str, convo: list) -> str:
     """
     provider = _provider()
     if provider == "anthropic":
-        client = anthropic.Anthropic()
+        client = anthropic.Anthropic(timeout=LLM_TIMEOUT_SECONDS, max_retries=LLM_MAX_RETRIES)
         response = client.messages.create(
             model=AGENT_MODEL,
             max_tokens=700,
@@ -517,7 +613,7 @@ def _llm_generate(system: str, convo: list) -> str:
         )
         return next((b.text for b in response.content if b.type == "text"), "").strip()
     if provider == "openai":
-        client = OpenAI(api_key=_openai_key())
+        client = OpenAI(api_key=_openai_key(), timeout=LLM_TIMEOUT_SECONDS, max_retries=LLM_MAX_RETRIES)
         response = client.chat.completions.create(
             model=OPENAI_CHAT_MODEL,
             max_tokens=700,
@@ -562,6 +658,17 @@ def _capability_block(user) -> str:
     parts = [
         "\n\nDATA TOOLS: Use query_records to answer from the database precisely — lists, "
         f"lookups, counts and sums the snapshot lacks. Readable tables: {', '.join(read_tables)}. "
+        "For ANY total, sum, count or average, ALWAYS use the `aggregate` parameter — NEVER "
+        "manually add up the `rows` a query_records call returns, because rows can be "
+        "truncated (a `truncated`/`note` field says so) and a manual sum over a partial page "
+        "silently gives a wrong, too-low answer. "
+        "PICK THE EXACT MONEY FIELD the question means — check the parenthetical notes in "
+        "the schema reference below; e.g. an invoice's `subtotal` is pre-VAT and is almost "
+        "never what \"total\"/\"balance\"/\"total_amount\" means. When a question names a "
+        "field literally (e.g. asks for \"total_amount\"), aggregate that exact field, not a "
+        "different one. For status/category filters, use the EXACT database value (e.g. "
+        "PARTIALLY_PAID) — query_records will error with the valid values if you guess wrong, "
+        "so read the error rather than inventing an unrelated filter. "
         "Never invent ids or figures; if a query errors, read the error and adjust.",
         "\nSCHEMA REFERENCE (fields you may set; * = required to create; [rcud] = your "
         "read/create/update/delete rights):\n" + entities.build_schema_reference(user),
@@ -624,7 +731,7 @@ def _openai_tool_loop(system: str, convo: list, company, user, conversation=None
     if not tools:
         return _llm_generate(system, convo), None
 
-    client = OpenAI(api_key=_openai_key())
+    client = OpenAI(api_key=_openai_key(), timeout=LLM_TIMEOUT_SECONDS, max_retries=LLM_MAX_RETRIES)
     messages = [{"role": "system", "content": system}, *convo]
     proposal_id = None
     for _ in range(6):  # cap the tool loop (query rounds + one propose)
@@ -712,6 +819,7 @@ def agent_respond(company, messages: list, *, query: str = None, user=None,
         if tools_on:
             capability_clause = _capability_block(user)
         elif enable_tools and user is not None:
+            _warn_tools_disabled_once()
             capability_clause = (
                 " Database write tools are unavailable right now (the OpenAI provider is not "
                 "configured) — you are read-only: suggest what the user should do, but never "
@@ -723,9 +831,11 @@ def agent_respond(company, messages: list, *, query: str = None, user=None,
                 "changed anything."
             )
 
-        # RAG retrieval surfaces invoice records — only for roles that may read them.
+        # RAG retrieval surfaces invoice records — only for roles that may read
+        # them. Gate purely on whether the (already role-stripped) snapshot kept
+        # the invoices section; `user is None` must NOT imply full access.
         rag_block = ''
-        if user is None or ctx.get('invoices') is not None:
+        if ctx.get('invoices') is not None:
             rag_block = _retrieved_block(company, rag_query)
 
         user_name = (getattr(user, 'first_name', '') or '').strip() if user is not None else ''
@@ -734,6 +844,17 @@ def agent_respond(company, messages: list, *, query: str = None, user=None,
             "first name occasionally — e.g. in a greeting or when wrapping up — not in every reply."
             if user_name else ""
         )
+
+        # Data minimisation: bank-account details are the most sensitive field in
+        # the snapshot. Only send them to the LLM when the question is actually
+        # about banking — never on every unrelated turn. (The rules fallback still
+        # answers banking questions locally from the full ctx.)
+        prompt_ctx = ctx
+        if ctx.get('banking') and not any(
+            w in (last_user or '').lower()
+            for w in ('bank', 'banking', 'account number', 'branch', 'iban', 'swift', 'payment detail')
+        ):
+            prompt_ctx = {k: v for k, v in ctx.items() if k != 'banking'}
 
         system = (
             "You are the TruckWys copilot — an AI agent for a South African road-freight operator. "
@@ -744,10 +865,19 @@ def agent_respond(company, messages: list, *, query: str = None, user=None,
             "guessing. Quote amounts and dates EXACTLY as they appear — do not add VAT, interest, or "
             "any derived calculation unless the user explicitly asks. A PAID invoice is settled "
             "(balance 0) and is never overdue. Format tabular answers as markdown tables. "
-            "Keep replies under ~120 words."
+            "Keep replies under ~120 words. "
+            "SNAPSHOT LIMITS: some snapshot lists are truncated SAMPLES, not the full set — "
+            "`contacts` is the first 100 customers by name (the real count is `customers_total`), "
+            "`quotes.recent` the 25 newest, `invoices.top_overdue`/`top_customers_by_outstanding` "
+            "the worst 5, `capital.top_eligible` a sample. NEVER state a sample's length as a total "
+            + ("or claim a record doesn't exist just because it's absent from a sample — use "
+               "query_records for complete counts, totals and lookups. "
+               if tools_on else
+               "or claim a record doesn't exist just because it's absent from a sample; say you're "
+               "showing a sample and they can view the full list in the app. ")
             + capability_clause
             + name_clause
-            + f"\n\nCompany snapshot:\n{json.dumps(ctx, default=str)}"
+            + f"\n\nCompany snapshot:\n{json.dumps(prompt_ctx, default=str)}"
             + rag_block
         )
         convo = [

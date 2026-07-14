@@ -80,10 +80,11 @@ class AIPriceOptimizeView(APIView):
             vehicle_type = str(data.get('vehicle_type') or '').strip()
             if origin and destination:
                 try:
+                    from core.views import resolve_user_company
                     from core.services.lane_benchmark import resolve_market_rate
                     rate, src = resolve_market_rate(
                         origin, destination, vehicle_type or None,
-                        company=getattr(request.user, 'company', None),
+                        company=resolve_user_company(request.user),
                     )
                     if rate and rate > 0:
                         market_rate = float(rate)
@@ -102,6 +103,8 @@ class AIPriceOptimizeView(APIView):
                 client_tier=client_tier,
                 days_until_departure=days_until_departure,
                 historical_acceptance_rate=historical_acceptance_rate,
+                origin=origin or None,
+                destination=destination or None,
             )
 
             response_data = {

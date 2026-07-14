@@ -224,14 +224,24 @@ def _vehicle_check_limit(company):
 
 
 def _invoice_pre_validate(company, user, payload):
+    from decimal import Decimal, InvalidOperation
     payload = dict(payload)
     if not payload.get('invoice_number'):
         payload['invoice_number'] = _unique_number(Invoice, 'invoice_number', 'INV')
     # total_amount/balance are serializer-required but recomputed by Invoice.save()
-    subtotal = payload.get('subtotal')
-    payload.setdefault('total_amount', subtotal)
-    payload.setdefault('balance', payload['total_amount'])
-    return payload, 'VAT, total and balance are auto-calculated on save.'
+    # (total = subtotal + 15% VAT - discount). Compute the SAME figure here so the
+    # confirmation card shows the real total the user will be charged, not the
+    # pre-VAT subtotal (which is what the old setdefault(subtotal) displayed).
+    try:
+        subtotal = Decimal(str(payload.get('subtotal') or '0'))
+        discount = Decimal(str(payload.get('discount') or '0'))
+    except (InvalidOperation, ValueError, TypeError):
+        subtotal, discount = Decimal('0'), Decimal('0')
+    vat = (subtotal * Decimal('0.15')).quantize(Decimal('0.01'))
+    total = (subtotal + vat - discount).quantize(Decimal('0.01'))
+    payload.setdefault('total_amount', str(total))
+    payload.setdefault('balance', str(total))
+    return payload, 'Total shown includes 15% VAT; final VAT/total/balance are confirmed on save.'
 
 
 def _load_pre_validate(company, user, payload):
@@ -382,6 +392,10 @@ ENTITY_REGISTRY = {
         'display_extra': {'customer': lambda q: q.customer.name if q.customer_id else ''},
         'hooks': {'pre_validate': _quote_pre_validate,
                   'execute_create': _quote_execute_create},
+        'field_notes': {
+            'base_rate': 'the pre-surcharge rate — NOT the quoted "total"/"price"',
+            'total_amount': 'the full quoted price the customer sees — use for "total"/"price"/"value"',
+        },
     },
     'loads': {
         'model': Load, 'serializer': LoadSerializer, 'label': 'Load',
@@ -428,6 +442,12 @@ ENTITY_REGISTRY = {
             ('due_date', "When is payment due? (YYYY-MM-DD)"),
         ],
         'fk': {'customer': ('customers', 'name')},
+        # Money-integrity fields the AI must never set directly: totals/VAT are
+        # recomputed by Invoice.save(); paid_amount/balance and status only move
+        # through the locked payment flow (record_payment) and lifecycle events.
+        # Letting the LLM write them would fabricate cash outside any audit trail.
+        'protected_fields': ['paid_amount', 'balance', 'total_amount',
+                             'vat_amount', 'tax_amount', 'status'],
         'search': ['invoice_number', 'customer__name'],
         'filter': ['status', 'invoice_number', 'customer', 'due_date', 'issue_date',
                    'total_amount', 'balance', 'paid_amount'],
@@ -436,6 +456,19 @@ ENTITY_REGISTRY = {
         'display': ['id', 'invoice_number', 'total_amount', 'balance', 'status', 'due_date'],
         'display_extra': {'customer': lambda i: i.customer.name if i.customer_id else ''},
         'hooks': {'pre_validate': _invoice_pre_validate},
+        # Disambiguate near-synonym money fields — a live test showed the model
+        # aggregating 'subtotal' when asked for "total balance" or even literally
+        # "total_amount", silently undercounting by the VAT portion.
+        'field_notes': {
+            'subtotal': 'pre-VAT amount — NOT what "total"/"balance"/"total_amount" means',
+            'total_amount': 'full invoiced amount INCLUDING VAT — use for "total_amount"/"invoice total"',
+            'balance': 'amount STILL OWED — use for "balance"/"outstanding"/"amount owed"',
+            'paid_amount': 'amount already paid on this invoice',
+            'status': 'exact DB value (e.g. PARTIALLY_PAID, not "Partially Paid"); note '
+                      'the company snapshot\'s overdue_count/overdue_total are computed '
+                      'by due_date, NOT this field — for a "status is OVERDUE" question, '
+                      'filter status=OVERDUE explicitly rather than reusing the snapshot',
+        },
     },
     'payments': {
         'model': Payment, 'serializer': PaymentSerializer, 'label': 'Payment',
@@ -544,14 +577,17 @@ def scoped_queryset(user, company, table):
 
 def writable_fields(table, *, for_update=False):
     """Field names the AI may supply, derived from the serializer minus
-    server-side fields. Payments restrict updates to safe fields."""
+    server-side fields. Payments restrict updates to safe fields; entities may
+    also declare `protected_fields` (a blocklist) for money-integrity columns the
+    AI must never set on create OR update (e.g. invoice totals/paid_amount)."""
     spec = ENTITY_REGISTRY[table]
+    protected = set(spec.get('protected_fields', ()))
     if for_update and spec.get('update_fields'):
-        return list(spec['update_fields'])
+        return [f for f in spec['update_fields'] if f not in protected]
     serializer = spec['serializer']()
     names = []
     for name, field in serializer.get_fields().items():
-        if field.read_only or name in GLOBAL_EXCLUDED_FIELDS:
+        if field.read_only or name in GLOBAL_EXCLUDED_FIELDS or name in protected:
             continue
         if name == 'user' and table == 'drivers':
             continue  # handled by the driver-user hook
@@ -597,7 +633,11 @@ def build_tool_schemas(user):
                 "description": (
                     "Query the company's database precisely. Use this for lists, lookups, "
                     "counts and sums the snapshot doesn't answer, and to resolve names to ids "
-                    "before proposing a create/update/delete."
+                    "before proposing a create/update/delete. For ANY total, sum, count or "
+                    "average, ALWAYS pass `aggregate` — NEVER add up the returned `rows` "
+                    "yourself, since results may be truncated (see the `truncated`/`note` "
+                    "fields in the response) and a manual sum over a truncated page silently "
+                    "undercounts."
                 ),
                 "parameters": {
                     "type": "object",
@@ -713,17 +753,38 @@ def build_tool_schemas(user):
 
 
 def build_schema_reference(user) -> str:
-    """Compact per-table field reference for the system prompt (read tables only)."""
+    """Compact per-table field reference for the system prompt (read tables only).
+
+    Lists the UNION of writable fields and queryable fields (agg/filter) — not
+    just writable_fields() — because fields the AI may never SET (e.g. an
+    invoice's `balance`/`total_amount`/`status`, blocked via `protected_fields`)
+    are still exactly what it needs to READ/aggregate/filter correctly. Showing
+    only writable fields silently hid the very fields whose disambiguating
+    `field_notes` mattered most (a live test showed the model substituting
+    `subtotal` for `balance`/`total_amount` because those two never appeared in
+    this reference at all)."""
     lines = []
     for table in allowed_tables(user, 'read'):
         spec = ENTITY_REGISTRY[table]
         required = {f for f, _q in spec['required']}
+        field_notes = spec.get('field_notes', {})
         ops = ''.join(c for c in 'rcud'
                       if c in spec['perms'].get((getattr(user, 'role', '') or '').upper(), '')
                       or getattr(user, 'is_superuser', False))
+        writable = writable_fields(table)
+        writable_set = set(writable)
+        queryable_only = [f for f in (spec.get('agg', []) + spec.get('filter', []))
+                          if f not in writable_set and '__' not in f]
+        # dict.fromkeys dedupes while preserving first-seen order.
+        all_fields = list(dict.fromkeys(writable + queryable_only))
         fields = []
-        for name in writable_fields(table):
-            fields.append(f"{name}*" if name in required else name)
+        for name in all_fields:
+            label = f"{name}*" if name in required else name
+            if name not in writable_set:
+                label += ' [read/query only]'
+            if name in field_notes:
+                label += f" ({field_notes[name]})"
+            fields.append(label)
         fk_notes = ', '.join(f"{f}→{t}.{lbl}" for f, (t, lbl) in spec.get('fk', {}).items())
         line = f"- {table} [{ops}] fields: {', '.join(fields)}"
         if fk_notes:

@@ -10,6 +10,7 @@ import logging
 from datetime import timedelta
 from decimal import Decimal
 
+from django.core.exceptions import FieldError
 from django.db import IntegrityError, transaction
 from django.db import models as dj_models
 from django.db.models import Avg, Count, Max, Min, Sum
@@ -55,6 +56,28 @@ def _row(spec, obj):
 # query_records
 # ---------------------------------------------------------------------------
 
+def _choices_for(spec, field):
+    """{DB_VALUE: display_label} for a choice field, or None if it has none."""
+    try:
+        model_field = spec['model']._meta.get_field(field)
+    except Exception:
+        return None
+    choices = getattr(model_field, 'choices', None)
+    return dict(choices) if choices else None
+
+
+def _normalize_choice(raw, valid_values):
+    """Map a model-supplied status-ish string ('Partially Paid', 'partially-paid')
+    onto the exact DB choice value ('PARTIALLY_PAID') the LLM SHOULD have sent.
+    Equality filters on choice fields are exact-match, so a humanized guess
+    silently matches zero rows instead of erroring — this is the deterministic
+    fix, not dependent on the model reading a schema hint correctly."""
+    if not isinstance(raw, str):
+        return raw, raw in valid_values
+    norm = raw.strip().upper().replace(' ', '_').replace('-', '_')
+    return (norm, True) if norm in valid_values else (raw, False)
+
+
 def query_records(company, user, conversation, args):
     table = args.get('table')
     spec = ENTITY_REGISTRY.get(table)
@@ -70,12 +93,43 @@ def query_records(company, user, conversation, args):
         if op not in _ORM_OPS:
             return {'error': f"Unknown filter op '{op}'."}
         lookup = _ORM_OPS[op].format(f=field)
+        # 'in'/'isnull' need the right value shape: a scalar 'in' would filter to
+        # (usually) zero rows silently; coerce a scalar to a single-item list and
+        # coerce isnull to a real bool.
+        if op == 'in' and not isinstance(value, (list, tuple)):
+            value = [value]
+        if op == 'isnull':
+            value = bool(value) if not isinstance(value, str) else value.strip().lower() in ('1', 'true', 'yes')
+        # Choice fields (status, category, ...): normalize a humanized guess
+        # ('Partially Paid') onto the real DB value ('PARTIALLY_PAID'), or error
+        # with the valid values rather than silently matching zero rows.
+        if op in ('eq', 'neq', 'in'):
+            choices = _choices_for(spec, field)
+            if choices:
+                valid = set(choices.keys())
+                if op == 'in':
+                    normalized, bad = [], []
+                    for v in value:
+                        nv, ok = _normalize_choice(v, valid)
+                        normalized.append(nv)
+                        if not ok:
+                            bad.append(v)
+                    if bad:
+                        return {'error': f"{bad!r} not a valid '{field}' value on {table}. "
+                                          f"Valid values: {', '.join(sorted(valid))}"}
+                    value = normalized
+                else:
+                    nv, ok = _normalize_choice(value, valid)
+                    if not ok:
+                        return {'error': f"{value!r} is not a valid '{field}' value on {table}. "
+                                          f"Valid values: {', '.join(sorted(valid))}"}
+                    value = nv
         try:
             if op == 'neq':
                 qs = qs.exclude(**{lookup: value})
             else:
                 qs = qs.filter(**{lookup: value})
-        except (ValueError, TypeError, dj_models.FieldError) as e:
+        except (ValueError, TypeError, FieldError) as e:
             return {'error': f"Bad filter {field} {op} {value!r}: {e}"}
 
     search = (args.get('search') or '').strip()
@@ -98,10 +152,24 @@ def query_records(company, user, conversation, args):
         if group_by:
             if group_by not in spec['filter'] and group_by not in spec['display']:
                 return {'error': f"Cannot group {table} by '{group_by}'."}
-            rows = list(
-                qs.values(group_by).annotate(value=func(field)).order_by('-value')[:50]
-            )
-            return {'groups': [{**{k: _json_safe(v) for k, v in r.items()}} for r in rows]}
+            grouped = qs.values(group_by).annotate(value=func(field)).order_by('-value')
+            total_groups = grouped.count()
+            truncated = total_groups > 50
+            rows = list(grouped[:50])
+            result = {
+                'groups': [{**{k: _json_safe(v) for k, v in r.items()}} for r in rows],
+                'group_count': total_groups,
+                'truncated': truncated,
+            }
+            if truncated:
+                # A grand total over just these 50 groups would silently miss the
+                # rest — say so explicitly rather than let the model add them up.
+                result['note'] = (
+                    f"Only the top 50 of {total_groups} groups are shown. Adding up these "
+                    "group values would NOT be a true grand total — call aggregate without "
+                    "group_by for an exact overall total/count/sum."
+                )
+            return result
         value = qs.aggregate(value=func(field))['value']
         return {'value': _json_safe(value), 'func': func_name, 'field': field}
 
@@ -112,12 +180,26 @@ def query_records(company, user, conversation, args):
         qs = qs.order_by(order_by)
 
     try:
-        limit = max(1, min(int(args.get('limit') or 20), 50))
+        # Default matches the max (50): a caller that forgets to raise `limit`
+        # still gets the complete row set for small/medium tables, shrinking how
+        # often the truncated-rows case below is even reached.
+        limit = max(1, min(int(args.get('limit') or 50), 50))
     except (TypeError, ValueError):
-        limit = 20
+        limit = 50
     total = qs.count()
+    truncated = total > limit
     rows = [_row(spec, obj) for obj in qs[:limit]]
-    return {'rows': rows, 'count': total, 'truncated': total > limit}
+    result = {'rows': rows, 'count': total, 'truncated': truncated}
+    if truncated:
+        # This is the exact moment a model could silently undercount a total by
+        # adding up only the visible rows — say so explicitly, in-context, rather
+        # than relying on it recalling a system-prompt rule from turns ago.
+        result['note'] = (
+            f"Only {len(rows)} of {total} matching rows are shown. Do NOT add these up for a "
+            "total/sum/count/average — re-call query_records with the `aggregate` parameter "
+            "for an exact figure over ALL matching rows."
+        )
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -504,14 +586,32 @@ def _execute_email_proposal(proposal, request_user, company):
 def execute_proposal(proposal, request_user, company):
     """Perform the confirmed write. Returns (ok, payload_for_response).
 
-    Re-checks everything: status, expiry, ownership, company, and RBAC — the
-    user's role may have changed since the proposal was created.
+    Atomically claims the PENDING proposal under a row lock so two concurrent
+    confirms (double-click / two tabs / a retry) can never both execute — the
+    loser sees the already-resolved status instead of double-writing. Then
+    re-checks everything: expiry, ownership, company, and RBAC — the user's role
+    may have changed since the proposal was created.
     """
     from core.models import CopilotProposal
 
-    if proposal.table == 'email':
-        return _execute_email_proposal(proposal, request_user, company)
+    with transaction.atomic():
+        locked = CopilotProposal.objects.select_for_update().filter(pk=proposal.pk).first()
+        if locked is None:
+            return False, {'error': 'Proposal not found.'}
+        if locked.status != 'PENDING':
+            # Another request already resolved it; report the true state so the
+            # client can render "Saved"/"Dismissed" rather than "Failed".
+            return False, {'error': f'This proposal was already {locked.status.lower()}.',
+                           'proposal_status': locked.status.lower()}
+        proposal = locked
+        if proposal.table == 'email':
+            return _execute_email_proposal(proposal, request_user, company)
+        return _execute_write_proposal(proposal, request_user, company)
 
+
+def _execute_write_proposal(proposal, request_user, company):
+    """Perform a confirmed CREATE/UPDATE/DELETE. Caller holds the row lock and has
+    already asserted the proposal is PENDING."""
     spec = ENTITY_REGISTRY.get(proposal.table)
     op_name = {'CREATE': 'create', 'UPDATE': 'update', 'DELETE': 'delete'}[proposal.operation]
     if spec is None or not role_can(request_user, proposal.table, op_name):

@@ -1,11 +1,16 @@
 """AI insights endpoints: LLM-backed executive briefing + explainable risk."""
+import logging
+
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.throttling import ScopedRateThrottle
 
 from core.services.llm_insights import executive_briefing, explain_risk_score
 from core.services.agent import agent_respond, generate_conversation_title
+
+logger = logging.getLogger(__name__)
 
 
 class AgentChatView(APIView):
@@ -16,6 +21,8 @@ class AgentChatView(APIView):
     Grounded in the company's live data; read-only (suggests, never mutates).
     """
     permission_classes = [IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'copilot'
 
     def post(self, request):
         from core.views import resolve_user_company
@@ -33,9 +40,14 @@ class AgentChatView(APIView):
         if not isinstance(messages, list):
             return Response({'error': 'messages must be a list'}, status=status.HTTP_400_BAD_REQUEST)
         try:
-            result = agent_respond(company, messages)
-        except Exception as e:
-            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            # Pass the acting user so build_agent_context strips the snapshot to
+            # the caller's role — otherwise a DRIVER/VIEWER could read banking,
+            # driver PII and customer contacts they're denied everywhere else.
+            result = agent_respond(company, messages, user=request.user)
+        except Exception:
+            logger.exception('agent chat failed')
+            return Response({'error': 'The copilot is unavailable right now.'},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         # Persist this turn into a conversation (new chats are kept, not destroyed).
         try:
@@ -77,6 +89,8 @@ class ConversationChatView(APIView):
     Returns: { reply, source, ai_available, actions, proposed_action, conversation_id }
     """
     permission_classes = [IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'copilot'
 
     def post(self, request, pk):
         from core.views import resolve_user_company
@@ -98,19 +112,27 @@ class ConversationChatView(APIView):
             return Response({'error': 'message is required'}, status=status.HTTP_400_BAD_REQUEST)
         text = str(text).strip()
 
-        # Server-side history (last 30 turns — guided data entry spans many short
-        # question/answer turns) loaded from the DB, then the new user turn.
+        # Server-side history: the 30 MOST RECENT turns (guided data entry spans
+        # many short turns), oldest-first for the model. Slice newest in SQL then
+        # reverse — the old `order_by('created_at')[:300][-30:]` took the OLDEST
+        # 300 and kept 271-300, so >300-message threads froze at stale context.
         history = [
             {'role': m.role, 'content': m.content}
-            for m in conv.messages.order_by('created_at')[:300]
-        ][-30:]
+            for m in reversed(list(conv.messages.order_by('-created_at')[:30]))
+        ]
         history.append({'role': 'user', 'content': text})
 
-        # Keep this account's invoice index fresh (cheap: skips unchanged rows), then
-        # answer with per-account RAG retrieval grounded in the user's question.
+        # Keep this account's invoice index reasonably fresh, but NOT on every
+        # message: loading all invoices+embeddings per turn is O(N). Throttle to
+        # once per 5 min per company via the shared cache (the Celery beat task
+        # reindex_copilot_rag is the backstop when this path is quiet).
         try:
+            from django.core.cache import cache
             from core.services import rag
-            rag.index_company_invoices(company)
+            _rag_key = f'rag_indexed_{company.id}'
+            if not cache.get(_rag_key):
+                rag.index_company_invoices(company)
+                cache.set(_rag_key, 1, 300)
         except Exception:
             pass
 
@@ -121,8 +143,10 @@ class ConversationChatView(APIView):
                 company, history, query=text, user=request.user,
                 enable_tools=True, conversation=conv,
             )
-        except Exception as e:
-            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except Exception:
+            logger.exception('conversation chat failed')
+            return Response({'error': 'The copilot is unavailable right now.'},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         # Persist the turn.
         try:
@@ -307,8 +331,10 @@ class DashboardBriefingView(APIView):
         from_date = _parse(request.query_params.get('from')) or to_date.replace(day=1)
         try:
             return Response(executive_briefing(company, from_date, to_date))
-        except Exception as e:
-            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except Exception:
+            logger.exception('dashboard briefing failed')
+            return Response({'error': 'The briefing is unavailable right now.'},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class RiskScoreExplainView(APIView):
@@ -317,14 +343,22 @@ class RiskScoreExplainView(APIView):
 
     def get(self, request, pk):
         from core.models import RiskScore
+        from core.views import resolve_user_company
         qs = RiskScore.objects.all()
-        company = getattr(request.user, 'company', None)
-        if company and not getattr(request.user, 'is_superuser', False):
+        if not getattr(request.user, 'is_superuser', False):
+            # Always tenant-scope for non-superusers. A user with no company
+            # (legacy/seed accounts have company_id=NULL) must see NOTHING —
+            # never the unscoped queryset, which would leak other tenants' scores.
+            company = resolve_user_company(request.user)
+            if company is None:
+                return Response({'error': 'Risk score not found'}, status=status.HTTP_404_NOT_FOUND)
             qs = qs.filter(invoice__company=company)
         score = qs.filter(pk=pk).first()
         if not score:
             return Response({'error': 'Risk score not found'}, status=status.HTTP_404_NOT_FOUND)
         try:
             return Response(explain_risk_score(score))
-        except Exception as e:
-            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except Exception:
+            logger.exception('risk score explain failed')
+            return Response({'error': 'The explanation is unavailable right now.'},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
