@@ -378,6 +378,27 @@ def analyze_quote(payload, company=None):
         cost_basis, real_market_rate, client_tier, days,
         historical_acceptance_rate=hist_rate, origin=origin, destination=destination,
     )
+
+    # With NO market data the optimizer's "optimum" is an artefact of its own
+    # synthetic cost*1.25 anchor — effectively a fixed ~30% markup pulled from
+    # thin air, contradicting the Revenue Guard's margin-target advice shown on
+    # the same screen. Until the lane has a real benchmark, recommend the
+    # company's own target margin instead (same formula the guard uses), so
+    # both panels agree. The curve is kept so the sweet-spot chart still renders.
+    no_market_data = not real_market_rate
+    if no_market_data and cost_basis > 0:
+        t = _f(getattr(company, 'margin_target_pct', None), 10.0) or 10.0
+        t = min(max(t, 1.0), 40.0)  # sane bounds; t is margin-on-price in %
+        target_price = round(cost_basis / (1 - t / 100), 2)
+        curve = opt.get('curve') or []
+        nearest = min(curve, key=lambda p: abs(_f(p.get('price')) - target_price)) if curve else None
+        p_win = nearest.get('win_probability') if nearest else None
+        opt['optimal_price'] = target_price
+        opt['optimal_margin_pct'] = round((target_price - cost_basis) / cost_basis * 100, 1)
+        opt['win_probability_at_optimal'] = p_win
+        opt['expected_profit'] = round(
+            (target_price - cost_basis) * (p_win if p_win is not None else 1.0), 2)
+
     cost = assess_revenue_guard(
         total_cost=cost_basis, quote_price=quote_total,
         distance_km=distance_km, fuel_cost=fuel_cost, company=company,
@@ -403,7 +424,14 @@ def analyze_quote(payload, company=None):
         narrative = _rule_based_narrative(cost, fuel, opt, market, suggested_price, quote_total)
 
     rationale = None
-    if opt.get('optimal_margin_pct') is not None:
+    if no_market_data and cost_basis > 0:
+        t = _f(getattr(company, 'margin_target_pct', None), 10.0) or 10.0
+        t = min(max(t, 1.0), 40.0)
+        rationale = (
+            f"No market data for this lane yet — priced to your target margin of {t:.0f}%. "
+            "As you win quotes on this lane, pricing will optimise for expected profit."
+        )
+    elif opt.get('optimal_margin_pct') is not None:
         rationale = (
             f"Maximises expected profit at a {opt['optimal_margin_pct']:.0f}% margin"
             + (f" with a {round((opt['win_probability_at_optimal'] or 0) * 100)}% win probability."
