@@ -87,8 +87,10 @@ class OptimizerCostBasisTests(TestCase):
     def test_no_market_data_is_reported_honestly_not_fabricated(self, _fp):
         """With NO market data at all, the analysis must NOT invent a market rate
         from the user's own price (the old quote_total*1.25 anchor). It reports
-        market_rate=None / source='none', and the suggestion still doesn't track
-        whatever the user typed (optimizer anchors on cost internally)."""
+        market_rate=None / source='none', recommends the company margin-target
+        price (default 10% on price = cost/0.9) rather than the optimizer's
+        synthetic ~30% markup, and the suggestion still doesn't track whatever
+        the user typed."""
         from core.services.quote_analysis import analyze_quote
 
         base = {'direct_cost': 8000, 'market_rate': 0}
@@ -98,8 +100,35 @@ class OptimizerCostBasisTests(TestCase):
         self.assertIsNone(low['market_analysis']['market_rate'])
         self.assertEqual(low['market_analysis']['source'], 'none')
         self.assertIsNone(low['market_analysis']['your_vs_market_pct'])
+        # Margin-target recommendation: cost / (1 - 0.10) with the default 10%.
+        self.assertEqual(low['suggested_price'], round(8000 / 0.9, 2))
+        self.assertEqual(low['price_optimization']['optimal_price'], round(8000 / 0.9, 2))
+        self.assertIn('target margin', low['suggested_price_rationale'])
         # Same costs => same suggestion, regardless of what the user typed.
         self.assertEqual(low['suggested_price'], high['suggested_price'])
+
+    @mock.patch('core.services.fuel_price.fetch_fuel_prices', side_effect=Exception('offline'))
+    def test_no_market_data_uses_company_margin_target(self, _fp):
+        """The no-data recommendation follows the COMPANY's configured target."""
+        from core.models import Company
+        from core.services.quote_analysis import analyze_quote
+
+        company = Company.objects.create(company_name='Target Co', margin_target_pct=15)
+        out = analyze_quote({'direct_cost': 8500, 'quote_total': 8500, 'market_rate': 0},
+                            company=company)
+        self.assertEqual(out['suggested_price'], round(8500 / 0.85, 2))
+        self.assertIn('15%', out['suggested_price_rationale'])
+
+    @mock.patch('core.services.fuel_price.fetch_fuel_prices', side_effect=Exception('offline'))
+    def test_real_market_rate_keeps_profit_max_path(self, _fp):
+        """With a real market rate the profit-max optimizer stays in charge —
+        the margin-target override applies ONLY when there's no data."""
+        from core.services.quote_analysis import analyze_quote
+
+        out = analyze_quote({'direct_cost': 8000, 'quote_total': 10000, 'market_rate': 12000})
+        self.assertNotIn('target margin', out['suggested_price_rationale'] or '')
+        # The optimizer's own optimum, not cost/0.9.
+        self.assertNotEqual(out['suggested_price'], round(8000 / 0.9, 2))
 
     def test_at_risk_price_increase_suggestion_math(self):
         """Target price for a revenue margin t is cost/(1-t): cost=10000,
