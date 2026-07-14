@@ -97,10 +97,13 @@ vs win-rate across margin) so the operator prices for *maximum money*, not max m
 safest discount.
 
 **The ML flywheel (closed):** every accepted/rejected quote is captured as a
-`QuoteOutcome`. When enough accumulate, `core/services/quote_training.py` **auto-retrains
-the win model in the background** (`maybe_retrain_win_model_async`, fired from
-`QuoteOutcomeView`). The quote screen shows an honest chip: *"heuristic · N/40 outcomes"*
-→ flips to *"learned · AUC 0.xx"*. Manual command: `manage.py retrain_win_model`.
+`QuoteOutcome` via `core/services/quote_outcome_capture.record_quote_outcome` — fired
+from the public customer accept/decline link, `QuoteViewSet.update_status`, and the
+manual "Mark Outcome" button (one row per quote, point-in-time feature snapshots).
+Celery Beat retrains the win model nightly (`core.tasks.retrain_win_model`, 03:00 SAST;
+idempotent below the 40-outcome threshold). The quote screen shows an honest chip:
+*"heuristic · N/40 outcomes"* → flips to *"learned · AUC 0.xx"*. Manual command:
+`manage.py retrain_win_model`.
 
 ### Other agentic AI
 
@@ -149,8 +152,8 @@ these unlock real functionality. Set in the backend `.env` (see `.env.example`).
 |------------|---------|-----------|
 | `SECRET_KEY`, `DEBUG=False`, `ALLOWED_HOSTS`, `DATABASE_URL` (Postgres) | Production baseline | **Yes** |
 | `REDIS_URL` + Redis running | WebSocket live push | **Yes** (real-time) |
-| `ANTHROPIC_API_KEY` (+ `CLAUDE_*_MODEL`) | Copilot, AI quote parsing, insights | Recommended |
-| `OPENAI_API_KEY` | Voice quote transcription (Whisper) | Optional |
+| `OPENAI_API_KEY` (+ `COPILOT_LLM_PROVIDER=openai`) | **Copilot** (chat + DB tools/proposals/guided-entry + RAG invoice retrieval), voice transcription | **Yes** for the full Copilot |
+| `ANTHROPIC_API_KEY` (+ `CLAUDE_*_MODEL`) | AI quote parsing + insights. ⚠️ Does NOT power Copilot DB tools — if set with `COPILOT_LLM_PROVIDER=auto` it silently disables them | Optional |
 | `RESEND_API_KEY` + `DEFAULT_FROM_EMAIL` | Real invoice emails + payment reminders (collections) | **Yes** for collections |
 | `XERO_CLIENT_ID` / `XERO_CLIENT_SECRET` / `XERO_REDIRECT_URI` | Xero accounting sync | When using Xero |
 | `TOMTOM_API_KEY` | Route distance/toll calc for quoting | Recommended |
