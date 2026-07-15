@@ -4,6 +4,11 @@ Margin / price optimizer for SA freight quotes.
 Pure, dependency-light service that searches the price axis and picks the price
 that MAXIMISES EXPECTED PROFIT = (price - cost) * P(win | price).
 
+The candidate-price band is anchored on the market rate (0.75x .. 1.35x) with a
+floor at cost * (1 + min_margin), so the optimum can sit BELOW the caller's
+current price when the market supports it — the cost basis only defines the
+profit baseline, not the search space.
+
 Win probability is sourced from the existing WinProbabilityModel in
 core.services.quote_ml so behaviour stays consistent with the rest of the
 quoting stack (it transparently falls back to a heuristic ladder when no
@@ -14,9 +19,13 @@ fallback dict so API callers can rely on a stable shape.
 """
 
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+# Price band anchors relative to the market rate.
+MARKET_BAND_LOW = 0.75
+MARKET_BAND_HIGH = 1.35
 
 
 # Map the human-friendly client_tier strings used across the quoting API to the
@@ -54,6 +63,46 @@ def _fallback(total_cost: float, min_margin: float, max_margin: float) -> Dict[s
     }
 
 
+def _route_popularity(origin: Optional[str], destination: Optional[str]) -> float:
+    """Lane quote volume over the past 90 days, normalized against the busiest
+    lane. Lane identity is canonicalized (DUR == DBN etc.) on both the numerator
+    and the denominator so historical spellings never fragment a lane.
+    Snapshotted onto QuoteOutcome at capture time so training sees the exact
+    same definition. Returns 0.5 when unknown."""
+    if not origin or not destination:
+        return 0.5
+    try:
+        from datetime import timedelta
+        from django.utils import timezone
+        from django.db.models import Count
+        from core.models import Quote
+        from core.services.lane_benchmark import canon_code, _lane_q
+
+        since = timezone.now() - timedelta(days=90)
+        lane_n = Quote.objects.filter(
+            _lane_q('origin', origin), _lane_q('destination', destination),
+            created_at__gte=since,
+        ).count()
+        # Busiest lane, grouped on CANONICAL codes so alias spellings pool.
+        by_lane: dict = {}
+        rows = (
+            Quote.objects.filter(created_at__gte=since)
+            .exclude(origin='').exclude(destination='')
+            .values('origin', 'destination')
+            .annotate(n=Count('id'))
+        )
+        for row in rows:
+            key = (canon_code(row['origin']), canon_code(row['destination']))
+            by_lane[key] = by_lane.get(key, 0) + row['n']
+        top_n = max(by_lane.values()) if by_lane else 0
+        if not top_n:
+            return 0.5
+        return max(0.0, min(1.0, lane_n / top_n))
+    except Exception as exc:
+        logger.debug('route popularity lookup failed: %s', exc)
+        return 0.5
+
+
 def optimize_price(
     total_cost: float,
     market_rate: float,
@@ -62,24 +111,29 @@ def optimize_price(
     historical_acceptance_rate: float = 0.5,
     min_margin: float = 0.05,
     max_margin: float = 0.45,
+    origin: Optional[str] = None,
+    destination: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Find the price that maximises expected profit over a margin band.
+    Find the price that maximises expected profit over a market-anchored band.
 
     Args:
-        total_cost: Carrier's all-in cost for the job (ZAR). Must be > 0.
+        total_cost: Carrier's direct operating cost for the job (ZAR). Must be > 0.
         market_rate: Benchmark market price for the lane (ZAR). If <= 0, the
             win curve cannot be computed and a mid-margin fallback is returned.
         client_tier: 'new' | 'standard'/'regular' | 'vip'/'premium' (or int 0-2).
         days_until_departure: Urgency in days (lower = more urgent).
         historical_acceptance_rate: Client's past acceptance rate [0, 1].
-        min_margin: Lower bound of the searched margin band (fraction, e.g. 0.05).
-        max_margin: Upper bound of the searched margin band (fraction, e.g. 0.45).
+        min_margin: Markup floor over cost — no candidate price sits below
+            total_cost * (1 + min_margin).
+        max_margin: Markup ceiling used only when the market cannot anchor the
+            band (cost at/above market, or the mid-margin fallback).
+        origin/destination: Optional lane codes for the route-popularity feature.
 
     Returns:
         {
             'optimal_price': float,
-            'optimal_margin_pct': float,            # e.g. 18.0
+            'optimal_margin_pct': float,            # markup over total_cost, e.g. 18.0
             'win_probability_at_optimal': float|None,
             'expected_profit': float,
             'curve': [
@@ -143,14 +197,27 @@ def optimize_price(
             win_model = _HeuristicWinModel()
             win_model.predict_proba = WinProbabilityModel.predict_proba.__get__(win_model)
 
+        # Candidate prices are anchored on the market rate, floored at cost plus
+        # the minimum markup. When cost sits at/above the market band, fall back
+        # to sweeping the markup band over cost so the band is never inverted.
+        price_lo = max(total_cost * (1.0 + min_margin), market_rate * MARKET_BAND_LOW)
+        price_hi = max(market_rate * MARKET_BAND_HIGH, total_cost * (1.0 + max_margin))
+
+        # Point-in-time context features so a trained model sees the same
+        # feature distribution it was fitted on (no hardcoded defaults).
+        from django.utils import timezone
+        now = timezone.now()
+        month, day_of_week = now.month, now.weekday()
+        popularity = _route_popularity(origin, destination)
+
         steps = 40
         full_curve: List[Dict[str, float]] = []
         best = None  # (expected_profit, point_dict)
 
         for i in range(steps + 1):
             frac = i / steps
-            margin = min_margin + frac * (max_margin - min_margin)
-            price = total_cost * (1.0 + margin)
+            price = price_lo + frac * (price_hi - price_lo)
+            margin = (price - total_cost) / total_cost
             price_ratio = price / market_rate
 
             try:
@@ -159,6 +226,9 @@ def optimize_price(
                     client_tier=tier_int,
                     days_until_departure=days,
                     historical_acceptance_rate=hist,
+                    month=month,
+                    day_of_week=day_of_week,
+                    route_popularity=popularity,
                 )
             except Exception:
                 p_win = 0.0

@@ -51,11 +51,15 @@ def _money(v) -> float:
 
 
 def invoice_document(invoice) -> str:
-    """Render one invoice + its payments to a compact, retrievable text document."""
-    today = timezone.now().date()
+    """Render one invoice + its payments to a compact, retrievable text document.
+
+    Deliberately excludes any value derived from *today* (e.g. days-overdue): such
+    a value changes daily, which would flip source_hash and force re-embedding
+    every overdue invoice once a day. The invoice status ('Overdue') and due date
+    are stable and carry the same semantic signal; the live day count comes from
+    the fresh snapshot / query_records, not from RAG."""
     customer = invoice.customer.name if invoice.customer else "Unknown customer"
     due = invoice.due_date
-    days_overdue = (today - due).days if (due and due < today and invoice.status != "PAID") else 0
 
     lines = [
         f"Invoice {invoice.invoice_number} for customer {customer}.",
@@ -65,12 +69,13 @@ def invoice_document(invoice) -> str:
         f"Issued {invoice.issue_date.isoformat() if invoice.issue_date else '—'}, "
         f"due {due.isoformat() if due else '—'}.",
     ]
-    if days_overdue > 0:
-        lines.append(f"OVERDUE by {days_overdue} days.")
     if invoice.early_pay_eligible:
         lines.append("Eligible for fast-pay / early-payment advance.")
 
-    payments = list(invoice.payments.all().order_by("-payment_date")[:10])
+    # Sort in Python so a prefetch_related('payments') cache is reused (an
+    # .order_by() here would re-query per invoice — the indexing N+1).
+    payments = sorted(invoice.payments.all(),
+                      key=lambda p: p.payment_date or timezone.now().date(), reverse=True)[:10]
     if payments:
         pay_strs = [
             f"R{_money(p.amount):,.2f} via {p.get_payment_method_display()} on "
@@ -98,7 +103,9 @@ def _embed(texts):
             logger.warning("RAG embed skipped: OPENAI_API_KEY / openai / numpy not available")
         return []
     try:
-        client = OpenAI(api_key=_api_key())
+        # Bound the wall-clock so a slow embeddings endpoint can't pin the worker
+        # (SDK default is 600s); one retry rides out transient blips.
+        client = OpenAI(api_key=_api_key(), timeout=20, max_retries=1)
         resp = client.embeddings.create(model=_embedding_model(), input=list(texts))
         return [item.embedding for item in resp.data]
     except Exception as exc:  # pragma: no cover - network/credential failures
@@ -113,7 +120,11 @@ def index_company_invoices(company) -> int:
         return 0
     from core.models import Invoice, InvoiceEmbedding
 
-    invoices = list(Invoice.objects.filter(company=company).select_related("customer"))
+    invoices = list(
+        Invoice.objects.filter(company=company)
+        .select_related("customer")
+        .prefetch_related("payments")  # avoid a per-invoice payments query (N+1)
+    )
     if not invoices:
         return 0
 

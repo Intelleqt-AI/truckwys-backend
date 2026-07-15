@@ -183,11 +183,12 @@ class AIQuoteSuggestionView(APIView):
                 market_rate_source = 'cost_anchor'
 
             # 2) Deterministic, grounded expected-profit optimum (anchor + sane band).
-            from core.services.margin_optimizer import optimize_price
+            from core.services.margin_optimizer import optimize_price, _route_popularity
             opt = optimize_price(
                 total_cost=actual_cost, market_rate=market_rate,
                 client_tier=client_tier, days_until_departure=days_until,
                 historical_acceptance_rate=hist,
+                origin=origin or None, destination=destination or None,
             )
             anchor_price = _sg_float(opt.get('optimal_price'), 0.0) or round(actual_cost * 1.18, 2)
             curve = opt.get('curve') or []
@@ -252,11 +253,19 @@ class AIQuoteSuggestionView(APIView):
                     win_model = _HeuristicWin()
                     win_model.predict_proba = WinProbabilityModel.predict_proba.__get__(win_model)
 
+                # Same context features the model saw in training — without
+                # them a trained model would score every quote as a Tuesday in
+                # March on an average lane.
+                _now = timezone.now()
+                _pop = _route_popularity(origin or None, destination or None)
+
                 def _pw(price):
                     ratio = (price / market_rate) if market_rate > 0 else 1.0
                     return round(float(win_model.predict_proba(
                         price_ratio=ratio, client_tier=client_tier,
                         days_until_departure=days_until, historical_acceptance_rate=hist,
+                        month=_now.month, day_of_week=_now.weekday(),
+                        route_popularity=_pop,
                     )), 2)
                 win_probability = _pw(suggested_price)
                 win_low = _pw(suggested_price * 0.95)
@@ -324,7 +333,8 @@ class RevenueGuardView(APIView):
                     'error': 'total_cost and quote_price must be > 0',
                 }, status=status.HTTP_400_BAD_REQUEST)
 
-            company = getattr(request.user, 'company', None)
+            from core.views import resolve_user_company
+            company = resolve_user_company(request.user)
             quote = None
             if quote_id:
                 try:
@@ -332,11 +342,17 @@ class RevenueGuardView(APIView):
                 except Quote.DoesNotExist:
                     quote = None
 
+            customer = None
+            if data.get('customer_id'):
+                customer = Customer.objects.filter(
+                    id=data['customer_id'], company=company,
+                ).first()
+
             from core.services.quote_analysis import assess_revenue_guard
             result = assess_revenue_guard(
                 total_cost=total_cost, quote_price=quote_price,
                 distance_km=distance_km, fuel_cost=fuel_cost,
-                company=company, quote=quote,
+                company=company, quote=quote, customer=customer,
             )
             result.setdefault('factors', [])  # legacy field
             return Response(result)
@@ -357,9 +373,54 @@ class AIQuoteAnalyzeView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
+    @staticmethod
+    def _derive_client_features(company, customer_id):
+        """Real per-customer signals from quote history: (tier, acceptance_rate).
+        Falls back to ('standard', 0.5) when there is no usable history."""
+        tier, hist_rate = 'standard', 0.5
+        try:
+            decided = Q(outcome__in=['accepted', 'rejected']) | Q(
+                status__in=['ACCEPTED', 'IT', 'COMPLETED', 'DECLINED'])
+            won = Q(outcome='accepted') | Q(status__in=['ACCEPTED', 'IT', 'COMPLETED'])
+            base = Quote.objects.filter(company=company, customer_id=customer_id)
+            total = base.filter(decided).distinct().count()
+            accepted = base.filter(won).distinct().count()
+            if total > 0:
+                hist_rate = accepted / total
+            if accepted >= 10:
+                tier = 'vip'
+            elif accepted >= 3:
+                tier = 'regular'
+            else:
+                tier = 'new'
+        except Exception as exc:
+            logger.warning('analyze: client feature derivation failed: %s', exc)
+        return tier, hist_rate
+
     def post(self, request):
         try:
             data = request.data
+            from core.views import resolve_user_company
+            company = resolve_user_company(request.user)
+
+            # Derive the win-model features from real data server-side; the
+            # client only names the customer and the pickup date.
+            client_tier = data.get('client_tier') or 'standard'
+            hist_rate = data.get('historical_acceptance_rate')
+            customer_id = data.get('customer_id')
+            if customer_id:
+                client_tier, derived_rate = self._derive_client_features(company, customer_id)
+                if hist_rate is None:
+                    hist_rate = derived_rate
+
+            days_until_departure = data.get('days_until_departure')
+            if days_until_departure is None and data.get('pickup_date'):
+                try:
+                    pickup = date.fromisoformat(str(data['pickup_date'])[:10])
+                    days_until_departure = max(0, (pickup - timezone.now().date()).days)
+                except (TypeError, ValueError):
+                    days_until_departure = None
+
             payload = {
                 'quote_total': data.get('quote_total'),
                 'direct_cost': data.get('direct_cost'),
@@ -374,10 +435,11 @@ class AIQuoteAnalyzeView(APIView):
                 'fuel_usage_litres': data.get('fuel_usage_litres'),
                 'fuel_price_used': data.get('fuel_price_used'),
                 'market_rate': data.get('market_rate'),
-                'client_tier': data.get('client_tier', 'standard'),
-                'days_until_departure': data.get('days_until_departure', 7),
+                'client_tier': client_tier,
+                'days_until_departure': days_until_departure if days_until_departure is not None else 7,
+                'historical_acceptance_rate': hist_rate if hist_rate is not None else 0.5,
+                'customer_id': customer_id,
             }
-            company = getattr(request.user, 'company', None)
             from core.services.quote_analysis import analyze_quote
             result = analyze_quote(payload, company=company)
             if not result.get('success'):
@@ -660,54 +722,22 @@ class QuoteOutcomeView(APIView):
         rejection_reason = request.data.get('rejection_reason', '')
         final_price = request.data.get('final_price')
 
-        # Update quote fields
-        quote.outcome = outcome
-        quote.rejection_reason = rejection_reason if outcome == 'rejected' else ''
-
-        if outcome == 'accepted':
-            quote.accepted_at = timezone.now()
-            quote.rejected_at = None
-        else:
-            quote.rejected_at = timezone.now()
-            quote.accepted_at = None
-
-        quote.save()
-
-        # Create QuoteOutcome record for ML training
-        final_price_val = Decimal(final_price) if final_price else quote.total_amount
-        margin_pct = ((final_price_val - (quote.base_rate + quote.fuel_surcharge + quote.toll_charges + quote.driver_allowance + quote.additional_charges)) / final_price_val * 100) if final_price_val > 0 else Decimal('0')
-
-        # Determine client tier based on quote history
-        client_tier = 'new'
-        if quote.customer:
-            customer_quote_count = Quote.objects.filter(customer=quote.customer, outcome='accepted').count()
-            if customer_quote_count >= 10:
-                client_tier = 'vip'
-            elif customer_quote_count >= 3:
-                client_tier = 'regular'
-
-        QuoteOutcome.objects.create(
-            quote=quote,
-            outcome=outcome,
-            rejection_reason=rejection_reason if outcome == 'rejected' else '',
-            final_price=final_price_val,
-            margin_pct=margin_pct,
-            distance_km=quote.distance,
-            vehicle_type=quote.vehicle_type,
-            origin=quote.origin,
-            destination=quote.destination,
-            weight_kg=quote.weight,
-            client_tier=client_tier,
-            fuel_price=quote.fuel_price_at_creation,
+        # One shared capture path (also used by the public accept link and
+        # status updates) — updates the quote fields, upserts the single
+        # QuoteOutcome row per quote, and snapshots the ML features.
+        # allow_flip: this is the deliberate operator-correction path, so it
+        # may overwrite an existing opposite label.
+        from core.services.quote_outcome_capture import record_quote_outcome
+        record = record_quote_outcome(
+            quote, outcome,
+            rejection_reason=rejection_reason, final_price=final_price,
+            allow_flip=True,
         )
-
-        # Close the ML flywheel: a fresh outcome may be enough to (re)train the
-        # win-probability model. Fire-and-forget so it never delays the response.
-        try:
-            from core.services.quote_training import maybe_retrain_win_model_async
-            maybe_retrain_win_model_async()
-        except Exception:
-            pass
+        if record is None:
+            return Response({
+                'success': False,
+                'error': 'Failed to record outcome',
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         return Response({
             'success': True,
@@ -724,8 +754,12 @@ class QuoteModelStatsView(APIView):
     def get(self, request):
         """Return current state of the quoting model."""
         try:
+            from core.views import resolve_user_company
+            company = resolve_user_company(request.user)
+            # Tenant-scoped: never expose other operators' outcome volume.
             real_quotes_count = QuoteOutcome.objects.filter(
-                outcome__in=['accepted', 'rejected']
+                outcome__in=['accepted', 'rejected'],
+                quote__company=company,
             ).count()
 
             # Report ONLY what is real. A model exists when its metadata file has
@@ -748,7 +782,7 @@ class QuoteModelStatsView(APIView):
             # profit sweet-spot curve, and it learns on the installed sklearn stack.
             try:
                 from core.services.quote_training import win_model_status
-                win = win_model_status()
+                win = win_model_status(company=company)
             except Exception:
                 win = None
 
@@ -925,8 +959,11 @@ class QuoteBenchmarkView(APIView):
         Returns market average, range, and recommendation.
         """
         try:
-            origin = request.query_params.get('origin', '').upper()
-            destination = request.query_params.get('destination', '').upper()
+            from core.services.lane_benchmark import (
+                compute_lane_benchmark, canon_code, lookup_sa_estimate, _lane_q,
+            )
+            origin = canon_code(request.query_params.get('origin', ''))
+            destination = canon_code(request.query_params.get('destination', ''))
             vehicle_type = request.query_params.get('vehicle_type', '').lower()
 
             if not origin or not destination or not vehicle_type:
@@ -938,17 +975,19 @@ class QuoteBenchmarkView(APIView):
             # Cross-platform anonymized benchmark first (pools won quotes across
             # ALL operators, k-anonymity enforced so no single operator's pricing
             # is exposed). Falls back to own-company data, then hardcoded estimates.
-            from core.services.lane_benchmark import compute_lane_benchmark
             platform = compute_lane_benchmark(origin, destination, vehicle_type)
             if not platform.get('available'):
                 # Retry at lane level (all vehicle types) before falling back.
                 platform = compute_lane_benchmark(origin, destination)
 
-            # Query this operator's own accepted quotes on this lane (fallback layer)
+            # Query this operator's own accepted quotes on this lane (fallback
+            # layer). _lane_q matches historical alias spellings (DUR/DURBAN)
+            # against the canonical query code.
+            from core.views import resolve_user_company
             lane_quotes = Quote.objects.filter(
-                company=request.user.company,
-                origin__iexact=origin,
-                destination__iexact=destination,
+                _lane_q('origin', origin),
+                _lane_q('destination', destination),
+                company=resolve_user_company(request.user),
                 vehicle_type__icontains=vehicle_type,
                 outcome='accepted',
                 created_at__gte=timezone.now() - timedelta(days=90)
@@ -958,16 +997,8 @@ class QuoteBenchmarkView(APIView):
             source = 'company'
             distinct_operators = None
 
-            # Fallback to hardcoded SA market averages
-            SA_MARKET_BENCHMARKS = {
-                ('JHB', 'CPT', 'interlink'): {'avg': 43800, 'low': 38000, 'high': 52000},
-                ('JHB', 'DBN', 'interlink'): {'avg': 17000, 'low': 14000, 'high': 20000},
-                ('CPT', 'DBN', 'interlink'): {'avg': 52000, 'low': 45000, 'high': 90000},
-                ('JHB', 'CPT', 'truck'): {'avg': 38900, 'low': 34000, 'high': 46000},
-                ('JHB', 'DBN', 'truck'): {'avg': 15000, 'low': 12000, 'high': 18000},
-            }
-
-            lane_key = (origin, destination, vehicle_type)
+            # Hardcoded SA market averages live in lane_benchmark (single source).
+            sa_estimate = lookup_sa_estimate(origin, destination, vehicle_type)
 
             if platform.get('available'):
                 # Real cross-platform benchmark (preferred)
@@ -990,12 +1021,11 @@ class QuoteBenchmarkView(APIView):
                 market_range_high = int(stats['max_price'] or 0)
                 confidence = 'high'
                 source = 'company'
-            elif lane_key in SA_MARKET_BENCHMARKS:
+            elif sa_estimate:
                 # Fallback to hardcoded
-                benchmark = SA_MARKET_BENCHMARKS[lane_key]
-                market_avg_rate = benchmark['avg']
-                market_range_low = benchmark['low']
-                market_range_high = benchmark['high']
+                market_avg_rate = sa_estimate['avg']
+                market_range_low = sa_estimate['low']
+                market_range_high = sa_estimate['high']
                 confidence = 'medium' if data_points >= 5 else 'low'
                 source = 'estimate'
             else:

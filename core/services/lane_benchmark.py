@@ -25,12 +25,45 @@ from datetime import timedelta
 from decimal import Decimal
 
 from django.utils import timezone
-from django.db.models import Count
+from django.db.models import Count, Q
 
 logger = logging.getLogger(__name__)
 
 # Statuses that mean the quote was won / accepted by the customer.
 WON_STATUSES = ['ACCEPTED', 'IT', 'COMPLETED']
+
+# Alternate spellings of lane codes seen in stored Quote.origin/destination
+# (the frontend historically emitted 'DUR' for Durban while the estimate
+# tables key on 'DBN'). Everything maps onto one canonical code so lane cells
+# and estimate lookups never fragment on spelling.
+_CITY_ALIASES = {
+    'DUR': 'DBN', 'DURBAN': 'DBN',
+    'JOHANNESBURG': 'JHB',
+    'CAPE TOWN': 'CPT',
+    'PRETORIA': 'PTA',
+    'PORT ELIZABETH': 'PE', 'GQEBERHA': 'PE',
+    'BLOEMFONTEIN': 'BFN',
+}
+
+
+def canon_code(code):
+    """Canonical uppercase lane code for a city code/name (e.g. DUR -> DBN)."""
+    c = (code or '').strip().upper()
+    return _CITY_ALIASES.get(c, c)
+
+
+def _code_variants(code):
+    """Every stored spelling that should match this lane code."""
+    c = canon_code(code)
+    return {c} | {alias for alias, canon in _CITY_ALIASES.items() if canon == c}
+
+
+def _lane_q(field, code):
+    """Q object matching a Quote location field against all code variants."""
+    q = Q()
+    for variant in _code_variants(code):
+        q |= Q(**{f'{field}__iexact': variant})
+    return q
 
 # Distinct operators required before a cell is exposed (in addition to k_anonymity).
 MIN_DISTINCT_OPERATORS = 2
@@ -94,7 +127,7 @@ def _seasonality_for(values_with_months):
 
 
 def compute_lane_benchmark(origin, destination, vehicle_type=None,
-                           k_anonymity=5, days=180):
+                           k_anonymity=5, days=180, exclude_quote_id=None):
     """
     Compute an anonymized, cross-platform benchmark for a single lane.
 
@@ -143,13 +176,18 @@ def compute_lane_benchmark(origin, destination, vehicle_type=None,
         since = timezone.now() - timedelta(days=days)
 
         qs = Quote.objects.filter(
-            origin__iexact=origin,
-            destination__iexact=destination,
+            _lane_q('origin', origin),
+            _lane_q('destination', destination),
             status__in=WON_STATUSES,
             created_at__gte=since,
         )
         if vehicle_type:
             qs = qs.filter(vehicle_type__icontains=vehicle_type)
+        if exclude_quote_id:
+            # Callers benchmarking a specific quote must not see that quote's
+            # own price inside its benchmark (k-anonymity is re-checked below
+            # on the excluded set, so thresholds stay honest).
+            qs = qs.exclude(id=exclude_quote_id)
 
         # Pull only what we need. Note: NOT filtered by company — cross-platform.
         rows = list(
@@ -211,61 +249,87 @@ def compute_lane_benchmark(origin, destination, vehicle_type=None,
 
 
 # Coarse SA market averages (ZAR) used only as a last-resort honest estimate
-# when there's no real won-quote data on a lane yet.
-_SA_MARKET_ESTIMATES = {
-    ('JHB', 'CPT', 'interlink'): 43800, ('JHB', 'DBN', 'interlink'): 17000,
-    ('CPT', 'DBN', 'interlink'): 52000, ('JHB', 'CPT', 'truck'): 38900,
-    ('JHB', 'DBN', 'truck'): 15000,
+# when there's no real won-quote data on a lane yet. Single source of truth —
+# the benchmark API view imports this too. Keys are CANONICAL codes (canon_code).
+SA_MARKET_ESTIMATES = {
+    ('JHB', 'CPT', 'interlink'): {'avg': 43800, 'low': 38000, 'high': 52000},
+    ('JHB', 'DBN', 'interlink'): {'avg': 17000, 'low': 14000, 'high': 20000},
+    ('CPT', 'DBN', 'interlink'): {'avg': 52000, 'low': 45000, 'high': 90000},
+    ('JHB', 'CPT', 'truck'): {'avg': 38900, 'low': 34000, 'high': 46000},
+    ('JHB', 'DBN', 'truck'): {'avg': 15000, 'low': 12000, 'high': 18000},
 }
 
+# How far back the own-company fallback looks. Without a window, years-old
+# won quotes (pre fuel-price/inflation moves) would anchor today's "market".
+COMPANY_FALLBACK_DAYS = 365
 
-def resolve_market_rate(origin, destination, vehicle_type=None, company=None):
+
+def lookup_sa_estimate(origin, destination, vehicle_type=None):
+    """The hardcoded estimate entry for a lane, or None. Codes are canonicalized."""
+    o, d = canon_code(origin), canon_code(destination)
+    vt = (vehicle_type or '').strip().lower() or None
+    for key in ((o, d, vt), (o, d, 'truck'), (o, d, 'interlink')):
+        if key in SA_MARKET_ESTIMATES:
+            return SA_MARKET_ESTIMATES[key]
+    return None
+
+
+def resolve_market_rate(origin, destination, vehicle_type=None, company=None,
+                        exclude_quote_id=None):
     """Resolve a REAL market/benchmark rate for a lane, with provenance.
 
     Cascade (most-trustworthy first): cross-platform anonymized benchmark ->
-    lane-level cross-platform -> this operator's own won quotes -> coarse SA
-    estimate -> None. Returns (rate: float|None, source: str). Never raises.
+    lane-level cross-platform -> this operator's own won quotes (last
+    COMPANY_FALLBACK_DAYS; skipped entirely when company is None so a raw
+    cross-tenant average can never leak) -> coarse SA estimate -> None.
+    Pass exclude_quote_id when benchmarking a specific quote so its own price
+    never sits inside its own benchmark.
+    Returns (rate: float|None, source: str). Never raises.
     `source` is one of: platform | platform_lane | company | estimate | none.
     """
     origin = (origin or '').strip()
     destination = (destination or '').strip()
     if not origin or not destination:
         return None, 'none'
-    o, d = origin.upper(), destination.upper()
+    o, d = canon_code(origin), canon_code(destination)
     vt = (vehicle_type or '').strip().lower() or None
 
     # 1-2) Cross-platform anonymized benchmark (vehicle-specific, then lane-level).
     try:
-        b = compute_lane_benchmark(o, d, vt)
+        b = compute_lane_benchmark(o, d, vt, exclude_quote_id=exclude_quote_id)
         if b.get('available') and b.get('market_avg_rate'):
             return float(b['market_avg_rate']), 'platform'
-        b = compute_lane_benchmark(o, d)
+        b = compute_lane_benchmark(o, d, exclude_quote_id=exclude_quote_id)
         if b.get('available') and b.get('market_avg_rate'):
             return float(b['market_avg_rate']), 'platform_lane'
     except Exception as exc:  # never raise
         logger.warning('resolve_market_rate: platform lookup failed: %s', exc)
 
-    # 3) This operator's own won quotes on the lane (point-in-time, not anonymized).
-    try:
-        from core.models import Quote
-        from django.db.models import Avg
-        qs = Quote.objects.filter(
-            origin__iexact=o, destination__iexact=d, status__in=WON_STATUSES,
-        )
-        if company is not None:
-            qs = qs.filter(company=company)
-        if vt:
-            qs = qs.filter(vehicle_type__icontains=vt)
-        agg = qs.exclude(total_amount__isnull=True).aggregate(a=Avg('total_amount'), n=Count('id'))
-        if (agg['n'] or 0) >= 3 and agg['a']:
-            return float(agg['a']), 'company'
-    except Exception as exc:  # never raise
-        logger.warning('resolve_market_rate: company lookup failed: %s', exc)
+    # 3) This operator's own recent won quotes on the lane (never cross-tenant).
+    if company is not None:
+        try:
+            from core.models import Quote
+            from django.db.models import Avg
+            since = timezone.now() - timedelta(days=COMPANY_FALLBACK_DAYS)
+            qs = Quote.objects.filter(
+                _lane_q('origin', o), _lane_q('destination', d),
+                status__in=WON_STATUSES, company=company,
+                created_at__gte=since,
+            )
+            if vt:
+                qs = qs.filter(vehicle_type__icontains=vt)
+            if exclude_quote_id:
+                qs = qs.exclude(id=exclude_quote_id)
+            agg = qs.exclude(total_amount__isnull=True).aggregate(a=Avg('total_amount'), n=Count('id'))
+            if (agg['n'] or 0) >= 3 and agg['a']:
+                return float(agg['a']), 'company'
+        except Exception as exc:  # never raise
+            logger.warning('resolve_market_rate: company lookup failed: %s', exc)
 
     # 4) Coarse SA estimate (honest last resort).
-    for key in ((o, d, vt), (o, d, 'truck'), (o, d, 'interlink')):
-        if key in _SA_MARKET_ESTIMATES:
-            return float(_SA_MARKET_ESTIMATES[key]), 'estimate'
+    est = lookup_sa_estimate(o, d, vt)
+    if est:
+        return float(est['avg']), 'estimate'
 
     return None, 'none'
 

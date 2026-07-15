@@ -24,7 +24,7 @@ class Command(BaseCommand):
         # Query real quote outcomes
         real_outcomes = QuoteOutcome.objects.filter(
             outcome__in=['accepted', 'rejected']
-        ).order_by('created_at')
+        ).select_related('quote').order_by('created_at')
 
         real_count = real_outcomes.count()
         self.stdout.write(f'Found {real_count} real quote outcomes in database')
@@ -58,10 +58,30 @@ class Command(BaseCommand):
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
 
+            skipped = 0
             for outcome in real_outcomes:
                 # Map outcome to training row
                 # Simplified mapping — in production, you'd extract more detailed features
-                margin_pct = float(outcome.margin_pct) if outcome.margin_pct else 0
+
+                # Recompute the target from the quote's cost components rather
+                # than trusting QuoteOutcome.margin_pct: that column has held
+                # two different definitions over time (with/without base_rate),
+                # while this model's synthetic baseline defines margin over
+                # price with base_rate counted as cost.
+                margin_frac = None
+                quote = outcome.quote
+                final = float(outcome.final_price) if outcome.final_price else 0.0
+                if quote is not None and final > 0:
+                    cost = float(
+                        (quote.base_rate or 0) + (quote.fuel_surcharge or 0)
+                        + (quote.toll_charges or 0) + (quote.driver_allowance or 0)
+                        + (quote.additional_charges or 0)
+                    )
+                    if cost > 0:
+                        margin_frac = (final - cost) / final
+                if margin_frac is None or not (0.0 <= margin_frac <= 0.6):
+                    skipped += 1
+                    continue
 
                 # Map vehicle_type to truck_type integer
                 truck_type_map = {
@@ -102,11 +122,14 @@ class Command(BaseCommand):
                     'fleet_utilization': 0.75,
                     'deadhead_prob': 0.3,
                     'load_value_zar': 0,
-                    'actual_margin_pct': margin_pct / 100,  # Convert to decimal (0.18 = 18%)
+                    'actual_margin_pct': margin_frac,  # decimal fraction (0.18 = 18%)
                 }
                 writer.writerow(row)
 
-        self.stdout.write(self.style.SUCCESS(f'Exported {real_count} real outcomes to {training_csv_path}'))
+        self.stdout.write(self.style.SUCCESS(
+            f'Exported {real_count - skipped} real outcomes to {training_csv_path}'
+            + (f' ({skipped} skipped: no recomputable margin)' if skipped else '')
+        ))
 
         # Load synthetic baseline (if available)
         synthetic_csv_path = Path(settings.MEDIA_ROOT) / 'ml_models' / 'quote_training_data.csv'

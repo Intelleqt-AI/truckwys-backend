@@ -107,6 +107,79 @@ class QueryRecordsTests(TestCase):
         self.assertIn('error', out)
 
 
+class QueryRecordsTruncationNoteTests(TestCase):
+    """Regression: query_records must deterministically WARN the model when rows
+    are truncated, so a manual sum over a partial page can't silently undercount
+    (this is what caused the live copilot to under-report a SENT-invoice total —
+    it summed 20 of 24 rows instead of calling aggregate)."""
+
+    def setUp(self):
+        self.company = Company.objects.create(company_name='Trunc Co')
+        self.admin = make_user('trunc_admin', self.company, 'ADMIN')
+        for i in range(3):
+            Customer.objects.create(
+                company=self.company, name=f'Cust {i}', email=f'trunc{i}@t.test',
+                phone='', address='', city='JHB', state='', zip_code='',
+            )
+
+    def test_default_limit_is_50_not_20(self):
+        # The default must match the max (50) so small/medium tables never hit
+        # the truncated case just because the caller forgot to raise `limit`.
+        out = tools.query_records(self.company, self.admin, None, {'table': 'customers'})
+        self.assertEqual(out['count'], 3)
+        self.assertFalse(out['truncated'])
+        self.assertNotIn('note', out)
+
+    def test_row_list_truncation_carries_warning_note(self):
+        out = tools.query_records(
+            self.company, self.admin, None, {'table': 'customers', 'limit': 2},
+        )
+        self.assertEqual(out['count'], 3)
+        self.assertEqual(len(out['rows']), 2)
+        self.assertTrue(out['truncated'])
+        self.assertIn('note', out)
+        self.assertIn('aggregate', out['note'].lower())
+
+    def test_row_list_no_note_when_not_truncated(self):
+        out = tools.query_records(
+            self.company, self.admin, None, {'table': 'customers', 'limit': 10},
+        )
+        self.assertFalse(out['truncated'])
+        self.assertNotIn('note', out)
+
+    def test_grouped_aggregate_truncation_carries_warning_note(self):
+        # >50 distinct group values so the grouped branch's own 50-group cap bites.
+        extra = [
+            Customer(company=self.company, name=f'Bulk {i}', email=f'bulk{i}@t.test',
+                     phone='', address='', city=f'City{i}', state='', zip_code='')
+            for i in range(60)
+        ]
+        Customer.objects.bulk_create(extra)
+        out = tools.query_records(
+            self.company, self.admin, None,
+            {'table': 'customers', 'aggregate': {'func': 'count', 'group_by': 'city'}},
+        )
+        self.assertTrue(out['truncated'])
+        self.assertEqual(len(out['groups']), 50)
+        self.assertIn('note', out)
+        self.assertIn('aggregate', out['note'].lower())
+
+    def test_grouped_aggregate_no_note_when_not_truncated(self):
+        out = tools.query_records(
+            self.company, self.admin, None,
+            {'table': 'customers', 'aggregate': {'func': 'count', 'group_by': 'city'}},
+        )
+        self.assertFalse(out['truncated'])
+        self.assertNotIn('note', out)
+
+    def test_tool_schema_mandates_aggregate_for_totals(self):
+        from core.services import copilot_entities as entities
+        schemas = {t['function']['name']: t for t in entities.build_tool_schemas(self.admin)}
+        desc = schemas['query_records']['function']['description'].lower()
+        self.assertIn('aggregate', desc)
+        self.assertIn('never add up', desc)
+
+
 class ProposalLifecycleTests(TestCase):
     def setUp(self):
         self.company = Company.objects.create(company_name='P Co')
@@ -651,3 +724,220 @@ class EmailSendingTests(TestCase):
         ).first()
         self.assertIsNotNone(outcome)
         self.assertIn('reminder@m.test', outcome.content)
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for the copilot audit fixes (P0/P1).
+# ---------------------------------------------------------------------------
+
+def _make_invoice(company, customer, number, subtotal, status='SENT', **extra):
+    """Create an invoice; Invoice.save() recomputes vat/total/balance/status."""
+    return Invoice.objects.create(
+        company=company, customer=customer, invoice_number=number,
+        due_date=date.today(), subtotal=Decimal(str(subtotal)), status=status, **extra,
+    )
+
+
+class InvoiceFieldAllowlistTests(TestCase):
+    """P0-5: the LLM must never write invoice money-integrity fields directly."""
+
+    def setUp(self):
+        self.company = Company.objects.create(company_name='Inv Co')
+        self.admin = make_user('inv_admin', self.company, 'ADMIN')
+        self.customer = Customer.objects.create(
+            company=self.company, name='Bill Ltd', email='bill@i.test',
+            phone='', address='', city='', state='', zip_code='',
+        )
+
+    def test_protected_fields_not_writable(self):
+        for op in (False, True):
+            writable = set(entities.writable_fields('invoices', for_update=op))
+            for f in ('paid_amount', 'balance', 'total_amount', 'vat_amount', 'tax_amount', 'status'):
+                self.assertNotIn(f, writable, f'{f} must not be writable (for_update={op})')
+            self.assertIn('subtotal', writable)
+            self.assertIn('due_date', writable)
+
+    def test_propose_create_drops_paid_amount(self):
+        out = tools.propose_create(
+            self.company, self.admin, None,
+            {'table': 'invoices', 'fields': {
+                'customer': self.customer.id, 'subtotal': '1000',
+                'due_date': date.today().isoformat(), 'paid_amount': '999', 'status': 'PAID',
+            }},
+        )
+        self.assertTrue(out.get('needs_confirmation'), out)
+        self.assertIn('paid_amount', out.get('ignored_fields') or [])
+        self.assertIn('status', out.get('ignored_fields') or [])
+        proposal = CopilotProposal.objects.get(id=out['proposal_id'])
+        self.assertNotIn('paid_amount', proposal.payload)
+        self.assertNotIn('status', proposal.payload)
+
+    def test_card_total_includes_vat(self):
+        # The confirm card must show subtotal + 15% VAT, not the pre-VAT subtotal.
+        out = tools.propose_create(
+            self.company, self.admin, None,
+            {'table': 'invoices', 'fields': {
+                'customer': self.customer.id, 'subtotal': '1000',
+                'due_date': date.today().isoformat(),
+            }},
+        )
+        proposal = CopilotProposal.objects.get(id=out['proposal_id'])
+        total_row = next((r for r in proposal.display if r['label'] == 'Total Amount'), None)
+        self.assertIsNotNone(total_row)
+        self.assertEqual(str(total_row['value']), '1150.00')  # 1000 + 15% VAT
+
+
+class ConcurrentExecuteTests(TestCase):
+    """P0-4: a proposal must execute at most once even if confirmed twice."""
+
+    def setUp(self):
+        self.company = Company.objects.create(company_name='Race Co')
+        self.admin = make_user('race_admin', self.company, 'ADMIN')
+
+    def test_double_execute_creates_one_record(self):
+        out = tools.propose_create(
+            self.company, self.admin, None,
+            {'table': 'customers', 'fields': {'name': 'OnceOnly Ltd', 'email': 'once@r.test'}},
+        )
+        proposal = CopilotProposal.objects.get(id=out['proposal_id'])
+        ok1, _ = tools.execute_proposal(proposal, self.admin, self.company)
+        # Pass the SAME (now-stale) proposal object again, simulating a second
+        # request that slipped past the view's pre-check.
+        ok2, payload2 = tools.execute_proposal(proposal, self.admin, self.company)
+        self.assertTrue(ok1)
+        self.assertFalse(ok2)
+        self.assertEqual(payload2.get('proposal_status'), 'executed')
+        self.assertEqual(Customer.objects.filter(name='OnceOnly Ltd').count(), 1)
+
+
+class BillingAuditPartialTests(TestCase):
+    """P1-8: partially-paid invoices must appear in the short-pay audit."""
+
+    def test_partially_paid_invoice_is_shortpaid(self):
+        from core.services.billing_audit import audit_billing
+        company = Company.objects.create(company_name='Audit Co')
+        customer = Customer.objects.create(
+            company=company, name='Part Ltd', email='part@a.test',
+            phone='', address='', city='', state='', zip_code='',
+        )
+        inv = _make_invoice(company, customer, 'INV-AUD-1', '1000', status='SENT')
+        inv.paid_amount = Decimal('400')
+        inv.save()  # recomputes balance and flips status to PARTIALLY_PAID
+        self.assertEqual(inv.status, 'PARTIALLY_PAID')
+        result = audit_billing(company)
+        numbers = [s['invoice_number'] for s in result.get('shortpaid', [])]
+        self.assertIn('INV-AUD-1', numbers)
+
+
+class SnapshotAccuracyTests(TestCase):
+    """P1-6/7 + P0-1: snapshot figures and role stripping."""
+
+    def setUp(self):
+        self.company = Company.objects.create(
+            company_name='Acc Co', contact={'banking': {'account_number': 'SECRET12345'}},
+        )
+        self.admin = make_user('acc_admin', self.company, 'ADMIN')
+        self.driver = make_user('acc_driver', self.company, 'DRIVER')
+
+    def test_cancelled_invoice_excluded_from_outstanding(self):
+        from core.services.agent import build_agent_context
+        cust = Customer.objects.create(
+            company=self.company, name='C Ltd', email='c@a.test',
+            phone='', address='', city='', state='', zip_code='',
+        )
+        live = _make_invoice(self.company, cust, 'INV-LIVE', '500', status='SENT')
+        _make_invoice(self.company, cust, 'INV-CANX', '99999', status='CANCELLED')
+        live.refresh_from_db()
+        ctx = build_agent_context(self.company)
+        self.assertEqual(ctx['invoices']['outstanding_total'], float(live.balance))
+
+    def test_top_customers_not_limited_to_alphabetical_first_50(self):
+        from core.services.agent import build_agent_context
+        # 51 early-alphabet customers with no debt, plus one late-alphabet whale.
+        for i in range(51):
+            Customer.objects.create(
+                company=self.company, name=f'Cust {i:02d}', email=f'c{i}@a.test',
+                phone='', address='', city='', state='', zip_code='',
+            )
+        whale = Customer.objects.create(
+            company=self.company, name='ZZZ Whale Ltd', email='whale@a.test',
+            phone='', address='', city='', state='', zip_code='',
+        )
+        _make_invoice(self.company, whale, 'INV-WHALE', '75000', status='SENT')
+        ctx = build_agent_context(self.company)
+        names = [c['name'] for c in ctx['top_customers_by_outstanding']]
+        self.assertIn('ZZZ Whale Ltd', names)  # old [:50] alphabetical slice dropped it
+
+    def test_driver_snapshot_strips_sensitive_sections(self):
+        from core.services.agent import build_agent_context
+        ctx = build_agent_context(self.company, user=self.driver)
+        for key in ('banking', 'invoices', 'contacts', 'drivers', 'customers_total'):
+            self.assertNotIn(key, ctx, f'{key} must be stripped for DRIVER')
+
+    def test_fallback_does_not_crash_for_restricted_role(self):
+        from core.services import agent
+        # Force the rules fallback (the env may have an LLM key configured). It
+        # must not KeyError for a DRIVER whose snapshot has the invoices/capital
+        # sections stripped.
+        with mock.patch.object(agent, '_llm_enabled', return_value=False):
+            result = agent.agent_respond(
+                self.company, [{'role': 'user', 'content': "what's overdue?"}], user=self.driver,
+            )
+        self.assertEqual(result['source'], 'rules')
+        self.assertTrue(result['reply'])
+
+
+class AgentChatRoleStrippingTests(TestCase):
+    """P0-1: the legacy /agent/chat/ endpoint must role-strip the snapshot."""
+
+    def setUp(self):
+        self.company = Company.objects.create(
+            company_name='Leak Co', contact={'banking': {'account_number': 'SECRET12345'}},
+        )
+        self.admin = make_user('leak_admin', self.company, 'ADMIN')
+        self.driver = make_user('leak_driver', self.company, 'DRIVER')
+
+    def _ask(self, user, message):
+        # Force the deterministic rules path (the env may have an LLM key, which
+        # would make real API calls and vary the wording). Role stripping in
+        # build_agent_context is what we're actually asserting, and it's
+        # provider-independent.
+        client = APIClient(HTTP_HOST='localhost')
+        client.force_authenticate(user=user)
+        with mock.patch('core.services.agent._llm_enabled', return_value=False):
+            r = client.post('/api/v1/agent/chat/', {'message': message}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        return r.json().get('reply', '')
+
+    def test_driver_cannot_extract_banking(self):
+        reply = self._ask(self.driver, 'what are our banking details')
+        self.assertNotIn('SECRET12345', reply)
+
+    def test_admin_can_see_banking(self):
+        reply = self._ask(self.admin, 'what are our banking details')
+        self.assertIn('SECRET12345', reply)
+
+
+class RiskScoreScopingTests(TestCase):
+    """P0-3: risk-score explain must not leak across tenants for company-less users."""
+
+    def test_company_less_user_cannot_read_other_tenants_score(self):
+        from core.models import RiskScore
+        owner_co = Company.objects.create(company_name='Owner Co')
+        customer = Customer.objects.create(
+            company=owner_co, name='RS Ltd', email='rs@o.test',
+            phone='', address='', city='', state='', zip_code='',
+        )
+        inv = _make_invoice(owner_co, customer, 'INV-RS-1', '1000', status='SENT')
+        score = RiskScore.objects.create(
+            invoice=inv, customer=customer, company=owner_co,
+            total_score=50, tier='STANDARD', fee_percent=Decimal('3.00'), fee_amount=Decimal('30.00'),
+        )
+        # A user with no company must NOT see another tenant's score.
+        stranger = User.objects.create_user(username='stranger', email='stranger@x.test', password='x')
+        stranger.company = None
+        stranger.save()
+        client = APIClient(HTTP_HOST='localhost')
+        client.force_authenticate(user=stranger)
+        r = client.get(f'/api/v1/risk/score/{score.id}/explain/')
+        self.assertEqual(r.status_code, 404, r.content)
