@@ -63,6 +63,39 @@ class Vehicle(models.Model):
         help_text='Fuel consumption in litres per km (default: 0.35 L/km for trucks)'
     )
 
+    # Cartrack Fleet API — live telematics (current-state, updated in place on each poll)
+    cartrack_registration = models.CharField(
+        max_length=50,
+        blank=True,
+        help_text='Registration string Cartrack identifies this vehicle by, if it differs from plate'
+    )
+    latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    heading = models.DecimalField(
+        max_digits=5, decimal_places=1, null=True, blank=True,
+        help_text='Compass heading in degrees (0-360)'
+    )
+    speed_kmh = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    ignition_on = models.BooleanField(null=True, blank=True)
+    last_location_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text='Timestamp of the last Cartrack location reading'
+    )
+
+    # Cartrack extended telemetry — cargo/cabin temperature probes (up to 4),
+    # reported informational driver reference, and door state.
+    temp1 = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    temp2 = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    temp3 = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    temp4 = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    cartrack_current_driver_ref = models.CharField(
+        max_length=100, blank=True,
+        help_text='Raw driver/tag identifier Cartrack reports as currently in this vehicle. '
+                   'Informational only — does not affect the authoritative `driver` field.'
+    )
+    door_open = models.BooleanField(null=True, blank=True)
+    last_door_event_at = models.DateTimeField(null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     

@@ -149,6 +149,67 @@ class XeroStatusView(APIView):
         }, status=status.HTTP_200_OK)
 
 
+class CartrackStatusView(APIView):
+    """
+    Get Cartrack connection status for the current user's company.
+    GET /api/v1/integrations/cartrack/status/
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        company = _user_company(request)
+        return Response({
+            'configured': bool(company.cartrack_username and company.cartrack_password),
+            'connected': bool(company.cartrack_connected_at),
+            'base_url': company.cartrack_base_url,
+            'connected_at': company.cartrack_connected_at,
+            'last_status_sync': company.cartrack_last_status_sync,
+        }, status=status.HTTP_200_OK)
+
+
+class CartrackConnectView(APIView):
+    """
+    Save and validate this company's Cartrack Fleet API credentials.
+    POST /api/v1/integrations/cartrack/connect/
+    Body: {username, password, base_url}
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from core.utils.crypto import encrypt_secret
+        from core.integrations.cartrack import CartrackClient, CartrackAPIError
+
+        username = (request.data.get('username') or '').strip()
+        password = request.data.get('password') or ''
+        base_url = (request.data.get('base_url') or '').strip().rstrip('/')
+
+        if not username or not password or not base_url:
+            return Response(
+                {'error': 'username, password and base_url are all required'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            CartrackClient(username, password, base_url).get_vehicles()
+        except CartrackAPIError as exc:
+            return Response(
+                {'error': f'Could not connect to Cartrack with these credentials: {exc}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        company = _user_company(request)
+        company.cartrack_username = username
+        company.cartrack_password = encrypt_secret(password)
+        company.cartrack_base_url = base_url
+        company.cartrack_connected_at = timezone.now()
+        company.save(update_fields=[
+            'cartrack_username', 'cartrack_password', 'cartrack_base_url', 'cartrack_connected_at',
+        ])
+
+        return Response({'success': True, 'message': 'Cartrack connected successfully'},
+                        status=status.HTTP_200_OK)
+
+
 class XeroSyncInvoicesView(APIView):
     """
     Push this company's outstanding invoices to Xero.
