@@ -41,7 +41,8 @@ from .views_integrations import (
     XeroConnectView, XeroCallbackView, XeroDisconnectView, XeroStatusView,
     XeroSyncInvoicesView, XeroSyncPaymentsView, XeroSyncLogView, FleetImportTripsView,
     CreditLookupView, DashboardInsightsView, CashFlowForecastView,
-    FleetTripSyncView, FleetTripBulkSyncView, TripSyncView
+    FleetTripSyncView, FleetTripBulkSyncView, TripSyncView,
+    CartrackStatusView, CartrackConnectView,
 )
 from .views import RouteCalculatorView, LocationSuggestView, DashboardSignalsView, PasswordResetRequestView, PasswordResetConfirmView, IntegrationAPIKeyViewSet
 from .views_lender import (
@@ -194,6 +195,10 @@ urlpatterns = [
     path('integrations/xero/sync-invoices/', XeroSyncInvoicesView.as_view(), name='xero-sync-invoices'),
     path('integrations/xero/sync-payments/', XeroSyncPaymentsView.as_view(), name='xero-sync-payments'),
     path('integrations/xero/sync-log/', XeroSyncLogView.as_view(), name='xero-sync-log'),
+
+    # Cartrack Fleet API integration endpoints
+    path('integrations/cartrack/status/', CartrackStatusView.as_view(), name='cartrack-status'),
+    path('integrations/cartrack/connect/', CartrackConnectView.as_view(), name='cartrack-connect'),
 
     # Fleet Integration endpoints (NEW - Phase 4)
     path('integrations/fleet/import-trips/', FleetImportTripsView.as_view(), name='fleet-import-trips'),

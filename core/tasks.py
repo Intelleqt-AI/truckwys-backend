@@ -524,3 +524,43 @@ def reindex_copilot_rag():
             logger.exception('Copilot RAG reindex failed for company %s', company.id)
     logger.info('Copilot RAG reindex complete: %s invoice embeddings written.', total)
     return {'indexed': total, 'enabled': True}
+
+
+@shared_task(name='core.tasks.poll_cartrack_vehicle_status')
+def poll_cartrack_vehicle_status():
+    """Poll GET /vehicles/status from Cartrack for every company that has
+    credentials configured, updating each Vehicle's live location fields.
+    One company's failure never blocks the others."""
+    from core.models import Company
+    from core.services.cartrack_sync import poll_vehicle_status
+
+    companies_polled = 0
+    total_matched = 0
+    for company in Company.objects.exclude(cartrack_username__isnull=True).exclude(cartrack_username=''):
+        try:
+            result = poll_vehicle_status(company)
+            companies_polled += 1
+            total_matched += result['matched']
+        except Exception:
+            logger.exception('Cartrack vehicle-status poll failed for company %s', company.id)
+    return {'companies_polled': companies_polled, 'vehicles_matched': total_matched}
+
+
+@shared_task(name='core.tasks.poll_cartrack_door_events')
+def poll_cartrack_door_events():
+    """Poll GET /topics/vehicles/door from Cartrack for every company that has
+    credentials configured. A company without the DOOR topic granted (403)
+    fails independently of vehicle-status polling and of other companies."""
+    from core.models import Company
+    from core.services.cartrack_sync import poll_door_events
+
+    companies_polled = 0
+    total_applied = 0
+    for company in Company.objects.exclude(cartrack_username__isnull=True).exclude(cartrack_username=''):
+        try:
+            result = poll_door_events(company)
+            companies_polled += 1
+            total_applied += result['applied']
+        except Exception:
+            logger.exception('Cartrack door-event poll failed for company %s', company.id)
+    return {'companies_polled': companies_polled, 'events_applied': total_applied}

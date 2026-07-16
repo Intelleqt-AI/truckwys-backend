@@ -439,6 +439,7 @@ class AIQuoteAnalyzeView(APIView):
                 'days_until_departure': days_until_departure if days_until_departure is not None else 7,
                 'historical_acceptance_rate': hist_rate if hist_rate is not None else 0.5,
                 'customer_id': customer_id,
+                'skip_narrative': bool(data.get('skip_narrative')),
             }
             from core.services.quote_analysis import analyze_quote
             result = analyze_quote(payload, company=company)
