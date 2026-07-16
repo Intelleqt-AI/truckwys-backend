@@ -418,7 +418,10 @@ def analyze_quote(payload, company=None):
         'suggested_price': round(suggested_price, 2),
     }
 
-    narrative = _llm_narrative(structured)
+    # skip_narrative: callers that never display the narrative (e.g. the Quote
+    # Builder's live panel, which re-analyzes on every cost change) skip the
+    # synchronous OpenAI call — it dominates response time by seconds.
+    narrative = None if payload.get('skip_narrative') else _llm_narrative(structured)
     narrative_source = 'llm' if narrative else 'rules'
     if not narrative:
         narrative = _rule_based_narrative(cost, fuel, opt, market, suggested_price, quote_total)

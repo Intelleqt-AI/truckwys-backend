@@ -1,7 +1,7 @@
 # TENANCY AUDIT: 2026-03-15 — Fleet integration API endpoints
 # - FleetTripSyncAPIView: Uses authenticated requests, operates on specific Load IDs ✓
 # - FleetBookingSyncAPIView: Uses authenticated requests, operates on specific Load IDs ✓
-# - FleetVehicleStatusAPIView: Should filter by company - FIXED BELOW
+# - FleetVehicleStatusAPIView: Filters by company ✓
 # - FleetWebhookTripUpdateView: API key auth, operates on specific entities by ID ✓
 # - FleetWebhookVehicleEventView: API key auth, operates on specific entities by ID ✓
 # - FleetWebhookDriverEventView: API key auth, operates on specific entities by ID ✓
@@ -191,6 +191,11 @@ class FleetVehicleStatusAPIView(APIView):
 
     permission_classes = [IsAuthenticated]
 
+    # Cartrack's own guidance is to poll /vehicles/status every 10-30s; treat a
+    # reading older than ~2x that window as stale rather than trusting it blindly
+    # (the tracker itself can go offline without Cartrack's API reflecting that).
+    LOCATION_STALE_AFTER_SECONDS = 60
+
     @extend_schema(
         tags=['Fleet Management'],
         summary='Get vehicle status and availability',
@@ -230,19 +235,32 @@ class FleetVehicleStatusAPIView(APIView):
         """Get vehicle status and availability."""
         vehicle_id = request.query_params.get('vehicle_id')
 
+        vehicles = Vehicle.objects.filter(company=request.user.company)
         if vehicle_id:
             try:
-                vehicles = Vehicle.objects.filter(id=vehicle_id)
+                vehicles = vehicles.filter(id=vehicle_id)
             except ValueError:
                 return Response(
                     {'error': 'Invalid vehicle_id'},
                     status=status.HTTP_400_BAD_REQUEST
                 )
-        else:
-            vehicles = Vehicle.objects.all()
 
+        now = timezone.now()
         vehicle_data = []
         for vehicle in vehicles:
+            current_location = None
+            if vehicle.latitude is not None and vehicle.longitude is not None and vehicle.last_location_at:
+                age_seconds = (now - vehicle.last_location_at).total_seconds()
+                current_location = {
+                    'latitude': vehicle.latitude,
+                    'longitude': vehicle.longitude,
+                    'heading': vehicle.heading,
+                    'speed_kmh': vehicle.speed_kmh,
+                    'ignition_on': vehicle.ignition_on,
+                    'last_location_at': vehicle.last_location_at,
+                    'is_stale': age_seconds > self.LOCATION_STALE_AFTER_SECONDS,
+                }
+
             vehicle_data.append({
                 'id': vehicle.id,
                 'vin': vehicle.vin,
@@ -250,7 +268,7 @@ class FleetVehicleStatusAPIView(APIView):
                 'model': vehicle.model,
                 'plate': vehicle.plate,
                 'status': vehicle.status,
-                'current_location': None,  # TODO: Implement location tracking
+                'current_location': current_location,
                 'next_available': None  # TODO: Calculate from current loads
             })
 

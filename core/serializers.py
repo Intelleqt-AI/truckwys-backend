@@ -140,10 +140,16 @@ class VehicleSerializer(serializers.ModelSerializer):
             'uptime_score', 'maintenance_score', 'uptime_percentage', 'cost_per_km',
             'margin_per_trip', 'fuel_consumption_per_km', 'created_at', 'updated_at',
             'driver_name', 'vehicle_type_name', 'revenue_generated', 'total_trips',
-            'utilisation_rate'
+            'utilisation_rate', 'cartrack_registration', 'latitude', 'longitude',
+            'heading', 'speed_kmh', 'ignition_on', 'last_location_at',
+            'temp1', 'temp2', 'temp3', 'temp4', 'cartrack_current_driver_ref',
+            'door_open', 'last_door_event_at',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'driver_name', 'vehicle_type_name',
-                           'revenue_generated', 'total_trips', 'utilisation_rate']
+                           'revenue_generated', 'total_trips', 'utilisation_rate',
+                           'latitude', 'longitude', 'heading', 'speed_kmh', 'ignition_on',
+                           'last_location_at', 'temp1', 'temp2', 'temp3', 'temp4',
+                           'cartrack_current_driver_ref', 'door_open', 'last_door_event_at']
 
     def get_driver_name(self, obj):
         if not obj.driver:

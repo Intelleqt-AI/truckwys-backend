@@ -359,4 +359,16 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'core.tasks.reindex_copilot_rag',
         'schedule': crontab(minute='*/15'),
     },
+    # Poll Cartrack's live vehicle status every 20s (their own guidance is a
+    # 10-30s cadence). A plain float, not crontab — crontab's minimum
+    # granularity is one minute, too coarse for this.
+    'poll-cartrack-vehicle-status': {
+        'task': 'core.tasks.poll_cartrack_vehicle_status',
+        'schedule': 20.0,
+    },
+    # Door events don't need sub-minute cadence like position does.
+    'poll-cartrack-door-events': {
+        'task': 'core.tasks.poll_cartrack_door_events',
+        'schedule': crontab(minute='*/2'),
+    },
 }
