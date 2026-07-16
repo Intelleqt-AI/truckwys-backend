@@ -941,3 +941,203 @@ class RiskScoreScopingTests(TestCase):
         client.force_authenticate(user=stranger)
         r = client.get(f'/api/v1/risk/score/{score.id}/explain/')
         self.assertEqual(r.status_code, 404, r.content)
+
+
+class WithheldSectionsPromptTests(TestCase):
+    """Role-stripped snapshot sections must be DECLARED to the LLM as withheld,
+    so it answers 'you lack permission' instead of 'there are no invoices' (the
+    live wrong-answer this guards against)."""
+
+    def setUp(self):
+        self.company = Company.objects.create(company_name='Withheld Co')
+        self.admin = make_user('wh_admin', self.company, 'ADMIN')
+        self.driver = make_user('wh_driver', self.company, 'DRIVER')
+
+    def test_context_records_withheld_sections_for_driver(self):
+        from core.services.agent import build_agent_context
+        ctx = build_agent_context(self.company, user=self.driver)
+        withheld = ctx.get('_withheld_sections', [])
+        for key in ('invoices', 'contacts', 'drivers', 'quotes', 'fleet'):
+            self.assertIn(key, withheld)
+            self.assertNotIn(key, ctx)
+
+    def test_admin_context_has_no_withheld_marker(self):
+        from core.services.agent import build_agent_context
+        ctx = build_agent_context(self.company, user=self.admin)
+        self.assertNotIn('_withheld_sections', ctx)
+        self.assertIn('invoices', ctx)
+
+    def _system_prompt_for(self, user):
+        from core.services import agent
+        # _retrieved_block is patched out: with a real OPENAI_API_KEY in the env
+        # it would make a live embedding call for the RAG query.
+        with mock.patch.object(agent, '_llm_enabled', return_value=True), \
+             mock.patch.object(agent, '_provider', return_value='anthropic'), \
+             mock.patch.object(agent, '_retrieved_block', return_value=''), \
+             mock.patch.object(agent, '_llm_generate', return_value='ok') as gen:
+            result = agent.agent_respond(
+                self.company, [{'role': 'user', 'content': 'Total invoiced MTD?'}], user=user,
+            )
+        self.assertEqual(result['source'], 'llm', result)
+        return gen.call_args[0][0]
+
+    def test_driver_system_prompt_declares_withheld_invoices(self):
+        system = self._system_prompt_for(self.driver)
+        self.assertIn('WITHHELD DATA', system)
+        self.assertIn('invoices', system.split('WITHHELD DATA', 1)[1][:400])
+        self.assertIn("NEVER say the data doesn't exist", system)
+        # The marker must not leak into the snapshot JSON itself.
+        self.assertNotIn('_withheld_sections', system)
+
+    def test_admin_system_prompt_has_scope_but_no_withheld_clause(self):
+        system = self._system_prompt_for(self.admin)
+        self.assertNotIn('WITHHELD DATA', system)
+        self.assertIn('ACCOUNT SCOPE', system)
+        self.assertIn('Withheld Co', system)
+        self.assertIn('role ADMIN', system)
+
+
+class CopilotMemoryTests(TestCase):
+    def setUp(self):
+        self.company = Company.objects.create(company_name='Mem Co')
+        self.other_company = Company.objects.create(company_name='Mem Other Co')
+        self.user = make_user('mem_user', self.company, 'ADMIN')
+        self.other_user = make_user('mem_other', self.company, 'ADMIN')
+
+    def test_remember_and_forget_roundtrip(self):
+        out = tools.remember_fact(self.company, self.user, None, {'fact': 'Prefers weekly summaries'})
+        self.assertEqual(out.get('remembered'), 'Prefers weekly summaries')
+        out = tools.forget_fact(self.company, self.user, None, {'fact': 'weekly summaries'})
+        self.assertEqual(out.get('forgotten'), 'Prefers weekly summaries')
+        self.assertEqual(out['facts'], [])
+
+    def test_remember_dedupes_case_insensitively(self):
+        tools.remember_fact(self.company, self.user, None, {'fact': 'Prefers ZAR totals'})
+        out = tools.remember_fact(self.company, self.user, None, {'fact': 'prefers zar TOTALS'})
+        self.assertIn('note', out)
+        self.assertEqual(len(out['facts']), 1)
+
+    def test_memory_cap_enforced(self):
+        from core.models import CopilotUserMemory
+        for i in range(CopilotUserMemory.MAX_FACTS):
+            tools.remember_fact(self.company, self.user, None, {'fact': f'fact number {i}'})
+        out = tools.remember_fact(self.company, self.user, None, {'fact': 'one too many'})
+        self.assertIn('error', out)
+        self.assertIn('full', out['error'])
+
+    def test_forget_ambiguous_match_errors_with_candidates(self):
+        tools.remember_fact(self.company, self.user, None, {'fact': 'Likes coffee reports'})
+        tools.remember_fact(self.company, self.user, None, {'fact': 'Likes coffee in the morning'})
+        out = tools.forget_fact(self.company, self.user, None, {'fact': 'coffee'})
+        self.assertIn('error', out)
+        self.assertEqual(len(out['matches']), 2)
+
+    def test_memory_isolated_per_user_and_company(self):
+        from core.services import agent
+        tools.remember_fact(self.company, self.user, None, {'fact': 'Secret preference of user A'})
+        # Same company, different user: nothing.
+        self.assertEqual(agent._memory_block(self.other_user, self.company), '')
+        # Same user, different company: nothing.
+        self.assertEqual(agent._memory_block(self.user, self.other_company), '')
+        # Right pair: the fact is present.
+        block = agent._memory_block(self.user, self.company)
+        self.assertIn('USER MEMORY', block)
+        self.assertIn('Secret preference of user A', block)
+
+    def test_memory_injected_into_system_prompt(self):
+        from core.services import agent
+        tools.remember_fact(self.company, self.user, None, {'fact': 'Prefers weekly summaries'})
+        with mock.patch.object(agent, '_llm_enabled', return_value=True), \
+             mock.patch.object(agent, '_provider', return_value='anthropic'), \
+             mock.patch.object(agent, '_retrieved_block', return_value=''), \
+             mock.patch.object(agent, '_llm_generate', return_value='ok') as gen:
+            agent.agent_respond(
+                self.company, [{'role': 'user', 'content': 'hi'}], user=self.user,
+            )
+        system = gen.call_args[0][0]
+        self.assertIn('USER MEMORY', system)
+        self.assertIn('Prefers weekly summaries', system)
+
+    def test_memory_tools_offered_to_every_role(self):
+        viewer = make_user('mem_viewer', self.company, 'VIEWER')
+        names = [t['function']['name'] for t in entities.build_tool_schemas(viewer)]
+        self.assertIn('remember_fact', names)
+        self.assertIn('forget_fact', names)
+
+
+class NoCompanyCopilotTests(TestCase):
+    """A company-less account must get a clear 'not linked to a workspace' reply —
+    and NO phantom empty Company may be silently created for it."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='orphan', email='orphan@x.test', password='x',
+        )
+        self.user.company = None
+        self.user.save()
+
+    def test_agent_chat_returns_guidance_and_creates_no_company(self):
+        from core.models import CopilotMessage
+        before = Company.objects.count()
+        client = APIClient(HTTP_HOST='localhost')
+        client.force_authenticate(user=self.user)
+        # _llm_enabled False: the persist block generates a conversation title,
+        # which would otherwise hit the live LLM when a key is configured.
+        with mock.patch('core.services.agent._llm_enabled', return_value=False):
+            r = client.post('/api/v1/agent/chat/', {'message': 'hello'}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertIn("isn't linked to a company workspace", r.json()['reply'])
+        self.assertEqual(Company.objects.count(), before)
+        # The exchange must still persist so it survives a reload.
+        self.assertEqual(CopilotMessage.objects.filter(user=self.user).count(), 2)
+
+    def test_conversation_chat_returns_guidance_and_creates_no_company(self):
+        from core.models import CopilotMessage
+        conv = CopilotConversation.objects.create(user=self.user)
+        before = Company.objects.count()
+        client = APIClient(HTTP_HOST='localhost')
+        client.force_authenticate(user=self.user)
+        with mock.patch('core.services.agent._llm_enabled', return_value=False):
+            r = client.post(f'/api/v1/agent/conversations/{conv.id}/chat/',
+                            {'message': 'hello'}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertIn("isn't linked to a company workspace", r.json()['reply'])
+        self.assertEqual(Company.objects.count(), before)
+        self.assertEqual(CopilotMessage.objects.filter(conversation=conv).count(), 2)
+
+
+class CopilotMemoryApiTests(TestCase):
+    """GET/DELETE /api/v1/agent/memory/ — users can audit and purge their own
+    copilot memory outside the LLM (a planted/mistaken fact must be removable
+    without asking the model)."""
+
+    def setUp(self):
+        self.company = Company.objects.create(company_name='MemApi Co')
+        self.user = make_user('memapi_user', self.company, 'ADMIN')
+        self.client = APIClient(HTTP_HOST='localhost')
+        self.client.force_authenticate(user=self.user)
+
+    def test_get_lists_own_facts(self):
+        tools.remember_fact(self.company, self.user, None, {'fact': 'Prefers Mondays'})
+        r = self.client.get('/api/v1/agent/memory/')
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json()['facts'], ['Prefers Mondays'])
+
+    def test_delete_one_fact(self):
+        tools.remember_fact(self.company, self.user, None, {'fact': 'Fact A'})
+        tools.remember_fact(self.company, self.user, None, {'fact': 'Fact B'})
+        r = self.client.delete('/api/v1/agent/memory/', {'fact': 'Fact A'}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json()['facts'], ['Fact B'])
+
+    def test_delete_all_facts(self):
+        tools.remember_fact(self.company, self.user, None, {'fact': 'Fact A'})
+        r = self.client.delete('/api/v1/agent/memory/', {}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json()['facts'], [])
+
+    def test_cannot_see_another_users_memory(self):
+        other = make_user('memapi_other', self.company, 'ADMIN')
+        tools.remember_fact(self.company, other, None, {'fact': 'Other secret'})
+        r = self.client.get('/api/v1/agent/memory/')
+        self.assertEqual(r.json()['facts'], [])

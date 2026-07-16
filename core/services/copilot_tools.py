@@ -459,12 +459,70 @@ def propose_send_email(company, user, conversation, args):
     }
 
 
+# ---------------------------------------------------------------------------
+# Per-user memory (remember_fact / forget_fact)
+# ---------------------------------------------------------------------------
+
+def remember_fact(company, user, conversation, args):
+    """Store one short fact in the calling user's own (user, company) memory.
+    Executes immediately (no confirmation card): it only ever touches the
+    caller's private memory, never company data."""
+    from core.models import CopilotUserMemory
+
+    fact = ' '.join(str(args.get('fact') or '').split())
+    if not fact:
+        return {'error': 'fact is required — one short sentence to remember.'}
+    fact = fact[:CopilotUserMemory.MAX_FACT_LEN]
+
+    mem, _ = CopilotUserMemory.objects.get_or_create(user=user, company=company)
+    facts = [f for f in (mem.facts or []) if isinstance(f, str) and f.strip()]
+    if any(f.lower() == fact.lower() for f in facts):
+        return {'facts': facts, 'note': 'Already remembered — nothing changed.'}
+    if len(facts) >= CopilotUserMemory.MAX_FACTS:
+        return {'error': f'Memory is full ({CopilotUserMemory.MAX_FACTS} facts). '
+                         'Use forget_fact to remove an outdated one first.',
+                'facts': facts}
+    facts.append(fact)
+    mem.facts = facts
+    mem.save(update_fields=['facts', 'updated_at'])
+    return {'remembered': fact, 'facts': facts}
+
+
+def forget_fact(company, user, conversation, args):
+    """Remove a fact from the calling user's own memory, matched exactly or by
+    case-insensitive substring. Ambiguous matches error with the candidates."""
+    from core.models import CopilotUserMemory
+
+    needle = ' '.join(str(args.get('fact') or '').split())
+    if not needle:
+        return {'error': 'fact is required — the fact (or part of it) to forget.'}
+
+    mem = CopilotUserMemory.objects.filter(user=user, company=company).first()
+    facts = [f for f in ((mem.facts if mem else []) or []) if isinstance(f, str) and f.strip()]
+    if not facts:
+        return {'error': 'Nothing is remembered for this user yet.'}
+
+    exact = [f for f in facts if f.lower() == needle.lower()]
+    matches = exact or [f for f in facts if needle.lower() in f.lower()]
+    if not matches:
+        return {'error': f'No remembered fact matches {needle!r}.', 'facts': facts}
+    if len(matches) > 1:
+        return {'error': 'Several facts match — repeat with the exact one to forget.',
+                'matches': matches}
+    facts.remove(matches[0])
+    mem.facts = facts
+    mem.save(update_fields=['facts', 'updated_at'])
+    return {'forgotten': matches[0], 'facts': facts}
+
+
 TOOL_HANDLERS = {
     'query_records': query_records,
     'propose_create': propose_create,
     'propose_update': propose_update,
     'propose_delete': propose_delete,
     'propose_send_email': propose_send_email,
+    'remember_fact': remember_fact,
+    'forget_fact': forget_fact,
 }
 
 

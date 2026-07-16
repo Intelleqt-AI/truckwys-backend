@@ -21,6 +21,30 @@ class CopilotConversation(models.Model):
         return self.title or f'Conversation {self.pk}'
 
 
+class CopilotUserMemory(models.Model):
+    """Per-user copilot memory: short facts the user explicitly asked the agent to
+    remember (preferences, context). Scoped to (user, company) so memory never
+    follows a user into a different workspace if their company is ever re-bound."""
+    MAX_FACTS = 20
+    MAX_FACT_LEN = 300
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='copilot_memories'
+    )
+    company = models.ForeignKey(
+        'core.Company', on_delete=models.CASCADE, related_name='copilot_memories'
+    )
+    facts = models.JSONField(default=list, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'copilot_user_memory'
+        unique_together = [('user', 'company')]
+
+    def __str__(self):
+        return f'Memory for user {self.user_id} @ company {self.company_id} ({len(self.facts)} facts)'
+
+
 class CopilotMessage(models.Model):
     """A single turn in a Copilot conversation. Persisted so conversations
     survive navigation, refresh and device changes."""

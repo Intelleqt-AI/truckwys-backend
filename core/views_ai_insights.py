@@ -12,6 +12,26 @@ from core.services.agent import agent_respond, generate_conversation_title
 
 logger = logging.getLogger(__name__)
 
+# Friendly, non-error copilot reply for accounts with no company bound. The
+# copilot deliberately uses get_user_company (never resolve_user_company) so a
+# company-less account gets THIS instead of a silently minted empty tenant that
+# then answers "R0" to everything.
+_NO_COMPANY_REPLY = (
+    "Your account isn't linked to a company workspace yet, so I have no data to "
+    "answer from. Ask your admin for an invite to the right workspace (or set up "
+    "your company in Settings)."
+)
+
+
+def _no_company_result():
+    return {
+        'reply': _NO_COMPANY_REPLY,
+        'source': 'rules',
+        'ai_available': False,
+        'actions': [],
+        'proposed_action': None,
+    }
+
 
 class AgentChatView(APIView):
     """POST /api/v1/agent/chat/ — conversational fleet-finance copilot.
@@ -25,13 +45,8 @@ class AgentChatView(APIView):
     throttle_scope = 'copilot'
 
     def post(self, request):
-        from core.views import resolve_user_company
-        company = resolve_user_company(request.user)
-        if company is None:
-            return Response(
-                {'error': 'No company associated with this account'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        from core.views import get_user_company
+        company = get_user_company(request.user)
         messages = request.data.get('messages')
         if messages is None:
             # also accept a single { "message": "..." }
@@ -39,15 +54,20 @@ class AgentChatView(APIView):
             messages = [{'role': 'user', 'content': single}] if single else []
         if not isinstance(messages, list):
             return Response({'error': 'messages must be a list'}, status=status.HTTP_400_BAD_REQUEST)
-        try:
-            # Pass the acting user so build_agent_context strips the snapshot to
-            # the caller's role — otherwise a DRIVER/VIEWER could read banking,
-            # driver PII and customer contacts they're denied everywhere else.
-            result = agent_respond(company, messages, user=request.user)
-        except Exception:
-            logger.exception('agent chat failed')
-            return Response({'error': 'The copilot is unavailable right now.'},
-                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        if company is None:
+            # Friendly guidance instead of an error — and the turn still persists
+            # below, so the exchange survives a reload like any other.
+            result = _no_company_result()
+        else:
+            try:
+                # Pass the acting user so build_agent_context strips the snapshot to
+                # the caller's role — otherwise a DRIVER/VIEWER could read banking,
+                # driver PII and customer contacts they're denied everywhere else.
+                result = agent_respond(company, messages, user=request.user)
+            except Exception:
+                logger.exception('agent chat failed')
+                return Response({'error': 'The copilot is unavailable right now.'},
+                                status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         # Persist this turn into a conversation (new chats are kept, not destroyed).
         try:
@@ -93,15 +113,10 @@ class ConversationChatView(APIView):
     throttle_scope = 'copilot'
 
     def post(self, request, pk):
-        from core.views import resolve_user_company
+        from core.views import get_user_company
         from core.models import CopilotConversation, CopilotMessage
 
-        company = resolve_user_company(request.user)
-        if company is None:
-            return Response(
-                {'error': 'No company associated with this account'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        company = get_user_company(request.user)
 
         conv = CopilotConversation.objects.filter(id=pk, user=request.user).first()
         if conv is None:
@@ -112,41 +127,46 @@ class ConversationChatView(APIView):
             return Response({'error': 'message is required'}, status=status.HTTP_400_BAD_REQUEST)
         text = str(text).strip()
 
-        # Server-side history: the 30 MOST RECENT turns (guided data entry spans
-        # many short turns), oldest-first for the model. Slice newest in SQL then
-        # reverse — the old `order_by('created_at')[:300][-30:]` took the OLDEST
-        # 300 and kept 271-300, so >300-message threads froze at stale context.
-        history = [
-            {'role': m.role, 'content': m.content}
-            for m in reversed(list(conv.messages.order_by('-created_at')[:30]))
-        ]
-        history.append({'role': 'user', 'content': text})
+        if company is None:
+            # Friendly guidance instead of an error — the turn still persists
+            # below, so the exchange survives a reload like any other.
+            result = _no_company_result()
+        else:
+            # Server-side history: the 30 MOST RECENT turns (guided data entry spans
+            # many short turns), oldest-first for the model. Slice newest in SQL then
+            # reverse — the old `order_by('created_at')[:300][-30:]` took the OLDEST
+            # 300 and kept 271-300, so >300-message threads froze at stale context.
+            history = [
+                {'role': m.role, 'content': m.content}
+                for m in reversed(list(conv.messages.order_by('-created_at')[:30]))
+            ]
+            history.append({'role': 'user', 'content': text})
 
-        # Keep this account's invoice index reasonably fresh, but NOT on every
-        # message: loading all invoices+embeddings per turn is O(N). Throttle to
-        # once per 5 min per company via the shared cache (the Celery beat task
-        # reindex_copilot_rag is the backstop when this path is quiet).
-        try:
-            from django.core.cache import cache
-            from core.services import rag
-            _rag_key = f'rag_indexed_{company.id}'
-            if not cache.get(_rag_key):
-                rag.index_company_invoices(company)
-                cache.set(_rag_key, 1, 300)
-        except Exception:
-            pass
+            # Keep this account's invoice index reasonably fresh, but NOT on every
+            # message: loading all invoices+embeddings per turn is O(N). Throttle to
+            # once per 5 min per company via the shared cache (the Celery beat task
+            # reindex_copilot_rag is the backstop when this path is quiet).
+            try:
+                from django.core.cache import cache
+                from core.services import rag
+                _rag_key = f'rag_indexed_{company.id}'
+                if not cache.get(_rag_key):
+                    rag.index_company_invoices(company)
+                    cache.set(_rag_key, 1, 300)
+            except Exception:
+                pass
 
-        try:
-            # enable_tools=True lets the agent query the database and prepare
-            # confirm-first create/update/delete proposals from chat.
-            result = agent_respond(
-                company, history, query=text, user=request.user,
-                enable_tools=True, conversation=conv,
-            )
-        except Exception:
-            logger.exception('conversation chat failed')
-            return Response({'error': 'The copilot is unavailable right now.'},
-                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            try:
+                # enable_tools=True lets the agent query the database and prepare
+                # confirm-first create/update/delete proposals from chat.
+                result = agent_respond(
+                    company, history, query=text, user=request.user,
+                    enable_tools=True, conversation=conv,
+                )
+            except Exception:
+                logger.exception('conversation chat failed')
+                return Response({'error': 'The copilot is unavailable right now.'},
+                                status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         # Persist the turn.
         try:
@@ -238,11 +258,12 @@ class ProposalExecuteView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
-        from core.views import resolve_user_company
+        from core.views import get_user_company
         from core.models import CopilotProposal, CopilotMessage
         from core.services.copilot_tools import execute_proposal
 
-        company = resolve_user_company(request.user)
+        # None company matches no proposal (company FK is required) → clean 404.
+        company = get_user_company(request.user)
         proposal = CopilotProposal.objects.filter(
             id=pk, user=request.user, company=company
         ).first()
@@ -293,10 +314,10 @@ class ProposalDismissView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
-        from core.views import resolve_user_company
+        from core.views import get_user_company
         from core.models import CopilotProposal
 
-        company = resolve_user_company(request.user)
+        company = get_user_company(request.user)
         proposal = CopilotProposal.objects.filter(
             id=pk, user=request.user, company=company
         ).first()
@@ -308,6 +329,43 @@ class ProposalDismissView(APIView):
         return Response({'status': 'dismissed'})
 
 
+class CopilotMemoryView(APIView):
+    """GET/DELETE /api/v1/agent/memory/ — audit or purge the caller's own copilot
+    memory. remember_fact writes silently from chat, so users need a surface
+    OUTSIDE the LLM to see and remove what's stored (a planted/mistaken fact must
+    not be discoverable only by asking the model)."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from core.views import get_user_company
+        from core.models import CopilotUserMemory
+        company = get_user_company(request.user)
+        mem = (CopilotUserMemory.objects.filter(user=request.user, company=company).first()
+               if company else None)
+        return Response({'facts': (mem.facts if mem else []) or []})
+
+    def delete(self, request):
+        """Body {"fact": "..."} removes that fact (exact match); no body clears all."""
+        from core.views import get_user_company
+        from core.models import CopilotUserMemory
+        company = get_user_company(request.user)
+        mem = (CopilotUserMemory.objects.filter(user=request.user, company=company).first()
+               if company else None)
+        if mem is None:
+            return Response({'facts': []})
+        fact = (request.data or {}).get('fact')
+        if fact:
+            facts = [f for f in (mem.facts or []) if f != fact]
+            if len(facts) == len(mem.facts or []):
+                return Response({'error': 'No such fact.', 'facts': mem.facts},
+                                status=status.HTTP_404_NOT_FOUND)
+            mem.facts = facts
+        else:
+            mem.facts = []
+        mem.save(update_fields=['facts', 'updated_at'])
+        return Response({'facts': mem.facts})
+
+
 class DashboardBriefingView(APIView):
     """GET /api/v1/dashboard/briefing/ — an AI executive briefing over the
     company's live finance/cash/insights data (Claude when configured, else a
@@ -315,9 +373,16 @@ class DashboardBriefingView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        from core.views import resolve_user_company
+        from core.views import get_user_company
         from datetime import datetime, date
-        company = resolve_user_company(request.user)
+        company = get_user_company(request.user)
+        if company is None:
+            return Response({
+                'narrative': _NO_COMPANY_REPLY,
+                'source': 'rules',
+                'ai_available': False,
+                'metrics': {},
+            })
 
         # Reporting window from the Insights filter (?from=&to=, YYYY-MM-DD).
         # Defaults to month-to-date, matching the finance dashboard contract.
