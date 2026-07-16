@@ -85,8 +85,11 @@ class InvoiceGenerator:
         # Check early pay eligibility
         early_pay_eligible = self._check_early_pay_eligibility(total_amount)
 
-        # Create invoice
+        # Create invoice — stamped with the load's company: without it the
+        # invoice lands with company=NULL and is invisible to every tenant-scoped
+        # surface (invoice list, stats, copilot), a silent black hole.
         invoice = Invoice(
+            company=self.trip.load.company,
             invoice_number=invoice_number,
             customer=self.customer,
             load=self.trip.load,
