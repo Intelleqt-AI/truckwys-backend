@@ -12,6 +12,15 @@ class UserSerializer(serializers.ModelSerializer):
     # Declared as CharField (not the model ChoiceField) so we can normalise the
     # UI's lower-case role values to the model's upper-case choices.
     role = serializers.CharField(required=False)
+    # Diagnostic visibility only — there was previously no way, even for the
+    # user themselves, to see their own tenant binding or superuser status from
+    # the app (had to go through Django admin). company_name is a method field
+    # since company can be null (legacy/seed accounts with no company bound).
+    company_id = serializers.IntegerField(read_only=True)
+    company_name = serializers.SerializerMethodField()
+
+    def get_company_name(self, obj):
+        return obj.company.company_name if obj.company_id else None
 
     def validate_role(self, value):
         if not isinstance(value, str):
@@ -26,8 +35,10 @@ class UserSerializer(serializers.ModelSerializer):
         model = User
         fields = ['id', 'username', 'email', 'password', 'first_name', 'last_name', 'name', 'job_title',
                   'role', 'status', 'phone', 'address', 'timezone', 'language', 'date_format',
-                  'notification_settings', 'avatar', 'last_active', 'is_active', 'created_at', 'updated_at']
-        read_only_fields = ['id', 'created_at', 'updated_at', 'last_active']
+                  'notification_settings', 'avatar', 'last_active', 'is_active', 'created_at', 'updated_at',
+                  'is_superuser', 'company_id', 'company_name']
+        read_only_fields = ['id', 'created_at', 'updated_at', 'last_active',
+                           'is_superuser', 'company_id', 'company_name']
         extra_kwargs = {'password': {'write_only': True, 'required': False}}
 
     def validate_email(self, value):

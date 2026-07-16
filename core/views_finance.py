@@ -1,11 +1,9 @@
-# TENANCY AUDIT: 2026-03-15 — All finance views audited for company isolation
-# - InvoiceFinanceViewSet: Extends CompanyFilterMixin ✓
-# - PaymentFinanceViewSet: Extends CompanyFilterMixin ✓
-# - ExpenseFinanceViewSet: Extends CompanyFilterMixin ✓
-# - TripCostView, FinanceDashboardView, RouteAnalyticsView, CustomerHealthView,
-#   DashboardKPIView, ReportsExportView: All aggregate data but inherit company
-#   filtering through related objects (Invoice, Expense, Load all have company FK) ✓
-# Note: Dashboard views use request.user.company implicitly through CompanyFilterMixin
+# TENANCY: CompanyFilterMixin only scopes a ViewSet's get_queryset() — it does
+# NOT touch hand-rolled `Model.objects` queries inside @action methods or plain
+# APIViews. (A 2026-03-15 audit note previously claimed otherwise; the dashboard/
+# stats/aging/export views were in fact global until 2026-07-16.) Every
+# aggregate view here must therefore resolve the caller's company explicitly
+# (resolve_user_company) and filter each queryset on it.
 
 """
 Finance-specific API views for invoices, payments, expenses, and dashboards.
@@ -213,6 +211,9 @@ class InvoiceFinanceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
             "separate": true   // if true, generate separate invoices
         }
         """
+        from core.views import resolve_user_company
+        company = resolve_user_company(request.user)
+
         trip_ids = request.data.get('trip_ids', [])
         customer_id = request.data.get('customer_id')
         separate = request.data.get('separate', True)
@@ -223,8 +224,8 @@ class InvoiceFinanceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Get trips
-        trips = Trip.objects.filter(id__in=trip_ids, status='COMPLETED')
+        # Get trips — only the caller's own (Trip has no company FK; the load does).
+        trips = Trip.objects.filter(id__in=trip_ids, status='COMPLETED', load__company=company)
 
         if trips.count() != len(trip_ids):
             return Response(
@@ -259,9 +260,18 @@ class InvoiceFinanceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
+            # Customer must be the caller's own — checked BEFORE the broad
+            # try/except below so a cross-tenant/unknown id is a clean 400, not
+            # a DoesNotExist swallowed into a 500.
+            customer = Customer.objects.filter(id=customer_id, company=company).first()
+            if customer is None:
+                return Response(
+                    {'error': 'Customer not found'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
             try:
                 # Create combined invoice
-                customer = Customer.objects.get(id=customer_id)
                 first_trip = trips.first()
 
                 # Build combined line items
@@ -283,6 +293,7 @@ class InvoiceFinanceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
                 due_date = generator._calculate_due_date(customer.payment_terms_default or 'NET30')
 
                 invoice = Invoice.objects.create(
+                    company=company,
                     invoice_number=invoice_number,
                     customer=customer,
                     load=first_trip.load,
@@ -316,12 +327,13 @@ class InvoiceFinanceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     @action(detail=False, methods=['get'])
     def aging(self, request):
         """
-        Get aging analysis report.
+        Get aging analysis report (caller's company only).
 
         GET /api/v1/invoices/aging/
         """
+        from core.views import resolve_user_company
         try:
-            report = AgingAnalysisService.generate_aging_report()
+            report = AgingAnalysisService.generate_aging_report(resolve_user_company(request.user))
             return Response(report)
         except Exception as e:
             return Response(
@@ -346,12 +358,20 @@ class InvoiceFinanceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
             "collection_rate": 0.71
         }
         """
+        from core.views import resolve_user_company
         try:
+            # Every figure on this endpoint is tenant-scoped: the stat cards it
+            # powers previously summed ALL companies' invoices, so an empty
+            # workspace saw another tenant's money and the (correctly scoped)
+            # invoice list/copilot looked wrong by comparison.
+            company = resolve_user_company(request.user)
+            base = Invoice.objects.filter(company=company)
+
             # Get current month invoices
             now = timezone.now()
             month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
-            invoices_mtd = Invoice.objects.filter(issue_date__gte=month_start.date())
+            invoices_mtd = base.filter(issue_date__gte=month_start.date())
 
             # Total invoiced this month
             total_invoiced_mtd = invoices_mtd.aggregate(
@@ -367,7 +387,7 @@ class InvoiceFinanceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
 
             # Overdue invoices (due_date < today and not paid)
             today = date.today()
-            overdue = Invoice.objects.filter(
+            overdue = base.filter(
                 due_date__lt=today,
                 status__in=['SENT', 'OVERDUE', 'PARTIALLY_PAID', 'DRAFT']
             )
@@ -377,7 +397,7 @@ class InvoiceFinanceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
             )['total'] or Decimal('0')
 
             # Average days to pay (for paid invoices)
-            paid_invoices = Invoice.objects.filter(
+            paid_invoices = base.filter(
                 status='PAID',
                 paid_at__isnull=False
             ).annotate(
@@ -402,7 +422,7 @@ class InvoiceFinanceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
             # Count by status
             by_status = {}
             for status_choice in ['DRAFT', 'SENT', 'PAID', 'OVERDUE', 'PARTIALLY_PAID']:
-                by_status[status_choice] = Invoice.objects.filter(status=status_choice).count()
+                by_status[status_choice] = base.filter(status=status_choice).count()
 
             return Response({
                 'total_invoiced_mtd': float(total_invoiced_mtd),
@@ -520,8 +540,10 @@ class ExpenseFinanceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Get expenses for the month
+        # Get expenses for the month — caller's company only
+        from core.views import resolve_user_company
         expenses = Expense.objects.filter(
+            company=resolve_user_company(request.user),
             expense_date__gte=start_date,
             expense_date__lte=end_date
         )
@@ -565,9 +587,12 @@ class TripCostView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, trip_id):
-        try:
-            trip = Trip.objects.get(id=trip_id)
-        except Trip.DoesNotExist:
+        from core.views import resolve_user_company
+        company = resolve_user_company(request.user)
+        # Tenant-scope via the load (Trip has no company FK): another tenant's
+        # trip id must 404, not leak its costs/revenue.
+        trip = Trip.objects.filter(id=trip_id, load__company=company).first()
+        if trip is None:
             return Response(
                 {'error': 'Trip not found'},
                 status=status.HTTP_404_NOT_FOUND
@@ -586,15 +611,15 @@ class TripCostView(APIView):
             for item in expense_totals
         }
 
-        # Calculate fuel cost if not in expenses
+        # Calculate fuel cost if not in expenses — at the CALLER's company fuel
+        # price (the old Company.objects.first() used whichever tenant sorted first).
         fuel_cost = Decimal('0.00')
         if trip.distance_km and trip.vehicle:
             try:
-                company = Company.objects.first()
-                fuel_price = company.fuel_price_per_litre if company else Decimal('23.50')
+                fuel_price = (company.fuel_price_per_litre if company else None) or Decimal('23.50')
                 fuel_consumption = trip.vehicle.fuel_consumption_per_km
                 fuel_cost = trip.distance_km * fuel_consumption * fuel_price
-            except:
+            except Exception:
                 pass
 
         total_expenses = expenses.aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
@@ -672,50 +697,58 @@ class FinanceDashboardView(APIView):
         def aware_end(d):
             return timezone.make_aware(datetime.combine(d, datetime.max.time()))
 
+        # Tenant scoping: every aggregate below reads ONLY the caller's company
+        # (this dashboard previously summed all tenants' invoices/expenses, so an
+        # empty workspace saw another company's money).
+        from core.views import resolve_user_company
+        company = resolve_user_company(request.user)
+        inv_qs = Invoice.objects.filter(company=company)
+        exp_qs = Expense.objects.filter(company=company)
+
         # Revenue for selected period (paid invoices)
-        revenue_period = Invoice.objects.filter(
+        revenue_period = inv_qs.filter(
             paid_at__gte=aware_start(from_date),
             paid_at__lte=aware_end(to_date),
             status='PAID'
         ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
 
         # Revenue MTD (paid invoices) - for legacy compatibility
-        revenue_mtd = Invoice.objects.filter(
+        revenue_mtd = inv_qs.filter(
             paid_at__gte=aware_start(mtd_start),
             status='PAID'
         ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
 
         # Revenue YTD
-        revenue_ytd = Invoice.objects.filter(
+        revenue_ytd = inv_qs.filter(
             paid_at__gte=aware_start(ytd_start),
             status='PAID'
         ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
 
         # All-time total revenue for Overview card
-        total_revenue = Invoice.objects.filter(
+        total_revenue = inv_qs.filter(
             status='PAID'
         ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
 
         # Expenses for selected period (approved)
-        expenses_period = Expense.objects.filter(
+        expenses_period = exp_qs.filter(
             expense_date__gte=from_date,
             expense_date__lte=to_date,
             status='APPROVED'
         ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
 
         # Expenses MTD (approved) - for legacy compatibility
-        expenses_mtd = Expense.objects.filter(
+        expenses_mtd = exp_qs.filter(
             expense_date__gte=mtd_start,
             status='APPROVED'
         ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
 
         # All-time total expenses
-        total_expenses = Expense.objects.filter(
+        total_expenses = exp_qs.filter(
             status='APPROVED'
         ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
 
         # Fuel expenses for selected period
-        fuel_expenses_period = Expense.objects.filter(
+        fuel_expenses_period = exp_qs.filter(
             expense_date__gte=from_date,
             expense_date__lte=to_date,
             status='APPROVED',
@@ -723,7 +756,7 @@ class FinanceDashboardView(APIView):
         ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
 
         # Fuel expenses MTD
-        fuel_expenses_mtd = Expense.objects.filter(
+        fuel_expenses_mtd = exp_qs.filter(
             expense_date__gte=mtd_start,
             status='APPROVED',
             category='FUEL'
@@ -749,53 +782,55 @@ class FinanceDashboardView(APIView):
         # Idle vehicles count (vehicles with no recent loads)
         thirty_days_ago = today - timedelta(days=30)
         active_vehicle_ids = Load.objects.filter(
+            company=company,
             created_at__gte=aware_start(thirty_days_ago)
         ).values_list('vehicle_id', flat=True).distinct()
 
-        idle_vehicles = Vehicle.objects.exclude(
-            id__in=active_vehicle_ids
-        ).filter(
+        idle_vehicles = Vehicle.objects.filter(
+            company=company,
             status='ACTIVE'
+        ).exclude(
+            id__in=active_vehicle_ids
         ).count()
 
         # Outstanding invoices
-        outstanding_total = Invoice.objects.filter(
+        outstanding_total = inv_qs.filter(
             balance__gt=0,
             status__in=['SENT', 'VIEWED', 'PARTIALLY_PAID', 'OVERDUE']
         ).aggregate(total=Sum('balance'))['total'] or Decimal('0.00')
 
         # Overdue invoices
-        overdue_total = Invoice.objects.filter(
+        overdue_total = inv_qs.filter(
             due_date__lt=today,
             balance__gt=0,
             status__in=['SENT', 'VIEWED', 'PARTIALLY_PAID', 'OVERDUE']
         ).aggregate(total=Sum('balance'))['total'] or Decimal('0.00')
 
         # DSO (Days Sales Outstanding)
-        aging_service = AgingAnalysisService()
+        aging_service = AgingAnalysisService(company)
         dso = aging_service.calculate_dso()
 
         # Cash flow forecast (next 30/60/90 days)
-        forecast_30 = Invoice.objects.filter(
+        forecast_30 = inv_qs.filter(
             due_date__gte=today,
             due_date__lte=today + timedelta(days=30),
             balance__gt=0
         ).aggregate(total=Sum('balance'))['total'] or Decimal('0.00')
 
-        forecast_60 = Invoice.objects.filter(
+        forecast_60 = inv_qs.filter(
             due_date__gte=today + timedelta(days=31),
             due_date__lte=today + timedelta(days=60),
             balance__gt=0
         ).aggregate(total=Sum('balance'))['total'] or Decimal('0.00')
 
-        forecast_90 = Invoice.objects.filter(
+        forecast_90 = inv_qs.filter(
             due_date__gte=today + timedelta(days=61),
             due_date__lte=today + timedelta(days=90),
             balance__gt=0
         ).aggregate(total=Sum('balance'))['total'] or Decimal('0.00')
 
         # Top customers by revenue
-        top_customers = Invoice.objects.filter(
+        top_customers = inv_qs.filter(
             status='PAID',
             paid_at__gte=aware_start(ytd_start)
         ).values(
@@ -813,13 +848,13 @@ class FinanceDashboardView(APIView):
             month_start = month_date.replace(day=1)
             month_end = (month_start + relativedelta(months=1)) - timedelta(days=1)
 
-            month_revenue = Invoice.objects.filter(
+            month_revenue = inv_qs.filter(
                 paid_at__gte=aware_start(month_start),
                 paid_at__lte=aware_end(month_end),
                 status='PAID'
             ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
 
-            month_expenses = Expense.objects.filter(
+            month_expenses = exp_qs.filter(
                 expense_date__gte=month_start,
                 expense_date__lte=month_end,
                 status='APPROVED'
@@ -841,13 +876,13 @@ class FinanceDashboardView(APIView):
             week_start = today - timedelta(days=today.weekday()) - timedelta(weeks=i)
             week_end = week_start + timedelta(days=6)
 
-            week_revenue = Invoice.objects.filter(
+            week_revenue = inv_qs.filter(
                 paid_at__gte=aware_start(week_start),
                 paid_at__lte=aware_end(week_end),
                 status='PAID'
             ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
 
-            week_fuel = Expense.objects.filter(
+            week_fuel = exp_qs.filter(
                 expense_date__gte=week_start,
                 expense_date__lte=week_end,
                 status='APPROVED',
@@ -865,13 +900,13 @@ class FinanceDashboardView(APIView):
             prev_from_date = from_date - timedelta(days=period_length + 1)
             prev_to_date = from_date - timedelta(days=1)
 
-            prev_revenue = Invoice.objects.filter(
+            prev_revenue = inv_qs.filter(
                 paid_at__gte=aware_start(prev_from_date),
                 paid_at__lte=aware_end(prev_to_date),
                 status='PAID'
             ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
 
-            prev_expenses = Expense.objects.filter(
+            prev_expenses = exp_qs.filter(
                 expense_date__gte=prev_from_date,
                 expense_date__lte=prev_to_date,
                 status='APPROVED'
@@ -905,10 +940,10 @@ class FinanceDashboardView(APIView):
         # (real numbers, no more hardcoded "+12.5% vs avg").
         _r30 = today - timedelta(days=30)
         _r60 = today - timedelta(days=60)
-        rev_last30 = Invoice.objects.filter(paid_at__gte=aware_start(_r30), paid_at__lte=aware_end(today), status='PAID').aggregate(t=Sum('total_amount'))['t'] or Decimal('0.00')
-        rev_prev30 = Invoice.objects.filter(paid_at__gte=aware_start(_r60), paid_at__lt=aware_start(_r30), status='PAID').aggregate(t=Sum('total_amount'))['t'] or Decimal('0.00')
-        exp_last30 = Expense.objects.filter(expense_date__gte=_r30, expense_date__lte=today, status='APPROVED').aggregate(t=Sum('amount'))['t'] or Decimal('0.00')
-        exp_prev30 = Expense.objects.filter(expense_date__gte=_r60, expense_date__lt=_r30, status='APPROVED').aggregate(t=Sum('amount'))['t'] or Decimal('0.00')
+        rev_last30 = inv_qs.filter(paid_at__gte=aware_start(_r30), paid_at__lte=aware_end(today), status='PAID').aggregate(t=Sum('total_amount'))['t'] or Decimal('0.00')
+        rev_prev30 = inv_qs.filter(paid_at__gte=aware_start(_r60), paid_at__lt=aware_start(_r30), status='PAID').aggregate(t=Sum('total_amount'))['t'] or Decimal('0.00')
+        exp_last30 = exp_qs.filter(expense_date__gte=_r30, expense_date__lte=today, status='APPROVED').aggregate(t=Sum('amount'))['t'] or Decimal('0.00')
+        exp_prev30 = exp_qs.filter(expense_date__gte=_r60, expense_date__lt=_r30, status='APPROVED').aggregate(t=Sum('amount'))['t'] or Decimal('0.00')
         revenue_change_pct = round(float((rev_last30 - rev_prev30) / rev_prev30 * 100), 1) if rev_prev30 > 0 else None
         _m_last30 = float((rev_last30 - exp_last30) / rev_last30 * 100) if rev_last30 > 0 else None
         _m_prev30 = float((rev_prev30 - exp_prev30) / rev_prev30 * 100) if rev_prev30 > 0 else None
@@ -995,8 +1030,13 @@ class RouteAnalyticsView(APIView):
         else:
             to_date = today
 
+        # Tenant scoping: routes/revenue/expenses below read ONLY the caller's company.
+        from core.views import resolve_user_company
+        company = resolve_user_company(request.user)
+
         # Get top 10 routes by trip count in date range (use pickup_date for proper filtering)
         routes_qs = Load.objects.filter(
+            company=company,
             pickup_date__gte=from_date,
             pickup_date__lte=to_date
         ).exclude(pickup_location='').exclude(delivery_location='').values(
@@ -1008,6 +1048,7 @@ class RouteAnalyticsView(APIView):
             route_str = f"{r['pickup_location']} → {r['delivery_location']}"
             # Try to get avg revenue from linked invoices in date range
             avg_rev = Invoice.objects.filter(
+                company=company,
                 load__pickup_location=r['pickup_location'],
                 load__delivery_location=r['delivery_location'],
                 issue_date__gte=from_date,
@@ -1017,6 +1058,7 @@ class RouteAnalyticsView(APIView):
             # Calculate actual average expenses per route from Expense records
             # Get all loads for this route in date range
             route_loads = Load.objects.filter(
+                company=company,
                 pickup_location=r['pickup_location'],
                 delivery_location=r['delivery_location'],
                 pickup_date__gte=from_date,
@@ -1095,17 +1137,22 @@ class CustomerHealthView(APIView):
         else:
             to_date = today
 
+        # Tenant scoping: customer intelligence reads ONLY the caller's company.
+        from core.views import resolve_user_company
+        company = resolve_user_company(request.user)
+        inv_qs = Invoice.objects.filter(company=company)
+
         # Get all customers with invoices in the period
-        customers_with_invoices = Invoice.objects.filter(
+        customers_with_invoices = inv_qs.filter(
             issue_date__gte=from_date,
             issue_date__lte=to_date
         ).values('customer_id').distinct()
 
         customer_ids = [c['customer_id'] for c in customers_with_invoices]
-        customers = Customer.objects.filter(id__in=customer_ids)
+        customers = Customer.objects.filter(id__in=customer_ids, company=company)
 
         # Calculate total revenue for concentration %
-        total_revenue = Invoice.objects.filter(
+        total_revenue = inv_qs.filter(
             issue_date__gte=from_date,
             issue_date__lte=to_date,
             status='PAID'
@@ -1114,7 +1161,7 @@ class CustomerHealthView(APIView):
         customer_data = []
         for customer in customers:
             # Revenue in period
-            customer_revenue = Invoice.objects.filter(
+            customer_revenue = inv_qs.filter(
                 customer=customer,
                 issue_date__gte=from_date,
                 issue_date__lte=to_date,
@@ -1122,14 +1169,14 @@ class CustomerHealthView(APIView):
             ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
 
             # Invoice count
-            invoice_count = Invoice.objects.filter(
+            invoice_count = inv_qs.filter(
                 customer=customer,
                 issue_date__gte=from_date,
                 issue_date__lte=to_date
             ).count()
 
             # Average payment days (for paid invoices)
-            paid_invoices = Invoice.objects.filter(
+            paid_invoices = inv_qs.filter(
                 customer=customer,
                 status='PAID',
                 paid_at__isnull=False,
@@ -1148,7 +1195,7 @@ class CustomerHealthView(APIView):
 
             # DSO calculation (Days Sales Outstanding)
             # DSO = (Accounts Receivable / Total Credit Sales) * Number of Days
-            receivable = Invoice.objects.filter(
+            receivable = inv_qs.filter(
                 customer=customer,
                 balance__gt=0
             ).aggregate(total=Sum('balance'))['total'] or Decimal('0.00')
@@ -1160,7 +1207,7 @@ class CustomerHealthView(APIView):
                 dso = 0
 
             # Overdue count
-            overdue_count = Invoice.objects.filter(
+            overdue_count = inv_qs.filter(
                 customer=customer,
                 due_date__lt=today,
                 balance__gt=0
@@ -1294,7 +1341,7 @@ class DashboardKPIView(APIView):
 
         # DSO
         from core.services.aging_service import AgingAnalysisService
-        aging_service = AgingAnalysisService()
+        aging_service = AgingAnalysisService(company)
         dso = aging_service.calculate_dso()
 
         # Fleet metrics (company-scoped)
@@ -1382,15 +1429,19 @@ class ReportsExportView(APIView):
         else:
             to_date = today
 
+        # Tenant scoping: exports contain ONLY the caller's company data.
+        from core.views import resolve_user_company
+        company = resolve_user_company(request.user)
+
         # Generate CSV based on report type
         if report_type == 'finance':
-            return self._export_finance_csv(from_date, to_date)
+            return self._export_finance_csv(company, from_date, to_date)
         elif report_type == 'fleet':
-            return self._export_fleet_csv(from_date, to_date)
+            return self._export_fleet_csv(company, from_date, to_date)
         elif report_type == 'customers':
-            return self._export_customers_csv(from_date, to_date)
+            return self._export_customers_csv(company, from_date, to_date)
 
-    def _export_finance_csv(self, from_date, to_date):
+    def _export_finance_csv(self, company, from_date, to_date):
         """Export finance data to CSV."""
         response = HttpResponse(content_type='text/csv')
         response['Content-Disposition'] = f'attachment; filename="finance_report_{from_date}_{to_date}.csv"'
@@ -1399,6 +1450,7 @@ class ReportsExportView(APIView):
         writer.writerow(['Invoice Number', 'Customer', 'Issue Date', 'Due Date', 'Amount', 'Paid Amount', 'Balance', 'Status'])
 
         invoices = Invoice.objects.filter(
+            company=company,
             issue_date__gte=from_date,
             issue_date__lte=to_date
         ).select_related('customer').order_by('-issue_date')
@@ -1417,7 +1469,7 @@ class ReportsExportView(APIView):
 
         return response
 
-    def _export_fleet_csv(self, from_date, to_date):
+    def _export_fleet_csv(self, company, from_date, to_date):
         """Export fleet data to CSV."""
         response = HttpResponse(content_type='text/csv')
         response['Content-Disposition'] = f'attachment; filename="fleet_report_{from_date}_{to_date}.csv"'
@@ -1426,6 +1478,7 @@ class ReportsExportView(APIView):
         writer.writerow(['Vehicle', 'Load Number', 'Pickup', 'Delivery', 'Distance (km)', 'Status', 'Created Date'])
 
         loads = Load.objects.filter(
+            company=company,
             created_at__gte=from_date,
             created_at__lte=to_date
         ).select_related('vehicle').order_by('-created_at')
@@ -1443,7 +1496,7 @@ class ReportsExportView(APIView):
 
         return response
 
-    def _export_customers_csv(self, from_date, to_date):
+    def _export_customers_csv(self, company, from_date, to_date):
         """Export customer health data to CSV."""
         response = HttpResponse(content_type='text/csv')
         response['Content-Disposition'] = f'attachment; filename="customers_report_{from_date}_{to_date}.csv"'
@@ -1451,36 +1504,38 @@ class ReportsExportView(APIView):
         writer = csv.writer(response)
         writer.writerow(['Customer Name', 'Revenue', 'Invoice Count', 'Avg Payment Days', 'DSO', 'Overdue Count', 'Risk Tier', 'Concentration %'])
 
+        inv_qs = Invoice.objects.filter(company=company)
+
         # Get customer health data (reuse logic from CustomerHealthView)
-        customers_with_invoices = Invoice.objects.filter(
+        customers_with_invoices = inv_qs.filter(
             issue_date__gte=from_date,
             issue_date__lte=to_date
         ).values('customer_id').distinct()
 
         customer_ids = [c['customer_id'] for c in customers_with_invoices]
-        customers = Customer.objects.filter(id__in=customer_ids)
+        customers = Customer.objects.filter(id__in=customer_ids, company=company)
 
-        total_revenue = Invoice.objects.filter(
+        total_revenue = inv_qs.filter(
             issue_date__gte=from_date,
             issue_date__lte=to_date,
             status='PAID'
         ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
 
         for customer in customers:
-            customer_revenue = Invoice.objects.filter(
+            customer_revenue = inv_qs.filter(
                 customer=customer,
                 issue_date__gte=from_date,
                 issue_date__lte=to_date,
                 status='PAID'
             ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
 
-            invoice_count = Invoice.objects.filter(
+            invoice_count = inv_qs.filter(
                 customer=customer,
                 issue_date__gte=from_date,
                 issue_date__lte=to_date
             ).count()
 
-            paid_invoices = Invoice.objects.filter(
+            paid_invoices = inv_qs.filter(
                 customer=customer,
                 status='PAID',
                 paid_at__isnull=False,
@@ -1494,7 +1549,7 @@ class ReportsExportView(APIView):
             else:
                 avg_payment_days = 0
 
-            receivable = Invoice.objects.filter(customer=customer, balance__gt=0).aggregate(total=Sum('balance'))['total'] or Decimal('0.00')
+            receivable = inv_qs.filter(customer=customer, balance__gt=0).aggregate(total=Sum('balance'))['total'] or Decimal('0.00')
 
             if customer_revenue > 0:
                 period_days = (to_date - from_date).days + 1
@@ -1502,7 +1557,7 @@ class ReportsExportView(APIView):
             else:
                 dso = 0
 
-            overdue_count = Invoice.objects.filter(customer=customer, due_date__lt=date.today(), balance__gt=0).count()
+            overdue_count = inv_qs.filter(customer=customer, due_date__lt=date.today(), balance__gt=0).count()
 
             if dso < 30 and overdue_count == 0:
                 risk_tier = 'PRIME'
