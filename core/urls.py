@@ -9,7 +9,7 @@ from .views import (
     VehicleViewSet, VehicleTypeViewSet, VehicleLogViewSet, LoadViewSet,
     QuoteViewSet, InvoiceViewSet, PaymentViewSet,
     ExpenseViewSet, SettlementViewSet, NotificationViewSet, WebhookViewSet,
-    RegisterView, LoginView, LoginVerifyOtpView, LoginResendOtpView, LogoutView, ChangePasswordView, UserProfileView, SessionsView,
+    RegisterView, LoginView, LoginVerifyOtpView, LoginResendOtpView, LogoutView, ChangePasswordView, DeleteAccountView, UserProfileView, SessionsView,
     FleetOverviewView, VehicleInsightsView, VehicleIntelligenceFeedView, VehicleActionView,
     DriverOverviewView, DriverPerformanceLeaderboardView,
     QuotesPipelineOverviewView, NotificationSettingsView, SecuritySettingsView,
@@ -116,6 +116,7 @@ urlpatterns = [
     path('auth/login/resend-otp/', LoginResendOtpView.as_view(), name='login-resend-otp'),
     path('auth/logout/', LogoutView.as_view(), name='logout'),
     path('auth/change-password/', ChangePasswordView.as_view(), name='change-password'),
+    path('auth/delete-account/', DeleteAccountView.as_view(), name='delete-account'),
     # Billing (PayFast) — views were imported but never routed
     path('billing/status/', BillingStatusView.as_view(), name='billing-status'),
     path('billing/history/', BillingHistoryView.as_view(), name='billing-history'),

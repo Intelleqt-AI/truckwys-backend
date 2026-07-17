@@ -465,6 +465,38 @@ class ChangePasswordView(APIView):
         return Response({'detail': 'Password changed successfully'})
 
 
+class DeleteAccountView(APIView):
+    """Self-service account deletion. Soft-deletes (deactivates) rather than
+    hard-deleting, since User has CASCADE relations (Driver, UserSession,
+    Copilot data, IntegrationAPIKey, Webhook, InviteToken) that a real delete
+    would destroy. Requires the current password and force-logs-out every
+    session for this user."""
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request):
+        password = request.data.get('password') or ''
+        if not request.user.check_password(password):
+            return Response({'error': 'Password is incorrect'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if request.user.role == 'ADMIN':
+            company_id = request.user.company_id
+            other_active_users = User.objects.filter(
+                company_id=company_id, is_active=True,
+            ).exclude(id=request.user.id)
+            if other_active_users.exists() and not other_active_users.filter(role='ADMIN').exists():
+                return Response(
+                    {'error': "You're the only admin for your company. Promote another user to admin before deleting your account."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        request.user.is_active = False
+        request.user.status = 'INACTIVE'
+        request.user.save(update_fields=['is_active', 'status'])
+        request.user.sessions.all().delete()
+
+        return Response({'detail': 'Account deleted'})
+
+
 class UserProfileView(APIView):
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
