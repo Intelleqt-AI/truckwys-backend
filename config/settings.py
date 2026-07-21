@@ -153,7 +153,11 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 LANGUAGE_CODE = 'en-us'
-TIME_ZONE = 'UTC'
+# South African operator: use SAST so "today", overdue math and reporting windows
+# roll over at local midnight, not 02:00 SAST (which UTC caused). Storage stays
+# UTC (USE_TZ=True); this only sets the app's local reference time. Matches
+# CELERY_TIMEZONE below.
+TIME_ZONE = config('TIME_ZONE', default='Africa/Johannesburg')
 USE_I18N = True
 USE_TZ = True
 
@@ -197,6 +201,9 @@ REST_FRAMEWORK = {
         'otp_verify': '10/minute',  # 2FA code verification (per-challenge cap of 5 also applies)
         'otp_resend': '3/minute',   # 2FA code resend (plus a per-challenge 60s cooldown)
         'lender': '120/minute',  # Per-API-key cap for the lender API
+        # Copilot chat is far more expensive than a normal API call (LLM + RAG +
+        # snapshot). A tighter per-user cap prevents runaway OpenAI spend.
+        'copilot': config('COPILOT_THROTTLE_RATE', default='15/minute'),
     }
 }
 
@@ -333,10 +340,35 @@ CELERY_ACCEPT_CONTENT = ['json']
 
 from celery.schedules import crontab  # noqa: E402
 CELERY_BEAT_SCHEDULE = {
-    # SA diesel prices change on the first Wednesday of each month.
-    # Run on 3rd and 10th to catch it; task retries 3× with 6h gaps if scrape fails.
+    # Refresh SA diesel price daily at 06:00 SAST.
+    # force_update=True so a previously-stored fallback gets overwritten once live sources come back.
     'refresh-fuel-price': {
         'task': 'core.tasks.refresh_fuel_price',
-        'schedule': crontab(day_of_month='3,10', hour='6', minute='0'),
+        'schedule': crontab(hour='6', minute='0'),
+    },
+    # Retrain the quote win-probability model nightly at 03:00 SAST.
+    # Idempotent — no-ops until WIN_MODEL_MIN_SAMPLES outcomes exist.
+    'retrain-win-model': {
+        'task': 'core.tasks.retrain_win_model',
+        'schedule': crontab(hour='3', minute='0'),
+    },
+    # Rebuild the Copilot RAG invoice embeddings for every company every 15 min so
+    # retrieval stays fresh WITHOUT indexing on the chat request path. Incremental:
+    # skips unchanged invoices (source_hash), so it's cheap between real changes.
+    'reindex-copilot-rag': {
+        'task': 'core.tasks.reindex_copilot_rag',
+        'schedule': crontab(minute='*/15'),
+    },
+    # Poll Cartrack's live vehicle status every 20s (their own guidance is a
+    # 10-30s cadence). A plain float, not crontab — crontab's minimum
+    # granularity is one minute, too coarse for this.
+    'poll-cartrack-vehicle-status': {
+        'task': 'core.tasks.poll_cartrack_vehicle_status',
+        'schedule': 20.0,
+    },
+    # Door events don't need sub-minute cadence like position does.
+    'poll-cartrack-door-events': {
+        'task': 'core.tasks.poll_cartrack_door_events',
+        'schedule': crontab(minute='*/2'),
     },
 }

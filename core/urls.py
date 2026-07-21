@@ -9,7 +9,7 @@ from .views import (
     VehicleViewSet, VehicleTypeViewSet, VehicleLogViewSet, LoadViewSet,
     QuoteViewSet, InvoiceViewSet, PaymentViewSet,
     ExpenseViewSet, SettlementViewSet, NotificationViewSet, WebhookViewSet,
-    RegisterView, LoginView, LoginVerifyOtpView, LoginResendOtpView, LogoutView, ChangePasswordView, UserProfileView, SessionsView,
+    RegisterView, LoginView, LoginVerifyOtpView, LoginResendOtpView, LogoutView, ChangePasswordView, DeleteAccountView, UserProfileView, SessionsView,
     FleetOverviewView, VehicleInsightsView, VehicleIntelligenceFeedView, VehicleActionView,
     DriverOverviewView, DriverPerformanceLeaderboardView,
     QuotesPipelineOverviewView, NotificationSettingsView, SecuritySettingsView,
@@ -32,7 +32,7 @@ from .views_finance import (
 )
 from .views_capital import (
     FacilityViewSet, RiskScoreViewSet, AdvanceRequestViewSet,
-    CapitalDashboardViewSet, CapitalEligibleInvoicesView
+    CapitalDashboardViewSet, CapitalEligibleInvoicesView, CustomerRiskProfileView
 )
 from .views_partner import (
     PartnerAdvanceViewSet, PartnerOperatorViewSet, PartnerRiskScoreViewSet
@@ -41,7 +41,8 @@ from .views_integrations import (
     XeroConnectView, XeroCallbackView, XeroDisconnectView, XeroStatusView,
     XeroSyncInvoicesView, XeroSyncPaymentsView, XeroSyncLogView, FleetImportTripsView,
     CreditLookupView, DashboardInsightsView, CashFlowForecastView,
-    FleetTripSyncView, FleetTripBulkSyncView, TripSyncView
+    FleetTripSyncView, FleetTripBulkSyncView, TripSyncView,
+    CartrackStatusView, CartrackConnectView,
 )
 from .views import RouteCalculatorView, LocationSuggestView, DashboardSignalsView, PasswordResetRequestView, PasswordResetConfirmView, IntegrationAPIKeyViewSet
 from .views_lender import (
@@ -65,7 +66,7 @@ from .views_risk_api import (
 from .views_invite import (
     InviteCreateView, InviteValidateView, InviteAcceptView
 )
-from .views_ai_insights import DashboardBriefingView, RiskScoreExplainView, AgentChatView, CopilotConversationsView, CopilotConversationDetailView, ConversationChatView
+from .views_ai_insights import DashboardBriefingView, RiskScoreExplainView, AgentChatView, CopilotConversationsView, CopilotConversationDetailView, ConversationChatView, ProposalExecuteView, ProposalDismissView, CopilotMemoryView
 from .views_quote_optimize import AIPriceOptimizeView
 from .views_risk_score_api import RiskUnderwriteView
 
@@ -115,6 +116,7 @@ urlpatterns = [
     path('auth/login/resend-otp/', LoginResendOtpView.as_view(), name='login-resend-otp'),
     path('auth/logout/', LogoutView.as_view(), name='logout'),
     path('auth/change-password/', ChangePasswordView.as_view(), name='change-password'),
+    path('auth/delete-account/', DeleteAccountView.as_view(), name='delete-account'),
     # Billing (PayFast) — views were imported but never routed
     path('billing/status/', BillingStatusView.as_view(), name='billing-status'),
     path('billing/history/', BillingHistoryView.as_view(), name='billing-history'),
@@ -164,6 +166,9 @@ urlpatterns = [
     path('agent/conversations/', CopilotConversationsView.as_view(), name='agent-conversations'),
     path('agent/conversations/<int:pk>/', CopilotConversationDetailView.as_view(), name='agent-conversation-detail'),
     path('agent/conversations/<int:pk>/chat/', ConversationChatView.as_view(), name='agent-conversation-chat'),
+    path('agent/proposals/<int:pk>/execute/', ProposalExecuteView.as_view(), name='agent-proposal-execute'),
+    path('agent/proposals/<int:pk>/dismiss/', ProposalDismissView.as_view(), name='agent-proposal-dismiss'),
+    path('agent/memory/', CopilotMemoryView.as_view(), name='agent-memory'),
     path('quotes/optimize/', AIPriceOptimizeView.as_view(), name='quote-optimize'),
     path('quotes/analyze/', AIQuoteAnalyzeView.as_view(), name='quote-analyze'),
     path('risk/underwrite/', RiskUnderwriteView.as_view(), name='risk-underwrite'),
@@ -192,6 +197,10 @@ urlpatterns = [
     path('integrations/xero/sync-invoices/', XeroSyncInvoicesView.as_view(), name='xero-sync-invoices'),
     path('integrations/xero/sync-payments/', XeroSyncPaymentsView.as_view(), name='xero-sync-payments'),
     path('integrations/xero/sync-log/', XeroSyncLogView.as_view(), name='xero-sync-log'),
+
+    # Cartrack Fleet API integration endpoints
+    path('integrations/cartrack/status/', CartrackStatusView.as_view(), name='cartrack-status'),
+    path('integrations/cartrack/connect/', CartrackConnectView.as_view(), name='cartrack-connect'),
 
     # Fleet Integration endpoints (NEW - Phase 4)
     path('integrations/fleet/import-trips/', FleetImportTripsView.as_view(), name='fleet-import-trips'),
@@ -236,6 +245,7 @@ urlpatterns = [
 
     # Capital eligible invoices for operators (Sprint A4)
     path('capital/eligible/', CapitalEligibleInvoicesView.as_view(), name='capital-eligible'),
+    path('customers/<int:pk>/risk-profile/', CustomerRiskProfileView.as_view(), name='customer-risk-profile'),
 
     # Fleet Management API endpoints (outbound + inbound webhooks)
     path('fleet/trips/sync/', FleetTripSyncAPIView.as_view(), name='fleet-trip-sync'),

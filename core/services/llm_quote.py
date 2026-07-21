@@ -10,6 +10,7 @@ For a faster / cheaper per-quote path, set CLAUDE_QUOTE_MODEL=claude-haiku-4-5.
 import json
 import logging
 import os
+from datetime import date
 from typing import Any, Dict, List, Optional, Tuple
 
 from django.conf import settings
@@ -36,7 +37,7 @@ OPENAI_QUOTE_MODEL = (
 
 VEHICLE_TYPES = ["Flatbed", "Tautliner", "Refrigerated", "Tanker", "Box Truck", "Danger Load"]
 
-SYSTEM_PROMPT = (
+SYSTEM_PROMPT_BASE = (
     "You are the quoting assistant for TruckWys, a South African road-freight platform. "
     "Extract structured load details from the user's message and the conversation so far.\n"
     "- Locations are South African or SADC cities/towns. Normalise abbreviations "
@@ -45,11 +46,25 @@ SYSTEM_PROMPT = (
     f"- vehicle_type must be exactly one of: {', '.join(VEHICLE_TYPES)} "
     "(map reefer/fridge->Refrigerated, curtainsider->Tautliner, dg/dangerous goods->Danger Load).\n"
     "- cargo_description is the goods being moved (e.g. 'steel coils', 'pallets of beverages').\n"
+    "- pickup_date, delivery_date and valid_until are dates in YYYY-MM-DD format. Resolve relative "
+    "phrases ('today', 'tomorrow', 'in 5 days', '5 days from now', 'next Monday') against TODAY'S DATE "
+    "given below — do the arithmetic yourself, don't guess. If a date isn't mentioned, return \"\".\n"
+    "- trip_type is \"ONE_WAY\" or \"ROUND_TRIP\" — infer from phrases like 'one way'/'one-way' -> "
+    "ONE_WAY, 'round trip'/'return trip'/'there and back' -> ROUND_TRIP. If not mentioned, return \"\".\n"
     "- For any field you cannot determine from the conversation, return an empty string \"\" "
     "(or 0 for weight_kg). Do NOT guess or invent values.\n"
     "- 'reply' is one short, friendly sentence: confirm what you captured and ask for any "
     "still-missing essentials (pickup, delivery, cargo, weight)."
 )
+
+
+def _system_prompt() -> str:
+    # Built per-call (not a module constant) so "today"/"tomorrow"/"in N days"
+    # always resolve against the real current date, not whenever this process
+    # happened to start.
+    today = date.today()
+    return f"{SYSTEM_PROMPT_BASE}\n\nTODAY'S DATE: {today.isoformat()} ({today.strftime('%A')})."
+
 
 EXTRACTION_SCHEMA = {
     "type": "object",
@@ -59,11 +74,17 @@ EXTRACTION_SCHEMA = {
         "weight_kg": {"type": "number"},
         "vehicle_type": {"type": "string"},
         "cargo_description": {"type": "string"},
+        "pickup_date": {"type": "string"},
+        "delivery_date": {"type": "string"},
+        "valid_until": {"type": "string"},
+        "trip_type": {"type": "string"},
         "reply": {"type": "string"},
     },
     "required": [
         "pickup_location", "delivery_location", "weight_kg",
-        "vehicle_type", "cargo_description", "reply",
+        "vehicle_type", "cargo_description",
+        "pickup_date", "delivery_date", "valid_until", "trip_type",
+        "reply",
     ],
     "additionalProperties": False,
 }
@@ -128,7 +149,7 @@ def extract(message: str, history: Optional[List[Dict[str, Any]]] = None,
         response = client.messages.create(
             model=QUOTE_MODEL,
             max_tokens=600,
-            system=SYSTEM_PROMPT,
+            system=_system_prompt(),
             messages=msgs,
             output_config={"format": {"type": "json_schema", "schema": EXTRACTION_SCHEMA}},
         )
@@ -136,9 +157,10 @@ def extract(message: str, history: Optional[List[Dict[str, Any]]] = None,
         data = json.loads(text)
     elif provider == "openai":
         client = OpenAI(api_key=_openai_key())
-        sys = SYSTEM_PROMPT + (
+        sys = _system_prompt() + (
             "\n\nRespond ONLY with a JSON object with exactly these keys: pickup_location, "
-            "delivery_location, weight_kg, vehicle_type, cargo_description, reply."
+            "delivery_location, weight_kg, vehicle_type, cargo_description, pickup_date, "
+            "delivery_date, valid_until, trip_type, reply."
         )
         response = client.chat.completions.create(
             model=OPENAI_QUOTE_MODEL,
@@ -166,5 +188,18 @@ def extract(message: str, history: Optional[List[Dict[str, Any]]] = None,
         weight = 0
     if weight > 0:
         extracted["weight"] = weight
+
+    for date_field in ("pickup_date", "delivery_date", "valid_until"):
+        raw = (data.get(date_field) or "").strip()
+        if raw:
+            try:
+                date.fromisoformat(raw[:10])  # validate shape; reject anything malformed
+                extracted[date_field] = raw[:10]
+            except ValueError:
+                logger.debug("llm_quote: ignoring unparseable %s %r", date_field, raw)
+
+    trip_type = (data.get("trip_type") or "").strip().upper()
+    if trip_type in ("ONE_WAY", "ROUND_TRIP"):
+        extracted["trip_type"] = trip_type
 
     return extracted, (data.get("reply") or "").strip()

@@ -426,86 +426,37 @@ class WinProbabilityModel:
             logger.warning('Failed to load WinProbabilityModel: %s', exc)
 
     def _save_model(self):
-        """Save model and metadata to disk."""
+        """Save model and metadata to disk atomically (temp file + os.replace)
+        so a concurrent worker never reads a half-written pickle.
+
+        Training itself lives in core.services.quote_training.retrain_win_model
+        — the single training path (fits a scaler pipeline, threshold from
+        WIN_MODEL_MIN_SAMPLES) which assigns model/metadata and calls this.
+        """
+        import os
+        import tempfile
         try:
-            joblib.dump(self.model, self.MODEL_PATH)
-            with open(self.METADATA_PATH, 'w') as f:
-                json.dump(self.metadata, f, indent=2)
+            fd, tmp_path = tempfile.mkstemp(dir=self.MODEL_DIR, suffix='.pkl.tmp')
+            os.close(fd)
+            try:
+                joblib.dump(self.model, tmp_path)
+                os.replace(tmp_path, self.MODEL_PATH)
+            finally:
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+
+            fd, tmp_meta = tempfile.mkstemp(dir=self.MODEL_DIR, suffix='.json.tmp')
+            try:
+                with os.fdopen(fd, 'w') as f:
+                    json.dump(self.metadata, f, indent=2)
+                os.replace(tmp_meta, self.METADATA_PATH)
+            finally:
+                if os.path.exists(tmp_meta):
+                    os.unlink(tmp_meta)
+
             logger.info('Saved WinProbabilityModel to %s', self.MODEL_PATH)
         except Exception as exc:
             logger.error('Failed to save WinProbabilityModel: %s', exc)
-
-    def train(self, outcomes_df) -> Dict[str, Any]:
-        """
-        Train logistic regression on QuoteOutcome data.
-
-        Args:
-            outcomes_df: DataFrame with columns:
-                - outcome: 'accepted' or 'rejected'
-                - price_ratio, client_tier, days_until_departure, etc.
-
-        Returns:
-            Dict with training metrics
-        """
-        from sklearn.linear_model import LogisticRegression
-        from sklearn.model_selection import train_test_split
-        from sklearn.metrics import accuracy_score, roc_auc_score
-
-        # Prepare features
-        feature_cols = [
-            'price_ratio', 'client_tier', 'days_until_departure',
-            'historical_acceptance_rate', 'month', 'day_of_week',
-            'route_popularity'
-        ]
-
-        X = outcomes_df[feature_cols].values
-        y = (outcomes_df['outcome'] == 'accepted').astype(int).values
-
-        if len(X) < 50:
-            logger.warning('Insufficient data for win probability training (<50 outcomes)')
-            # Use synthetic bootstrapping or skip training
-            return {'success': False, 'error': 'Insufficient data (<50 outcomes)'}
-
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.2, random_state=42
-        )
-
-        self.model = LogisticRegression(
-            max_iter=1000,
-            random_state=42,
-            penalty='l2',
-            C=1.0
-        )
-        self.model.fit(X_train, y_train)
-
-        # Evaluate
-        y_pred = self.model.predict(X_test)
-        y_pred_proba = self.model.predict_proba(X_test)[:, 1]
-
-        accuracy = accuracy_score(y_test, y_pred)
-        try:
-            auc = roc_auc_score(y_test, y_pred_proba)
-        except:
-            auc = 0.5
-
-        self.metadata = {
-            'trained_at': datetime.now().isoformat(),
-            'training_count': len(X_train),
-            'test_count': len(X_test),
-            'accuracy': float(accuracy),
-            'auc': float(auc),
-            'feature_names': feature_cols,
-            'version': '1.0.0',
-        }
-
-        self._save_model()
-
-        return {
-            'success': True,
-            'accuracy': accuracy,
-            'auc': auc,
-            'training_count': len(X_train),
-        }
 
     def predict_proba(
         self,

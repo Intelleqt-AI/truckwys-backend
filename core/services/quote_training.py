@@ -7,7 +7,6 @@ ladder; this module is what turns captured outcomes into a fitted model and
 keeps it fresh as more quotes are decided.
 """
 import logging
-import threading
 from datetime import datetime
 
 import numpy as np
@@ -47,7 +46,14 @@ def _lane_market_rate(origin, destination, vehicle_type, cache):
 
 
 def build_win_training_matrix():
-    """Return (X, y, n) numpy arrays engineered from QuoteOutcome. Never raises."""
+    """Return (X, y, n) numpy arrays engineered from QuoteOutcome. Never raises.
+
+    Prefers the point-in-time feature snapshots stamped on each QuoteOutcome by
+    quote_outcome_capture (price_ratio, days_until_departure, quote month/dow,
+    historical_acceptance_rate). Legacy rows without snapshots are
+    reconstructed best-effort from the quote itself — never from the
+    outcome-marking click time, and never with hardcoded constants.
+    """
     from core.models import QuoteOutcome
 
     outcomes = list(
@@ -57,7 +63,10 @@ def build_win_training_matrix():
     if not outcomes:
         return np.empty((0, len(WIN_FEATURE_COLS))), np.empty((0,)), 0
 
-    # Precompute per-customer acceptance rate and per-lane popularity.
+    from core.services.lane_benchmark import canon_code
+
+    # Precompute legacy fallbacks: per-customer acceptance rate and per-lane
+    # popularity (keyed on CANONICAL lane codes so DUR/DBN spellings pool).
     cust_total, cust_acc, lane_count = {}, {}, {}
     finals = []
     for o in outcomes:
@@ -66,7 +75,7 @@ def build_win_training_matrix():
             cust_total[cid] = cust_total.get(cid, 0) + 1
             if o.outcome == 'accepted':
                 cust_acc[cid] = cust_acc.get(cid, 0) + 1
-        lane = (o.origin or '', o.destination or '')
+        lane = (canon_code(o.origin), canon_code(o.destination))
         lane_count[lane] = lane_count.get(lane, 0) + 1
         if o.final_price:
             finals.append(float(o.final_price))
@@ -79,20 +88,53 @@ def build_win_training_matrix():
         final = float(o.final_price) if o.final_price else 0.0
         if final <= 0:
             continue
-        market = _lane_market_rate(o.origin, o.destination, o.vehicle_type, rate_cache) or global_median
-        if not market or market <= 0:
-            continue
-        price_ratio = final / market
+
+        # price_ratio: snapshot first, else reconstruct against today's benchmark.
+        if o.price_ratio:
+            price_ratio = float(o.price_ratio)
+        else:
+            market = _lane_market_rate(o.origin, o.destination, o.vehicle_type, rate_cache) or global_median
+            if not market or market <= 0:
+                continue
+            price_ratio = final / market
 
         cid = getattr(o.quote, 'customer_id', None)
-        hist = (cust_acc.get(cid, 0) / cust_total[cid]) if cid in cust_total and cust_total[cid] else 0.7
-        tier = _TIER_MAP.get((o.client_tier or '').lower(), 0)
-        created = o.created_at
-        month = created.month if created else 1
-        dow = created.weekday() if created else 0
-        popularity = lane_count.get((o.origin or '', o.destination or ''), 1) / max_lane
+        if o.historical_acceptance_rate is not None:
+            hist = float(o.historical_acceptance_rate)
+        else:
+            # Leave-one-out: the row's own label must never sit inside its own
+            # feature. No prior history -> 0.5, matching the serving-time
+            # default in AIQuoteAnalyzeView._derive_client_features.
+            prior_total = cust_total.get(cid, 0) - 1 if cid is not None else 0
+            prior_acc = cust_acc.get(cid, 0) - (1 if o.outcome == 'accepted' else 0)
+            hist = (prior_acc / prior_total) if prior_total > 0 else 0.5
 
-        rows.append([price_ratio, tier, 2, hist, month, dow, popularity])
+        tier = _TIER_MAP.get((o.client_tier or '').lower(), 0)
+
+        # Urgency: snapshot, else quote pickup minus quote creation, else 7.
+        if o.days_until_departure is not None:
+            days = int(o.days_until_departure)
+        else:
+            q = o.quote
+            if getattr(q, 'pickup_date', None) and getattr(q, 'created_at', None):
+                days = max(0, (q.pickup_date - q.created_at.date()).days)
+            else:
+                days = 7
+
+        # Seasonality from QUOTE creation time, not the outcome click time.
+        quote_created = getattr(o.quote, 'created_at', None)
+        month = o.quote_month or (quote_created.month if quote_created else 1)
+        dow = o.quote_dow if o.quote_dow is not None else (quote_created.weekday() if quote_created else 0)
+
+        # Popularity: prefer the capture-time snapshot (identical definition to
+        # inference); legacy rows fall back to within-training normalization.
+        if o.route_popularity is not None:
+            popularity = float(o.route_popularity)
+        else:
+            popularity = lane_count.get(
+                (canon_code(o.origin), canon_code(o.destination)), 1) / max_lane
+
+        rows.append([price_ratio, tier, days, hist, month, dow, popularity])
         labels.append(1 if o.outcome == 'accepted' else 0)
 
     return np.array(rows, dtype=float), np.array(labels, dtype=int), len(rows)
@@ -120,6 +162,8 @@ def retrain_win_model(min_samples=None) -> dict:
     from sklearn.linear_model import LogisticRegression
     from sklearn.model_selection import train_test_split
     from sklearn.metrics import accuracy_score, roc_auc_score
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import StandardScaler
 
     try:
         if n >= 25:
@@ -127,7 +171,12 @@ def retrain_win_model(min_samples=None) -> dict:
         else:
             X_tr, X_te, y_tr, y_te = X, X, y, y
 
-        model = LogisticRegression(max_iter=1000, random_state=42, C=1.0)
+        # Scale features before the L2-penalized fit — otherwise price_ratio
+        # (~1.0) is drowned out by month (1-12) and the win curve goes flat.
+        model = make_pipeline(
+            StandardScaler(),
+            LogisticRegression(max_iter=1000, random_state=42, C=1.0),
+        )
         model.fit(X_tr, y_tr)
 
         proba = model.predict_proba(X_te)[:, 1]
@@ -156,10 +205,17 @@ def retrain_win_model(min_samples=None) -> dict:
         return {'trained': False, 'reason': f'fit failed: {exc}', 'samples': n}
 
 
-def win_model_status() -> dict:
-    """Honest snapshot of the win model for the quote UI. Never raises."""
+def win_model_status(company=None) -> dict:
+    """Honest snapshot of the win model for the quote UI. Never raises.
+
+    Pass `company` to scope the outcome count to one tenant (what the UI
+    shows); the model itself is global, so its metadata is unscoped.
+    """
     from core.models import QuoteOutcome
-    outcomes = QuoteOutcome.objects.filter(outcome__in=['accepted', 'rejected']).count()
+    qs = QuoteOutcome.objects.filter(outcome__in=['accepted', 'rejected'])
+    if company is not None:
+        qs = qs.filter(quote__company=company)
+    outcomes = qs.count()
     min_needed = _min_samples()
 
     meta = {}
@@ -184,31 +240,8 @@ def win_model_status() -> dict:
     }
 
 
-def maybe_retrain_win_model_async(step=10):
-    """Fire-and-forget retrain check after a new outcome is recorded.
-
-    Retrains in a daemon thread when enough data exists and either the model
-    isn't trained yet or another `step` outcomes have accumulated. This is what
-    closes the loop without any external scheduler.
-    """
-    try:
-        from core.models import QuoteOutcome
-        from core.services.quote_ml import WIN_ML_AVAILABLE
-        if not WIN_ML_AVAILABLE:
-            return
-        count = QuoteOutcome.objects.filter(outcome__in=['accepted', 'rejected']).count()
-        if count < _min_samples():
-            return
-        status = win_model_status()
-        if status['trained'] and (count % step != 0):
-            return
-
-        def _run():
-            try:
-                retrain_win_model()
-            except Exception as exc:
-                logger.warning('async win retrain failed: %s', exc)
-
-        threading.Thread(target=_run, daemon=True).start()
-    except Exception as exc:
-        logger.debug('maybe_retrain_win_model_async skipped: %s', exc)
+# NOTE: retraining is scheduled — Celery Beat runs core.tasks.retrain_win_model
+# nightly (idempotent, no-ops below the sample threshold). The old fire-and-
+# forget daemon-thread retrain inside the web request was removed: it died with
+# the worker, raced joblib.dump across gunicorn workers, and skipped retrains
+# whenever count % 10 != 0.

@@ -255,11 +255,18 @@ def complete_login(user, request):
     fingerprint = f"{device}|{ip or 'Unknown'}"
     known = user.known_devices or []
     is_new_device = fingerprint not in known
+    # Stamp last_login ourselves: this app never calls django.contrib.auth.login(),
+    # so the signal that normally maintains it never fires. LoginView's
+    # duplicate-email ordering (most recently used account first) and the
+    # serializer's 'last_active' field both depend on this being real.
+    user.last_login = timezone.now()
+    updates = ['last_login']
     if is_new_device:
         # Record it regardless of the alert preference, so turning alerts on
         # later doesn't fire for already-familiar devices.
         user.known_devices = (known + [fingerprint])[-100:]
-        user.save(update_fields=['known_devices'])
+        updates.append('known_devices')
+    user.save(update_fields=updates)
     session = UserSession.objects.create(
         user=user,
         device=device,
@@ -296,13 +303,22 @@ class LoginView(APIView):
         user = authenticate(username=identifier, password=password)
         if not user and identifier:
             from .models import User
-            # Try every account with this email (emails aren't unique) and use
-            # whichever password actually authenticates.
-            for match in User.objects.filter(email__iexact=identifier):
-                candidate = authenticate(username=match.username, password=password)
-                if candidate:
-                    user = candidate
-                    break
+            # Emails aren't unique, so try every account with this email — in a
+            # DETERMINISTIC order: most recently used first (then lowest id), so a
+            # duplicate-email user always lands in the account they actually use
+            # instead of whichever row the DB happened to return first.
+            candidates = list(User.objects.filter(email__iexact=identifier)
+                              .order_by(F('last_login').desc(nulls_last=True), 'id'))
+            authenticated = [c for c in (authenticate(username=m.username, password=password)
+                                         for m in candidates) if c]
+            if authenticated:
+                user = authenticated[0]
+                if len(authenticated) > 1:
+                    _exc_logger.warning(
+                        'login: %d accounts share email %s with the same password; '
+                        'picked user id=%s (most recent login). Consider merging them.',
+                        len(authenticated), identifier, user.id,
+                    )
 
         # Identical response for both 2FA-on and 2FA-off users — never branch on
         # 2FA before the password check (no account/2FA enumeration).
@@ -449,6 +465,38 @@ class ChangePasswordView(APIView):
         return Response({'detail': 'Password changed successfully'})
 
 
+class DeleteAccountView(APIView):
+    """Self-service account deletion. Soft-deletes (deactivates) rather than
+    hard-deleting, since User has CASCADE relations (Driver, UserSession,
+    Copilot data, IntegrationAPIKey, Webhook, InviteToken) that a real delete
+    would destroy. Requires the current password and force-logs-out every
+    session for this user."""
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request):
+        password = request.data.get('password') or ''
+        if not request.user.check_password(password):
+            return Response({'error': 'Password is incorrect'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if request.user.role == 'ADMIN':
+            company_id = request.user.company_id
+            other_active_users = User.objects.filter(
+                company_id=company_id, is_active=True,
+            ).exclude(id=request.user.id)
+            if other_active_users.exists() and not other_active_users.filter(role='ADMIN').exists():
+                return Response(
+                    {'error': "You're the only admin for your company. Promote another user to admin before deleting your account."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        request.user.is_active = False
+        request.user.status = 'INACTIVE'
+        request.user.save(update_fields=['is_active', 'status'])
+        request.user.sessions.all().delete()
+
+        return Response({'detail': 'Account deleted'})
+
+
 class UserProfileView(APIView):
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
@@ -569,20 +617,48 @@ class IsAdmin(IsAuthenticated):
 def resolve_user_company(user):
     """Return the user's own Company, creating+binding one if they have none yet
     (legacy/seed accounts). This replaces the old global Company id=1 singleton so
-    each tenant reads/writes ONLY their own company record."""
+    each tenant reads/writes ONLY their own company record.
+
+    Race-safe: several requests from a company-less user can land concurrently
+    (e.g. the New Quote page fires model-stats + profile on mount), so the
+    create path locks the user row — losers return the winner's company instead
+    of each creating an orphan."""
     company = getattr(user, 'company', None)
     if company:
         return company
-    company = Company.objects.create(
-        company_name=f"{(user.first_name or user.username)}'s Company",
-        address={},
-        contact={},
-    )
-    user.company = company
-    user.save(update_fields=['company'])
+
+    from django.db import transaction
+    with transaction.atomic():
+        locked = type(user).objects.select_for_update().get(pk=user.pk)
+        if locked.company_id:
+            user.company = locked.company
+            return locked.company
+        company = Company.objects.create(
+            company_name=f"{(user.first_name or user.username)}'s Company",
+            address={},
+            contact={},
+        )
+        # Loud on purpose: a phantom empty company minted here is how a user ends
+        # up staring at an app full of zeros (seed/legacy accounts with no company).
+        _exc_logger.warning(
+            'resolve_user_company: auto-created empty company id=%s for user id=%s (%s) '
+            'which had no company bound', company.id, user.id, user.email,
+        )
+        locked.company = company
+        locked.save(update_fields=['company'])
+        user.company = company
+
     from core.services.company_setup import seed_default_vehicle_types
     seed_default_vehicle_types(company)
     return company
+
+
+def get_user_company(user):
+    """The user's company or None — NEVER creates one (unlike resolve_user_company).
+    Use on read-ish surfaces (e.g. the copilot) where a company-less account should
+    get a clear 'not linked to a workspace' answer instead of a silently minted
+    empty tenant."""
+    return getattr(user, 'company', None) or None
 
 
 class CompanyProfileView(APIView):
@@ -1614,14 +1690,17 @@ class VehicleTypeViewSet(viewsets.ModelViewSet):
     ordering_fields = ['name', 'capacity', 'base_rate']
 
     def get_queryset(self):
-        from django.db.models import Q
+        from django.db.models import Q, Count
         user = self.request.user
         if not user.is_authenticated:
             return VehicleType.objects.none()
         if user.is_superuser:
-            return VehicleType.objects.all()
-        return VehicleType.objects.filter(
-            Q(company=None) | Q(company=user.company)
+            qs = VehicleType.objects.all()
+        else:
+            qs = VehicleType.objects.filter(Q(company=None) | Q(company=user.company))
+        # Annotate count of AVAILABLE vehicles per type (read by the serializer)
+        return qs.annotate(
+            avail_count=Count('vehicles', filter=Q(vehicles__status='AVAILABLE'))
         )
 
     def perform_create(self, serializer):
@@ -1653,7 +1732,11 @@ class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     def perform_create(self, serializer):
         # Creation notification is raised by the Load post_save signal
         # (notify_company), which covers all creation paths, not just this view.
-        serializer.save(created_by=self.request.user)
+        # company must be set explicitly: this override replaces
+        # CompanyFilterMixin.perform_create, which would otherwise have set it —
+        # without it loads are created with company=NULL and vanish from
+        # company-scoped queries.
+        serializer.save(created_by=self.request.user, company=self.request.user.company)
 
     @action(detail=True, methods=['patch'])
     def update_status(self, request, pk=None):
@@ -1668,19 +1751,28 @@ class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
             )
 
         load.status = new_status
+        # Read by the Load post_save signal so the acting user isn't notified
+        # about their own status change. ASSIGNED/IN_TRANSIT/DELIVERED/
+        # CANCELLED already get a specific, nicer-worded notification from
+        # that signal — only send this generic one for statuses it doesn't
+        # cover (PENDING/LOADING/INVOICED), so the company isn't told twice.
+        load._notify_actor_id = request.user.id
         load.save()
-        try:
-            from core.services.notify import notify_company
-            notify_company(
-                getattr(load, 'company_id', None),
-                'INFO',
-                'Booking status updated',
-                f'{load.load_number or ("Load " + str(load.id))} → {new_status}',
-                link=f'/bookings/{load.id}',
-                event='booking.status',
-            )
-        except Exception:
-            pass
+        _SIGNAL_HANDLED_STATUSES = {'ASSIGNED', 'IN_TRANSIT', 'DELIVERED', 'CANCELLED'}
+        if new_status not in _SIGNAL_HANDLED_STATUSES:
+            try:
+                from core.services.notify import notify_company
+                notify_company(
+                    getattr(load, 'company_id', None),
+                    'INFO',
+                    'Booking status updated',
+                    f'{load.load_number or ("Load " + str(load.id))} → {new_status}',
+                    link=f'/bookings/{load.id}',
+                    event='booking.status',
+                    exclude_user_id=request.user.id,
+                )
+            except Exception:
+                pass
         serializer = self.get_serializer(load)
         return Response(serializer.data)
 
@@ -1854,7 +1946,26 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
             )
         
         quote.status = new_status
+        # Read by the Quote post_save signal: an authenticated user made this
+        # change, so exclude them from their own "quote accepted/declined/…"
+        # notification — everyone else in the company still gets it. And for
+        # ACCEPTED/IT specifically, this view sends that notification itself
+        # right below (it needs the request-scoped actor), so tell the signal
+        # not to send its own copy too — otherwise the company gets it twice.
+        quote._notify_actor_id = request.user.id
+        if new_status in ('ACCEPTED', 'IT'):
+            quote._notify_handled = True
         quote.save()
+
+        # Status changes that decide the quote are ML training labels too.
+        if new_status in ('ACCEPTED', 'IT', 'DECLINED'):
+            from core.services.quote_outcome_capture import record_quote_outcome
+            record_quote_outcome(
+                quote,
+                'accepted' if new_status in ('ACCEPTED', 'IT') else 'rejected',
+                rejection_reason=str(request.data.get('rejection_reason') or ''),
+            )
+
         if new_status in ('ACCEPTED', 'IT'):
             try:
                 from core.services.notify import notify_company
@@ -1864,6 +1975,7 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
                     f'{getattr(quote, "quote_number", None) or ("Quote " + str(quote.id))}'
                     + (f' · {quote.customer.name}' if getattr(quote, 'customer', None) else ''),
                     link=f'/quotes/{quote.id}', event='quote.accepted',
+                    exclude_user_id=request.user.id,
                 )
             except Exception:
                 pass
@@ -1920,6 +2032,11 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         # Update quote status to In-Transit
         quote.status = 'IT'
         quote.save()
+
+        # Converting to a load IS a win — capture the ML label (idempotent:
+        # no-ops when the quote was already recorded as accepted).
+        from core.services.quote_outcome_capture import record_quote_outcome
+        record_quote_outcome(quote, 'accepted')
 
         serializer = LoadSerializer(load)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
@@ -1983,9 +2100,24 @@ class PublicQuoteView(APIView):
                     status=status.HTTP_404_NOT_FOUND
                 )
 
+            # Customer-facing branding — the freight company's own name/logo
+            company = quote.company
+            company_logo_url = None
+            if company and getattr(company, 'logo', None):
+                try:
+                    logo_url = company.logo.url
+                    company_logo_url = request.build_absolute_uri(logo_url)
+                except Exception:
+                    company_logo_url = None
+
+            # NOTE: Cost breakdown (base rate, fuel, tolls, driver allowance,
+            # margin) and driver details are intentionally NOT returned — the
+            # customer only ever sees route, cargo, dates and the final price.
             return Response({
                 'quote_number': quote.quote_number,
                 'customer_name': quote.customer.name if quote.customer else '',
+                'company_name': company.company_name if company else '',
+                'company_logo_url': company_logo_url,
                 'pickup_location': quote.pickup_location,
                 'delivery_location': quote.delivery_location,
                 'origin': quote.origin,
@@ -1994,24 +2126,16 @@ class PublicQuoteView(APIView):
                 'weight': str(quote.weight),
                 'distance': str(quote.distance) if quote.distance else None,
                 'vehicle_type': quote.vehicle_type,
-                'vehicle_display': (
-                    f"{quote.vehicle.make} {quote.vehicle.model} ({quote.vehicle.plate})"
-                    if quote.vehicle else None
-                ),
-                'driver_display': (
-                    (f"{quote.driver.user.first_name} {quote.driver.user.last_name}".strip()
-                     or quote.driver.user.username)
-                    if quote.driver else None
-                ),
-                'base_rate': str(quote.base_rate),
-                'fuel_surcharge': str(quote.fuel_surcharge),
-                'toll_charges': str(quote.toll_charges),
-                'driver_allowance': str(quote.driver_allowance),
-                'additional_charges': str(quote.additional_charges),
+                'pickup_date': str(quote.pickup_date) if quote.pickup_date else None,
+                'delivery_date': str(quote.delivery_date) if quote.delivery_date else None,
                 'total_amount': str(quote.total_amount),
                 'valid_until': str(quote.valid_until),
                 'status': quote.status,
                 'sla_hours': quote.sla_hours,
+                'trip_type': quote.trip_type,
+                'return_location': quote.return_location,
+                'return_cargo': quote.return_cargo,
+                'return_date': str(quote.return_date) if quote.return_date else None,
             })
         except Quote.DoesNotExist:
             return Response(
@@ -2034,7 +2158,9 @@ class PublicQuoteRespondView(APIView):
                     status=status.HTTP_404_NOT_FOUND
                 )
 
-            if quote.status in ['ACCEPTED', 'DECLINED']:
+            # IT/COMPLETED are decided too — a stale link must never re-decide
+            # a quote that is already being executed.
+            if quote.status in ['ACCEPTED', 'DECLINED', 'IT', 'COMPLETED']:
                 return Response(
                     {
                         'error': 'This quote has already been responded to',
@@ -2056,6 +2182,11 @@ class PublicQuoteRespondView(APIView):
                 quote.save()
                 # TODO: Optionally auto-create load here
 
+                # Customer-link decisions are the cleanest ML training labels —
+                # record them (never blocks the acceptance).
+                from core.services.quote_outcome_capture import record_quote_outcome
+                record_quote_outcome(quote, 'accepted')
+
                 # Confirmation email with quote PDF — must never block the acceptance
                 try:
                     from core.services.email_service import send_quote_accepted_email
@@ -2076,6 +2207,11 @@ class PublicQuoteRespondView(APIView):
             else:  # decline
                 quote.status = 'DECLINED'
                 quote.save()
+                from core.services.quote_outcome_capture import record_quote_outcome
+                record_quote_outcome(
+                    quote, 'rejected',
+                    rejection_reason=str(request.data.get('reason') or 'Declined via client link'),
+                )
                 return Response({
                     'message': 'Quote declined',
                     'status': quote.status
@@ -2110,6 +2246,12 @@ class PublicInvoiceView(APIView):
 
         company = invoice.company
         contact = company.contact if company and company.contact else {}
+        company_logo_url = None
+        if company and getattr(company, 'logo', None):
+            try:
+                company_logo_url = request.build_absolute_uri(company.logo.url)
+            except Exception:
+                company_logo_url = None
 
         return Response({
             'invoice_number': invoice.invoice_number,
@@ -2127,6 +2269,7 @@ class PublicInvoiceView(APIView):
             'line_items': invoice.line_items or [],
             'description': getattr(invoice, 'description', '') or '',
             'company_name': company.company_name if company else 'TruckWys',
+            'company_logo_url': company_logo_url,
             'company_phone': contact.get('phone', ''),
             'company_email': contact.get('email', ''),
             'company_address': contact.get('address', ''),

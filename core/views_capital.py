@@ -46,13 +46,14 @@ def _inv_no(advance):
     return getattr(inv, 'invoice_number', None) or f'Advance #{advance.id}'
 
 
-def _notify_advance(advance, ntype, title, message):
+def _notify_advance(advance, ntype, title, message, exclude_user_id=None):
     """Persist + live-push a notification for an advance lifecycle change."""
     try:
         from core.services.notify import notify_company
         company_id = getattr(getattr(advance, 'facility', None), 'company_id', None)
         notify_company(company_id, ntype, title, message,
-                       link=f'/capital/advances/{advance.id}', event='advance.status')
+                       link=f'/capital/advances/{advance.id}', event='advance.status',
+                       exclude_user_id=exclude_user_id)
     except Exception:
         pass
 
@@ -263,6 +264,20 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
         if existing:
             return Response(AdvanceRequestSerializer(existing).data, status=status.HTTP_200_OK)
 
+        # AI customer risk (overdue behavior): >70% blocks fast pay entirely;
+        # otherwise the advance amount is proportionally deducted below.
+        from core.services.customer_risk import compute_customer_risk, fundable_amount, BLOCK_THRESHOLD
+        crisk = compute_customer_risk(invoice.customer, facility.company)
+        if crisk['blocked']:
+            return Response(
+                {'error': f"Customer risk too high for fast pay ({crisk['risk_pct']}%)",
+                 'customer_risk_pct': crisk['risk_pct'],
+                 'customer_risk_band': crisk['band'],
+                 'block_threshold': BLOCK_THRESHOLD},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        advance_amount = fundable_amount(invoice.total_amount, crisk['risk_pct'] or 0)
+
         # Calculate risk score
         engine = RiskEngine(invoice=invoice, facility=facility)
         result = engine.calculate_risk_score()
@@ -298,21 +313,24 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
                 if race_dupe:
                     return Response(AdvanceRequestSerializer(race_dupe).data, status=status.HTTP_200_OK)
 
-                if locked_facility.available < invoice.total_amount:
+                if locked_facility.available < advance_amount:
                     return Response(
                         {'error': 'Advance would exceed available facility limit',
                          'available': float(locked_facility.available)},
                         status=status.HTTP_400_BAD_REQUEST
                     )
 
+                # Fee applies to the risk-deducted amount, not the face value.
+                fee_amount = (advance_amount * Decimal(str(result.final_fee_percent)) / Decimal('100')
+                              ).quantize(Decimal('0.01'))
                 advance_request = AdvanceRequest.objects.create(
                     invoice=invoice,
                     facility=locked_facility,
                     risk_score=risk_score,
-                    amount=invoice.total_amount,
+                    amount=advance_amount,
                     fee_percent=result.final_fee_percent,
-                    fee_amount=result.fee_amount,
-                    net_amount=result.net_advance,
+                    fee_amount=fee_amount,
+                    net_amount=advance_amount - fee_amount,
                     status='REQUESTED',
                     requested_at=timezone.now(),
                 )
@@ -326,7 +344,7 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
                 getattr(facility, 'company_id', None),
                 'SUCCESS',
                 'Advance requested',
-                f'{invoice.invoice_number} — R{float(result.net_advance):,.0f} net ({result.risk_tier} tier)',
+                f'{invoice.invoice_number} — R{float(advance_request.net_amount):,.0f} net ({result.risk_tier} tier)',
                 link=f'/capital/advances/{advance_request.id}',
                 event='advance.created',
             )
@@ -352,13 +370,21 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
 
         try:
+            # Read by the AdvanceRequest post_save signal: this view sends its
+            # own "Advance approved" notification below (excluding the actor),
+            # so tell the signal not to send its own copy too — and exclude the
+            # approving user from that copy in case _notify_handled ever isn't
+            # set (defence in depth, matches the same pattern used for quotes).
+            advance._notify_handled = True
+            advance._notify_actor_id = request.user.id
             advance.approve()
             if serializer.validated_data.get('notes'):
                 advance.notes = serializer.validated_data['notes']
                 advance.save()
 
             _notify_advance(advance, 'SUCCESS', 'Advance approved',
-                            f'{_inv_no(advance)} approved — R{float(advance.net_amount):,.0f} to be disbursed')
+                            f'{_inv_no(advance)} approved — R{float(advance.net_amount):,.0f} to be disbursed',
+                            exclude_user_id=request.user.id)
             response_serializer = AdvanceRequestSerializer(advance)
             return Response(response_serializer.data)
 
@@ -392,7 +418,8 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
                 advance.save()
 
             _notify_advance(advance, 'WARNING', 'Advance declined',
-                            f'{_inv_no(advance)} declined: {reason}')
+                            f'{_inv_no(advance)} declined: {reason}',
+                            exclude_user_id=request.user.id)
             response_serializer = AdvanceRequestSerializer(advance)
             return Response(response_serializer.data)
 
@@ -418,6 +445,10 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
 
         try:
+            # See the same guard in approve() above — the signal would
+            # otherwise also send "Funds disbursed" for this transition.
+            advance._notify_handled = True
+            advance._notify_actor_id = request.user.id
             advance.disburse()
 
             if serializer.validated_data.get('notes'):
@@ -425,7 +456,8 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
                 advance.save()
 
             _notify_advance(advance, 'SUCCESS', 'Advance disbursed',
-                            f'{_inv_no(advance)} — R{float(advance.net_amount):,.0f} paid out')
+                            f'{_inv_no(advance)} — R{float(advance.net_amount):,.0f} paid out',
+                            exclude_user_id=request.user.id)
             response_serializer = AdvanceRequestSerializer(advance)
             return Response(response_serializer.data)
 
@@ -465,7 +497,8 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
             except Exception:
                 pass
             _notify_advance(advance, 'SUCCESS', 'Advance settled',
-                            f'{_inv_no(advance)} settled')
+                            f'{_inv_no(advance)} settled',
+                            exclude_user_id=user.id)
 
             response_serializer = AdvanceRequestSerializer(advance)
             return Response(response_serializer.data)
@@ -688,6 +721,14 @@ class CapitalEligibleInvoicesView(APIView):
             candidates = candidates.filter(company=company)
         candidates = candidates.order_by('-issue_date')[:50]
 
+        # AI customer risk (overdue-behavior based): one bulk pass for every
+        # customer in the candidate list — drives the badge, the proportional
+        # fundable amount, and the >70% block on the Capital page.
+        from core.services.customer_risk import compute_customer_risk_bulk, fundable_amount
+        customer_risk = compute_customer_risk_bulk(
+            company, [inv.customer_id for inv in candidates if inv.customer_id]
+        ) if company is not None else {}
+
         result = []
         ineligible_result = []
         total_face_value = Decimal('0.00')
@@ -735,11 +776,18 @@ class CapitalEligibleInvoicesView(APIView):
 
             age_days = (date.today() - inv.issue_date).days if inv.issue_date else 0
 
+            crisk = customer_risk.get(inv.customer_id, {'risk_pct': None, 'band': None, 'blocked': False})
+            fundable = fundable_amount(amount, crisk['risk_pct']) if crisk['risk_pct'] is not None else amount
+
             result.append({
                 'id': inv.id,
                 'invoice_number': inv.invoice_number,
                 'customer': inv.customer.name,
                 'customer_id': inv.customer.id,
+                'customer_risk_pct': crisk['risk_pct'],
+                'customer_risk_band': crisk['band'],
+                'risk_blocked': crisk['blocked'],
+                'fundable_amount_zar': float(fundable),
                 'amount_zar': float(amount),
                 'amount': float(amount),  # Frontend compatibility
                 'total_amount': float(amount),  # Frontend compatibility
@@ -767,3 +815,31 @@ class CapitalEligibleInvoicesView(APIView):
             'ineligible_count': len(ineligible_result),
             'ineligible_invoices': ineligible_result,
         })
+
+
+class CustomerRiskProfileView(APIView):
+    """
+    GET /api/v1/customers/<id>/risk-profile/
+
+    The AI customer risk profile behind the Capital page's risk badge:
+    overdue-behavior score + components, payment-behavior rows for the table
+    and charts, and a live LLM-written summary (deterministic fallback).
+    Company-scoped: another company's customer id is a 404.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        from core.models import Customer
+        from core.services.customer_risk import compute_customer_risk, ai_risk_summary
+
+        company = getattr(request.user, 'company', None)
+        qs = Customer.objects.all()
+        if company is not None and not request.user.is_superuser:
+            qs = qs.filter(company=company)
+        customer = qs.filter(pk=pk).first()
+        if customer is None:
+            return Response({'error': 'Customer not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        profile = compute_customer_risk(customer, company or customer.company)
+        profile['ai_summary'] = ai_risk_summary(profile)
+        return Response(profile)

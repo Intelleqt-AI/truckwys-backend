@@ -169,6 +169,49 @@ class Company(models.Model):
         help_text='Last time payments were pulled from Xero'
     )
 
+    # Cartrack Fleet API integration fields (bring-your-own-account, mirrors Xero above)
+    cartrack_username = models.CharField(
+        max_length=200,
+        blank=True,
+        null=True,
+        help_text='Cartrack Fleet API username (Fleetweb > Settings > API Settings)'
+    )
+    cartrack_password = models.TextField(
+        blank=True,
+        null=True,
+        help_text='Cartrack Fleet API password (encrypted at rest)'
+    )
+    cartrack_base_url = models.CharField(
+        max_length=200,
+        blank=True,
+        null=True,
+        help_text='Regional Cartrack Fleet API base URL, e.g. https://fleetapi-za.cartrack.com'
+    )
+    cartrack_webhook_secret = models.TextField(
+        blank=True,
+        null=True,
+        help_text='HMAC key used to verify X-Webhook-Signature on inbound Cartrack webhooks (encrypted at rest)'
+    )
+    # Nullable, no eager default: not used until the Phase 4 inbound webhook is
+    # built. Generated lazily (uuid.uuid4()) the first time it's actually needed,
+    # so existing rows don't collide on the unique constraint at migration time.
+    cartrack_webhook_token = models.UUIDField(
+        null=True,
+        blank=True,
+        unique=True,
+        editable=False,
+        help_text='Unique per-company token used in the inbound Cartrack webhook URL'
+    )
+    cartrack_connected_at = models.DateTimeField(null=True, blank=True)
+    cartrack_last_status_sync = models.DateTimeField(
+        null=True, blank=True,
+        help_text='Last time vehicle status/location was polled from Cartrack'
+    )
+    cartrack_last_alert_sync = models.DateTimeField(
+        null=True, blank=True,
+        help_text='Watermark for GET /alerts/notifications polling'
+    )
+
     # Billing / subscription fields
     subscription_plan = models.CharField(
         max_length=20,
