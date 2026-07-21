@@ -1751,19 +1751,28 @@ class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
             )
 
         load.status = new_status
+        # Read by the Load post_save signal so the acting user isn't notified
+        # about their own status change. ASSIGNED/IN_TRANSIT/DELIVERED/
+        # CANCELLED already get a specific, nicer-worded notification from
+        # that signal — only send this generic one for statuses it doesn't
+        # cover (PENDING/LOADING/INVOICED), so the company isn't told twice.
+        load._notify_actor_id = request.user.id
         load.save()
-        try:
-            from core.services.notify import notify_company
-            notify_company(
-                getattr(load, 'company_id', None),
-                'INFO',
-                'Booking status updated',
-                f'{load.load_number or ("Load " + str(load.id))} → {new_status}',
-                link=f'/bookings/{load.id}',
-                event='booking.status',
-            )
-        except Exception:
-            pass
+        _SIGNAL_HANDLED_STATUSES = {'ASSIGNED', 'IN_TRANSIT', 'DELIVERED', 'CANCELLED'}
+        if new_status not in _SIGNAL_HANDLED_STATUSES:
+            try:
+                from core.services.notify import notify_company
+                notify_company(
+                    getattr(load, 'company_id', None),
+                    'INFO',
+                    'Booking status updated',
+                    f'{load.load_number or ("Load " + str(load.id))} → {new_status}',
+                    link=f'/bookings/{load.id}',
+                    event='booking.status',
+                    exclude_user_id=request.user.id,
+                )
+            except Exception:
+                pass
         serializer = self.get_serializer(load)
         return Response(serializer.data)
 
@@ -1937,6 +1946,15 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
             )
         
         quote.status = new_status
+        # Read by the Quote post_save signal: an authenticated user made this
+        # change, so exclude them from their own "quote accepted/declined/…"
+        # notification — everyone else in the company still gets it. And for
+        # ACCEPTED/IT specifically, this view sends that notification itself
+        # right below (it needs the request-scoped actor), so tell the signal
+        # not to send its own copy too — otherwise the company gets it twice.
+        quote._notify_actor_id = request.user.id
+        if new_status in ('ACCEPTED', 'IT'):
+            quote._notify_handled = True
         quote.save()
 
         # Status changes that decide the quote are ML training labels too.
@@ -1957,6 +1975,7 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
                     f'{getattr(quote, "quote_number", None) or ("Quote " + str(quote.id))}'
                     + (f' · {quote.customer.name}' if getattr(quote, 'customer', None) else ''),
                     link=f'/quotes/{quote.id}', event='quote.accepted',
+                    exclude_user_id=request.user.id,
                 )
             except Exception:
                 pass

@@ -542,6 +542,94 @@ class AIChatQuoteView(APIView):
                 if to_match:
                     extracted['delivery_location'] = to_match.group(1).strip()
 
+                # Dictated "label: value" style ("Collection location: Cape Town
+                # - Delivery: Durban") has no "from ... to ..." at all — catch
+                # it as a second attempt.
+                if 'pickup_location' not in extracted:
+                    m = re.search(r'(?:collection|pickup)(?:\s+location)?\s*[:\-]\s*([A-Za-z][A-Za-z\s]{1,25}?)(?:\s*[-,.]|\s+(?:total|weight|pickup|delivery|valid)\b|$)', message, re.IGNORECASE)
+                    if m:
+                        extracted['pickup_location'] = m.group(1).strip()
+                if 'delivery_location' not in extracted:
+                    m = re.search(r'delivery(?:\s+location)?\s*[:\-]\s*([A-Za-z][A-Za-z\s]{1,25}?)(?:\s*[-,.]|\s+(?:total|weight|pickup|delivery|valid|will)\b|$)', message, re.IGNORECASE)
+                    if m:
+                        extracted['delivery_location'] = m.group(1).strip()
+
+            # Dates — pickup_date, delivery_date, valid_until, each resolved
+            # against TODAY so relative phrases ("today", "tomorrow", "in 5
+            # days", "5 days from now") become real ISO dates, matching what
+            # the LLM path (llm_quote.py) does when it's configured.
+            from datetime import date as _date, timedelta as _timedelta
+            try:
+                from dateutil import parser as _date_parser
+            except ImportError:
+                _date_parser = None
+            today = _date.today()
+
+            _MONTH_OR_WEEKDAY_WORDS = {
+                'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august',
+                'september', 'october', 'november', 'december',
+                'jan', 'feb', 'mar', 'apr', 'jun', 'jul', 'aug', 'sep', 'sept', 'oct', 'nov', 'dec',
+                'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
+            }
+
+            def _resolve_date_phrase(phrase: str):
+                p = (phrase or '').strip().lower()
+                if not p:
+                    return None
+                if 'today' in p:
+                    return today
+                if 'tomorrow' in p:
+                    return today + _timedelta(days=1)
+                if 'yesterday' in p:
+                    return today - _timedelta(days=1)
+                dm = re.search(r'(\d+)\s*days?\s*(?:from now|later|from today|out)', p)
+                if not dm:
+                    dm = re.search(r'in\s+(\d+)\s*days?', p)
+                if dm:
+                    return today + _timedelta(days=int(dm.group(1)))
+                # Only hand ambiguous text (e.g. a city name that happened to be
+                # captured, like "Durban") to dateutil's fuzzy parser when it
+                # actually looks date-shaped — fuzzy mode otherwise silently
+                # falls back to `default` (today) for plain non-date text,
+                # which would misfire as a false date match.
+                has_digit = bool(re.search(r'\d', p))
+                has_date_word = any(w in p for w in _MONTH_OR_WEEKDAY_WORDS)
+                if not _date_parser or not (has_digit or has_date_word):
+                    return None
+                try:
+                    from datetime import datetime as _dt
+                    return _date_parser.parse(phrase, fuzzy=True, default=_dt.combine(today, _dt.min.time())).date()
+                except (ValueError, OverflowError, TypeError):
+                    return None
+
+            def _extract_date_field(labels: str):
+                pattern = rf'(?:{labels})(?:\s+date)?\s*(?:is|will be|[:\-])?\s*([A-Za-z0-9][A-Za-z0-9\s]{{1,30}}?)(?:\s*[-,.]|$)'
+                # Try every match, not just the first — a label can legitimately
+                # appear twice (e.g. "Delivery: Durban" is the location, a later
+                # "Delivery will be 5 days from now" is the date); skip whichever
+                # match doesn't actually resolve to a date.
+                for m in re.finditer(pattern, message, re.IGNORECASE):
+                    resolved = _resolve_date_phrase(m.group(1))
+                    if resolved:
+                        return resolved
+                return None
+
+            d = _extract_date_field(r'pickup|collection')
+            if d:
+                extracted['pickup_date'] = d.isoformat()
+            d = _extract_date_field(r'delivery(?:\s+will\s+be)?')
+            if d:
+                extracted['delivery_date'] = d.isoformat()
+            d = _extract_date_field(r'valid(?:ate)?(?:\s+until)?')
+            if d:
+                extracted['valid_until'] = d.isoformat()
+
+            # Trip type
+            if re.search(r'\bone[\s-]way\b|\bsingle\s+trip\b', message, re.IGNORECASE):
+                extracted['trip_type'] = 'ONE_WAY'
+            elif re.search(r'\bround[\s-]trip\b|\breturn\s+trip\b|\bthere\s+and\s+back\b', message, re.IGNORECASE):
+                extracted['trip_type'] = 'ROUND_TRIP'
+
             # Weight — with unit suffix
             weight_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:ton|t\b|tons|tonne|tonnes|kg|kgs|kilogram)', message, re.IGNORECASE)
             if weight_match:
