@@ -50,10 +50,15 @@ class AgingSummary:
 
 
 class AgingAnalysisService:
-    """Service for calculating invoice aging analysis."""
+    """Service for calculating invoice aging analysis.
 
-    def __init__(self):
-        """Initialize aging analysis service."""
+    Tenant-scoped: every query filters on the company passed at construction —
+    there is deliberately no company-less mode, so a forgotten argument fails
+    loudly instead of silently aggregating every tenant's receivables."""
+
+    def __init__(self, company):
+        """company: the tenant whose invoices/customers are analyzed."""
+        self.company = company
         self.today = date.today()
 
     def calculate_customer_aging(self, customer: Customer) -> CustomerAging:
@@ -68,6 +73,7 @@ class AgingAnalysisService:
         """
         # Get all outstanding invoices for customer
         invoices = Invoice.objects.filter(
+            company=self.company,
             customer=customer,
             balance__gt=0,
             status__in=['SENT', 'VIEWED', 'PARTIALLY_PAID', 'OVERDUE']
@@ -118,6 +124,7 @@ class AgingAnalysisService:
         """
         # Get all outstanding invoices
         invoices = Invoice.objects.filter(
+            company=self.company,
             balance__gt=0,
             status__in=['SENT', 'VIEWED', 'PARTIALLY_PAID', 'OVERDUE']
         )
@@ -167,8 +174,13 @@ class AgingAnalysisService:
         Returns:
             List[CustomerAging]: List of customer aging analyses
         """
-        # Get customers with outstanding invoices
+        # Get customers with outstanding invoices. Scoped by the INVOICES' company
+        # only — the same predicate calculate_overall_aging uses — so the customer
+        # rows always sum to the summary. (Filtering on Customer.company too would
+        # drop legacy NULL-company customers whose invoices ARE tenant-stamped,
+        # leaving money in the summary that no customer row explains.)
         customers = Customer.objects.filter(
+            invoices__company=self.company,
             invoices__balance__gt=0,
             invoices__status__in=['SENT', 'VIEWED', 'PARTIALLY_PAID', 'OVERDUE']
         ).distinct()
@@ -192,6 +204,7 @@ class AgingAnalysisService:
             List[AgingBucket]: List of aging buckets
         """
         invoices = Invoice.objects.filter(
+            company=self.company,
             balance__gt=0,
             status__in=['SENT', 'VIEWED', 'PARTIALLY_PAID', 'OVERDUE']
         )
@@ -261,6 +274,7 @@ class AgingAnalysisService:
             List[Invoice]: List of overdue invoices
         """
         query = Invoice.objects.filter(
+            company=self.company,
             balance__gt=0,
             status__in=['SENT', 'VIEWED', 'PARTIALLY_PAID', 'OVERDUE'],
             due_date__lt=self.today
@@ -297,12 +311,14 @@ class AgingAnalysisService:
 
         # Get total credit sales (all invoices issued in period)
         total_sales = Invoice.objects.filter(
+            company=self.company,
             issue_date__gte=start_date,
             issue_date__lte=end_date
         ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
 
         # Get average AR (current outstanding)
         current_ar = Invoice.objects.filter(
+            company=self.company,
             balance__gt=0
         ).aggregate(total=Sum('balance'))['total'] or Decimal('0.00')
 
@@ -315,14 +331,14 @@ class AgingAnalysisService:
         return round(dso, 2)
 
     @classmethod
-    def generate_aging_report(cls) -> Dict:
+    def generate_aging_report(cls, company) -> Dict:
         """
-        Generate complete aging report.
+        Generate complete aging report for one tenant.
 
         Returns:
             Dict: Complete aging report with summary and customer details
         """
-        service = cls()
+        service = cls(company)
 
         summary = service.calculate_overall_aging()
         customer_aging = service.get_all_customer_aging()

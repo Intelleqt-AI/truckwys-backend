@@ -19,6 +19,62 @@ WIN_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
 MAC_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15)'
 
 
+class DuplicateEmailLoginTests(TestCase):
+    """Emails aren't unique. Login by email must be DETERMINISTIC: the account
+    whose password matches wins; when several match, the most recently used one
+    (then lowest id) — never DB row order."""
+
+    def setUp(self):
+        cache.clear()  # reset the shared login rate-throttle between tests
+        alert_patcher = patch('core.tasks.send_login_alert_email_task')
+        alert_patcher.start()
+        self.addCleanup(alert_patcher.stop)
+        no_2fa = {'two_factor': False, 'login_alerts': False}
+        self.user_a = User.objects.create_user(
+            username='dup_a', email='dup@example.com', password='passA',
+            security_settings=no_2fa,
+        )
+        self.user_b = User.objects.create_user(
+            username='dup_b', email='dup@example.com', password='passB',
+            security_settings=no_2fa,
+        )
+
+    def _login(self, password):
+        client = APIClient(HTTP_USER_AGENT=WIN_UA)
+        return client.post('/api/v1/auth/login/',
+                           {'username': 'dup@example.com', 'password': password},
+                           format='json')
+
+    def test_password_selects_the_matching_account(self):
+        resp = self._login('passB')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.content)
+        self.assertEqual(resp.json()['user']['id'], self.user_b.id)
+
+    def test_shared_password_prefers_most_recently_used_account(self):
+        # user_b signs in normally (by username) — a REAL login must stamp
+        # last_login (complete_login), or the recency ordering below is dead code.
+        client = APIClient(HTTP_USER_AGENT=WIN_UA)
+        resp = client.post('/api/v1/auth/login/',
+                           {'username': 'dup_b', 'password': 'passB'}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.content)
+        self.user_b.refresh_from_db()
+        self.assertIsNotNone(self.user_b.last_login, 'login must stamp last_login')
+        # Now both accounts share the password; email login must pick the
+        # recently-used B, not the lower-id A.
+        self.user_b.set_password('passA')
+        self.user_b.save()
+        resp = self._login('passA')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.content)
+        self.assertEqual(resp.json()['user']['id'], self.user_b.id)
+
+    def test_shared_password_never_logged_in_falls_back_to_lowest_id(self):
+        self.user_b.set_password('passA')
+        self.user_b.save()
+        resp = self._login('passA')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.content)
+        self.assertEqual(resp.json()['user']['id'], self.user_a.id)
+
+
 class SessionsTestCase(TestCase):
     def setUp(self):
         cache.clear()  # reset the shared login rate-throttle between tests

@@ -9,7 +9,7 @@ from .views import (
     VehicleViewSet, VehicleTypeViewSet, VehicleLogViewSet, LoadViewSet,
     QuoteViewSet, InvoiceViewSet, PaymentViewSet,
     ExpenseViewSet, SettlementViewSet, NotificationViewSet, WebhookViewSet,
-    RegisterView, LoginView, LoginVerifyOtpView, LoginResendOtpView, LogoutView, ChangePasswordView, UserProfileView, SessionsView,
+    RegisterView, LoginView, LoginVerifyOtpView, LoginResendOtpView, LogoutView, ChangePasswordView, DeleteAccountView, UserProfileView, SessionsView,
     FleetOverviewView, VehicleInsightsView, VehicleIntelligenceFeedView, VehicleActionView,
     DriverOverviewView, DriverPerformanceLeaderboardView,
     QuotesPipelineOverviewView, NotificationSettingsView, SecuritySettingsView,
@@ -66,7 +66,7 @@ from .views_risk_api import (
 from .views_invite import (
     InviteCreateView, InviteValidateView, InviteAcceptView
 )
-from .views_ai_insights import DashboardBriefingView, RiskScoreExplainView, AgentChatView, CopilotConversationsView, CopilotConversationDetailView, ConversationChatView, ProposalExecuteView, ProposalDismissView
+from .views_ai_insights import DashboardBriefingView, RiskScoreExplainView, AgentChatView, CopilotConversationsView, CopilotConversationDetailView, ConversationChatView, ProposalExecuteView, ProposalDismissView, CopilotMemoryView
 from .views_quote_optimize import AIPriceOptimizeView
 from .views_risk_score_api import RiskUnderwriteView
 
@@ -116,6 +116,7 @@ urlpatterns = [
     path('auth/login/resend-otp/', LoginResendOtpView.as_view(), name='login-resend-otp'),
     path('auth/logout/', LogoutView.as_view(), name='logout'),
     path('auth/change-password/', ChangePasswordView.as_view(), name='change-password'),
+    path('auth/delete-account/', DeleteAccountView.as_view(), name='delete-account'),
     # Billing (PayFast) — views were imported but never routed
     path('billing/status/', BillingStatusView.as_view(), name='billing-status'),
     path('billing/history/', BillingHistoryView.as_view(), name='billing-history'),
@@ -167,6 +168,7 @@ urlpatterns = [
     path('agent/conversations/<int:pk>/chat/', ConversationChatView.as_view(), name='agent-conversation-chat'),
     path('agent/proposals/<int:pk>/execute/', ProposalExecuteView.as_view(), name='agent-proposal-execute'),
     path('agent/proposals/<int:pk>/dismiss/', ProposalDismissView.as_view(), name='agent-proposal-dismiss'),
+    path('agent/memory/', CopilotMemoryView.as_view(), name='agent-memory'),
     path('quotes/optimize/', AIPriceOptimizeView.as_view(), name='quote-optimize'),
     path('quotes/analyze/', AIQuoteAnalyzeView.as_view(), name='quote-analyze'),
     path('risk/underwrite/', RiskUnderwriteView.as_view(), name='risk-underwrite'),

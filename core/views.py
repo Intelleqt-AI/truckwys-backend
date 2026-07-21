@@ -255,11 +255,18 @@ def complete_login(user, request):
     fingerprint = f"{device}|{ip or 'Unknown'}"
     known = user.known_devices or []
     is_new_device = fingerprint not in known
+    # Stamp last_login ourselves: this app never calls django.contrib.auth.login(),
+    # so the signal that normally maintains it never fires. LoginView's
+    # duplicate-email ordering (most recently used account first) and the
+    # serializer's 'last_active' field both depend on this being real.
+    user.last_login = timezone.now()
+    updates = ['last_login']
     if is_new_device:
         # Record it regardless of the alert preference, so turning alerts on
         # later doesn't fire for already-familiar devices.
         user.known_devices = (known + [fingerprint])[-100:]
-        user.save(update_fields=['known_devices'])
+        updates.append('known_devices')
+    user.save(update_fields=updates)
     session = UserSession.objects.create(
         user=user,
         device=device,
@@ -296,13 +303,22 @@ class LoginView(APIView):
         user = authenticate(username=identifier, password=password)
         if not user and identifier:
             from .models import User
-            # Try every account with this email (emails aren't unique) and use
-            # whichever password actually authenticates.
-            for match in User.objects.filter(email__iexact=identifier):
-                candidate = authenticate(username=match.username, password=password)
-                if candidate:
-                    user = candidate
-                    break
+            # Emails aren't unique, so try every account with this email — in a
+            # DETERMINISTIC order: most recently used first (then lowest id), so a
+            # duplicate-email user always lands in the account they actually use
+            # instead of whichever row the DB happened to return first.
+            candidates = list(User.objects.filter(email__iexact=identifier)
+                              .order_by(F('last_login').desc(nulls_last=True), 'id'))
+            authenticated = [c for c in (authenticate(username=m.username, password=password)
+                                         for m in candidates) if c]
+            if authenticated:
+                user = authenticated[0]
+                if len(authenticated) > 1:
+                    _exc_logger.warning(
+                        'login: %d accounts share email %s with the same password; '
+                        'picked user id=%s (most recent login). Consider merging them.',
+                        len(authenticated), identifier, user.id,
+                    )
 
         # Identical response for both 2FA-on and 2FA-off users — never branch on
         # 2FA before the password check (no account/2FA enumeration).
@@ -449,6 +465,38 @@ class ChangePasswordView(APIView):
         return Response({'detail': 'Password changed successfully'})
 
 
+class DeleteAccountView(APIView):
+    """Self-service account deletion. Soft-deletes (deactivates) rather than
+    hard-deleting, since User has CASCADE relations (Driver, UserSession,
+    Copilot data, IntegrationAPIKey, Webhook, InviteToken) that a real delete
+    would destroy. Requires the current password and force-logs-out every
+    session for this user."""
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request):
+        password = request.data.get('password') or ''
+        if not request.user.check_password(password):
+            return Response({'error': 'Password is incorrect'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if request.user.role == 'ADMIN':
+            company_id = request.user.company_id
+            other_active_users = User.objects.filter(
+                company_id=company_id, is_active=True,
+            ).exclude(id=request.user.id)
+            if other_active_users.exists() and not other_active_users.filter(role='ADMIN').exists():
+                return Response(
+                    {'error': "You're the only admin for your company. Promote another user to admin before deleting your account."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        request.user.is_active = False
+        request.user.status = 'INACTIVE'
+        request.user.save(update_fields=['is_active', 'status'])
+        request.user.sessions.all().delete()
+
+        return Response({'detail': 'Account deleted'})
+
+
 class UserProfileView(APIView):
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
@@ -590,6 +638,12 @@ def resolve_user_company(user):
             address={},
             contact={},
         )
+        # Loud on purpose: a phantom empty company minted here is how a user ends
+        # up staring at an app full of zeros (seed/legacy accounts with no company).
+        _exc_logger.warning(
+            'resolve_user_company: auto-created empty company id=%s for user id=%s (%s) '
+            'which had no company bound', company.id, user.id, user.email,
+        )
         locked.company = company
         locked.save(update_fields=['company'])
         user.company = company
@@ -597,6 +651,14 @@ def resolve_user_company(user):
     from core.services.company_setup import seed_default_vehicle_types
     seed_default_vehicle_types(company)
     return company
+
+
+def get_user_company(user):
+    """The user's company or None — NEVER creates one (unlike resolve_user_company).
+    Use on read-ish surfaces (e.g. the copilot) where a company-less account should
+    get a clear 'not linked to a workspace' answer instead of a silently minted
+    empty tenant."""
+    return getattr(user, 'company', None) or None
 
 
 class CompanyProfileView(APIView):
