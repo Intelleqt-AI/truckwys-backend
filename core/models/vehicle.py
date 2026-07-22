@@ -41,6 +41,9 @@ class Vehicle(models.Model):
     mileage = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     last_maintenance_date = models.DateField(null=True, blank=True)
     next_maintenance_due = models.DateField(null=True, blank=True)
+    # When we last sent a maintenance-due alert for this vehicle, so the daily
+    # sweep re-alerts at most weekly (core/management/commands/sweep_maintenance_due.py).
+    last_maintenance_alert_at = models.DateField(null=True, blank=True)
     service_interval_km = models.IntegerField(null=True, blank=True, help_text='How many km between services (e.g. 10000)')
     last_service_mileage = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, help_text='Odometer reading at last service')
     insurance_expiry = models.DateField(null=True, blank=True)

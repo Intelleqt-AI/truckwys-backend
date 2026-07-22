@@ -11,6 +11,7 @@ class Quote(models.Model):
         ('DECLINED', 'Declined'),
         ('IT', 'In-Transit'),
         ('COMPLETED', 'Completed'),
+        ('EXPIRED', 'Expired'),
     ]
 
     CONFIDENCE_CHOICES = [

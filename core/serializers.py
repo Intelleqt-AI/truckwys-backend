@@ -37,8 +37,11 @@ class UserSerializer(serializers.ModelSerializer):
                   'role', 'status', 'phone', 'address', 'timezone', 'language', 'date_format',
                   'notification_settings', 'avatar', 'last_active', 'is_active', 'created_at', 'updated_at',
                   'is_superuser', 'company_id', 'company_name']
+        # notification_settings is read-only here: the validated
+        # NotificationSettingsView is the single write path for preferences.
         read_only_fields = ['id', 'created_at', 'updated_at', 'last_active',
-                           'is_superuser', 'company_id', 'company_name']
+                           'is_superuser', 'company_id', 'company_name',
+                           'notification_settings']
         extra_kwargs = {'password': {'write_only': True, 'required': False}}
 
     def validate_email(self, value):

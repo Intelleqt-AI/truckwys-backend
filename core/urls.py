@@ -13,6 +13,7 @@ from .views import (
     FleetOverviewView, VehicleInsightsView, VehicleIntelligenceFeedView, VehicleActionView,
     DriverOverviewView, DriverPerformanceLeaderboardView,
     QuotesPipelineOverviewView, NotificationSettingsView, SecuritySettingsView,
+    VapidPublicKeyView, PushSubscriptionView,
     CompanyProfileView, CompanyLogoUploadView, DashboardOverviewView, ActivityEventViewSet,
     TestEmailView, InviteView, InviteTokenView, InviteResendView,
     PublicQuoteView, PublicQuoteRespondView, PublicInvoiceView,
@@ -152,6 +153,10 @@ urlpatterns = [
     # Notification Settings endpoint
     path('notifications/settings/', NotificationSettingsView.as_view(), name='notification-settings'),
     path('auth/security-settings/', SecuritySettingsView.as_view(), name='security-settings'),
+
+    # Web Push (browser notifications)
+    path('push/vapid-key/', VapidPublicKeyView.as_view(), name='push-vapid-key'),
+    path('push/subscriptions/', PushSubscriptionView.as_view(), name='push-subscriptions'),
     
     # Company Settings endpoints
     path('company/profile/', CompanyProfileView.as_view(), name='company-profile'),

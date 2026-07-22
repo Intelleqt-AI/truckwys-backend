@@ -52,6 +52,17 @@ def advance_pre_save(sender, instance, **kwargs):
         instance._old_status = None
 
 
+@receiver(pre_save, sender='core.Driver')
+def driver_pre_save(sender, instance, **kwargs):
+    if instance.pk:
+        try:
+            instance._old_status = sender.objects.values_list('status', flat=True).get(pk=instance.pk)
+        except sender.DoesNotExist:
+            instance._old_status = None
+    else:
+        instance._old_status = None
+
+
 @receiver(post_save, sender='core.Load')
 def load_saved(sender, instance, created, **kwargs):
     """Fire webhook when load is created or status changes."""
@@ -335,6 +346,7 @@ def quote_saved(sender, instance, created, **kwargs):
                     'SENT':      ('quote.sent',      'Quote sent to customer', 'INFO'),
                     'DECLINED':  ('quote.declined',  'Quote declined',         'ALERT'),
                     'COMPLETED': ('quote.completed', 'Quote completed',        'SUCCESS'),
+                    'EXPIRED':   ('quote.expired',   'Quote expired',          'WARNING'),
                 }
                 if instance.status in _QUOTE_STATUS_NOTIFY:
                     event, title, ntype = _QUOTE_STATUS_NOTIFY[instance.status]
@@ -683,6 +695,29 @@ def driver_scores_on_save(sender, instance, created, **kwargs):
     try:
         from core.tasks import compute_driver_scores
         compute_driver_scores(instance.pk)
+    except Exception:
+        pass
+
+
+@receiver(post_save, sender='core.Driver')
+def driver_status_notify(sender, instance, created, **kwargs):
+    """Notify the company when a driver's status changes (category: driver_updates)."""
+    if created:
+        return
+    try:
+        old = getattr(instance, '_old_status', None)
+        if old and old != instance.status:
+            from core.services.notify import notify_company
+            name = ''
+            if getattr(instance, 'user', None):
+                name = (f"{instance.user.first_name} {instance.user.last_name}".strip()
+                        or instance.user.username)
+            detail = f"{name or 'Driver'} is now {instance.status}" + (f" (was {old})" if old else '')
+            notify_company(
+                instance.company_id, 'INFO', 'Driver status updated', detail,
+                link=f'/drivers/{instance.id}', event='driver.status_changed',
+                exclude_user_id=getattr(instance, '_notify_actor_id', None),
+            )
     except Exception:
         pass
 
