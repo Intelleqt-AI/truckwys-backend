@@ -33,3 +33,4 @@ lxml>=4.9.0
 
 # Secrets-at-rest encryption (Xero OAuth tokens)
 cryptography>=42.0
+pywebpush>=2.0

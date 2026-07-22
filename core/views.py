@@ -14,7 +14,7 @@
 # - UserViewSet: Admin-only, filters all users (needs multi-tenancy if non-admin users access) ⚠️
 
 import logging as _logging
-from rest_framework import viewsets, status, filters
+from rest_framework import viewsets, status, filters, mixins
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -547,37 +547,89 @@ class SessionsView(APIView):
 
 
 class NotificationSettingsView(APIView):
+    """Per-user notification preferences, validated against the canonical
+    schema (core/services/notification_prefs.py). Single write path — the
+    field is read-only everywhere else. Preferences gate delivery (toast,
+    browser push, email); bell history is never filtered.
+    """
     permission_classes = [IsAuthenticated]
-    
+
     def get(self, request):
-        # Default settings if none exist
-        default_settings = {
-            "email": { "quotes": True, "bookings": True, "invoices": False, "alerts": True, "marketing": False },
-            "push": { "quotes": True, "bookings": True, "alerts": True, "messages": False },
-            "sms": { "alerts": True, "confirmations": False }
-        }
-        settings = request.user.notification_settings
-        if not settings:
-            settings = default_settings
-        return Response(settings)
-    
+        from core.services.notification_prefs import get_prefs
+        return Response(get_prefs(request.user))
+
     def patch(self, request):
+        from core.services.notification_prefs import NOTIFICATION_DEFAULTS, get_prefs
+        if not isinstance(request.data, dict):
+            return Response({'detail': 'Body must be a JSON object of channels.'},
+                            status=status.HTTP_400_BAD_REQUEST)
         user = request.user
-        settings = user.notification_settings or {
-            "email": { "quotes": True, "bookings": True, "invoices": False, "alerts": True, "marketing": False },
-            "push": { "quotes": True, "bookings": True, "alerts": True, "messages": False },
-            "sms": { "alerts": True, "confirmations": False }
-        }
-        
-        for key, value in request.data.items():
-            if isinstance(value, dict) and key in settings:
-                settings[key].update(value)
-            else:
-                settings[key] = value
-        
+        settings = get_prefs(user)
+        for channel, defaults in NOTIFICATION_DEFAULTS.items():
+            incoming = request.data.get(channel)
+            if not isinstance(incoming, dict):
+                continue
+            for key in defaults:
+                if key in incoming:
+                    settings[channel][key] = bool(incoming[key])
         user.notification_settings = settings
-        user.save()
-        return Response(user.notification_settings)
+        user.save(update_fields=['notification_settings', 'updated_at'])
+        return Response(settings)
+
+
+class VapidPublicKeyView(APIView):
+    """Public VAPID key the browser needs to create a push subscription."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from django.conf import settings as dj_settings
+        key = dj_settings.VAPID_PUBLIC_KEY
+        if not key:
+            return Response({'detail': 'Web push is not configured on this server.'},
+                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        return Response({'public_key': key})
+
+
+class PushSubscriptionView(APIView):
+    """Register/unregister this browser's Web Push subscription.
+
+    POST body: the PushSubscription.toJSON() shape —
+        {"endpoint": ..., "keys": {"p256dh": ..., "auth": ...}}
+    DELETE body: {"endpoint": ...}
+    Upserts by endpoint (a browser re-subscribing moves the endpoint to the
+    currently logged-in user).
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        data = request.data if isinstance(request.data, dict) else {}
+        endpoint = data.get('endpoint')
+        keys = data.get('keys') or {}
+        if not endpoint or not keys.get('p256dh') or not keys.get('auth'):
+            return Response({'detail': 'endpoint and keys.p256dh/keys.auth are required.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        from core.models import PushSubscription
+        sub, created = PushSubscription.objects.update_or_create(
+            endpoint=endpoint,
+            defaults={
+                'user': request.user,
+                'p256dh': keys['p256dh'],
+                'auth': keys['auth'],
+                'user_agent': request.META.get('HTTP_USER_AGENT', '')[:300],
+            },
+        )
+        return Response({'id': sub.id, 'created': created},
+                        status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+    def delete(self, request):
+        data = request.data if isinstance(request.data, dict) else {}
+        endpoint = data.get('endpoint')
+        if not endpoint:
+            return Response({'detail': 'endpoint is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        from core.models import PushSubscription
+        deleted, _ = PushSubscription.objects.filter(
+            endpoint=endpoint, user=request.user).delete()
+        return Response({'deleted': deleted})
 
 
 class SecuritySettingsView(APIView):
@@ -2404,7 +2456,10 @@ class SettlementViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         return Response(serializer.data)
 
 
-class NotificationViewSet(viewsets.ModelViewSet):
+class NotificationViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
+                          viewsets.GenericViewSet):
+    """Read-only notification feed + mark-read actions. Rows are created by
+    notify_company only — no client create/update/delete."""
     serializer_class = NotificationSerializer
     permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
@@ -2414,19 +2469,29 @@ class NotificationViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         """Return notifications for the current user"""
         queryset = Notification.objects.filter(user=self.request.user)
-        
+
         unread_only = self.request.query_params.get('unread')
         if unread_only == 'true':
             queryset = queryset.filter(is_read=False)
-            
-        limit = self.request.query_params.get('limit')
+
+        return queryset
+
+    def list(self, request, *args, **kwargs):
+        # ?limit=N slices here (list only) so mark-read/unread_count and detail
+        # routes can still filter/update the unsliced queryset.
+        queryset = self.filter_queryset(self.get_queryset())
+        limit = request.query_params.get('limit')
         if limit:
             try:
                 queryset = queryset[:int(limit)]
             except ValueError:
                 pass
-                
-        return queryset
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
 
     @action(detail=False, methods=['post'], url_path='mark-read')
     def mark_read_bulk(self, request):

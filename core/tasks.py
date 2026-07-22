@@ -564,3 +564,33 @@ def poll_cartrack_door_events():
         except Exception:
             logger.exception('Cartrack door-event poll failed for company %s', company.id)
     return {'companies_polled': companies_polled, 'events_applied': total_applied}
+
+
+# ---------------------------------------------------------------------------
+# Notification sweeps (Celery Beat — daily; weekly digest Mondays)
+# See core/services/notification_sweeps.py; same logic is runnable manually
+# via the matching management commands.
+# ---------------------------------------------------------------------------
+
+@shared_task(name='core.tasks.sweep_overdue_invoices')
+def sweep_overdue_invoices():
+    from core.services.notification_sweeps import sweep_overdue_invoices as run
+    return run()
+
+
+@shared_task(name='core.tasks.sweep_maintenance_due')
+def sweep_maintenance_due():
+    from core.services.notification_sweeps import sweep_maintenance_due as run
+    return run()
+
+
+@shared_task(name='core.tasks.sweep_expired_quotes')
+def sweep_expired_quotes():
+    from core.services.notification_sweeps import sweep_expired_quotes as run
+    return run()
+
+
+@shared_task(name='core.tasks.send_weekly_summaries')
+def send_weekly_summaries():
+    from core.services.notification_sweeps import send_weekly_summaries as run
+    return run()

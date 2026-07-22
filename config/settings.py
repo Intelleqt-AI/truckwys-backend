@@ -262,6 +262,11 @@ DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='Truckwys <noreply@tru
 RESEND_API_KEY = config('RESEND_API_KEY', default='')
 EMAIL_FROM = config('EMAIL_FROM', default='TruckWys <noreply@mail.baselinq.ai>')
 
+# Web Push (VAPID) — generate a keypair with: manage.py generate_vapid_keys
+VAPID_PUBLIC_KEY = config('VAPID_PUBLIC_KEY', default='')
+VAPID_PRIVATE_KEY = config('VAPID_PRIVATE_KEY', default='')
+VAPID_CLAIM_EMAIL = config('VAPID_CLAIM_EMAIL', default='admin@truckwys.com')
+
 # RAG / embeddings (Copilot retrieval). OpenAI provides the embeddings; Claude
 # (ANTHROPIC_API_KEY) does the generation. Without OPENAI_API_KEY, RAG degrades
 # to the snapshot-only prompt.
@@ -370,5 +375,27 @@ CELERY_BEAT_SCHEDULE = {
     'poll-cartrack-door-events': {
         'task': 'core.tasks.poll_cartrack_door_events',
         'schedule': crontab(minute='*/2'),
+    },
+    # Notification sweeps — flip invoices past due to OVERDUE (07:00 daily),
+    # alert on vehicle maintenance due within 7 days (07:05 daily), expire
+    # SENT quotes past valid_until (07:10 daily). Each fires notify_company,
+    # which delivers per user preference (bell always; email/push gated).
+    'sweep-overdue-invoices': {
+        'task': 'core.tasks.sweep_overdue_invoices',
+        'schedule': crontab(hour='7', minute='0'),
+    },
+    'sweep-maintenance-due': {
+        'task': 'core.tasks.sweep_maintenance_due',
+        'schedule': crontab(hour='7', minute='5'),
+    },
+    'sweep-expired-quotes': {
+        'task': 'core.tasks.sweep_expired_quotes',
+        'schedule': crontab(hour='7', minute='10'),
+    },
+    # Weekly performance digest to opted-in users, Mondays 07:15 SAST.
+    # Idempotent per company per ISO week (cache-keyed).
+    'send-weekly-summaries': {
+        'task': 'core.tasks.send_weekly_summaries',
+        'schedule': crontab(day_of_week='mon', hour='7', minute='15'),
     },
 }

@@ -70,12 +70,29 @@ def record_payment(company, user, data):
 
         invoice.paid_amount += amount
         invoice.balance -= amount
-        if invoice.balance == 0:
+        fully_paid = invoice.balance == 0
+        if fully_paid:
             invoice.status = 'PAID'
             invoice.paid_at = timezone.now()
         elif invoice.paid_amount > 0:
             invoice.status = 'PARTIALLY_PAID'
         invoice.save()
+
+    # Partial payments previously notified nobody. Full payments already fire
+    # invoice.paid via the invoice post_save signal (same category), so only
+    # the partial case emits payment.received here.
+    if not fully_paid:
+        try:
+            from core.services.notify import notify_company
+            notify_company(
+                invoice.company_id, 'INFO', 'Payment received',
+                f"Partial payment of R{amount} received on {invoice.invoice_number} "
+                f"(R{invoice.balance} outstanding)",
+                link=f"/finance/invoices/{invoice.id}", event='payment.received',
+                exclude_user_id=getattr(user, 'id', None),
+            )
+        except Exception:
+            pass
 
     return serializer
 
