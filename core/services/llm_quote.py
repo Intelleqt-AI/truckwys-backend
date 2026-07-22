@@ -7,6 +7,7 @@ falls back to the regex extractor in views_ai_quote.py.
 Model is configurable via CLAUDE_QUOTE_MODEL (default: claude-opus-4-8).
 For a faster / cheaper per-quote path, set CLAUDE_QUOTE_MODEL=claude-haiku-4-5.
 """
+import difflib
 import json
 import logging
 import os
@@ -35,6 +36,10 @@ OPENAI_QUOTE_MODEL = (
     or getattr(settings, "OPENAI_CHAT_MODEL", "") or "gpt-4o"
 )
 
+# Fallback only — used when the caller has no company context (tests, or a
+# request whose user has no company) to offer the LLM as candidates. The real
+# fleet's vehicle types (fetched per-request from VehicleType) always take
+# priority — see extract()'s vehicle_types param.
 VEHICLE_TYPES = ["Flatbed", "Tautliner", "Refrigerated", "Tanker", "Box Truck", "Danger Load"]
 
 SYSTEM_PROMPT_BASE = (
@@ -43,8 +48,14 @@ SYSTEM_PROMPT_BASE = (
     "- Locations are South African or SADC cities/towns. Normalise abbreviations "
     "(JHB->Johannesburg, CPT->Cape Town, DBN->Durban, PTA->Pretoria, PE->Port Elizabeth, BFN->Bloemfontein).\n"
     "- weight_kg must be in kilograms. Convert tons/tonnes to kg (1 ton = 1000 kg).\n"
-    f"- vehicle_type must be exactly one of: {', '.join(VEHICLE_TYPES)} "
-    "(map reefer/fridge->Refrigerated, curtainsider->Tautliner, dg/dangerous goods->Danger Load).\n"
+    "- vehicle_type: extract whatever vehicle/truck type the user mentions AS FREE TEXT, in their own "
+    "words (e.g. 'rigid truck', 'flatbed', 'reefer', 'semi'). Do NOT restrict this to any fixed list or "
+    "reject a value because it looks unfamiliar — the caller matches it against the fleet's real vehicle "
+    "types afterwards. If not mentioned, return \"\".\n"
+    "- customer_name: the name of the client/customer this quote is for, as free text, if the user "
+    "mentions one (e.g. 'client is Acme', 'for John', 'customer will be Maru'). Extract exactly what "
+    "they said, even a short/partial name — the caller matches it against real customer records "
+    "afterwards. If no client is mentioned, return \"\".\n"
     "- cargo_description is the goods being moved (e.g. 'steel coils', 'pallets of beverages').\n"
     "- pickup_date, delivery_date and valid_until are dates in YYYY-MM-DD format. Resolve relative "
     "phrases ('today', 'tomorrow', 'in 5 days', '5 days from now', 'next Monday') against TODAY'S DATE "
@@ -58,12 +69,18 @@ SYSTEM_PROMPT_BASE = (
 )
 
 
-def _system_prompt() -> str:
+def _system_prompt(vehicle_types: Optional[List[str]] = None, customer_names: Optional[List[str]] = None) -> str:
     # Built per-call (not a module constant) so "today"/"tomorrow"/"in N days"
     # always resolve against the real current date, not whenever this process
-    # happened to start.
+    # happened to start, and so the fleet's actual vehicle types/customers (a
+    # per-company list) can be offered as hints without hard-constraining them.
     today = date.today()
-    return f"{SYSTEM_PROMPT_BASE}\n\nTODAY'S DATE: {today.isoformat()} ({today.strftime('%A')})."
+    extra = ""
+    if vehicle_types:
+        extra += f"\n\nThis fleet's configured vehicle types (prefer matching one of these if the user's wording is close): {', '.join(vehicle_types)}."
+    if customer_names:
+        extra += f"\n\nKnown clients for this company (prefer matching one of these if the user's wording is close): {', '.join(customer_names)}."
+    return f"{SYSTEM_PROMPT_BASE}\n\nTODAY'S DATE: {today.isoformat()} ({today.strftime('%A')}).{extra}"
 
 
 EXTRACTION_SCHEMA = {
@@ -73,6 +90,7 @@ EXTRACTION_SCHEMA = {
         "delivery_location": {"type": "string"},
         "weight_kg": {"type": "number"},
         "vehicle_type": {"type": "string"},
+        "customer_name": {"type": "string"},
         "cargo_description": {"type": "string"},
         "pickup_date": {"type": "string"},
         "delivery_date": {"type": "string"},
@@ -82,12 +100,32 @@ EXTRACTION_SCHEMA = {
     },
     "required": [
         "pickup_location", "delivery_location", "weight_kg",
-        "vehicle_type", "cargo_description",
+        "vehicle_type", "customer_name", "cargo_description",
         "pickup_date", "delivery_date", "valid_until", "trip_type",
         "reply",
     ],
     "additionalProperties": False,
 }
+
+
+def _fuzzy_match(raw: str, candidates: List[str], cutoff: float = 0.45) -> Optional[str]:
+    """Match free text the LLM extracted against a real list of names (vehicle
+    types, customers). Exact/case-insensitive first, then substring containment
+    (handles "rigid" -> "Rigid Truck"), then a fuzzy ratio as a last resort.
+    Returns None rather than forcing a bad guess when nothing is close enough.
+    """
+    raw = (raw or "").strip()
+    if not raw or not candidates:
+        return None
+    raw_lc = raw.lower()
+    for c in candidates:
+        if c.lower() == raw_lc:
+            return c
+    for c in candidates:
+        if raw_lc in c.lower() or c.lower() in raw_lc:
+            return c
+    matches = difflib.get_close_matches(raw, candidates, n=1, cutoff=cutoff)
+    return matches[0] if matches else None
 
 
 def _anthropic_key() -> str:
@@ -134,22 +172,32 @@ def _build_messages(message: str, history: Optional[List[Dict[str, Any]]],
 
 
 def extract(message: str, history: Optional[List[Dict[str, Any]]] = None,
-            current_fields: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, Any], str]:
+            current_fields: Optional[Dict[str, Any]] = None,
+            vehicle_types: Optional[List[str]] = None,
+            customers: Optional[List[Dict[str, Any]]] = None) -> Tuple[Dict[str, Any], str]:
     """Return (extracted_fields, reply). Raises on SDK/API error so the caller can fall back.
 
     Provider-agnostic: uses Claude when ANTHROPIC_API_KEY is set, else OpenAI (gpt-4o)
     with JSON mode. Both return the same {pickup_location, delivery_location, weight_kg,
     vehicle_type, cargo_description, reply} shape.
+
+    vehicle_types: the calling company's actual VehicleType names (e.g. "Rigid
+    Truck", "Semi-Trailer Truck") — the LLM extracts vehicle_type as free text
+    and it's fuzzy-matched against this real list, not a hardcoded generic one.
+    customers: [{'id': int, 'name': str}, ...] for the calling company — same
+    fuzzy-match treatment, returned as customer_id/customer_name when matched.
     """
     msgs = _build_messages(message, history, current_fields)
     provider = _provider()
+    vt_candidates = vehicle_types or VEHICLE_TYPES
+    customer_names = [c["name"] for c in customers] if customers else None
 
     if provider == "anthropic":
         client = anthropic.Anthropic()
         response = client.messages.create(
             model=QUOTE_MODEL,
             max_tokens=600,
-            system=_system_prompt(),
+            system=_system_prompt(vt_candidates, customer_names),
             messages=msgs,
             output_config={"format": {"type": "json_schema", "schema": EXTRACTION_SCHEMA}},
         )
@@ -157,10 +205,10 @@ def extract(message: str, history: Optional[List[Dict[str, Any]]] = None,
         data = json.loads(text)
     elif provider == "openai":
         client = OpenAI(api_key=_openai_key())
-        sys = _system_prompt() + (
+        sys = _system_prompt(vt_candidates, customer_names) + (
             "\n\nRespond ONLY with a JSON object with exactly these keys: pickup_location, "
-            "delivery_location, weight_kg, vehicle_type, cargo_description, pickup_date, "
-            "delivery_date, valid_until, trip_type, reply."
+            "delivery_location, weight_kg, vehicle_type, customer_name, cargo_description, "
+            "pickup_date, delivery_date, valid_until, trip_type, reply."
         )
         response = client.chat.completions.create(
             model=OPENAI_QUOTE_MODEL,
@@ -178,8 +226,15 @@ def extract(message: str, history: Optional[List[Dict[str, Any]]] = None,
         extracted["pickup_location"] = data["pickup_location"].strip()
     if data.get("delivery_location"):
         extracted["delivery_location"] = data["delivery_location"].strip()
-    if data.get("vehicle_type") and data["vehicle_type"] in VEHICLE_TYPES:
-        extracted["vehicle_type"] = data["vehicle_type"]
+    matched_vt = _fuzzy_match(data.get("vehicle_type"), vt_candidates)
+    if matched_vt:
+        extracted["vehicle_type"] = matched_vt
+    if customers:
+        matched_name = _fuzzy_match(data.get("customer_name"), customer_names)
+        if matched_name:
+            match = next(c for c in customers if c["name"] == matched_name)
+            extracted["customer_id"] = match["id"]
+            extracted["customer_name"] = matched_name
     if data.get("cargo_description"):
         extracted["cargo_description"] = data["cargo_description"].strip()
     try:

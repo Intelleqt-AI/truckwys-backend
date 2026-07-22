@@ -491,13 +491,31 @@ class AIChatQuoteView(APIView):
             current_fields = request.data.get('current_fields', {})
             history = request.data.get('history', [])
 
+            # The fleet's real vehicle types and customers — extraction matches
+            # free text against these, not a hardcoded generic list (a company's
+            # actual types like "Rigid Truck" or "Semi-Trailer Truck" otherwise
+            # never match a fixed enum, and there'd be no way to capture a client).
+            company = getattr(request.user, 'company', None)
+            vehicle_types = customers = None
+            if company is not None:
+                from core.models import VehicleType, Customer
+                vehicle_types = list(
+                    VehicleType.objects.filter(company=company).values_list('name', flat=True)
+                )
+                customers = list(
+                    Customer.objects.filter(company=company).values('id', 'name')
+                )
+
             # Primary path: Claude-backed natural-language extraction.
             # Falls through to the regex extractor below when the LLM is
             # not configured or the call fails, so the endpoint never breaks.
             from core.services import llm_quote
             if llm_quote.is_enabled():
                 try:
-                    extracted, reply = llm_quote.extract(message, history, current_fields)
+                    extracted, reply = llm_quote.extract(
+                        message, history, current_fields,
+                        vehicle_types=vehicle_types, customers=customers,
+                    )
                     merged = {**current_fields, **extracted}
                     if not reply:
                         reply = self._fallback_reply(merged)
@@ -647,16 +665,41 @@ class AIChatQuoteView(APIView):
                     # Heuristic: if < 100, likely tons; if >= 100, likely kg
                     extracted['weight'] = val * 1000 if val < 100 else val
 
-            # Vehicle type
-            vehicle_map = {
-                'flatbed': 'Flatbed', 'tautliner': 'Tautliner', 'curtainsider': 'Tautliner',
-                'refrigerated': 'Refrigerated', 'reefer': 'Refrigerated', 'fridge': 'Refrigerated',
-                'tanker': 'Tanker', 'box truck': 'Box Truck', 'danger': 'Danger Load', 'dg': 'Danger Load',
-            }
-            for key, val in vehicle_map.items():
-                if key in msg_lower:
-                    extracted['vehicle_type'] = val
+            # Vehicle type — prefer the fleet's actual configured names (e.g.
+            # "Rigid Truck", "Semi-Trailer Truck") over the generic keyword map,
+            # since a company's real fleet rarely matches the six hardcoded names.
+            matched_vt = None
+            for vt in (vehicle_types or []):
+                vt_lc = vt.lower()
+                significant = [w for w in vt_lc.split() if w not in ('truck', 'vehicle')]
+                if vt_lc in msg_lower or any(w in msg_lower for w in significant):
+                    matched_vt = vt
                     break
+            if matched_vt:
+                extracted['vehicle_type'] = matched_vt
+            else:
+                vehicle_map = {
+                    'flatbed': 'Flatbed', 'tautliner': 'Tautliner', 'curtainsider': 'Tautliner',
+                    'refrigerated': 'Refrigerated', 'reefer': 'Refrigerated', 'fridge': 'Refrigerated',
+                    'tanker': 'Tanker', 'box truck': 'Box Truck', 'danger': 'Danger Load', 'dg': 'Danger Load',
+                }
+                for key, val in vehicle_map.items():
+                    if key in msg_lower:
+                        extracted['vehicle_type'] = val
+                        break
+
+            # Client / customer — "client is X", "customer will be X", etc.,
+            # fuzzy-matched against this company's real customer records.
+            if customers:
+                m = re.search(r'(?:client|customer)(?:\s+will\s+be|\s+is)?\s*[:\-]?\s*([A-Za-z][A-Za-z\s]{1,40}?)(?:\s*[-,.]|$)', message, re.IGNORECASE)
+                if m:
+                    from core.services.llm_quote import _fuzzy_match
+                    names = [c['name'] for c in customers]
+                    matched_name = _fuzzy_match(m.group(1).strip(), names)
+                    if matched_name:
+                        match = next(c for c in customers if c['name'] == matched_name)
+                        extracted['customer_id'] = match['id']
+                        extracted['customer_name'] = matched_name
 
             # Cargo description — the noun AFTER "of" (e.g. "20 tons of steel from JHB"
             # -> "steel"; "of palletised goods to ..." -> "palletised goods").
