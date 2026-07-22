@@ -1778,10 +1778,21 @@ class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def assign_driver(self, request, pk=None):
-        """Assign driver and vehicle to load"""
+        """Assign (or clear) driver and vehicle on a load. Body: { driver_id?, vehicle_id? }
+
+        Both fields together assign; both blank clears the assignment. A lone
+        one of the two is rejected as ambiguous — same rule as converting a
+        quote to a booking.
+        """
         load = self.get_object()
         driver_id = request.data.get('driver_id')
         vehicle_id = request.data.get('vehicle_id')
+
+        if bool(driver_id) != bool(vehicle_id):
+            return Response(
+                {'error': 'Provide both a driver and vehicle, or clear both to unassign'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         # Verify driver and vehicle belong to the requesting user's company
         if driver_id:
@@ -1796,9 +1807,15 @@ class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
                 return Response({'error': 'Vehicle not found'}, status=status.HTTP_404_NOT_FOUND)
 
         try:
-            load.driver_id = driver_id
-            load.vehicle_id = vehicle_id
-            load.status = 'ASSIGNED'
+            load.driver_id = driver_id or None
+            load.vehicle_id = vehicle_id or None
+            # Only move status at the two ends of the assignment lifecycle —
+            # don't downgrade a load that's already further along (loading,
+            # in transit, ...) just because its driver/vehicle got corrected.
+            if driver_id and vehicle_id and load.status == 'PENDING':
+                load.status = 'ASSIGNED'
+            elif not driver_id and not vehicle_id and load.status == 'ASSIGNED':
+                load.status = 'PENDING'
             load.save()
             serializer = self.get_serializer(load)
             return Response(serializer.data)
@@ -1984,7 +2001,16 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def convert_to_load(self, request, pk=None):
-        """Convert quote to load"""
+        """Convert quote to load. Body: { driver_id?, vehicle_id? }
+
+        A quote only captures a vehicle TYPE (category) for pricing — not a
+        real unit or person, since most quotes are sent before it's known
+        whether the customer will accept. Converting is a natural point to
+        commit a specific driver + vehicle, but it's optional — the caller
+        can supply both to assign now, or omit both to skip and assign later
+        via the existing assign_driver action. A lone one of the two is
+        rejected as ambiguous.
+        """
         import secrets
         quote = self.get_object()
 
@@ -1995,10 +2021,39 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        driver_id = request.data.get('driver_id')
+        vehicle_id = request.data.get('vehicle_id')
+        if bool(driver_id) != bool(vehicle_id):
+            return Response(
+                {'error': 'Select both a driver and vehicle, or leave both blank to assign later'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        driver = None
+        vehicle = None
+        if driver_id and vehicle_id:
+            try:
+                driver = Driver.objects.get(id=driver_id, company=request.user.company)
+            except Driver.DoesNotExist:
+                return Response({'error': 'Driver not found'}, status=status.HTTP_404_NOT_FOUND)
+            try:
+                vehicle = Vehicle.objects.get(id=vehicle_id, company=request.user.company)
+            except Vehicle.DoesNotExist:
+                return Response({'error': 'Vehicle not found'}, status=status.HTTP_404_NOT_FOUND)
+
         # Auto-generate unique load_number
         load_number = f'LOAD-{timezone.now().strftime("%Y%m%d")}-{secrets.randbelow(9000) + 1000}'
         while Load.objects.filter(load_number=load_number).exists():
             load_number = f'LOAD-{timezone.now().strftime("%Y%m%d")}-{secrets.randbelow(9000) + 1000}'
+
+        # Quote.pickup_date/delivery_date are plain dates; Load's equivalents
+        # are DateTimeFields, so a bare date must become a tz-aware datetime
+        # first — assigning the date object directly serializes fine on
+        # save() but blows up (AttributeError) the moment DRF's DateTimeField
+        # tries to enforce_timezone() on the response.
+        def _date_to_aware_datetime(d):
+            if not d:
+                return None
+            return timezone.make_aware(datetime.combine(d, datetime.min.time()))
 
         # Create load from quote (stamp the company so it's tenant-scoped/visible)
         load = Load.objects.create(
@@ -2006,18 +2061,21 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
             company=getattr(quote, 'company', None) or getattr(request.user, 'company', None),
             customer=quote.customer,
             quote=quote,
-            driver=quote.driver,
-            vehicle=quote.vehicle,
+            driver=driver,
+            vehicle=vehicle,
             pickup_location=quote.pickup_location,
             delivery_location=quote.delivery_location,
             pickup_city=quote.origin or 'TBD',
             pickup_state='GP',
             pickup_zip='0000',
-            pickup_date=timezone.now() + timedelta(days=2),
+            # Use the quote's own dates when it has them (now reliably
+            # captured via the AI/voice quote flow) instead of always
+            # discarding them for a generic +2/+4 day placeholder.
+            pickup_date=_date_to_aware_datetime(quote.pickup_date) or (timezone.now() + timedelta(days=2)),
             delivery_city=quote.destination or 'TBD',
             delivery_state='GP',
             delivery_zip='0000',
-            delivery_date=timezone.now() + timedelta(days=4),
+            delivery_date=_date_to_aware_datetime(quote.delivery_date) or (timezone.now() + timedelta(days=4)),
             cargo_description=quote.cargo_description,
             weight=quote.weight,
             distance=quote.distance,
@@ -2025,7 +2083,7 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
             fuel_surcharge=quote.fuel_surcharge,
             additional_charges=quote.additional_charges,
             total_amount=quote.total_amount,
-            status='PENDING',
+            status='ASSIGNED' if (driver and vehicle) else 'PENDING',
             created_by=request.user
         )
 
@@ -2553,6 +2611,26 @@ class RouteCalculatorView(APIView):
         else:
             countries = detect_countries(origin_label, dest_label, origin_iso, dest_iso)
         cross_border = countries is not None and len(countries) > 1
+
+        # Company policy gate: a route that genuinely crosses a border always
+        # gets detected (above) regardless of any client-side toggle — but a
+        # company whose fleet/insurance isn't set up for cross-border work
+        # can't actually run this load at all, so refuse rather than silently
+        # price it.
+        if cross_border:
+            company = getattr(request.user, 'company', None)
+            if company is not None and getattr(company, 'allow_cross_border', True) is False:
+                return Response({
+                    'success': False,
+                    'error': 'cross_border_not_allowed',
+                    'message': (
+                        f"This route crosses into {'/'.join(countries[1:])}, but your "
+                        "company isn't set up for cross-border routes. An admin can "
+                        "enable this in company settings, or choose a domestic "
+                        "destination for this quote."
+                    ),
+                    'countries': countries,
+                }, status=status.HTTP_403_FORBIDDEN)
 
         # Toll cost — matched PER ROUTE via point-to-polyline plaza matching.
         # resolve_toll_truck_type handles exact names, DB VehicleType names

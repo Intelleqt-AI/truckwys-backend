@@ -275,14 +275,29 @@ class QuoteSerializer(serializers.ModelSerializer):
         fields = '__all__'
         read_only_fields = ['id', 'created_at', 'updated_at', 'created_by']
 
+    def _converted_load(self, obj):
+        # Assignment happens on the Load this quote was converted into (at
+        # conversion time or later from the Bookings page) — nothing syncs it
+        # back onto the quote's own vehicle/driver fields, so look there first.
+        # A quote converts to at most one load (convert_to_load blocks a
+        # second conversion), so the most recent is unambiguous. Not cached on
+        # self — this serializer instance is reused across every item when
+        # DRF serializes a list, so instance-level caching would leak the
+        # first quote's load onto every other quote in the list.
+        return obj.loads.select_related('vehicle', 'driver__user').order_by('-id').first()
+
     def get_vehicle_display(self, obj):
-        if obj.vehicle:
-            return f"{obj.vehicle.make} {obj.vehicle.model} ({obj.vehicle.plate})"
+        load = self._converted_load(obj)
+        vehicle = (load.vehicle if load else None) or obj.vehicle
+        if vehicle:
+            return f"{vehicle.make} {vehicle.model} ({vehicle.plate})"
         return None
 
     def get_driver_display(self, obj):
-        if obj.driver:
-            u = obj.driver.user
+        load = self._converted_load(obj)
+        driver = (load.driver if load else None) or obj.driver
+        if driver:
+            u = driver.user
             name = f"{u.first_name} {u.last_name}".strip() or u.username
             return name
         return None
