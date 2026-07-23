@@ -220,6 +220,10 @@ class Company(models.Model):
             ('starter', 'Starter'),
             ('pro', 'Pro'),  # Changed from 'professional' to match middleware
             ('enterprise', 'Enterprise'),
+            # Truck-count tiers (keys match PLAN_PRICING in services/payfast.py)
+            ('pro_50', 'Fleet 1-50'),
+            ('pro_100', 'Fleet 51-100'),
+            ('pro_150', 'Fleet 101-150'),
         ],
         default='free',
     )

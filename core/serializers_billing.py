@@ -23,6 +23,7 @@ class BillingStatusSerializer(serializers.ModelSerializer):
 
 
 class SubscribeSerializer(serializers.Serializer):
-    plan = serializers.ChoiceField(choices=['pro', 'growth', 'enterprise'])
+    # No 'plan' field: the tier is derived server-side from the company's
+    # vehicle count — a client-sent plan must never influence the charge.
     return_url = serializers.URLField(required=False, default='')
     cancel_url = serializers.URLField(required=False, default='')

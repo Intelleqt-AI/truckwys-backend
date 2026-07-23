@@ -15,12 +15,13 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework import status
 from django.utils import timezone
 
-from .models import BillingTransaction
+from .models import BillingTransaction, Vehicle
 from .serializers_billing import (
     BillingTransactionSerializer, BillingStatusSerializer, SubscribeSerializer
 )
 from .services.payfast import (
-    build_payment_data, validate_itn, confirm_payment_with_payfast, PLAN_PRICING
+    build_payment_data, validate_itn, confirm_payment_with_payfast, PLAN_PRICING,
+    SUBSCRIPTION_TIERS, get_tier_for_vehicle_count,
 )
 from django.conf import settings
 
@@ -41,13 +42,28 @@ class SubscribeView(APIView):
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        plan = serializer.validated_data['plan']
         return_url = serializer.validated_data.get('return_url', '')
         cancel_url = serializer.validated_data.get('cancel_url', '')
         notify_url = _get_notify_url(request)
 
         company = request.user.company
         user = request.user
+
+        # Tier is derived server-side from the company's fleet size — the
+        # client never chooses the plan or the amount.
+        vehicle_count = Vehicle.objects.filter(company=company).count()
+        tier = get_tier_for_vehicle_count(vehicle_count)
+        plan = tier['key']
+
+        if company.payfast_token and company.subscription_status == 'active':
+            # Resubscribing while a PayFast recurring token is still live:
+            # the old agreement is NOT cancelled at PayFast (known gap) and
+            # must be cancelled manually in the merchant dashboard.
+            logger.warning(
+                'Company %s starting a new checkout (%s) with an active '
+                'PayFast token — old recurring subscription may keep billing.',
+                company.id, plan,
+            )
 
         payment_data = build_payment_data(
             plan=plan,
@@ -77,6 +93,8 @@ class SubscribeView(APIView):
             'plan': plan,
             'amount': str(plan_info['amount']),
             'item_name': plan_info['item_name'],
+            'vehicle_count': vehicle_count,
+            'tier_label': tier['label'],
         }, status=status.HTTP_200_OK)
 
 
@@ -107,11 +125,26 @@ class BillingStatusView(APIView):
     def get(self, request):
         company = request.user.company
         serializer = BillingStatusSerializer(company)
+        # amount/item_name describe the plan the company is ON (legacy keys
+        # still resolve); current_tier is what a checkout would charge TODAY
+        # given the live fleet size.
         plan_info = PLAN_PRICING.get(company.subscription_plan, {})
+        vehicle_count = Vehicle.objects.filter(company=company).count()
+        current_tier = get_tier_for_vehicle_count(vehicle_count)
+        tiers = [
+            {**tier, 'amount': str(PLAN_PRICING[tier['key']]['amount'])}
+            for tier in SUBSCRIPTION_TIERS
+        ]
         return Response({
             **serializer.data,
             'amount': str(plan_info.get('amount', '0.00')),
             'item_name': plan_info.get('item_name', 'Free'),
+            'vehicle_count': vehicle_count,
+            'current_tier': {
+                **current_tier,
+                'amount': str(PLAN_PRICING[current_tier['key']]['amount']),
+            },
+            'tiers': tiers,
         })
 
 

@@ -411,3 +411,157 @@ class LoginTwoFactorTestCase(TestCase):
         r = client.post('/api/v1/auth/login/', {'username': 'tfa', 'password': 'wrong'}, format='json')
         self.assertEqual(r.status_code, status.HTTP_401_UNAUTHORIZED)
         mock_otp.assert_not_called()
+
+
+class SessionBulkRevokeTestCase(TestCase):
+    """DELETE auth/sessions/?scope=others|all — the adaptive bulk-logout button."""
+
+    def setUp(self):
+        cache.clear()  # reset the shared login rate-throttle between tests
+        alert_patcher = patch('core.tasks.send_login_alert_email_task')
+        alert_patcher.start()
+        self.addCleanup(alert_patcher.stop)
+        self.password = 'testpass123'
+        self.user = User.objects.create_user(
+            username='bulkuser', email='bulk@example.com', password=self.password,
+            security_settings={'two_factor': False, 'login_alerts': False},
+        )
+
+    def _login(self, ua):
+        client = APIClient(HTTP_USER_AGENT=ua)
+        resp = client.post('/api/v1/auth/login/', {'username': 'bulkuser', 'password': self.password}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.content)
+        client.credentials(HTTP_AUTHORIZATION='Token ' + resp.json()['token'])
+        return client
+
+    def test_revoke_others_keeps_current(self):
+        client_a = self._login(WIN_UA)
+        client_b = self._login(MAC_UA)
+        resp = client_a.delete('/api/v1/auth/sessions/?scope=others')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.json(), {'revoked': 1})
+        self.assertEqual(client_a.get('/api/v1/auth/me/').status_code, status.HTTP_200_OK)
+        self.assertEqual(client_b.get('/api/v1/auth/me/').status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(UserSession.objects.filter(user=self.user).count(), 1)
+
+    def test_revoke_all_kills_everything(self):
+        client_a = self._login(WIN_UA)
+        client_b = self._login(MAC_UA)
+        resp = client_a.delete('/api/v1/auth/sessions/?scope=all')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.json(), {'revoked': 2})
+        self.assertEqual(client_a.get('/api/v1/auth/me/').status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(client_b.get('/api/v1/auth/me/').status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(UserSession.objects.filter(user=self.user).count(), 0)
+
+    def test_missing_or_bad_scope_400(self):
+        client_a = self._login(WIN_UA)
+        self._login(MAC_UA)
+        for url in ('/api/v1/auth/sessions/', '/api/v1/auth/sessions/?scope=nope'):
+            resp = client_a.delete(url)
+            self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST, url)
+        self.assertEqual(UserSession.objects.filter(user=self.user).count(), 2)
+
+    def test_bulk_revoke_does_not_touch_other_users(self):
+        other = User.objects.create_user(username='bulkother', email='bo@example.com', password='x')
+        other_session = UserSession.objects.create(user=other, device='Mac')
+        client_a = self._login(WIN_UA)
+        client_a.delete('/api/v1/auth/sessions/?scope=all')
+        self.assertTrue(UserSession.objects.filter(id=other_session.id).exists())
+
+
+class LoginActivityTestCase(TestCase):
+    """Auth events land in AuditLog and surface via auth/sessions/activity/."""
+
+    def setUp(self):
+        cache.clear()  # reset the shared login rate-throttle between tests
+        alert_patcher = patch('core.tasks.send_login_alert_email_task')
+        alert_patcher.start()
+        self.addCleanup(alert_patcher.stop)
+        self.password = 'testpass123'
+        self.user = User.objects.create_user(
+            username='actuser', email='act@example.com', password=self.password,
+            security_settings={'two_factor': False, 'login_alerts': False},
+        )
+
+    def _login(self, ua):
+        client = APIClient(HTTP_USER_AGENT=ua)
+        resp = client.post('/api/v1/auth/login/', {'username': 'actuser', 'password': self.password}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.content)
+        client.credentials(HTTP_AUTHORIZATION='Token ' + resp.json()['token'])
+        return client
+
+    def _auth_rows(self):
+        from core.models import AuditLog
+        return AuditLog.objects.filter(user=self.user, action__in=('LOGIN', 'LOGOUT'))
+
+    def test_login_writes_audit_row(self):
+        self._login(WIN_UA)
+        rows = self._auth_rows()
+        self.assertEqual(rows.count(), 1)
+        row = rows.get()
+        self.assertEqual(row.action, 'LOGIN')
+        self.assertEqual(row.resource_type, 'UserSession')
+        self.assertEqual(row.details['event'], 'login')
+        self.assertEqual(row.details['device'], 'Windows PC')
+
+    def test_logout_writes_logout_row(self):
+        client = self._login(WIN_UA)
+        session_id = str(UserSession.objects.get(user=self.user).id)
+        client.post('/api/v1/auth/logout/')
+        row = self._auth_rows().filter(action='LOGOUT').get()
+        self.assertEqual(row.details['event'], 'logout')
+        self.assertEqual(row.resource_id, session_id)
+
+    def test_single_revoke_writes_revoked_row(self):
+        client_a = self._login(WIN_UA)
+        self._login(MAC_UA)
+        target = [r for r in client_a.get('/api/v1/auth/sessions/').json() if not r['current']][0]['id']
+        client_a.delete(f'/api/v1/auth/sessions/{target}/')
+        row = self._auth_rows().filter(action='LOGOUT').get()
+        self.assertEqual(row.details['event'], 'revoked')
+        self.assertEqual(row.resource_id, target)
+
+    def test_bulk_revoke_writes_one_aggregate_row(self):
+        client_a = self._login(WIN_UA)
+        self._login(MAC_UA)
+        self._login(MAC_UA)
+        client_a.delete('/api/v1/auth/sessions/?scope=others')
+        rows = self._auth_rows().filter(action='LOGOUT')
+        self.assertEqual(rows.count(), 1)
+        row = rows.get()
+        self.assertEqual(row.details['event'], 'revoked_others')
+        self.assertEqual(row.details['count'], 2)
+
+    def test_activity_endpoint_own_events_desc_capped(self):
+        from core.models import AuditLog
+        client = self._login(WIN_UA)  # writes 1 LOGIN row
+        for i in range(11):
+            AuditLog.log_action(
+                action='LOGIN', resource_type='UserSession', resource_id='-',
+                user=self.user, details={'event': 'login', 'device': f'Device {i}'},
+            )
+        other = User.objects.create_user(username='actother', email='ao@example.com', password='x')
+        foreign = AuditLog.log_action(
+            action='LOGIN', resource_type='UserSession', resource_id='-',
+            user=other, details={'event': 'login', 'device': 'Mac'},
+        )
+        business = AuditLog.log_action(
+            action='CREATE', resource_type='Load', resource_id='1', user=self.user,
+        )
+        resp = client.get('/api/v1/auth/sessions/activity/')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        data = resp.json()
+        self.assertEqual(len(data), 10)
+        returned_ids = {r['id'] for r in data}
+        self.assertNotIn(foreign.id, returned_ids)
+        self.assertNotIn(business.id, returned_ids)
+        times = [r['time'] for r in data]
+        self.assertEqual(times, sorted(times, reverse=True))  # newest first
+        for r in data:
+            self.assertEqual(set(r.keys()), {'id', 'action', 'event', 'device', 'ip', 'time'})
+            self.assertNotIn('key', r)
+
+    def test_activity_requires_auth(self):
+        resp = APIClient().get('/api/v1/auth/sessions/activity/')
+        self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)

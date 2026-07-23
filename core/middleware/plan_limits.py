@@ -21,6 +21,23 @@ PLAN_LIMITS = {
         'max_vehicles': 50,
         'max_api_calls_per_month': 10000,
     },
+    # Truck-count tiers: vehicles unlimited by design — the fleet size sets the
+    # subscription price (at checkout), it never blocks vehicle creation.
+    'pro_50': {
+        'max_users': 20,
+        'max_vehicles': None,
+        'max_api_calls_per_month': 10000,
+    },
+    'pro_100': {
+        'max_users': 20,
+        'max_vehicles': None,
+        'max_api_calls_per_month': 10000,
+    },
+    'pro_150': {
+        'max_users': 20,
+        'max_vehicles': None,
+        'max_api_calls_per_month': 10000,
+    },
     'enterprise': {
         'max_users': None,  # Unlimited
         'max_vehicles': None,  # Unlimited

@@ -78,6 +78,7 @@ from .models import (
     UserSession
 )
 from .utils.request_meta import parse_device, client_ip, mask_email
+from .utils.auth_events import log_auth_event
 from .serializers import (
     UserSerializer, CustomerSerializer, DriverSerializer,
     VehicleSerializer, VehicleTypeSerializer, VehicleLogSerializer, LoadSerializer,
@@ -189,6 +190,7 @@ class EmailVerifyView(APIView):
             user_agent=(request.META.get('HTTP_USER_AGENT', '') or '')[:512],
             ip_address=client_ip(request),
         )
+        log_auth_event(user, 'login', request=request, session=session)
         return Response({'token': session.key, 'user': UserSerializer(user).data})
 
 
@@ -273,6 +275,7 @@ def complete_login(user, request):
         user_agent=(request.META.get('HTTP_USER_AGENT', '') or '')[:512],
         ip_address=ip,
     )
+    log_auth_event(user, 'login', request=request, session=session)
     if is_new_device and (user.security_settings or {}).get('login_alerts', True):
         from core.tasks import send_login_alert_email_task
         send_login_alert_email_task(
@@ -445,6 +448,7 @@ class LogoutView(APIView):
         # SessionAuthentication (admin/browsable API), so guard the type.
         session = request.auth
         if isinstance(session, UserSession):
+            log_auth_event(request.user, 'logout', request=request, session=session)
             session.delete()
         return Response({'message': 'Successfully logged out'})
 
@@ -534,15 +538,63 @@ class SessionsView(APIView):
         } for s in request.user.sessions.all()]
         return Response(data)
 
-    def delete(self, request, session_id):
+    def delete(self, request, session_id=None):
+        if session_id is None:
+            # Bulk revoke: DELETE auth/sessions/?scope=others|all. 'others'
+            # keeps the current device signed in; 'all' kills it too (the
+            # client is expected to clear its token and return to login).
+            scope = (request.query_params.get('scope') or '').lower()
+            if scope not in ('others', 'all'):
+                return Response(
+                    {'detail': "scope must be 'others' or 'all'."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            current = request.auth if isinstance(request.auth, UserSession) else None
+            qs = request.user.sessions.all()
+            if scope == 'others' and current is not None:
+                qs = qs.exclude(pk=current.pk)
+            count = qs.count()
+            qs.delete()
+            # One aggregate activity row per bulk action, not one per session —
+            # keeps the 10-row activity feed from being flooded.
+            log_auth_event(
+                request.user, f'revoked_{scope}', request=request,
+                device=f"{count} session{'s' if count != 1 else ''}", count=count,
+            )
+            return Response({'revoked': count})
+
         # Scope the lookup to the user's own sessions — a missing or non-owned
         # id both return 404 (no existence leak).
         try:
             session = request.user.sessions.get(id=session_id)
         except UserSession.DoesNotExist:
             return Response({'detail': 'Session not found.'}, status=status.HTTP_404_NOT_FOUND)
+        log_auth_event(request.user, 'revoked', request=request, session=session)
         session.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class LoginActivityView(APIView):
+    """Last 10 auth events (sign-ins / sign-outs / revocations) for this user.
+
+    Backed by AuditLog rows written via log_auth_event; the action filter keeps
+    business audit rows (CREATE/UPDATE/... written by signals) out of the feed.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from .models.audit_log import AuditLog
+        rows = AuditLog.objects.filter(
+            user=request.user, action__in=('LOGIN', 'LOGOUT'),
+        )[:10]  # Meta.ordering is -created_at; (user, -created_at) is indexed
+        return Response([{
+            'id': r.id,
+            'action': r.action,
+            'event': (r.details or {}).get('event') or ('login' if r.action == 'LOGIN' else 'logout'),
+            'device': (r.details or {}).get('device') or 'Unknown device',
+            'ip': r.ip_address or 'Unknown',
+            'time': r.created_at.isoformat(),
+        } for r in rows])
 
 
 
@@ -3535,6 +3587,7 @@ class InviteTokenView(APIView):
             user_agent=(request.META.get('HTTP_USER_AGENT', '') or '')[:512],
             ip_address=client_ip(request),
         )
+        log_auth_event(user, 'login', request=request, session=session)
 
         return Response({
             'token': session.key,

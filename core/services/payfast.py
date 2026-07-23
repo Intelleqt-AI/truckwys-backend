@@ -15,11 +15,34 @@ from django.conf import settings
 logger = logging.getLogger(__name__)
 
 PLAN_PRICING = {
+    # Truck-count tiers — the only plans offered for new checkouts.
+    # Keys round-trip through PayFast custom_str2, so the ITN amount check
+    # resolves the tier amount from this dict unchanged.
+    'pro_50': {
+        'item_name': 'TruckWys Fleet (1-50 Trucks)',
+        'amount': Decimal('4499.00'),
+        'frequency': 3,   # Monthly
+        'cycles': 0,      # Indefinite
+    },
+    'pro_100': {
+        'item_name': 'TruckWys Fleet (51-100 Trucks)',
+        'amount': Decimal('8999.00'),
+        'frequency': 3,
+        'cycles': 0,
+    },
+    'pro_150': {
+        'item_name': 'TruckWys Fleet (101-150 Trucks)',
+        'amount': Decimal('13499.00'),
+        'frequency': 3,
+        'cycles': 0,
+    },
+    # Legacy plans — read-fallback only (existing subscribers / in-flight
+    # transactions). Not offered for new checkouts.
     'pro': {
         'item_name': 'TruckWys Pro',
         'amount': Decimal('4999.00'),
-        'frequency': 3,   # Monthly
-        'cycles': 0,      # Indefinite
+        'frequency': 3,
+        'cycles': 0,
     },
     'growth': {
         'item_name': 'TruckWys Growth',
@@ -34,6 +57,21 @@ PLAN_PRICING = {
         'cycles': 0,
     },
 }
+
+# Ordered ascending; 0 vehicles falls into the first tier.
+SUBSCRIPTION_TIERS = [
+    {'key': 'pro_50', 'label': '1-50 trucks', 'min_vehicles': 0, 'max_vehicles': 50},
+    {'key': 'pro_100', 'label': '51-100 trucks', 'min_vehicles': 51, 'max_vehicles': 100},
+    {'key': 'pro_150', 'label': '101-150 trucks', 'min_vehicles': 101, 'max_vehicles': 150},
+]
+
+
+def get_tier_for_vehicle_count(vehicle_count):
+    """Tier for a fleet size. Fleets above the top band pay the top tier."""
+    for tier in SUBSCRIPTION_TIERS:
+        if vehicle_count <= tier['max_vehicles']:
+            return tier
+    return SUBSCRIPTION_TIERS[-1]
 
 
 def _get_payfast_url():
