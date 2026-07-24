@@ -191,7 +191,9 @@ class EmailVerifyView(APIView):
             ip_address=client_ip(request),
         )
         log_auth_event(user, 'login', request=request, session=session)
-        return Response({'token': session.key, 'user': UserSerializer(user).data})
+        # context is required so ImageField URLs (avatar) come back absolute,
+        # matching auth/me/ — a relative /media/... URL 404s on the Vite origin.
+        return Response({'token': session.key, 'user': UserSerializer(user, context={'request': request}).data})
 
 
 class ResendVerificationView(APIView):
@@ -283,7 +285,9 @@ def complete_login(user, request):
             device, ip or 'Unknown',
             timezone.localtime().strftime('%d %b %Y, %H:%M'),
         )
-    return Response({'token': session.key, 'user': UserSerializer(user).data})
+    # context is required so ImageField URLs (avatar) come back absolute,
+    # matching auth/me/ — a relative /media/... URL 404s on the Vite origin.
+    return Response({'token': session.key, 'user': UserSerializer(user, context={'request': request}).data})
 
 
 class LoginView(APIView):
@@ -3591,7 +3595,7 @@ class InviteTokenView(APIView):
 
         return Response({
             'token': session.key,
-            'user': UserSerializer(user).data
+            'user': UserSerializer(user, context={'request': request}).data
         }, status=status.HTTP_200_OK)
 
 

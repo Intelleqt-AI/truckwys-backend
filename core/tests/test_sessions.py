@@ -1,11 +1,13 @@
 """Tests for per-device sessions and security-settings persistence."""
 
+import tempfile
 from datetime import timedelta
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.core import mail
 from django.core.cache import cache
+from django.core.files.base import ContentFile
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -565,3 +567,40 @@ class LoginActivityTestCase(TestCase):
     def test_activity_requires_auth(self):
         resp = APIClient().get('/api/v1/auth/sessions/activity/')
         self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+@override_settings(MEDIA_ROOT=tempfile.mkdtemp())
+class LoginAvatarUrlTestCase(TestCase):
+    """Login responses must return the avatar as an ABSOLUTE URL, like auth/me/.
+
+    Without the request in the serializer context the avatar came back as a
+    relative /media/... path, which the SPA resolved against the Vite origin
+    → 404 → the header avatar only appeared after a reload (which refetches
+    auth/me/, the one endpoint that did pass the context)."""
+
+    def setUp(self):
+        cache.clear()  # reset the shared login rate-throttle between tests
+        alert_patcher = patch('core.tasks.send_login_alert_email_task')
+        alert_patcher.start()
+        self.addCleanup(alert_patcher.stop)
+        self.password = 'testpass123'
+        self.user = User.objects.create_user(
+            username='avataruser', email='avatar@example.com', password=self.password,
+            security_settings={'two_factor': False, 'login_alerts': False},
+        )
+        # Smallest valid GIF (1x1 transparent pixel).
+        gif = (b'GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff'
+               b'!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;')
+        self.user.avatar.save('test-avatar.gif', ContentFile(gif), save=True)
+
+    def test_login_returns_absolute_avatar_url(self):
+        client = APIClient(HTTP_USER_AGENT=WIN_UA)
+        resp = client.post('/api/v1/auth/login/',
+                           {'username': 'avataruser', 'password': self.password}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.content)
+        avatar = resp.json()['user']['avatar']
+        self.assertTrue(avatar and avatar.startswith('http'), f'expected absolute URL, got {avatar!r}')
+        # And it matches what auth/me/ returns (the reload path).
+        client.credentials(HTTP_AUTHORIZATION='Token ' + resp.json()['token'])
+        me = client.get('/api/v1/auth/me/').json()
+        self.assertEqual(avatar, me['avatar'])

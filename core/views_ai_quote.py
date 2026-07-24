@@ -4,6 +4,7 @@ Sprint 1: AI Quoting Engine Upgrade with feedback loop, fuel alerts, win probabi
 """
 
 import logging
+import re
 from datetime import date, timedelta
 from decimal import Decimal
 from django.utils import timezone
@@ -457,6 +458,47 @@ class AIChatQuoteView(APIView):
     """POST /api/v1/ai/chat-quote/ — conversational quote extraction."""
     permission_classes = [IsAuthenticated]
 
+    # Plain intro for a greeting / "what can you do" when no load details exist yet.
+    INTRO_REPLY = (
+        "Hi! I'm the TruckWys quoting assistant — describe a load in plain English "
+        "(pickup, delivery, cargo and weight) and I'll turn it into a freight quote. "
+        "What trip would you like to quote?"
+    )
+
+    _HELP_RE = re.compile(
+        r'\b(how (can|do) you help|what can you (do|help)|what do you do|'
+        r'how does this (work|help)|who are you|what are you|can you help)\b', re.IGNORECASE)
+    _GREETING_RE = re.compile(
+        r'(hi|hey|hello|howzit|hiya|yo|good\s*(morning|afternoon|evening))\b', re.IGNORECASE)
+
+    @classmethod
+    def _is_help_question(cls, message):
+        return bool(cls._HELP_RE.search((message or '').strip()))
+
+    @classmethod
+    def _looks_conversational(cls, message):
+        """True when the message is a greeting or a 'what can you do' style question
+        rather than load details — so we answer it instead of nagging for fields."""
+        m = (message or '').strip()
+        if not m:
+            return False
+        return bool(cls._GREETING_RE.match(m) or cls._HELP_RE.search(m))
+
+    @classmethod
+    def _conversational_reply(cls, message, merged):
+        """Deterministic answer to a greeting / capability question, kept
+        quote-focused: explains what the assistant does and/or what it still
+        needs, instead of blankly repeating a field prompt."""
+        has_essentials = any(merged.get(k) for k in
+                             ('pickup_location', 'delivery_location', 'cargo_description', 'weight'))
+        if cls._is_help_question(message):
+            cap = ("I turn a plain-English load description into a freight quote — give me the "
+                   "pickup, delivery, cargo and weight and I'll price it.")
+            return f"{cap} {cls._fallback_reply(merged)}" if has_essentials \
+                else f"{cap} What trip would you like to quote?"
+        # Plain greeting
+        return f"Happy to help! {cls._fallback_reply(merged)}" if has_essentials else cls.INTRO_REPLY
+
     @staticmethod
     def _fallback_reply(merged):
         """Build a friendly reply from the fields captured so far."""
@@ -480,6 +522,16 @@ class AIChatQuoteView(APIView):
             return f"Almost there. Just need the {' and '.join(missing)} to complete the quote."
         return f"Thanks! I still need the {', '.join(missing[:-1])} and {missing[-1]} to build your quote."
 
+    @classmethod
+    def _reply_for(cls, message, merged, extracted, llm_reply=''):
+        """Pick the reply. A pure greeting / help question (no new load details
+        this turn) is answered deterministically here, overriding whatever the LLM
+        returned — so the assistant never ignores a direct question by repeating a
+        field prompt. Otherwise use the LLM's reply, or the field-progress fallback."""
+        if not extracted and cls._looks_conversational(message):
+            return cls._conversational_reply(message, merged)
+        return (llm_reply or '').strip() or cls._fallback_reply(merged)
+
     def post(self, request):
         """
         Extract quote fields from natural language message.
@@ -490,6 +542,8 @@ class AIChatQuoteView(APIView):
             message = request.data.get('message', '')
             current_fields = request.data.get('current_fields', {})
             history = request.data.get('history', [])
+            pending_entity = request.data.get('pending_entity')
+            declined_entities = request.data.get('declined_entities') or []
 
             # The fleet's real vehicle types and customers — extraction matches
             # free text against these, not a hardcoded generic list (a company's
@@ -506,23 +560,65 @@ class AIChatQuoteView(APIView):
                     Customer.objects.filter(company=company).values('id', 'name')
                 )
 
+            from core.services import quote_entity_chat
+
+            # A create-on-the-fly conversation is in progress — this turn is
+            # entirely the user's answer to it, not new quote-field content.
+            if pending_entity and company is not None:
+                nxt, ent_reply, created, link, declined_name = quote_entity_chat.advance_pending(
+                    pending_entity, message, company, request.user,
+                )
+                extracted = {}
+                if created:
+                    extracted = (
+                        {'customer_id': created['id'], 'customer_name': created['name']}
+                        if created['table'] == 'customers' else {'vehicle_type': created['name']}
+                    )
+                    ent_reply = f"{ent_reply} {self._fallback_reply({**current_fields, **extracted})}"
+                return Response({
+                    'success': True,
+                    'reply': ent_reply,
+                    'extracted_fields': extracted,
+                    'pending_entity': nxt,
+                    'link': link,
+                    'declined_entity': declined_name,
+                })
+
             # Primary path: Claude-backed natural-language extraction.
             # Falls through to the regex extractor below when the LLM is
             # not configured or the call fails, so the endpoint never breaks.
             from core.services import llm_quote
             if llm_quote.is_enabled():
                 try:
-                    extracted, reply = llm_quote.extract(
+                    extracted, reply, unmatched = llm_quote.extract(
                         message, history, current_fields,
                         vehicle_types=vehicle_types, customers=customers,
                     )
+                    if company is not None:
+                        hit = quote_entity_chat.detect_unmatched(unmatched, declined_entities)
+                        if hit:
+                            table, raw_name = hit
+                            pending, ask_reply, link = quote_entity_chat.start_pending(table, raw_name, request.user)
+                            return Response({
+                                'success': True,
+                                'reply': ask_reply,
+                                'extracted_fields': extracted,
+                                'pending_entity': pending,
+                                'link': link,
+                                'declined_entity': None,
+                                'source': 'llm',
+                            })
                     merged = {**current_fields, **extracted}
-                    if not reply:
-                        reply = self._fallback_reply(merged)
+                    # Deterministically answer a pure greeting / help question even
+                    # if the LLM returned a field-nag; otherwise keep the LLM reply.
+                    reply = self._reply_for(message, merged, extracted, llm_reply=reply)
                     return Response({
                         'success': True,
                         'reply': reply,
                         'extracted_fields': extracted,
+                        'pending_entity': None,
+                        'link': None,
+                        'declined_entity': None,
                         'source': 'llm',
                     })
                 except Exception as exc:
@@ -665,9 +761,13 @@ class AIChatQuoteView(APIView):
                     # Heuristic: if < 100, likely tons; if >= 100, likely kg
                     extracted['weight'] = val * 1000 if val < 100 else val
 
-            # Vehicle type — prefer the fleet's actual configured names (e.g.
-            # "Rigid Truck", "Semi-Trailer Truck") over the generic keyword map,
-            # since a company's real fleet rarely matches the six hardcoded names.
+            unmatched = {'customer_name': None, 'vehicle_type': None}
+
+            # Vehicle type — only ever set from the fleet's actual configured
+            # names (e.g. "Rigid Truck", "Semi-Trailer Truck"). A generic keyword
+            # ("flatbed") that doesn't match any real company VehicleType must
+            # NOT be silently written in as if it existed — surface it as
+            # unmatched instead so the caller can offer to create it.
             matched_vt = None
             for vt in (vehicle_types or []):
                 vt_lc = vt.lower()
@@ -678,28 +778,33 @@ class AIChatQuoteView(APIView):
             if matched_vt:
                 extracted['vehicle_type'] = matched_vt
             else:
-                vehicle_map = {
-                    'flatbed': 'Flatbed', 'tautliner': 'Tautliner', 'curtainsider': 'Tautliner',
-                    'refrigerated': 'Refrigerated', 'reefer': 'Refrigerated', 'fridge': 'Refrigerated',
-                    'tanker': 'Tanker', 'box truck': 'Box Truck', 'danger': 'Danger Load', 'dg': 'Danger Load',
-                }
-                for key, val in vehicle_map.items():
-                    if key in msg_lower:
-                        extracted['vehicle_type'] = val
+                _VEHICLE_KEYWORDS = [
+                    'flatbed', 'tautliner', 'curtainsider', 'refrigerated', 'reefer', 'fridge',
+                    'tanker', 'box truck', 'danger load', 'cargo truck', 'rigid truck',
+                    'semi-trailer truck', 'semi trailer', 'interlink',
+                ]
+                for kw in _VEHICLE_KEYWORDS:
+                    if kw in msg_lower:
+                        unmatched['vehicle_type'] = kw.title()
                         break
 
             # Client / customer — "client is X", "customer will be X", etc.,
-            # fuzzy-matched against this company's real customer records.
+            # fuzzy-matched against this company's real customer records. A name
+            # that's mentioned but doesn't match anything real is surfaced as
+            # unmatched rather than silently dropped.
             if customers:
                 m = re.search(r'(?:client|customer)(?:\s+will\s+be|\s+is)?\s*[:\-]?\s*([A-Za-z][A-Za-z\s]{1,40}?)(?:\s*[-,.]|$)', message, re.IGNORECASE)
                 if m:
                     from core.services.llm_quote import _fuzzy_match
+                    raw_name = m.group(1).strip()
                     names = [c['name'] for c in customers]
-                    matched_name = _fuzzy_match(m.group(1).strip(), names)
+                    matched_name = _fuzzy_match(raw_name, names)
                     if matched_name:
                         match = next(c for c in customers if c['name'] == matched_name)
                         extracted['customer_id'] = match['id']
                         extracted['customer_name'] = matched_name
+                    elif raw_name:
+                        unmatched['customer_name'] = raw_name
 
             # Cargo description — the noun AFTER "of" (e.g. "20 tons of steel from JHB"
             # -> "steel"; "of palletised goods to ..." -> "palletised goods").
@@ -717,31 +822,34 @@ class AIChatQuoteView(APIView):
                 if len(desc) > 2 and desc.lower() not in stop:
                     extracted['cargo_description'] = desc
 
+            if company is not None:
+                hit = quote_entity_chat.detect_unmatched(unmatched, declined_entities)
+                if hit:
+                    table, raw_name = hit
+                    pending, ask_reply, link = quote_entity_chat.start_pending(table, raw_name, request.user)
+                    return Response({
+                        'success': True,
+                        'reply': ask_reply,
+                        'extracted_fields': extracted,
+                        'pending_entity': pending,
+                        'link': link,
+                        'declined_entity': None,
+                    })
+
             # Merge with current fields
             merged = {**current_fields, **extracted}
 
-            # Build reply
-            missing = []
-            if not merged.get('pickup_location'):
-                missing.append('pickup location')
-            if not merged.get('delivery_location'):
-                missing.append('delivery location')
-            if not merged.get('cargo_description'):
-                missing.append('cargo type')
-            if not merged.get('weight'):
-                missing.append('weight')
-
-            if not missing:
-                reply = f"Got it — {merged.get('cargo_description', 'your cargo')} from {merged.get('pickup_location')} to {merged.get('delivery_location')}, {merged.get('weight', 0)/1000:.0f} tons. Ready to calculate your quote."
-            elif len(missing) <= 2:
-                reply = f"Almost there. Just need the {' and '.join(missing)} to complete the quote."
-            else:
-                reply = f"Thanks! I still need the {', '.join(missing[:-1])} and {missing[-1]} to build your quote."
+            # Answer a greeting / "how can you help" instead of nagging for fields;
+            # otherwise report progress on the still-missing essentials.
+            reply = self._reply_for(message, merged, extracted)
 
             return Response({
                 'success': True,
                 'reply': reply,
                 'extracted_fields': extracted,
+                'pending_entity': None,
+                'link': None,
+                'declined_entity': None,
             })
 
         except Exception as e:
@@ -749,6 +857,9 @@ class AIChatQuoteView(APIView):
                 'success': False,
                 'reply': "I had trouble understanding that. Can you describe the load again? For example: '20 tons of pallets from Johannesburg to Cape Town, flatbed.'",
                 'extracted_fields': {},
+                'pending_entity': None,
+                'link': None,
+                'declined_entity': None,
             })
 
 

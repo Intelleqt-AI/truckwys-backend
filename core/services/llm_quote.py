@@ -64,8 +64,16 @@ SYSTEM_PROMPT_BASE = (
     "ONE_WAY, 'round trip'/'return trip'/'there and back' -> ROUND_TRIP. If not mentioned, return \"\".\n"
     "- For any field you cannot determine from the conversation, return an empty string \"\" "
     "(or 0 for weight_kg). Do NOT guess or invent values.\n"
-    "- 'reply' is one short, friendly sentence: confirm what you captured and ask for any "
-    "still-missing essentials (pickup, delivery, cargo, weight)."
+    "- 'reply' is one short, friendly sentence that RESPONDS TO WHAT THE USER ACTUALLY SAID:\n"
+    "  * If they just greet you ('hi', 'hello') or ask what you can do / how you can help, greet "
+    "them back and say in one sentence that you build freight quotes from a plain-English "
+    "description of a load, then invite them to describe the trip — or, if some details are already "
+    "captured, ask for the next missing essential. Do NOT answer as if they had given load details.\n"
+    "  * If they give or add load details, confirm what you captured and ask for any still-missing "
+    "essentials (pickup, delivery, cargo, weight).\n"
+    "  * If they ask something unrelated to freight or quoting, politely say you're focused on "
+    "building quotes and steer back to the load.\n"
+    "  Never ignore a direct question by simply repeating a field request."
 )
 
 
@@ -174,8 +182,10 @@ def _build_messages(message: str, history: Optional[List[Dict[str, Any]]],
 def extract(message: str, history: Optional[List[Dict[str, Any]]] = None,
             current_fields: Optional[Dict[str, Any]] = None,
             vehicle_types: Optional[List[str]] = None,
-            customers: Optional[List[Dict[str, Any]]] = None) -> Tuple[Dict[str, Any], str]:
-    """Return (extracted_fields, reply). Raises on SDK/API error so the caller can fall back.
+            customers: Optional[List[Dict[str, Any]]] = None
+            ) -> Tuple[Dict[str, Any], str, Dict[str, Optional[str]]]:
+    """Return (extracted_fields, reply, unmatched). Raises on SDK/API error so the
+    caller can fall back.
 
     Provider-agnostic: uses Claude when ANTHROPIC_API_KEY is set, else OpenAI (gpt-4o)
     with JSON mode. Both return the same {pickup_location, delivery_location, weight_kg,
@@ -186,6 +196,12 @@ def extract(message: str, history: Optional[List[Dict[str, Any]]] = None,
     and it's fuzzy-matched against this real list, not a hardcoded generic one.
     customers: [{'id': int, 'name': str}, ...] for the calling company — same
     fuzzy-match treatment, returned as customer_id/customer_name when matched.
+
+    unmatched: {'customer_name': str|None, 'vehicle_type': str|None} — the raw
+    free text the caller mentioned when it did NOT match any real record (as
+    opposed to not being mentioned at all). Lets the view offer to create it
+    instead of silently dropping it — a real name that doesn't exist must never
+    be presented to the user as if it had been captured.
     """
     msgs = _build_messages(message, history, current_fields)
     provider = _provider()
@@ -222,19 +238,26 @@ def extract(message: str, history: Optional[List[Dict[str, Any]]] = None,
         raise RuntimeError("No LLM provider configured for quote extraction")
 
     extracted: Dict[str, Any] = {}
+    unmatched: Dict[str, Optional[str]] = {"customer_name": None, "vehicle_type": None}
     if data.get("pickup_location"):
         extracted["pickup_location"] = data["pickup_location"].strip()
     if data.get("delivery_location"):
         extracted["delivery_location"] = data["delivery_location"].strip()
-    matched_vt = _fuzzy_match(data.get("vehicle_type"), vt_candidates)
+    raw_vt = (data.get("vehicle_type") or "").strip()
+    matched_vt = _fuzzy_match(raw_vt, vt_candidates)
     if matched_vt:
         extracted["vehicle_type"] = matched_vt
+    elif raw_vt:
+        unmatched["vehicle_type"] = raw_vt
+    raw_customer_name = (data.get("customer_name") or "").strip()
     if customers:
-        matched_name = _fuzzy_match(data.get("customer_name"), customer_names)
+        matched_name = _fuzzy_match(raw_customer_name, customer_names)
         if matched_name:
             match = next(c for c in customers if c["name"] == matched_name)
             extracted["customer_id"] = match["id"]
             extracted["customer_name"] = matched_name
+        elif raw_customer_name:
+            unmatched["customer_name"] = raw_customer_name
     if data.get("cargo_description"):
         extracted["cargo_description"] = data["cargo_description"].strip()
     try:
@@ -257,4 +280,4 @@ def extract(message: str, history: Optional[List[Dict[str, Any]]] = None,
     if trip_type in ("ONE_WAY", "ROUND_TRIP"):
         extracted["trip_type"] = trip_type
 
-    return extracted, (data.get("reply") or "").strip()
+    return extracted, (data.get("reply") or "").strip(), unmatched
