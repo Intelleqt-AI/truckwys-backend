@@ -297,8 +297,14 @@ FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:3701')
 # Security Settings
 CSRF_COOKIE_HTTPONLY = True
 SESSION_COOKIE_HTTPONLY = True
-CSRF_COOKIE_SECURE = not DEBUG  # Only HTTPS in production
-SESSION_COOKIE_SECURE = not DEBUG  # Only HTTPS in production
+# Default to HTTPS-only cookies in production, but let a deployment opt out.
+# A Secure cookie is never stored over plain http://, so on an IP-only staging
+# box with DEBUG=False the browser drops the CSRF cookie and every admin login
+# dies with "CSRF verification failed". Set these False *only* on a host with no
+# TLS yet — cookies then travel in cleartext and are sniffable. Remove the
+# override the moment that host gets a certificate.
+CSRF_COOKIE_SECURE = config('CSRF_COOKIE_SECURE', default=not DEBUG, cast=bool)
+SESSION_COOKIE_SECURE = config('SESSION_COOKIE_SECURE', default=not DEBUG, cast=bool)
 SECURE_BROWSER_XSS_FILTER = True
 X_FRAME_OPTIONS = 'DENY'
 
