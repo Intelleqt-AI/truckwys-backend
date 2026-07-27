@@ -1,27 +1,73 @@
 name: Deploy TruckWys Backend to AWS EC2
 
-# Manual trigger only, on purpose. This used to fire on every push to main and
-# ran `gunicorn config.wsgi:application` against a bare venv — WSGI drops every
-# WebSocket (ws/events/), and it bypassed the container stack entirely. Deploys
-# now go through docker-compose.prod.yml (see DEPLOY_EC2.md). Switch this back
-# to `on: push` only once you've done a few manual deploys and trust it.
+# Every push to main redeploys the single-server stack in af-south-1.
+#
+# The runner rsyncs its checkout to the box rather than having the box pull from
+# GitHub: nobody on the team has admin on this repo, so a deploy key can't be
+# registered, and this way no repo credential has to live on the server at all.
+#
+# Secrets required: EC2_HOST, EC2_USER, EC2_SSH_KEY (a deploy-only keypair, not
+# anyone's personal .pem — revoke it by removing the matching line from
+# ~/.ssh/authorized_keys on the instance).
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
+
+# Never let two deploys rebuild the same box at once. Queue instead of cancel:
+# a half-applied deploy is worse than a slow one.
+concurrency:
+  group: deploy-ec2
+  cancel-in-progress: false
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Deploy to AWS EC2
-        uses: appleboy/ssh-action@v1.0.0
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          script: |
+      - uses: actions/checkout@v4
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Sync code to instance
+        run: |
+          rsync -az --delete \
+            --exclude='.git' \
+            --exclude='.env' \
+            --exclude='media' \
+            --exclude='staticfiles' \
+            --exclude='venv' \
+            --exclude='__pycache__' \
+            --exclude='*.pyc' \
+            -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes" \
+            ./ "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:~/truckwys/backend/"
+
+      # --delete keeps the tree honest, and .env is excluded so the server's
+      # real secrets survive every deploy. Never drop that exclude.
+
+      - name: Rebuild and restart
+        run: |
+          ssh -i ~/.ssh/deploy_key "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" '
             set -e
-            cd /home/ubuntu/truckwys/backend
-            git pull origin main
-            # migrate + collectstatic run inside the web container's entrypoint.
+            cd ~/truckwys/backend
+            # migrate + collectstatic run inside the web container entrypoint.
             docker compose -f docker-compose.prod.yml up -d --build
+            # 20 GiB fills up fast with one image layer set per deploy.
+            docker image prune -f
             docker compose -f docker-compose.prod.yml ps
+          '
+
+      - name: Smoke test
+        run: |
+          for i in $(seq 1 12); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://${{ secrets.EC2_HOST }}/api/docs/" || true)
+            if [ "$code" = "200" ]; then echo "/api/docs/ -> 200"; exit 0; fi
+            echo "attempt $i: got '$code', retrying..."
+            sleep 5
+          done
+          echo "::error::/api/docs/ never returned 200 after the deploy"
+          exit 1
