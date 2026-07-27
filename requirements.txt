@@ -1,5 +1,7 @@
-Django>=4.2.0
-djangorestframework>=3.14.0
+# Pinned to what dev runs — an unpinned Django>=4.2 let the Docker build resolve
+# a different major than local, so "works on my machine" stopped meaning anything.
+Django==6.0.6
+djangorestframework==3.17.1
 django-cors-headers>=4.0.0
 psycopg2-binary>=2.9.0
 python-decouple>=3.8
