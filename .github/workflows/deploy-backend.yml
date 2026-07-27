@@ -1,14 +1,17 @@
 name: Deploy TruckWys Backend to AWS EC2
 
+# Manual trigger only, on purpose. This used to fire on every push to main and
+# ran `gunicorn config.wsgi:application` against a bare venv — WSGI drops every
+# WebSocket (ws/events/), and it bypassed the container stack entirely. Deploys
+# now go through docker-compose.prod.yml (see DEPLOY_EC2.md). Switch this back
+# to `on: push` only once you've done a few manual deploys and trust it.
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
       - name: Deploy to AWS EC2
         uses: appleboy/ssh-action@v1.0.0
         with:
@@ -16,10 +19,9 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.SSH_KEY }}
           script: |
-            cd /home/ubuntu/truckwys-backend
+            set -e
+            cd /home/ubuntu/truckwys/backend
             git pull origin main
-            source venv/bin/activate
-            pip install -r requirements.txt
-            python manage.py migrate --noinput
-            python manage.py collectstatic --noinput
-            pm2 restart truckwys-backend || gunicorn config.wsgi:application --bind 0.0.0.0:3700 --workers 3 --daemon
+            # migrate + collectstatic run inside the web container's entrypoint.
+            docker compose -f docker-compose.prod.yml up -d --build
+            docker compose -f docker-compose.prod.yml ps
