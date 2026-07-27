@@ -63,7 +63,7 @@ def sweep_maintenance_due():
             notify_company(
                 vehicle.company_id, 'ALERT' if overdue else 'WARNING',
                 'Vehicle maintenance due', detail,
-                link=f'/vehicles/{vehicle.id}', event='maintenance.due',
+                link=f'/fleet/vehicles/{vehicle.id}', event='maintenance.due',
             )
             Vehicle.objects.filter(pk=vehicle.pk).update(last_maintenance_alert_at=today)
             notified += 1
