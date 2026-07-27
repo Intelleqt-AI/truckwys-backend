@@ -324,7 +324,7 @@ def quote_saved(sender, instance, created, **kwargs):
                 'INFO',
                 'New quote created',
                 detail,
-                link=f'/quotes/{instance.id}',
+                link=f'/bookings/quotes/{instance.id}',
                 event='quote.created',
                 exclude_user_id=getattr(instance, 'created_by_id', None),
             )
@@ -350,7 +350,7 @@ def quote_saved(sender, instance, created, **kwargs):
                 }
                 if instance.status in _QUOTE_STATUS_NOTIFY:
                     event, title, ntype = _QUOTE_STATUS_NOTIFY[instance.status]
-                    notify_company(cid, ntype, title, detail, link=f'/quotes/{instance.id}', event=event,
+                    notify_company(cid, ntype, title, detail, link=f'/bookings/quotes/{instance.id}', event=event,
                                     exclude_user_id=getattr(instance, '_notify_actor_id', None))
         except Exception:
             pass
@@ -402,7 +402,7 @@ def quote_saved(sender, instance, created, **kwargs):
                     'SUCCESS',
                     'Quote accepted',
                     detail,
-                    link=f'/quotes/{instance.id}',
+                    link=f'/bookings/quotes/{instance.id}',
                     event='quote.accepted',
                     exclude_user_id=getattr(instance, '_notify_actor_id', None),
                 )
@@ -449,7 +449,7 @@ def risk_score_saved(sender, instance, created, **kwargs):
                 type='INFO',
                 title="Risk Score Updated",
                 message=f"Invoice {instance.invoice.invoice_number} scored {instance.total_score} ({instance.tier})",
-                link=f"/invoices/{instance.invoice.id}"
+                link=f"/finance/invoices/{instance.invoice.id}"
             )
 
 
@@ -715,7 +715,7 @@ def driver_status_notify(sender, instance, created, **kwargs):
             detail = f"{name or 'Driver'} is now {instance.status}" + (f" (was {old})" if old else '')
             notify_company(
                 instance.company_id, 'INFO', 'Driver status updated', detail,
-                link=f'/drivers/{instance.id}', event='driver.status_changed',
+                link=f'/fleet/drivers/{instance.id}', event='driver.status_changed',
                 exclude_user_id=getattr(instance, '_notify_actor_id', None),
             )
     except Exception:

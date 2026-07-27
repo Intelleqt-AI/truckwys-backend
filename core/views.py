@@ -2095,7 +2095,7 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
                     'SUCCESS', 'Quote accepted',
                     f'{getattr(quote, "quote_number", None) or ("Quote " + str(quote.id))}'
                     + (f' · {quote.customer.name}' if getattr(quote, 'customer', None) else ''),
-                    link=f'/quotes/{quote.id}', event='quote.accepted',
+                    link=f'/bookings/quotes/{quote.id}', event='quote.accepted',
                     exclude_user_id=request.user.id,
                 )
             except Exception:
