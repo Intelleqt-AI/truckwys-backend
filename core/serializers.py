@@ -4,6 +4,7 @@ from .models import (
     User, Customer, Driver, Vehicle, VehicleLog, VehicleType, Load,
     Quote, Invoice, Payment, Expense, Settlement, Notification, Company, ActivityEvent
 )
+from .serializers_billing import DeliveryFeeChargeSerializer
 
 # User Serializer
 class UserSerializer(serializers.ModelSerializer):
@@ -310,11 +311,21 @@ class QuoteSerializer(serializers.ModelSerializer):
 class InvoiceSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source='customer.name', read_only=True)
     load_number = serializers.CharField(source='load.load_number', read_only=True)
-    
+    # The 0.25% take-rate charge on this invoice, if any — lets the operator
+    # see directly on the invoice whether/when the platform fee was taken.
+    # SerializerMethodField (not a plain nested serializer): the reverse
+    # OneToOneField raises DoesNotExist for any invoice with no charge yet
+    # (drafts, pre-this-feature invoices) — getattr's default swallows that.
+    delivery_fee_charge = serializers.SerializerMethodField()
+
     class Meta:
         model = Invoice
         fields = '__all__'
         read_only_fields = ['id', 'company', 'created_at', 'updated_at']
+
+    def get_delivery_fee_charge(self, obj):
+        charge = getattr(obj, 'delivery_fee_charge', None)
+        return DeliveryFeeChargeSerializer(charge).data if charge else None
 
 
 # Payment Serializer

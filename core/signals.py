@@ -200,6 +200,17 @@ def _auto_invoice_on_delivery(load):
     except Exception as exc:  # never break the delivery save
         import logging
         logging.getLogger(__name__).warning('auto-invoice on delivery failed: %s', exc)
+        return
+
+    # 0.25% delivery take-rate — charged the same moment the invoice is
+    # auto-raised. Its own service never raises, but keep this defensive too:
+    # a billing hiccup must never be able to undo the delivery/invoice save.
+    try:
+        from core.services.delivery_fee_billing import charge_delivery_fee_for_invoice
+        charge_delivery_fee_for_invoice(invoice)
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning('delivery fee charge failed: %s', exc)
 
 
 @receiver(post_save, sender='core.Invoice')

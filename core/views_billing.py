@@ -3,9 +3,17 @@
 # - CancelSubscriptionView: Uses request.user.company ✓
 # - BillingStatusView: Uses request.user.company ✓
 # - BillingHistoryView: Filters by request.user.company ✓
-# - PayFastITNView: Public webhook (AllowAny) - exempt from company filtering ✓
+# - PaystackWebhookView: Public webhook (AllowAny) - exempt from company filtering ✓
 
-"""Billing views for PayFast subscription management."""
+"""Billing views for Paystack subscription + take-rate management.
+
+There's no separate "cancel"/"revoke" API call on Paystack's side to make
+here — we never created a Paystack Subscription object (see
+core/services/subscription_billing.py for why: one charge_authorization
+primitive covers both the flat fee and the take-rate, so there's nothing
+gateway-side to cancel — cancelling is purely a local subscription_status
+flip that stops our own cron from charging them further).
+"""
 import logging
 from decimal import Decimal, InvalidOperation
 
@@ -13,28 +21,114 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework import status
+from django.conf import settings
 from django.utils import timezone
 
-from .models import BillingTransaction, Vehicle
+from .models import BillingTransaction
 from .serializers_billing import (
-    BillingTransactionSerializer, BillingStatusSerializer, SubscribeSerializer
+    BillingStatusSerializer, SubscribeSerializer, ConfirmPaymentSerializer,
 )
-from .services.payfast import (
-    build_payment_data, validate_itn, confirm_payment_with_payfast, PLAN_PRICING,
-    SUBSCRIPTION_TIERS, get_tier_for_vehicle_count,
-)
-from django.conf import settings
+from .services import paystack
+from .services.paystack import MONTHLY_FEE, MONTHLY_FEE_ITEM_NAME
 
 logger = logging.getLogger(__name__)
 
 
-def _get_notify_url(request):
-    """Build the ITN notify URL from the current request."""
-    return request.build_absolute_uri('/api/v1/billing/itn/')
+def _activate_from_verified_charge(company, txn, data: dict) -> bool:
+    """Shared by ConfirmPaymentView (return_url) and PaystackWebhookView
+    (async backup — same race PayFast's ITN-vs-return_url covered).
+    Idempotent. Returns True if the charge was valid and applied.
+    """
+    from core.services.notify import notify_company_billing_email
+
+    if txn.status == 'complete':
+        return True  # already processed by the other path
+
+    if (data or {}).get('status') != 'success':
+        txn.status = 'failed'
+        txn.payment_status = str((data or {}).get('status', ''))
+        txn.raw_gateway_response = data or {}
+        txn.save(update_fields=['status', 'payment_status', 'raw_gateway_response', 'updated_at'])
+        notify_company_billing_email(
+            company.id, 'Subscription payment failed',
+            f"We couldn't confirm your {MONTHLY_FEE_ITEM_NAME} payment (R{MONTHLY_FEE:,.2f}). "
+            "Your subscription was not activated — please try again.",
+            link='/settings/billing',
+        )
+        return False
+
+    # Amount verification: the gross paid must equal what we charged for.
+    # Without this, a tampered/replayed payload could grant an active plan
+    # for any amount.
+    expected_cents = int((txn.amount * 100).quantize(Decimal('1')))
+    if int(data.get('amount', -1)) != expected_cents:
+        logger.warning(
+            "Paystack charge amount mismatch: txn=%s expected=%s got=%s",
+            txn.id, expected_cents, data.get('amount'),
+        )
+        txn.status = 'failed'
+        txn.payment_status = 'amount_mismatch'
+        txn.raw_gateway_response = data
+        txn.save(update_fields=['status', 'payment_status', 'raw_gateway_response', 'updated_at'])
+        notify_company_billing_email(
+            company.id, 'Subscription payment failed',
+            f"We couldn't confirm your {MONTHLY_FEE_ITEM_NAME} payment (R{MONTHLY_FEE:,.2f}) — the amount charged "
+            "didn't match. Your subscription was not activated — please try again or contact support.",
+            link='/settings/billing',
+        )
+        return False
+
+    authorization = data.get('authorization') or {}
+    customer = data.get('customer') or {}
+
+    txn.status = 'complete'
+    txn.payment_status = 'success'
+    txn.gateway_transaction_id = str(data.get('id', ''))
+    txn.raw_gateway_response = data
+    txn.save(update_fields=['status', 'payment_status', 'gateway_transaction_id', 'raw_gateway_response', 'updated_at'])
+
+    company.subscription_plan = txn.plan or 'pro'
+    if authorization.get('authorization_code'):
+        company.paystack_authorization_code = authorization['authorization_code']
+        company.paystack_authorization_email = customer.get('email') or company.paystack_authorization_email
+        company.paystack_card_last4 = authorization.get('last4', '') or ''
+        company.paystack_card_type = authorization.get('card_type', '') or ''
+        company.paystack_bank = authorization.get('bank', '') or ''
+    if customer.get('customer_code'):
+        company.paystack_customer_code = customer['customer_code']
+    if not company.subscription_start:
+        company.subscription_start = timezone.now()
+    # This charge covers the month it lands in — next one is due a month out.
+    from core.services.subscription_billing import add_one_month, record_charge_success
+    company.next_billing_date = add_one_month(timezone.now().date())
+    company.save(update_fields=[
+        'subscription_plan', 'paystack_authorization_code',
+        'paystack_authorization_email', 'paystack_card_last4', 'paystack_card_type',
+        'paystack_bank', 'paystack_customer_code', 'subscription_start',
+        'next_billing_date', 'updated_at',
+    ])
+    # record_charge_success only flips active/grace_period -> active — a
+    # brand-new signup (status 'none') needs to go active explicitly here.
+    record_charge_success(company)
+    if company.subscription_status != 'active':
+        company.subscription_status = 'active'
+        company.save(update_fields=['subscription_status', 'updated_at'])
+
+    notify_company_billing_email(
+        company.id, 'Subscription payment confirmed',
+        f'{MONTHLY_FEE_ITEM_NAME}: R{MONTHLY_FEE:,.2f} charged successfully. Your subscription is active.',
+        link='/settings/billing',
+    )
+    return True
 
 
 class SubscribeView(APIView):
-    """POST /api/v1/billing/subscribe/ — Initiate a PayFast subscription."""
+    """POST /api/v1/billing/subscribe/ — Initiate the Paystack checkout that
+    both charges the first month AND captures a reusable card-on-file. Also
+    how a suspended/cancelled company reactivates — the successful charge
+    itself is what flips subscription_status back to 'active'
+    (_activate_from_verified_charge), whatever it was before.
+    """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -43,77 +137,72 @@ class SubscribeView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         return_url = serializer.validated_data.get('return_url', '')
-        cancel_url = serializer.validated_data.get('cancel_url', '')
-        notify_url = _get_notify_url(request)
-
         company = request.user.company
         user = request.user
 
-        # Tier is derived server-side from the company's fleet size — the
-        # client never chooses the plan or the amount.
-        vehicle_count = Vehicle.objects.filter(company=company).count()
-        tier = get_tier_for_vehicle_count(vehicle_count)
-        plan = tier['key']
+        if company.paystack_authorization_code and company.subscription_status == 'active':
+            logger.info('Company %s starting a new checkout with an active card on file already.', company.id)
 
-        if company.payfast_token and company.subscription_status == 'active':
-            # Resubscribing while a PayFast recurring token is still live:
-            # the old agreement is NOT cancelled at PayFast (known gap) and
-            # must be cancelled manually in the merchant dashboard.
-            logger.warning(
-                'Company %s starting a new checkout (%s) with an active '
-                'PayFast token — old recurring subscription may keep billing.',
-                company.id, plan,
-            )
-
-        payment_data = build_payment_data(
-            plan=plan,
-            company_id=company.id,
-            user_email=user.email or '',
-            first_name=user.first_name or '',
-            last_name=user.last_name or '',
-            notify_url=notify_url,
-            return_url=return_url,
-            cancel_url=cancel_url,
+        result = paystack.initialize_transaction(
+            email=user.email or '',
+            amount=MONTHLY_FEE,
+            callback_url=return_url,
+            metadata={'company_id': company.id, 'plan': 'pro'},
         )
+        if not result['success']:
+            return Response({'detail': f"Could not start checkout: {result['error']}"}, status=status.HTTP_502_BAD_GATEWAY)
 
-        # Create a pending transaction
-        plan_info = PLAN_PRICING[plan]
+        reference = result['data']['reference']
         BillingTransaction.objects.create(
             company=company,
-            amount=plan_info['amount'],
-            payment_id=payment_data['form_data'].get('m_payment_id', ''),
+            amount=MONTHLY_FEE,
+            payment_id=reference,
             status='pending',
-            plan=plan,
+            plan='pro',
         )
 
         return Response({
-            'payfast_url': payment_data['payfast_url'],
-            'payment_url': payment_data['payfast_url'],
-            'form_data': payment_data['form_data'],
-            'plan': plan,
-            'amount': str(plan_info['amount']),
-            'item_name': plan_info['item_name'],
-            'vehicle_count': vehicle_count,
-            'tier_label': tier['label'],
+            'authorization_url': result['data']['authorization_url'],
+            'reference': reference,
+            'plan': 'pro',
+            'amount': str(MONTHLY_FEE),
+            'item_name': MONTHLY_FEE_ITEM_NAME,
         }, status=status.HTTP_200_OK)
 
 
 class CancelSubscriptionView(APIView):
-    """POST /api/v1/billing/cancel/ — Cancel the active subscription."""
+    """POST /api/v1/billing/cancel/ — Stop the monthly fee (and take-rate)
+    cron from charging this company further. The card stays on file in case
+    they resubscribe — nothing to revoke on Paystack's side.
+
+    Per TruckWys_Fee_Billing_Spec.pdf §4: cancellation is an immediate,
+    deliberate action ("Explicit cancellation action" -> 'cancelled', no
+    grace period) — unlike a failed charge, which moves to 'grace_period'
+    first. Quoting/invoicing block immediately (core/middleware/plan_limits.py).
+    """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
         company = request.user.company
 
-        if company.subscription_status not in ('active', 'trialing'):
+        if company.subscription_status not in ('active', 'grace_period', 'trialing'):
             return Response(
                 {'detail': 'No active subscription to cancel.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         company.subscription_status = 'cancelled'
-        company.payfast_token = None
-        company.save(update_fields=['subscription_status', 'payfast_token', 'updated_at'])
+        company.next_billing_date = None
+        company.grace_period_expires_at = None
+        company.save(update_fields=['subscription_status', 'next_billing_date', 'grace_period_expires_at', 'updated_at'])
+
+        from core.services.notify import notify_company_billing_email
+        notify_company_billing_email(
+            company.id, 'Subscription cancelled',
+            f'Your {MONTHLY_FEE_ITEM_NAME} subscription has been cancelled — you will not be charged again, and '
+            'quoting/invoicing are now blocked. You can resubscribe any time from Settings → Billing.',
+            link='/settings/billing',
+        )
 
         return Response({'detail': 'Subscription cancelled successfully.'})
 
@@ -123,192 +212,167 @@ class BillingStatusView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        from core.services.subscription_billing import _grace_days
+
         company = request.user.company
         serializer = BillingStatusSerializer(company)
-        # amount/item_name describe the plan the company is ON (legacy keys
-        # still resolve); current_tier is what a checkout would charge TODAY
-        # given the live fleet size.
-        plan_info = PLAN_PRICING.get(company.subscription_plan, {})
-        vehicle_count = Vehicle.objects.filter(company=company).count()
-        current_tier = get_tier_for_vehicle_count(vehicle_count)
-        tiers = [
-            {**tier, 'amount': str(PLAN_PRICING[tier['key']]['amount'])}
-            for tier in SUBSCRIPTION_TIERS
-        ]
+        is_paid = company.subscription_plan not in ('free', 'starter') and company.subscription_status == 'active'
+
+        grace = None
+        if company.subscription_status == 'grace_period' and company.grace_period_expires_at:
+            days_remaining = (company.grace_period_expires_at.date() - timezone.now().date()).days
+            grace = {
+                'grace_period_expires_at': company.grace_period_expires_at,
+                'days_remaining': max(0, days_remaining),
+                'grace_period_days': _grace_days(),
+            }
+
         return Response({
             **serializer.data,
-            'amount': str(plan_info.get('amount', '0.00')),
-            'item_name': plan_info.get('item_name', 'Free'),
-            'vehicle_count': vehicle_count,
-            'current_tier': {
-                **current_tier,
-                'amount': str(PLAN_PRICING[current_tier['key']]['amount']),
+            'amount': str(MONTHLY_FEE) if is_paid else '0.00',
+            'item_name': MONTHLY_FEE_ITEM_NAME if is_paid else 'Free',
+            'flat_plan': {
+                'key': 'pro',
+                'label': MONTHLY_FEE_ITEM_NAME,
+                'amount': str(MONTHLY_FEE),
+                # Surfaced so the signup screen can disclose the take-rate
+                # BEFORE anyone adds a card — not just after the fact on an
+                # invoice. Single source of truth: settings.DELIVERY_FEE_PCT.
+                'take_rate_pct': str(getattr(settings, 'DELIVERY_FEE_PCT', 0.25)),
             },
-            'tiers': tiers,
+            'card': {
+                'last4': company.paystack_card_last4,
+                'card_type': company.paystack_card_type,
+                'bank': company.paystack_bank,
+            } if company.paystack_card_last4 else None,
+            # Set only while subscription_status == 'grace_period' — the
+            # countdown to show in Billing Settings before suspension.
+            'grace': grace,
+            'suspended': company.subscription_status == 'suspended',
         })
 
 
 class BillingHistoryView(APIView):
-    """GET /api/v1/billing/history/ — Payment history for the company."""
+    """GET /api/v1/billing/history/ — every charge ever taken from this
+    company's card: the monthly subscription fee AND the 0.25% delivery
+    take-rate, merged into one list (they're separate models — see
+    DeliveryFeeCharge's docstring for why) so there's one place a user can
+    audit every deduction, not just the subscription ones.
+    """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        from .models import DeliveryFeeCharge
+
         company = request.user.company
         transactions = BillingTransaction.objects.filter(company=company)
-        serializer = BillingTransactionSerializer(transactions, many=True)
-        return Response({'results': serializer.data, 'count': transactions.count()})
+        results = [
+            {
+                'id': f'sub-{t.id}',
+                'kind': 'subscription',
+                'label': MONTHLY_FEE_ITEM_NAME,
+                'amount': str(t.amount),
+                'status': t.status,
+                'reference': t.gateway_transaction_id or t.payment_id,
+                'created_at': t.created_at,
+            }
+            for t in transactions
+        ]
+
+        charges = DeliveryFeeCharge.objects.filter(company=company).select_related('invoice')
+        results += [
+            {
+                'id': f'fee-{c.id}',
+                'kind': 'delivery_fee',
+                'label': f'Delivery fee · {c.invoice.invoice_number}',
+                'amount': str(c.amount),
+                # DeliveryFeeCharge and BillingTransaction use different status
+                # vocabularies (charged/failed vs complete/failed) — normalise
+                # so the frontend renders one consistent set of colours.
+                'status': 'complete' if c.status == 'charged' else c.status,
+                'reference': c.invoice.invoice_number,
+                'created_at': c.created_at,
+            }
+            for c in charges
+        ]
+        results.sort(key=lambda r: r['created_at'], reverse=True)
+
+        return Response({'results': results, 'count': len(results)})
 
 
-class PayFastITNView(APIView):
-    """
-    POST /api/v1/billing/itn/ — PayFast Instant Transaction Notification webhook.
+class PaystackWebhookView(APIView):
+    """POST /api/v1/billing/webhook/ — Paystack event webhook.
 
-    This endpoint is publicly accessible (AllowAny) but validates the PayFast
-    signature before processing any state changes.
+    Public (AllowAny) but validates the HMAC-SHA512 signature before
+    processing anything. Only `charge.success` mutates state here — it's the
+    async backup for the initial subscribe checkout (return_url normally
+    fires first via ConfirmPaymentView; this covers the race/drop case, same
+    role PayFast's ITN played). The take-rate and monthly-fee charges we
+    trigger ourselves get their success/failure synchronously from the
+    charge_authorization call itself, so they don't depend on this webhook.
     """
     permission_classes = [AllowAny]
-    # PayFast sends form-encoded POST data, no CSRF token
     authentication_classes = []
 
     def post(self, request):
-        # Capture the raw body FIRST: once request.POST reads the stream,
-        # request.body raises RawPostDataException. The raw body is needed to
-        # verify the ITN signature against PayFast's exact bytes/order.
-        try:
-            raw_body = request.body.decode('utf-8', 'ignore')
-        except Exception:
-            raw_body = ''
-        post_data = request.POST.dict()
-        source_ip = request.META.get('REMOTE_ADDR', '')
-
-        # 1. Verify the ITN signature (and source IP in production).
-        if not validate_itn(post_data, source_ip, raw_body):
+        signature = request.headers.get('x-paystack-signature', '')
+        if not paystack.verify_webhook_signature(request.body, signature):
             return Response({'detail': 'Invalid signature.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # 2. Server-to-server confirmation: PayFast must echo this ITN as VALID.
-        #    This defeats forged/replayed payloads that happen to carry a valid signature.
-        if not confirm_payment_with_payfast(post_data):
-            logger.warning("PayFast ITN failed server-to-server confirmation: %s", post_data.get('m_payment_id'))
-            return Response({'detail': 'Unconfirmed.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            payload = request.data
+        except Exception:
+            return Response(status=status.HTTP_400_BAD_REQUEST)
 
-        payment_status = post_data.get('payment_status', '')
-        m_payment_id = post_data.get('m_payment_id', '')
-        pf_payment_id = post_data.get('pf_payment_id', '')
-        token = post_data.get('token', '')
-        company_id = post_data.get('custom_str1', '')
-        plan = post_data.get('custom_str2', '')
+        event = payload.get('event', '')
+        data = payload.get('data', {}) or {}
 
-        txn = BillingTransaction.objects.filter(payment_id=m_payment_id).first()
+        if event == 'charge.success':
+            reference = data.get('reference', '')
+            txn = BillingTransaction.objects.filter(payment_id=reference).select_related('company').first()
+            if txn:
+                _activate_from_verified_charge(txn.company, txn, data)
+        # Other events (charge.failed, transfer.*, etc.) are acknowledged but
+        # not acted on here — see docstring.
 
-        # 3. Idempotency: a transaction we've already completed is never re-processed.
-        #    Acknowledge with 200 so PayFast stops retrying.
-        if txn and txn.status == 'complete':
-            return Response(status=status.HTTP_200_OK)
-
-        # 4. Amount verification: the gross paid must equal the plan's price.
-        #    Without this, a tampered ITN could grant a paid plan for any amount.
-        if payment_status == 'COMPLETE':
-            expected_amount = PLAN_PRICING.get(plan, {}).get('amount')
-            try:
-                amount_gross = Decimal(str(post_data.get('amount_gross', '0')))
-            except (InvalidOperation, TypeError):
-                amount_gross = Decimal('0')
-
-            if expected_amount is None or amount_gross != expected_amount:
-                logger.warning(
-                    "PayFast ITN amount/plan mismatch: plan=%r gross=%s expected=%s",
-                    plan, amount_gross, expected_amount,
-                )
-                BillingTransaction.objects.filter(payment_id=m_payment_id).update(
-                    payfast_payment_id=pf_payment_id,
-                    status='failed',
-                    payment_status=payment_status,
-                    raw_itn_data=post_data,
-                )
-                return Response({'detail': 'Amount mismatch.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Update billing transaction
-        BillingTransaction.objects.filter(payment_id=m_payment_id).update(
-            payfast_payment_id=pf_payment_id,
-            status='complete' if payment_status == 'COMPLETE' else 'failed',
-            payment_status=payment_status,
-            raw_itn_data=post_data,
-        )
-
-        # Update company subscription on verified successful payment
-        if payment_status == 'COMPLETE' and company_id:
-            from .models import Company
-            try:
-                company = Company.objects.get(id=company_id)
-                company.subscription_plan = plan or company.subscription_plan
-                company.subscription_status = 'active'
-                if token:
-                    company.payfast_token = token
-                if not company.subscription_start:
-                    company.subscription_start = timezone.now()
-                company.save(update_fields=[
-                    'subscription_plan', 'subscription_status',
-                    'payfast_token', 'subscription_start', 'updated_at',
-                ])
-            except Company.DoesNotExist:
-                pass
-
-        # PayFast expects a 200 OK with no body on success
         return Response(status=status.HTTP_200_OK)
 
 
 class ConfirmPaymentView(APIView):
     """
-    POST /api/v1/billing/confirm/
-    Called by the frontend immediately after the user returns from PayFast
-    (return_url fires before ITN in most cases). Finds the most recent pending
-    transaction for the company and activates the subscription.
-
-    In sandbox mode: activates without server-to-server check (ITN can't reach
-    localhost). In production: verifies with PayFast before activating.
+    POST /api/v1/billing/confirm/ {"reference": "..."}
+    Called by the frontend right after Paystack redirects back to
+    callback_url (which arrives with ?reference=... appended). Verifies the
+    transaction server-side and activates the subscription — this is the
+    primary path; the webhook above is only the async backup.
     """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
         company = request.user.company
-        sandbox = getattr(settings, 'PAYFAST_SANDBOX', True)
+        serializer = ConfirmPaymentSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        reference = serializer.validated_data['reference']
 
-        txn = (
-            BillingTransaction.objects
-            .filter(company=company, status='pending')
-            .order_by('-created_at')
-            .first()
-        )
-
+        txn = BillingTransaction.objects.filter(company=company, payment_id=reference).first()
         if not txn:
-            # Already activated (ITN arrived first) or nothing to confirm
-            from .serializers_billing import BillingStatusSerializer
+            return Response({'detail': 'No matching transaction found.'}, status=status.HTTP_404_NOT_FOUND)
+        if txn.status == 'complete':
             return Response(BillingStatusSerializer(company).data)
 
-        if not sandbox:
-            # Production: verify with PayFast before trusting
-            fake_itn = {
-                'm_payment_id': txn.payment_id,
-                'payment_status': 'COMPLETE',
-                'custom_str1': str(company.id),
-                'custom_str2': txn.plan or '',
-            }
-            if not confirm_payment_with_payfast(fake_itn):
-                return Response(
-                    {'detail': 'Payment could not be confirmed with PayFast. Please wait a moment and try again.'},
-                    status=status.HTTP_402_PAYMENT_REQUIRED,
-                )
+        result = paystack.verify_transaction(reference)
+        if not result['success']:
+            return Response(
+                {'detail': f"Payment could not be confirmed: {result['error']}"},
+                status=status.HTTP_402_PAYMENT_REQUIRED,
+            )
 
-        # Activate
-        txn.status = 'complete'
-        txn.payment_status = 'COMPLETE'
-        txn.save(update_fields=['status', 'payment_status'])
+        ok = _activate_from_verified_charge(company, txn, result['data'])
+        if not ok:
+            return Response(
+                {'detail': 'Payment was not successful.'},
+                status=status.HTTP_402_PAYMENT_REQUIRED,
+            )
 
-        company.subscription_plan = txn.plan or company.subscription_plan
-        company.subscription_status = 'active'
-        if not company.subscription_start:
-            company.subscription_start = timezone.now()
-        company.save(update_fields=['subscription_plan', 'subscription_status', 'subscription_start', 'updated_at'])
-
-        from .serializers_billing import BillingStatusSerializer
         return Response(BillingStatusSerializer(company).data)
