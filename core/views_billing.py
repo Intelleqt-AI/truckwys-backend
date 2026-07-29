@@ -36,13 +36,14 @@ logger = logging.getLogger(__name__)
 
 def _activate_from_verified_charge(company, txn, data: dict) -> bool:
     """Shared by ConfirmPaymentView (return_url) and PaystackWebhookView
-    (async backup — same race PayFast's ITN-vs-return_url covered).
-    Idempotent. Returns True if the charge was valid and applied.
+    (async backup — same race PayFast's ITN-vs-return_url covered, now for
+    charge.failed too, not just charge.success — see the webhook's docstring).
+    Idempotent both ways. Returns True if the charge was valid and applied.
     """
     from core.services.notify import notify_company_billing_email
 
-    if txn.status == 'complete':
-        return True  # already processed by the other path
+    if txn.status in ('complete', 'failed'):
+        return txn.status == 'complete'  # already processed by the other path — don't re-email either way
 
     if (data or {}).get('status') != 'success':
         txn.status = 'failed'
@@ -304,12 +305,24 @@ class PaystackWebhookView(APIView):
     """POST /api/v1/billing/webhook/ — Paystack event webhook.
 
     Public (AllowAny) but validates the HMAC-SHA512 signature before
-    processing anything. Only `charge.success` mutates state here — it's the
-    async backup for the initial subscribe checkout (return_url normally
-    fires first via ConfirmPaymentView; this covers the race/drop case, same
-    role PayFast's ITN played). The take-rate and monthly-fee charges we
-    trigger ourselves get their success/failure synchronously from the
-    charge_authorization call itself, so they don't depend on this webhook.
+    processing anything.
+
+    `charge.success` is the async backup for the initial subscribe checkout
+    (return_url normally fires first via ConfirmPaymentView; this covers the
+    race/drop case, same role PayFast's ITN played).
+
+    `charge.failed` is the safety net for a checkout that's declined and then
+    simply abandoned — Paystack's hosted checkout does NOT auto-redirect back
+    to return_url on a decline (unlike success), it shows its own retry
+    screen and waits for the shopper to close it. If they never do, the
+    browser-driven paths (CompleteSignupView / ConfirmPaymentView) never
+    fire, and without this handler nobody — not the customer, not
+    TruckWys — would ever find out the payment failed. This webhook fires
+    regardless of what the browser does, so it's the only guaranteed path.
+
+    The take-rate and monthly-fee charges we trigger ourselves get their
+    success/failure synchronously from the charge_authorization call itself,
+    so they don't depend on this webhook.
     """
     permission_classes = [AllowAny]
     authentication_classes = []
@@ -326,14 +339,33 @@ class PaystackWebhookView(APIView):
 
         event = payload.get('event', '')
         data = payload.get('data', {}) or {}
+        reference = data.get('reference', '')
 
         if event == 'charge.success':
-            reference = data.get('reference', '')
             txn = BillingTransaction.objects.filter(payment_id=reference).select_related('company').first()
             if txn:
                 _activate_from_verified_charge(txn.company, txn, data)
-        # Other events (charge.failed, transfer.*, etc.) are acknowledged but
-        # not acted on here — see docstring.
+
+        elif event == 'charge.failed':
+            # Existing company reactivating/subscribing — a BillingTransaction
+            # already exists (created 'pending' by SubscribeView up front).
+            txn = BillingTransaction.objects.filter(payment_id=reference).select_related('company').first()
+            if txn:
+                _activate_from_verified_charge(txn.company, txn, data)
+            else:
+                # Fresh signup — no BillingTransaction exists yet for a
+                # failed attempt (only ever created on success), so look up
+                # the PendingSignup row this checkout belongs to instead.
+                from core.models import PendingSignup
+                from core.views import _notify_pending_signup_payment_failed
+                pending = PendingSignup.objects.filter(paystack_reference=reference, email_verified=True).first()
+                if pending:
+                    _notify_pending_signup_payment_failed(
+                        pending,
+                        "We couldn't confirm your TruckWys subscription payment, so your account was not created. "
+                        "Your registration details are saved — you can try the payment again.",
+                    )
+        # Other events (transfer.*, etc.) are acknowledged but not acted on.
 
         return Response(status=status.HTTP_200_OK)
 
