@@ -12,8 +12,7 @@ from .views import (
     RegisterView, LoginView, LoginVerifyOtpView, LoginResendOtpView, LogoutView, ChangePasswordView, DeleteAccountView, UserProfileView, SessionsView, LoginActivityView,
     FleetOverviewView, VehicleInsightsView, VehicleIntelligenceFeedView, VehicleActionView,
     DriverOverviewView, DriverPerformanceLeaderboardView,
-    QuotesPipelineOverviewView, NotificationSettingsView, SecuritySettingsView,
-    VapidPublicKeyView, PushSubscriptionView,
+    QuotesPipelineOverviewView, NotificationSettingsView, SecuritySettingsView, FcmDeviceView,
     CompanyProfileView, CompanyLogoUploadView, DashboardOverviewView, ActivityEventViewSet,
     TestEmailView, InviteView, InviteTokenView, InviteResendView,
     PublicQuoteView, PublicQuoteRespondView, PublicInvoiceView,
@@ -155,6 +154,8 @@ urlpatterns = [
     
     # Notification Settings endpoint
     path('notifications/settings/', NotificationSettingsView.as_view(), name='notification-settings'),
+    # Mobile push: register/unregister this device's FCM token.
+    path('push/devices/', FcmDeviceView.as_view(), name='fcm-devices'),
     path('auth/security-settings/', SecuritySettingsView.as_view(), name='security-settings'),
 
     # Web Push (browser notifications)
