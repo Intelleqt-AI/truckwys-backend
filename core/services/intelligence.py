@@ -238,7 +238,7 @@ class IntelligenceService:
                 'customer_name': invoice.customer.name,
                 'amount': float(invoice.balance),
                 'days_overdue': days_overdue,
-                'link': f'/invoices/{invoice.id}',
+                'link': f'/finance/invoices/{invoice.id}',
             })
 
         return alerts
@@ -277,7 +277,7 @@ class IntelligenceService:
                 'net_position': float(net_position),
                 'expected_in': float(expected_in),
                 'expected_out': float(expected_out),
-                'link': '/dashboard/finance',
+                'link': '/finance/reports',
             })
 
         return alerts
@@ -326,7 +326,7 @@ class IntelligenceService:
                     'destination': route_data['destination'],
                     'margin': margin,
                     'trip_count': len(route_data['trips']),
-                    'link': '/analytics/routes',
+                    'link': '/insights',
                 })
 
         return alerts

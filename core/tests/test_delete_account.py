@@ -57,6 +57,30 @@ class DeleteAccountViewTests(TestCase):
         self.assertEqual(user.status, 'INACTIVE')
         self.assertEqual(UserSession.objects.filter(user=user).count(), 0)
 
+    def test_deletion_frees_the_email_for_a_new_signup(self):
+        # Regression: the soft-deleted row used to keep the original email
+        # (and username, which defaults to it) forever, so re-registering
+        # with the same email after "deleting your account" was permanently
+        # blocked with "An account with this email already exists."
+        original_email = 'reusable@example.com'
+        user = _make_user(self.company, 'reusable@example.com', role='OPERATOR')
+        user.email = original_email
+        user.save()
+        client = _authed_client(user)
+
+        response = client.delete(reverse('delete-account'), {'password': 'testpass123'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        user.refresh_from_db()
+        self.assertNotEqual(user.email, original_email)
+        self.assertIn(original_email, user.email)  # kept for audit, just no longer an exact match
+        self.assertFalse(User.objects.filter(email__iexact=original_email).exists())
+
+        register_response = APIClient().post('/api/v1/auth/register/', {
+            'email': original_email, 'password': 'NewPass123!',
+        }, format='json')
+        self.assertEqual(register_response.status_code, status.HTTP_200_OK)
+
     def test_sole_admin_with_other_active_users_is_blocked(self):
         admin = _make_user(self.company, 'admin1', role='ADMIN')
         _make_user(self.company, 'operator1', role='OPERATOR')

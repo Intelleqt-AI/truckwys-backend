@@ -46,13 +46,14 @@ def _inv_no(advance):
     return getattr(inv, 'invoice_number', None) or f'Advance #{advance.id}'
 
 
-def _notify_advance(advance, ntype, title, message):
+def _notify_advance(advance, ntype, title, message, exclude_user_id=None):
     """Persist + live-push a notification for an advance lifecycle change."""
     try:
         from core.services.notify import notify_company
         company_id = getattr(getattr(advance, 'facility', None), 'company_id', None)
         notify_company(company_id, ntype, title, message,
-                       link=f'/capital/advances/{advance.id}', event='advance.status')
+                       link=f'/capital/advances/{advance.id}', event='advance.status',
+                       exclude_user_id=exclude_user_id)
     except Exception:
         pass
 
@@ -369,13 +370,21 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
 
         try:
+            # Read by the AdvanceRequest post_save signal: this view sends its
+            # own "Advance approved" notification below (excluding the actor),
+            # so tell the signal not to send its own copy too — and exclude the
+            # approving user from that copy in case _notify_handled ever isn't
+            # set (defence in depth, matches the same pattern used for quotes).
+            advance._notify_handled = True
+            advance._notify_actor_id = request.user.id
             advance.approve()
             if serializer.validated_data.get('notes'):
                 advance.notes = serializer.validated_data['notes']
                 advance.save()
 
             _notify_advance(advance, 'SUCCESS', 'Advance approved',
-                            f'{_inv_no(advance)} approved — R{float(advance.net_amount):,.0f} to be disbursed')
+                            f'{_inv_no(advance)} approved — R{float(advance.net_amount):,.0f} to be disbursed',
+                            exclude_user_id=request.user.id)
             response_serializer = AdvanceRequestSerializer(advance)
             return Response(response_serializer.data)
 
@@ -409,7 +418,8 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
                 advance.save()
 
             _notify_advance(advance, 'WARNING', 'Advance declined',
-                            f'{_inv_no(advance)} declined: {reason}')
+                            f'{_inv_no(advance)} declined: {reason}',
+                            exclude_user_id=request.user.id)
             response_serializer = AdvanceRequestSerializer(advance)
             return Response(response_serializer.data)
 
@@ -435,6 +445,10 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
 
         try:
+            # See the same guard in approve() above — the signal would
+            # otherwise also send "Funds disbursed" for this transition.
+            advance._notify_handled = True
+            advance._notify_actor_id = request.user.id
             advance.disburse()
 
             if serializer.validated_data.get('notes'):
@@ -442,7 +456,8 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
                 advance.save()
 
             _notify_advance(advance, 'SUCCESS', 'Advance disbursed',
-                            f'{_inv_no(advance)} — R{float(advance.net_amount):,.0f} paid out')
+                            f'{_inv_no(advance)} — R{float(advance.net_amount):,.0f} paid out',
+                            exclude_user_id=request.user.id)
             response_serializer = AdvanceRequestSerializer(advance)
             return Response(response_serializer.data)
 
@@ -482,7 +497,8 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
             except Exception:
                 pass
             _notify_advance(advance, 'SUCCESS', 'Advance settled',
-                            f'{_inv_no(advance)} settled')
+                            f'{_inv_no(advance)} settled',
+                            exclude_user_id=user.id)
 
             response_serializer = AdvanceRequestSerializer(advance)
             return Response(response_serializer.data)

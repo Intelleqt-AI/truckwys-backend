@@ -447,6 +447,77 @@ class EntityHookTests(TestCase):
         self.assertFalse(Vehicle.objects.filter(plate='CP 001 GP').exists())
 
 
+class CrossTenantFKTests(TestCase):
+    """A proposal's payload FK ids must belong to the caller's company. Otherwise
+    the confirmation card leaks another tenant's data (read oracle) and execute
+    persists a cross-tenant reference (write-through). The target-record scoping
+    (test_cross_company_record_invisible) does NOT cover FK values in the payload."""
+
+    def setUp(self):
+        self.company = Company.objects.create(company_name='A Co')
+        self.admin = make_user('ct_admin', self.company, 'ADMIN')
+        self.conv = CopilotConversation.objects.create(user=self.admin)
+        self.other = Company.objects.create(company_name='B Co')
+        self.foreign_customer = Customer.objects.create(
+            company=self.other, name='Secret Foreign Ltd', email='sf@b.test',
+            phone='', address='', city='', state='', zip_code='',
+        )
+        self.own_customer = Customer.objects.create(
+            company=self.company, name='Own Ltd', email='own@a.test',
+            phone='', address='', city='', state='', zip_code='',
+        )
+        self.own_quote = Quote.objects.create(
+            company=self.company, customer=self.own_customer, quote_number='QT-A-1',
+            pickup_location='JHB', delivery_location='CPT', cargo_description='steel',
+            weight=Decimal('10'), base_rate=Decimal('100'), total_amount=Decimal('5000'),
+            valid_until=date.today(),
+        )
+
+    def _propose_quote(self, customer_id):
+        return tools.propose_create(
+            self.company, self.admin, self.conv,
+            {'table': 'quotes', 'fields': {
+                'customer': customer_id, 'pickup_location': 'JHB',
+                'delivery_location': 'CPT', 'cargo_description': 'bricks',
+                'weight': 100, 'total_amount': 5000}},
+        )
+
+    def test_propose_create_foreign_fk_rejected_no_leak(self):
+        before = CopilotProposal.objects.count()
+        out = self._propose_quote(self.foreign_customer.id)
+        self.assertIn('error', out)
+        self.assertEqual(CopilotProposal.objects.count(), before)      # nothing persisted
+        self.assertNotIn('Secret Foreign Ltd', out['error'])           # read-oracle closed
+
+    def test_propose_create_own_fk_allowed(self):
+        out = self._propose_quote(self.own_customer.id)
+        self.assertTrue(out.get('needs_confirmation'), out)            # in-company id still works
+
+    def test_propose_update_foreign_fk_rejected_no_leak(self):
+        before = CopilotProposal.objects.count()
+        out = tools.propose_update(
+            self.company, self.admin, None,
+            {'table': 'quotes', 'record_id': self.own_quote.id,
+             'fields': {'customer': self.foreign_customer.id}},
+        )
+        self.assertIn('error', out)
+        self.assertEqual(CopilotProposal.objects.count(), before)
+        self.assertNotIn('Secret Foreign Ltd', out['error'])
+
+    def test_execute_rejects_tampered_foreign_fk(self):
+        # A valid in-company proposal whose payload is later tampered to point at
+        # another tenant must fail closed at execute (defense-in-depth).
+        out = self._propose_quote(self.own_customer.id)
+        proposal = CopilotProposal.objects.get(id=out['proposal_id'])
+        proposal.payload = {**proposal.payload, 'customer': self.foreign_customer.id}
+        proposal.save(update_fields=['payload'])
+        ok, _ = tools.execute_proposal(proposal, self.admin, self.company)
+        self.assertFalse(ok)
+        proposal.refresh_from_db()
+        self.assertEqual(proposal.status, 'FAILED')
+        self.assertFalse(Quote.objects.filter(customer=self.foreign_customer).exists())
+
+
 class ProposalEndpointTests(TestCase):
     def setUp(self):
         self.company = Company.objects.create(company_name='E Co')

@@ -2,21 +2,21 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views_billing import (
     SubscribeView, CancelSubscriptionView, BillingStatusView,
-    BillingHistoryView, PayFastITNView, ConfirmPaymentView,
+    BillingHistoryView, PaystackWebhookView, ConfirmPaymentView,
 )
 from .views import (
     UserViewSet, CustomerViewSet, DriverViewSet,
     VehicleViewSet, VehicleTypeViewSet, VehicleLogViewSet, LoadViewSet,
     QuoteViewSet, InvoiceViewSet, PaymentViewSet,
     ExpenseViewSet, SettlementViewSet, NotificationViewSet, WebhookViewSet,
-    RegisterView, LoginView, LoginVerifyOtpView, LoginResendOtpView, LogoutView, ChangePasswordView, DeleteAccountView, UserProfileView, SessionsView,
+    RegisterView, LoginView, LoginVerifyOtpView, LoginResendOtpView, LogoutView, ChangePasswordView, DeleteAccountView, UserProfileView, SessionsView, LoginActivityView,
     FleetOverviewView, VehicleInsightsView, VehicleIntelligenceFeedView, VehicleActionView,
     DriverOverviewView, DriverPerformanceLeaderboardView,
     QuotesPipelineOverviewView, NotificationSettingsView, SecuritySettingsView, FcmDeviceView,
     CompanyProfileView, CompanyLogoUploadView, DashboardOverviewView, ActivityEventViewSet,
     TestEmailView, InviteView, InviteTokenView, InviteResendView,
     PublicQuoteView, PublicQuoteRespondView, PublicInvoiceView,
-    EmailVerifyView, ResendVerificationView,
+    EmailVerifyView, ResendVerificationView, CompleteSignupView, RetrySignupPaymentView,
 )
 from .views_ai_quote import (
     AIChatQuoteView, AIQuoteAnalyzeView, AIQuoteSuggestionView, AIVoiceQuoteView,
@@ -117,19 +117,22 @@ urlpatterns = [
     path('auth/logout/', LogoutView.as_view(), name='logout'),
     path('auth/change-password/', ChangePasswordView.as_view(), name='change-password'),
     path('auth/delete-account/', DeleteAccountView.as_view(), name='delete-account'),
-    # Billing (PayFast) — views were imported but never routed
+    # Billing (Paystack)
     path('billing/status/', BillingStatusView.as_view(), name='billing-status'),
     path('billing/history/', BillingHistoryView.as_view(), name='billing-history'),
     path('billing/subscribe/', SubscribeView.as_view(), name='billing-subscribe'),
     path('billing/cancel/', CancelSubscriptionView.as_view(), name='billing-cancel'),
-    path('billing/itn/', PayFastITNView.as_view(), name='billing-itn'),
+    path('billing/webhook/', PaystackWebhookView.as_view(), name='billing-webhook'),
     path('billing/confirm/', ConfirmPaymentView.as_view(), name='billing-confirm'),
     path('auth/me/', UserProfileView.as_view(), name='user-profile'),
     path('auth/sessions/', SessionsView.as_view(), name='auth-sessions'),
+    path('auth/sessions/activity/', LoginActivityView.as_view(), name='auth-session-activity'),
     path('auth/sessions/<uuid:session_id>/', SessionsView.as_view(), name='auth-session-detail'),
     path('auth/password-reset/', PasswordResetRequestView.as_view(), name='password-reset'),
     path('auth/password-reset/confirm/', PasswordResetConfirmView.as_view(), name='password-reset-confirm'),
     path('auth/verify-email/', EmailVerifyView.as_view(), name='verify-email'),
+    path('auth/complete-signup/', CompleteSignupView.as_view(), name='complete-signup'),
+    path('auth/retry-signup-payment/', RetrySignupPaymentView.as_view(), name='retry-signup-payment'),
     path('auth/resend-verification/', ResendVerificationView.as_view(), name='resend-verification'),
     path('auth/invite/', InviteView.as_view(), name='auth-invite'),
     path('auth/invite/<str:token>/accept/', InviteTokenView.as_view(), name='auth-invite-accept'),
@@ -154,6 +157,10 @@ urlpatterns = [
     # Mobile push: register/unregister this device's FCM token.
     path('push/devices/', FcmDeviceView.as_view(), name='fcm-devices'),
     path('auth/security-settings/', SecuritySettingsView.as_view(), name='security-settings'),
+
+    # Web Push (browser notifications)
+    path('push/vapid-key/', VapidPublicKeyView.as_view(), name='push-vapid-key'),
+    path('push/subscriptions/', PushSubscriptionView.as_view(), name='push-subscriptions'),
     
     # Company Settings endpoints
     path('company/profile/', CompanyProfileView.as_view(), name='company-profile'),

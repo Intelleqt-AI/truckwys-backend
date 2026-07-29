@@ -1,4 +1,4 @@
-"""Company notifications: persist + live-push in one call.
+"""Company notifications: persist + deliver in one call.
 
 `notify_company` writes a Notification row for every active user in the company
 (so it survives refresh and shows in the bell with history), broadcasts it over
@@ -8,6 +8,7 @@ halves are best-effort and never raise — a notification failure must never bre
 the business action that triggered it.
 """
 import logging
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -50,14 +51,18 @@ def notify_company(company_id, ntype: str, title: str, message: str = '', link: 
     except Exception as exc:
         logger.warning('notify_company persist failed: %s', exc)
 
-    # 2) Live push (drives the bell + toast + instant screen refresh).
+    # 2) Live push (drives the bell + toast + instant screen refresh). The
+    # group is company-wide (every connected browser, actor included), so the
+    # actor id and category ride along and the frontend self-suppresses.
     try:
         from core.ws.broadcast import broadcast_event
         broadcast_event(
             company_id,
             event,
             message=title,
-            data={'title': title, 'message': message, 'link': link, 'type': ntype},
+            data={'title': title, 'message': message, 'link': link, 'type': ntype,
+                  'actor_id': exclude_user_id, 'category': push_cat,
+                  'event_id': str(uuid.uuid4())},
         )
     except Exception as exc:
         logger.warning('notify_company broadcast failed: %s', exc)
