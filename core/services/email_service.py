@@ -1183,18 +1183,29 @@ def send_billing_email(email: str, first_name: str, title: str, message: str = '
   </table>
 </body>
 </html>"""
-    try:
-        resend.api_key = settings.RESEND_API_KEY
-        resend.Emails.send({
-            "from": settings.EMAIL_FROM,
-            "to": [email],
-            "subject": f"TruckWys billing: {title}",
-            "html": html_content,
-        })
-        return True
-    except Exception as e:
-        logger.error(f"Failed to send billing email '{title}' to {email}: {e}")
-        return False
+    # Retried up to 3 attempts with a short backoff — a payment notification
+    # is exactly the kind of email that must not silently vanish because of
+    # one transient network blip (reproduced live: a single Resend call can
+    # fail with a plain connection reset with no Resend-side error at all).
+    import time
+    resend.api_key = settings.RESEND_API_KEY
+    attempts = 3
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            resend.Emails.send({
+                "from": settings.EMAIL_FROM,
+                "to": [email],
+                "subject": f"TruckWys billing: {title}",
+                "html": html_content,
+            })
+            return True
+        except Exception as e:
+            last_error = e
+            if attempt < attempts:
+                time.sleep(attempt)  # 1s, then 2s
+    logger.error(f"Failed to send billing email '{title}' to {email} after {attempts} attempts: {last_error}")
+    return False
 
 
 def send_weekly_summary_email(user, company, stats: dict) -> bool:
