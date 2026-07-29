@@ -33,3 +33,6 @@ lxml>=4.9.0
 
 # Secrets-at-rest encryption (Xero OAuth tokens)
 cryptography>=42.0
+
+# Mobile push (Firebase Cloud Messaging; iOS via FCM's APNs relay)
+firebase-admin>=6.5.0

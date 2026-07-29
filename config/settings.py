@@ -276,6 +276,19 @@ COPILOT_LLM_PROVIDER = config('COPILOT_LLM_PROVIDER', default='auto')
 # Frontend URL for email links
 FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:3701')
 
+# Firebase Cloud Messaging — mobile push (Android natively, iOS via FCM's APNs
+# relay). This is the only channel that reaches a closed app.
+#
+# Supply the service-account credential ONE of two ways, never both:
+#   FIREBASE_CREDENTIALS       absolute path to the service-account JSON file
+#   FIREBASE_CREDENTIALS_JSON  the JSON itself, for hosts with no writable disk
+#
+# Either value grants send-as-this-project rights: keep it in the environment /
+# secret manager, never in the repo, and never log it. Both blank => push is a
+# silent no-op (see core/services/fcm_push.fcm_configured).
+FIREBASE_CREDENTIALS = config('FIREBASE_CREDENTIALS', default='')
+FIREBASE_CREDENTIALS_JSON = config('FIREBASE_CREDENTIALS_JSON', default='')
+
 # Security Settings
 CSRF_COOKIE_HTTPONLY = True
 SESSION_COOKIE_HTTPONLY = True
