@@ -4,6 +4,7 @@ Enforces per-plan resource and API call limits for Free, Pro, and Enterprise tie
 """
 from django.http import JsonResponse
 from django.utils import timezone
+from django.db import DatabaseError, transaction
 from django.db.models import F
 from datetime import date
 from core.models import Company, User, Vehicle
@@ -178,22 +179,33 @@ class PlanLimitsMiddleware:
             company.api_calls_reset_date.month != today.month or
             company.api_calls_reset_date.year != today.year):
 
-            # Use select_for_update to prevent multiple resets from concurrent requests
+            # Use select_for_update to prevent multiple resets from concurrent
+            # requests. It has to run inside an atomic block: Postgres raises
+            # TransactionManagementError under autocommit, which took down every
+            # authenticated request the first time a reset came due. SQLite has
+            # no SELECT ... FOR UPDATE so it skips the check entirely, which is
+            # why local dev never saw this.
             try:
-                locked_company = Company.objects.select_for_update(nowait=True).get(id=company.id)
-                # Double-check after acquiring lock (another request may have already reset)
-                if (not locked_company.api_calls_reset_date or
-                    locked_company.api_calls_reset_date.month != today.month or
-                    locked_company.api_calls_reset_date.year != today.year):
+                with transaction.atomic():
+                    locked_company = Company.objects.select_for_update(nowait=True).get(id=company.id)
+                    # Double-check after acquiring lock (another request may have already reset)
+                    if (not locked_company.api_calls_reset_date or
+                        locked_company.api_calls_reset_date.month != today.month or
+                        locked_company.api_calls_reset_date.year != today.year):
 
-                    locked_company.api_calls_this_month = 0
-                    locked_company.api_calls_reset_date = today
-                    locked_company.save(update_fields=['api_calls_this_month', 'api_calls_reset_date'])
-                    # Update the instance we're working with
-                    company.api_calls_this_month = 0
-                    company.api_calls_reset_date = today
+                        locked_company.api_calls_this_month = 0
+                        locked_company.api_calls_reset_date = today
+                        locked_company.save(update_fields=['api_calls_this_month', 'api_calls_reset_date'])
+                        # Update the instance we're working with
+                        company.api_calls_this_month = 0
+                        company.api_calls_reset_date = today
             except Company.DoesNotExist:
                 pass  # Company was deleted, skip reset
+            except DatabaseError:
+                # nowait=True: another request already holds the row lock and is
+                # doing this same reset. Skipping is the intended behaviour —
+                # letting it bubble would 500 the request over a counter reset.
+                pass
 
 
 def check_user_limit(company):
