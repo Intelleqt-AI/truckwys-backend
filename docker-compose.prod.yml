@@ -49,9 +49,11 @@ services:
       # the worker wouldn't see what the web container wrote.
       - media:/app/media
     ports:
-      # Port 80 straight to gunicorn — no nginx yet. When a domain and HTTPS get
-      # added, this becomes 127.0.0.1:8000 and nginx takes over 80/443.
-      - "80:8000"
+      # Loopback only. nginx on the host owns 80/443, terminates TLS for
+      # api.truckwys.com and proxies here. Publishing 80 again collides with
+      # nginx and the container fails to start; publishing 0.0.0.0:8000 would
+      # let anyone skip TLS by hitting the port directly.
+      - "127.0.0.1:8000:8000"
     depends_on:
       db:
         condition: service_healthy
