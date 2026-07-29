@@ -11,6 +11,7 @@ from datetime import datetime
 
 import numpy as np
 from django.conf import settings
+from django.db.models import F, Q
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,12 @@ def build_win_training_matrix():
 
     outcomes = list(
         QuoteOutcome.objects.filter(outcome__in=['accepted', 'rejected'])
+        # Exclude pre-launch/test outcomes for companies that reset their
+        # training clock (Company.ai_training_started_at) — see win_model_status.
+        .filter(
+            Q(quote__company__ai_training_started_at__isnull=True)
+            | Q(created_at__gte=F('quote__company__ai_training_started_at'))
+        )
         .select_related('quote', 'quote__customer')
     )
     if not outcomes:
@@ -215,6 +222,8 @@ def win_model_status(company=None) -> dict:
     qs = QuoteOutcome.objects.filter(outcome__in=['accepted', 'rejected'])
     if company is not None:
         qs = qs.filter(quote__company=company)
+        if company.ai_training_started_at is not None:
+            qs = qs.filter(created_at__gte=company.ai_training_started_at)
     outcomes = qs.count()
     min_needed = _min_samples()
 

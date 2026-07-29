@@ -96,10 +96,8 @@ class RegisterView(APIView):
 
     def post(self, request):
         import secrets
-        import logging
-        from django.core.cache import cache
         from django.contrib.auth.hashers import make_password
-        from core.services.email_service import send_verification_email
+        from core.models import PendingSignup
 
         email = request.data.get('email', '').strip().lower()
         password = request.data.get('password', '')
@@ -114,18 +112,26 @@ class RegisterView(APIView):
         if User.objects.filter(email__iexact=email).exists():
             return Response({'detail': 'An account with this email already exists.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Store registration data in cache — account is created only after OTP verification
-        cache.set(f'pending_registration_{email}', {
-            'email': email,
-            'username': username,
-            'first_name': first_name,
-            'last_name': last_name,
-            'password': make_password(password),
-            'company_name': company_name,
-        }, timeout=600)
-
+        # No free tier: the account itself isn't created here, or even after
+        # OTP verification — only after a successful Paystack payment (see
+        # CompleteSignupView). This row just holds the registration details
+        # until then (a real table, not a short-lived cache entry, since the
+        # checkout redirect can reasonably take longer than a few minutes).
         otp_code = str(secrets.randbelow(900000) + 100000)
-        cache.set(f'email_verify_{email}', otp_code, timeout=600)
+        PendingSignup.objects.update_or_create(
+            email=email,
+            defaults={
+                'username': username,
+                'first_name': first_name,
+                'last_name': last_name,
+                'password_hash': make_password(password),
+                'company_name': company_name,
+                'otp_code': otp_code,
+                'otp_expires_at': timezone.now() + timedelta(minutes=10),
+                'email_verified': False,
+                'paystack_reference': '',
+            },
+        )
         from core.tasks import send_verification_email_task
         send_verification_email_task(email, otp_code, first_name or username)
 
@@ -136,64 +142,191 @@ class RegisterView(APIView):
 
 
 class EmailVerifyView(APIView):
+    """Confirms email ownership, then starts the mandatory Paystack checkout —
+    it does NOT create the account. See CompleteSignupView for that."""
     permission_classes = [AllowAny]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = 'login'
 
     def post(self, request):
         import hmac
-        from django.core.cache import cache
-        from core.models import Company, Facility
-        from core.services.company_setup import seed_default_vehicle_types
+        from core.models import PendingSignup
+        from core.services import paystack
+        from core.services.paystack import MONTHLY_FEE
 
         email = request.data.get('email', '').strip().lower()
         code = request.data.get('code', '').strip()
+        return_url = request.data.get('return_url', '')
         if not email or not code:
             return Response({'detail': 'email and code are required.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        cached_code = cache.get(f'email_verify_{email}')
-        if not cached_code or not hmac.compare_digest(str(cached_code), str(code)):
+        pending = PendingSignup.objects.filter(email=email).first()
+        if not pending or not pending.otp_expires_at or pending.otp_expires_at < timezone.now():
             return Response({'detail': 'Invalid or expired verification code.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        pending = cache.get(f'pending_registration_{email}')
-        if not pending:
-            return Response({'detail': 'Registration session expired. Please register again.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not hmac.compare_digest(str(pending.otp_code), str(code)):
+            return Response({'detail': 'Invalid or expired verification code.'}, status=status.HTTP_400_BAD_REQUEST)
 
         # The email may have been taken between registration and verification
         if User.objects.filter(email__iexact=email).exists():
             return Response({'detail': 'An account with this email already exists.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Create user now that email is verified
-        user = User.objects.create(
-            email=pending['email'],
-            username=pending['username'],
-            first_name=pending['first_name'],
-            last_name=pending['last_name'],
-            password=pending['password'],
-            is_active=True,
+        pending.email_verified = True
+        pending.save(update_fields=['email_verified', 'updated_at'])
+
+        result = paystack.initialize_transaction(
+            email=email, amount=MONTHLY_FEE, callback_url=return_url,
+            metadata={'signup_email': email},
         )
+        if not result['success']:
+            return Response({'detail': f"Could not start checkout: {result['error']}"}, status=status.HTTP_502_BAD_GATEWAY)
 
-        company = Company.objects.create(company_name=pending['company_name'])
-        user.company = company
-        user.role = 'ADMIN'
-        user.save()
+        pending.paystack_reference = result['data']['reference']
+        pending.save(update_fields=['paystack_reference', 'updated_at'])
 
-        Facility.objects.create(company=company, limit=1000000, outstanding=0, status='ACTIVE')
-        seed_default_vehicle_types(company)
+        return Response({
+            'authorization_url': result['data']['authorization_url'],
+            'reference': pending.paystack_reference,
+        })
 
-        cache.delete(f'email_verify_{email}')
-        cache.delete(f'pending_registration_{email}')
 
-        session = UserSession.objects.create(
-            user=user,
-            device=parse_device(request),
-            user_agent=(request.META.get('HTTP_USER_AGENT', '') or '')[:512],
-            ip_address=client_ip(request),
+class CompleteSignupView(APIView):
+    """POST /api/v1/auth/complete-signup/ {"reference": "..."}
+
+    Called by the frontend once Paystack redirects back from the checkout
+    started in EmailVerifyView. Only on a verified, successful, correct-amount
+    charge does the account (User + Company + Facility + default vehicle
+    types + the first BillingTransaction) actually get created — atomically,
+    so a mid-sequence failure can never leave a half-created company.
+    """
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
+
+    def post(self, request):
+        from django.db import transaction as db_transaction
+        from core.models import PendingSignup, Company, Facility, BillingTransaction
+        from core.services import paystack
+        from core.services.paystack import MONTHLY_FEE
+        from core.services.company_setup import seed_default_vehicle_types
+        from core.services.subscription_billing import add_one_month
+
+        reference = request.data.get('reference', '').strip()
+        if not reference:
+            return Response({'detail': 'reference is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        pending = PendingSignup.objects.filter(paystack_reference=reference).first()
+        if not pending or not pending.email_verified:
+            return Response({'detail': 'No matching signup found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        if User.objects.filter(email__iexact=pending.email).exists():
+            return Response({'detail': 'This account has already been created. Please log in.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        from core.services.email_service import send_billing_email
+
+        result = paystack.verify_transaction(reference)
+        if not result['success']:
+            send_billing_email(
+                pending.email, pending.first_name or pending.username, 'Payment could not be completed',
+                "We couldn't confirm your TruckWys subscription payment, so your account was not created. "
+                "Your registration details are saved — you can try the payment again.",
+            )
+            return Response({'detail': f"Payment could not be confirmed: {result['error']}"}, status=status.HTTP_402_PAYMENT_REQUIRED)
+
+        data = result['data'] or {}
+        expected_cents = int((MONTHLY_FEE * 100).quantize(Decimal('1')))
+        if data.get('status') != 'success' or int(data.get('amount', -1)) != expected_cents:
+            send_billing_email(
+                pending.email, pending.first_name or pending.username, 'Payment could not be completed',
+                "Your card was not charged, so your TruckWys account was not created. Your registration details "
+                "are saved — you can try the payment again.",
+            )
+            return Response({'detail': 'Payment was not successful.'}, status=status.HTTP_402_PAYMENT_REQUIRED)
+
+        authorization = data.get('authorization') or {}
+        customer = data.get('customer') or {}
+
+        with db_transaction.atomic():
+            user = User.objects.create(
+                email=pending.email, username=pending.username,
+                first_name=pending.first_name, last_name=pending.last_name,
+                password=pending.password_hash, is_active=True,
+            )
+            company = Company.objects.create(
+                company_name=pending.company_name,
+                subscription_plan='pro', subscription_status='active',
+                paystack_authorization_code=authorization.get('authorization_code', '') or '',
+                paystack_authorization_email=customer.get('email') or pending.email,
+                paystack_card_last4=authorization.get('last4', '') or '',
+                paystack_card_type=authorization.get('card_type', '') or '',
+                paystack_bank=authorization.get('bank', '') or '',
+                paystack_customer_code=customer.get('customer_code', '') or '',
+                subscription_start=timezone.now(),
+                next_billing_date=add_one_month(timezone.now().date()),
+            )
+            user.company = company
+            user.role = 'ADMIN'
+            user.save()
+
+            Facility.objects.create(company=company, limit=1000000, outstanding=0, status='ACTIVE')
+            seed_default_vehicle_types(company)
+
+            BillingTransaction.objects.create(
+                company=company, amount=MONTHLY_FEE, payment_id=reference,
+                status='complete', plan='pro', payment_status='success',
+                gateway_transaction_id=str(data.get('id', '')), raw_gateway_response=data,
+            )
+            pending.delete()
+
+        send_billing_email(
+            user.email, user.first_name or user.username, 'Welcome to TruckWys — payment confirmed',
+            f'Your subscription is active: R{MONTHLY_FEE:,.2f}/month charged to your card ending '
+            f'{authorization.get("last4", "")}. Your next charge is due {company.next_billing_date.strftime("%d %b %Y")}.',
+            link='/settings/billing',
         )
-        log_auth_event(user, 'login', request=request, session=session)
-        # context is required so ImageField URLs (avatar) come back absolute,
-        # matching auth/me/ — a relative /media/... URL 404s on the Vite origin.
-        return Response({'token': session.key, 'user': UserSerializer(user, context={'request': request}).data})
+        return complete_login(user, request)
+
+
+class RetrySignupPaymentView(APIView):
+    """POST /api/v1/auth/retry-signup-payment/ {"email": "...", "return_url": "..."}
+
+    A failed/abandoned signup checkout doesn't lose the registration — the
+    PendingSignup row survives, so this just starts a fresh Paystack checkout
+    against the same pending details rather than making them register again.
+    """
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
+
+    def post(self, request):
+        from core.models import PendingSignup
+        from core.services import paystack
+        from core.services.paystack import MONTHLY_FEE
+
+        email = request.data.get('email', '').strip().lower()
+        return_url = request.data.get('return_url', '')
+        if not email:
+            return Response({'detail': 'email is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        pending = PendingSignup.objects.filter(email=email, email_verified=True).first()
+        if not pending:
+            return Response({'detail': 'No pending signup found. Please register again.'}, status=status.HTTP_400_BAD_REQUEST)
+        if User.objects.filter(email__iexact=email).exists():
+            return Response({'detail': 'This account has already been created. Please log in.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        result = paystack.initialize_transaction(
+            email=email, amount=MONTHLY_FEE, callback_url=return_url,
+            metadata={'signup_email': email},
+        )
+        if not result['success']:
+            return Response({'detail': f"Could not start checkout: {result['error']}"}, status=status.HTTP_502_BAD_GATEWAY)
+
+        pending.paystack_reference = result['data']['reference']
+        pending.save(update_fields=['paystack_reference', 'updated_at'])
+
+        return Response({
+            'authorization_url': result['data']['authorization_url'],
+            'reference': pending.paystack_reference,
+        })
 
 
 class ResendVerificationView(APIView):
@@ -203,22 +336,22 @@ class ResendVerificationView(APIView):
 
     def post(self, request):
         import secrets
-        import logging
-        from django.core.cache import cache
-        from core.services.email_service import send_verification_email
+        from core.models import PendingSignup
 
         email = request.data.get('email', '').strip().lower()
         if not email:
             return Response({'detail': 'email is required.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        pending = cache.get(f'pending_registration_{email}')
+        pending = PendingSignup.objects.filter(email=email).first()
         if not pending:
             return Response({'detail': 'No pending registration found. Please register again.'}, status=status.HTTP_400_BAD_REQUEST)
 
         otp_code = str(secrets.randbelow(900000) + 100000)
-        cache.set(f'email_verify_{email}', otp_code, timeout=600)
+        pending.otp_code = otp_code
+        pending.otp_expires_at = timezone.now() + timedelta(minutes=10)
+        pending.save(update_fields=['otp_code', 'otp_expires_at', 'updated_at'])
         from core.tasks import send_verification_email_task
-        send_verification_email_task(email, otp_code, pending.get('first_name') or pending.get('username') or email)
+        send_verification_email_task(email, otp_code, pending.first_name or pending.username or email)
         return Response({'detail': 'Verification code resent. Please check your email.'})
 
 
@@ -482,6 +615,8 @@ class DeleteAccountView(APIView):
     permission_classes = [IsAuthenticated]
 
     def delete(self, request):
+        import uuid
+
         password = request.data.get('password') or ''
         if not request.user.check_password(password):
             return Response({'error': 'Password is incorrect'}, status=status.HTTP_400_BAD_REQUEST)
@@ -497,9 +632,18 @@ class DeleteAccountView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
+        # Free up the email/username so this person can sign up again later
+        # with a brand new account. Without this, the soft-deleted row keeps
+        # occupying both forever: `username` is DB-unique (and defaults to
+        # the email at registration), and every signup view treats email as
+        # effectively unique via an existence check — so "deleting" your
+        # account would otherwise permanently block re-registering with it.
+        tag = uuid.uuid4().hex[:12]
         request.user.is_active = False
         request.user.status = 'INACTIVE'
-        request.user.save(update_fields=['is_active', 'status'])
+        request.user.email = f'deleted-{tag}+{request.user.email}'
+        request.user.username = f'deleted-{tag}-{request.user.username}'[:150]
+        request.user.save(update_fields=['is_active', 'status', 'email', 'username'])
         request.user.sessions.all().delete()
 
         return Response({'detail': 'Account deleted'})
@@ -1954,10 +2098,14 @@ class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
                 'invoice_number': existing.invoice_number,
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        invoice, created = create_invoice_for_load(
-            load,
-            company=getattr(load, 'company', None) or getattr(request.user, 'company', None),
-        )
+        company = getattr(load, 'company', None) or getattr(request.user, 'company', None)
+        if company is not None and company.subscription_status in ('suspended', 'cancelled'):
+            return Response({
+                'error': 'Update your payment method to continue quoting.',
+                'account_suspended': True,
+            }, status=status.HTTP_402_PAYMENT_REQUIRED)
+
+        invoice, created = create_invoice_for_load(load, company=company)
         if not invoice:
             return Response({
                 'error': 'Load cannot be invoiced (needs a customer and a positive amount)',

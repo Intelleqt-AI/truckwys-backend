@@ -18,12 +18,12 @@ class BillingTransaction(models.Model):
     payment_id = models.CharField(
         max_length=200,
         blank=True,
-        help_text='Our m_payment_id sent to PayFast',
+        help_text='Paystack transaction reference',
     )
-    payfast_payment_id = models.CharField(
+    gateway_transaction_id = models.CharField(
         max_length=200,
         blank=True,
-        help_text='PayFast pf_payment_id returned in ITN',
+        help_text="Paystack's own transaction id (data.id) from the verified charge",
     )
     status = models.CharField(
         max_length=20,
@@ -38,12 +38,12 @@ class BillingTransaction(models.Model):
     payment_status = models.CharField(
         max_length=50,
         blank=True,
-        help_text='Raw payment_status from PayFast ITN',
+        help_text="Raw status from Paystack's verify/webhook response",
     )
-    raw_itn_data = models.JSONField(
+    raw_gateway_response = models.JSONField(
         default=dict,
         blank=True,
-        help_text='Full ITN payload for audit trail',
+        help_text='Full verify/webhook payload for audit trail',
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

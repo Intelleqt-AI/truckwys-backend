@@ -85,10 +85,32 @@ class NotificationAdmin(admin.ModelAdmin):
     list_filter = ['type', 'is_read']
     search_fields = ['title', 'user__username']
 
+@admin.action(description='Run billing sweeps now (monthly fee + delivery-fee retry + grace-period check)')
+def run_billing_sweeps(modeladmin, request, queryset):
+    """Manual trigger for the three Celery Beat billing crons, scoped to the
+    selected companies where possible — lets someone test the state machine
+    entirely by clicking, without waiting for the daily schedule or opening a
+    terminal. Same functions Celery Beat calls; nothing test-only about them."""
+    from core.services.subscription_billing import charge_monthly_subscription_fee, check_grace_period_expirations
+    from core.services.delivery_fee_billing import retry_failed_delivery_fee_charges
+
+    monthly_results = [charge_monthly_subscription_fee(c) for c in queryset]
+    retry_summary = retry_failed_delivery_fee_charges()  # not company-scoped — sweeps all failed charges
+    grace_summary = check_grace_period_expirations()      # not company-scoped — sweeps all grace periods
+    modeladmin.message_user(
+        request,
+        f'Monthly fee ({len(monthly_results)} co.): {monthly_results} | '
+        f'Delivery-fee retry (all companies): {retry_summary} | '
+        f'Grace-period check (all companies): {grace_summary}',
+    )
+
+
 @admin.register(Company)
 class CompanyAdmin(admin.ModelAdmin):
-    list_display = ['company_name', 'registration_number', 'vat_number', 'updated_at']
+    list_display = ['company_name', 'subscription_status', 'subscription_plan', 'grace_period_expires_at', 'next_billing_date', 'updated_at']
+    list_filter = ['subscription_status', 'subscription_plan']
     search_fields = ['company_name', 'registration_number']
+    actions = [run_billing_sweeps]
 
 
 @admin.register(Trip)

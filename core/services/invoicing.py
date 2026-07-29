@@ -26,13 +26,21 @@ def create_invoice_for_load(load, *, company=None, mark_sent: bool = False):
 
     Returns (invoice, created). If an invoice already exists for the load it is
     returned with created=False. Returns (None, False) when the load isn't
-    invoiceable (no customer, no value, or cancelled).
+    invoiceable (no customer, no value, cancelled, or the company is
+    suspended/cancelled — TruckWys_Fee_Billing_Spec.pdf §5's invoice-generation
+    block applies here rather than in the API middleware, since this function
+    is also reached by the automatic delivery signal and the loads
+    convert_to_invoice action, neither of which is a POST to /api/v1/invoices/).
     """
     from core.models.invoice import Invoice
 
     existing = Invoice.objects.filter(load=load).first()
     if existing:
         return existing, False
+
+    resolved_company = company or getattr(load, 'company', None)
+    if resolved_company is not None and resolved_company.subscription_status in ('suspended', 'cancelled'):
+        return None, False
 
     # Guard: only invoice loads that can actually produce a valid invoice.
     if getattr(load, 'status', None) == 'CANCELLED':

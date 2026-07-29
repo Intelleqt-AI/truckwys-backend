@@ -572,6 +572,36 @@ def poll_cartrack_door_events():
 # via the matching management commands.
 # ---------------------------------------------------------------------------
 
+@shared_task(name='core.tasks.retry_delivery_fee_charges')
+def retry_delivery_fee_charges():
+    """Daily retry of failed 0.25% delivery take-rate charges; freezes a
+    company once its charges have failed past DELIVERY_FEE_GRACE_DAYS."""
+    from core.services.delivery_fee_billing import retry_failed_delivery_fee_charges
+    summary = retry_failed_delivery_fee_charges()
+    if summary['frozen']:
+        logger.warning('Delivery fee retry: %s company(ies) frozen', summary['frozen'])
+    return summary
+
+
+@shared_task(name='core.tasks.run_monthly_subscription_billing')
+def run_monthly_subscription_billing():
+    """Daily sweep: charge the flat monthly fee for every company whose
+    next_billing_date has arrived."""
+    from core.services.subscription_billing import run_monthly_subscription_billing as _run
+    return _run()
+
+
+@shared_task(name='core.tasks.check_grace_period_expirations')
+def check_grace_period_expirations():
+    """Daily sweep: suspend any company whose grace period has expired with
+    no successful charge (TruckWys_Fee_Billing_Spec.pdf §4)."""
+    from core.services.subscription_billing import check_grace_period_expirations as _check
+    summary = _check()
+    if summary['suspended']:
+        logger.warning('Grace-period check: %s company(ies) suspended', summary['suspended'])
+    return summary
+
+
 @shared_task(name='core.tasks.sweep_overdue_invoices')
 def sweep_overdue_invoices():
     from core.services.notification_sweeps import sweep_overdue_invoices as run
