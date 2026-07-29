@@ -26,6 +26,15 @@ class PendingSignup(models.Model):
     # failed/abandoned payment can retry against this same pending row.
     paystack_reference = models.CharField(max_length=200, blank=True)
 
+    # Stamped the moment a "payment could not be completed" email has been
+    # sent for the CURRENT paystack_reference — guards against sending it
+    # twice when both the charge.failed webhook and the browser's own
+    # return-to-app redirect notice the same failed attempt. Explicitly
+    # cleared back to None every time a fresh checkout starts (see
+    # EmailVerifyView / RetrySignupPaymentView), so a later retry's own
+    # failure is still eligible for its own notification.
+    payment_failed_notified_at = models.DateTimeField(null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

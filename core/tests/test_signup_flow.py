@@ -2,6 +2,9 @@
 via Paystack -> only THEN does the account (User/Company/Facility) get
 created. All Paystack HTTP calls are mocked — no network access.
 """
+import hashlib
+import hmac
+import json
 from datetime import timedelta
 from decimal import Decimal
 from unittest import mock
@@ -179,3 +182,81 @@ class RetrySignupPaymentViewTests(TestCase):
         self.pending.save()
         response = self.client.post('/api/v1/auth/retry-signup-payment/', {'email': 'new@example.com'}, format='json')
         self.assertEqual(response.status_code, 400)
+
+
+class SignupPaymentFailedWebhookTests(TestCase):
+    """The async safety net for a decline the shopper simply abandons —
+    Paystack's hosted checkout doesn't auto-redirect back to the app on a
+    decline the way it does on success, so without this, an abandoned
+    checkout produces no "payment failed" email and no record at all."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.pending = PendingSignup.objects.create(
+            email='new@example.com', username='new@example.com', first_name='Jo',
+            password_hash='hashed', company_name="Jo's Transport",
+            email_verified=True, paystack_reference='ref-webhook-1',
+        )
+
+    def _post_signed(self, body: dict):
+        from django.conf import settings
+        raw = json.dumps(body).encode()
+        secret_key = getattr(settings, 'PAYSTACK_SECRET_KEY', '')
+        sig = hmac.new(secret_key.encode(), raw, hashlib.sha512).hexdigest()
+        return self.client.post(
+            '/api/v1/billing/webhook/', data=raw, content_type='application/json',
+            HTTP_X_PAYSTACK_SIGNATURE=sig,
+        )
+
+    @mock.patch('core.services.email_service.send_billing_email')
+    def test_charge_failed_emails_the_pending_signup_and_stamps_it(self, email_mock):
+        response = self._post_signed({
+            'event': 'charge.failed',
+            'data': {'reference': 'ref-webhook-1', 'status': 'failed'},
+        })
+        self.assertEqual(response.status_code, 200)
+        email_mock.assert_called_once()
+        self.assertEqual(email_mock.call_args.args[0], 'new@example.com')
+        self.pending.refresh_from_db()
+        self.assertIsNotNone(self.pending.payment_failed_notified_at)
+        # Account still never created — only a notification, no state change.
+        self.assertFalse(User.objects.filter(email='new@example.com').exists())
+
+    @mock.patch('core.services.email_service.send_billing_email')
+    def test_charge_failed_is_not_double_emailed_by_a_duplicate_webhook(self, email_mock):
+        body = {'event': 'charge.failed', 'data': {'reference': 'ref-webhook-1', 'status': 'failed'}}
+        self._post_signed(body)
+        self._post_signed(body)
+        email_mock.assert_called_once()
+
+    @mock.patch('core.services.email_service.send_billing_email')
+    def test_retry_re_arms_the_failure_notification(self, email_mock):
+        # First attempt fails -> notified once.
+        self._post_signed({'event': 'charge.failed', 'data': {'reference': 'ref-webhook-1', 'status': 'failed'}})
+        email_mock.assert_called_once()
+
+        # Retrying starts a fresh checkout against the same pending row...
+        with mock.patch('core.services.paystack.initialize_transaction') as init_mock:
+            init_mock.return_value = {
+                'success': True,
+                'data': {'authorization_url': 'https://checkout.paystack.com/ref-webhook-2', 'reference': 'ref-webhook-2'},
+                'error': None, 'raw': {},
+            }
+            self.client.post('/api/v1/auth/retry-signup-payment/', {
+                'email': 'new@example.com', 'return_url': 'https://app.test/signup/complete',
+            }, format='json')
+        self.pending.refresh_from_db()
+        self.assertIsNone(self.pending.payment_failed_notified_at)  # re-armed
+
+        # ...and if THAT one also fails, it gets its own, second notification.
+        self._post_signed({'event': 'charge.failed', 'data': {'reference': 'ref-webhook-2', 'status': 'failed'}})
+        self.assertEqual(email_mock.call_count, 2)
+
+    @mock.patch('core.services.email_service.send_billing_email')
+    def test_unknown_reference_is_acknowledged_but_ignored(self, email_mock):
+        response = self._post_signed({
+            'event': 'charge.failed',
+            'data': {'reference': 'no-such-ref', 'status': 'failed'},
+        })
+        self.assertEqual(response.status_code, 200)
+        email_mock.assert_not_called()

@@ -181,12 +181,34 @@ class EmailVerifyView(APIView):
             return Response({'detail': f"Could not start checkout: {result['error']}"}, status=status.HTTP_502_BAD_GATEWAY)
 
         pending.paystack_reference = result['data']['reference']
-        pending.save(update_fields=['paystack_reference', 'updated_at'])
+        pending.payment_failed_notified_at = None  # fresh checkout — re-arm the failure-email guard
+        pending.save(update_fields=['paystack_reference', 'payment_failed_notified_at', 'updated_at'])
 
         return Response({
             'authorization_url': result['data']['authorization_url'],
             'reference': pending.paystack_reference,
         })
+
+
+def _notify_pending_signup_payment_failed(pending, message: str) -> None:
+    """Send the "payment could not be completed" signup email at most once
+    per checkout attempt (pending.payment_failed_notified_at is cleared back
+    to None every time a fresh checkout starts — see EmailVerifyView /
+    RetrySignupPaymentView). Shared by CompleteSignupView's own synchronous
+    check (the browser returning via return_url) and PaystackWebhookView's
+    charge.failed handler (the async safety net for when it never does) —
+    whichever notices the failure first wins; the other is a no-op.
+    """
+    from django.utils import timezone
+    from core.services.email_service import send_billing_email
+
+    if pending.payment_failed_notified_at:
+        return
+    send_billing_email(
+        pending.email, pending.first_name or pending.username, 'Payment could not be completed', message,
+    )
+    pending.payment_failed_notified_at = timezone.now()
+    pending.save(update_fields=['payment_failed_notified_at', 'updated_at'])
 
 
 class CompleteSignupView(APIView):
@@ -221,12 +243,10 @@ class CompleteSignupView(APIView):
         if User.objects.filter(email__iexact=pending.email).exists():
             return Response({'detail': 'This account has already been created. Please log in.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        from core.services.email_service import send_billing_email
-
         result = paystack.verify_transaction(reference)
         if not result['success']:
-            send_billing_email(
-                pending.email, pending.first_name or pending.username, 'Payment could not be completed',
+            _notify_pending_signup_payment_failed(
+                pending,
                 "We couldn't confirm your TruckWys subscription payment, so your account was not created. "
                 "Your registration details are saved — you can try the payment again.",
             )
@@ -235,8 +255,8 @@ class CompleteSignupView(APIView):
         data = result['data'] or {}
         expected_cents = int((MONTHLY_FEE * 100).quantize(Decimal('1')))
         if data.get('status') != 'success' or int(data.get('amount', -1)) != expected_cents:
-            send_billing_email(
-                pending.email, pending.first_name or pending.username, 'Payment could not be completed',
+            _notify_pending_signup_payment_failed(
+                pending,
                 "Your card was not charged, so your TruckWys account was not created. Your registration details "
                 "are saved — you can try the payment again.",
             )
@@ -277,6 +297,7 @@ class CompleteSignupView(APIView):
             )
             pending.delete()
 
+        from core.services.email_service import send_billing_email
         send_billing_email(
             user.email, user.first_name or user.username, 'Welcome to TruckWys — payment confirmed',
             f'Your subscription is active: R{MONTHLY_FEE:,.2f}/month charged to your card ending '
@@ -321,7 +342,8 @@ class RetrySignupPaymentView(APIView):
             return Response({'detail': f"Could not start checkout: {result['error']}"}, status=status.HTTP_502_BAD_GATEWAY)
 
         pending.paystack_reference = result['data']['reference']
-        pending.save(update_fields=['paystack_reference', 'updated_at'])
+        pending.payment_failed_notified_at = None  # fresh checkout — re-arm the failure-email guard
+        pending.save(update_fields=['paystack_reference', 'payment_failed_notified_at', 'updated_at'])
 
         return Response({
             'authorization_url': result['data']['authorization_url'],

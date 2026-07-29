@@ -165,6 +165,39 @@ class PaystackWebhookViewTests(BillingViewTestCase):
         self.company.refresh_from_db()
         self.assertNotEqual(self.company.subscription_status, 'active')
 
+    @mock.patch('core.services.notify.notify_company_billing_email')
+    def test_charge_failed_marks_transaction_failed_and_emails(self, email_mock):
+        # The safety net for a decline the shopper simply abandons — Paystack's
+        # hosted checkout doesn't auto-redirect back to the app on a decline
+        # the way it does on success, so without this the app (and the
+        # customer) would never find out.
+        response = self._post_signed({
+            'event': 'charge.failed',
+            'data': _verified_charge_data(reference='ref-999', status='failed'),
+        })
+        self.assertEqual(response.status_code, 200)
+        self.txn.refresh_from_db()
+        self.assertEqual(self.txn.status, 'failed')
+        email_mock.assert_called_once()
+
+    @mock.patch('core.services.notify.notify_company_billing_email')
+    def test_charge_failed_is_not_double_emailed_by_a_duplicate_webhook(self, email_mock):
+        # Paystack can and does redeliver webhooks — a retry for the same
+        # event must not send a second "payment failed" email.
+        body = {'event': 'charge.failed', 'data': _verified_charge_data(reference='ref-999', status='failed')}
+        self._post_signed(body)
+        self._post_signed(body)
+        email_mock.assert_called_once()
+
+    def test_charge_failed_for_unknown_reference_is_acknowledged_but_ignored(self):
+        response = self._post_signed({
+            'event': 'charge.failed',
+            'data': _verified_charge_data(reference='no-such-ref', status='failed'),
+        })
+        self.assertEqual(response.status_code, 200)
+        self.txn.refresh_from_db()
+        self.assertEqual(self.txn.status, 'pending')  # untouched — a different reference
+
 
 class BillingStatusViewTests(BillingViewTestCase):
     def test_free_company_status(self):
