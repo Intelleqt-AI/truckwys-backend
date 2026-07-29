@@ -129,7 +129,7 @@ idempotent below the 40-outcome threshold). The quote screen shows an honest chi
 | **Inbound TMS booking** | `POST /integrations/trips/sync/` | `X-API-Key` → `IntegrationAPIKey` (metered, quota) | Creates real Loads, idempotent on `external_id`. |
 | **Lender API** (financiers) | `/lender/health|risk-profile|eligible-invoices|advance-request|portfolio` | env `LENDER_API_KEYS`, per-key throttle | Strongest external surface. |
 | **Outbound webhooks** | partner `WebhookSubscription` | HMAC-signed, retried | `WebhookDeliveryService` is now wired into `dispatch_webhook` (partners receive `load.*`, `invoice.*`, etc.). |
-| **PayFast ITN** | `POST /billing/itn/` | signature + server confirm + idempotency + amount check | Hardened. |
+| **Paystack** (subscription + take-rate billing) | `POST /billing/webhook/` | HMAC-SHA512 signature + amount check | Charges the flat monthly fee and the 0.25% delivery take-rate via `charge_authorization` — no Plan/Subscription object, self-managed by Celery Beat. Replaces PayFast (dropped). |
 
 ---
 
@@ -155,6 +155,7 @@ these unlock real functionality. Set in the backend `.env` (see `.env.example`).
 | `OPENAI_API_KEY` (+ `COPILOT_LLM_PROVIDER=openai`) | **Copilot** (chat + DB tools/proposals/guided-entry + RAG invoice retrieval), voice transcription | **Yes** for the full Copilot |
 | `ANTHROPIC_API_KEY` (+ `CLAUDE_*_MODEL`) | AI quote parsing + insights. ⚠️ Does NOT power Copilot DB tools — if set with `COPILOT_LLM_PROVIDER=auto` it silently disables them | Optional |
 | `RESEND_API_KEY` + `DEFAULT_FROM_EMAIL` | Real invoice emails + payment reminders (collections) | **Yes** for collections |
+| `PAYSTACK_SECRET_KEY` (`sk_test_...`/`sk_live_...`) | Subscription checkout + the 0.25% delivery take-rate charging | **Yes** for billing |
 | `XERO_CLIENT_ID` / `XERO_CLIENT_SECRET` / `XERO_REDIRECT_URI` | Xero accounting sync | When using Xero |
 | `TOMTOM_API_KEY` | Route distance/toll calc for quoting | Recommended |
 | `LENDER_API_KEYS` | Lender-facing API | When onboarding financiers |

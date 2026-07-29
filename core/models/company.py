@@ -218,34 +218,80 @@ class Company(models.Model):
         choices=[
             ('free', 'Free'),
             ('starter', 'Starter'),
-            ('pro', 'Pro'),  # Changed from 'professional' to match middleware
+            # The single flat-rate paid plan (see MONTHLY_FEE in services/paystack.py).
+            ('pro', 'TruckWys Fleet'),
             ('enterprise', 'Enterprise'),
-            # Truck-count tiers (keys match PLAN_PRICING in services/payfast.py)
-            ('pro_50', 'Fleet 1-50'),
-            ('pro_100', 'Fleet 51-100'),
-            ('pro_150', 'Fleet 101-150'),
         ],
         default='free',
     )
+    # State machine per TruckWys_Fee_Billing_Spec.pdf §4 — the ITN-equivalent
+    # (Paystack charge_authorization result) webhook handler is the single
+    # source of truth driving every transition (core.services.subscription_billing):
+    #   active        billing current                    full access
+    #   grace_period  most recent charge attempt failed   full access (temporary)
+    #   suspended     grace period expired, unresolved     quoting/invoicing blocked
+    #   cancelled     explicit cancellation                quoting/invoicing blocked
+    # 'none'/'trialing' are pre-subscription values outside the spec's scope
+    # (used for signup/free-tier bookkeeping before a company ever pays).
     subscription_status = models.CharField(
         max_length=20,
         choices=[
             ('none', 'None'),
             ('trialing', 'Trialing'),
             ('active', 'Active'),
-            ('past_due', 'Past Due'),
+            ('grace_period', 'Grace Period'),
+            ('suspended', 'Suspended'),
             ('cancelled', 'Cancelled'),
         ],
         default='none',
     )
-    payfast_token = models.CharField(
-        max_length=255,
-        blank=True,
-        null=True,
-        help_text='PayFast subscription token',
+
+    # Paystack card-on-file — captured from the first (card-verifying) checkout
+    # and reused for every later charge_authorization call: both the flat
+    # monthly fee (core/services/subscription_billing.py) and the 0.25%
+    # delivery take-rate (core/services/delivery_fee_billing.py).
+    paystack_customer_code = models.CharField(max_length=255, blank=True, null=True)
+    paystack_authorization_code = models.CharField(
+        max_length=255, blank=True, null=True,
+        help_text='Reusable Paystack authorization_code for this company\'s card on file',
     )
+    paystack_authorization_email = models.EmailField(
+        blank=True, null=True,
+        help_text='Email the authorization was created with — Paystack requires an exact match on every charge',
+    )
+    paystack_card_last4 = models.CharField(max_length=4, blank=True)
+    paystack_card_type = models.CharField(max_length=20, blank=True)
+    paystack_bank = models.CharField(max_length=100, blank=True)
+
     subscription_start = models.DateTimeField(null=True, blank=True)
     subscription_end = models.DateTimeField(null=True, blank=True)
+    next_billing_date = models.DateField(
+        null=True, blank=True,
+        help_text='Next date the flat monthly fee is due; advanced by core.services.subscription_billing',
+    )
+
+    # TruckWys_Fee_Billing_Spec.pdf §7's suggested fields — stamped/managed by
+    # core.services.subscription_billing's shared record_charge_* helpers,
+    # called from every charge site (monthly fee, take-rate fee, both retries).
+    last_charge_attempt_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text='Most recent charge attempt (subscription or take-rate), success or failure',
+    )
+    grace_period_expires_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text='Set once on entering grace_period (now + grace days); cleared on return to active. '
+                   'Past this timestamp with no successful charge, the company moves to suspended.',
+    )
+
+    # Quote ML flywheel — set when this company goes live for real, so
+    # pre-launch/internal-testing QuoteOutcome rows (fake "accept" clicks
+    # during demos) stop counting toward the win-model training threshold.
+    # Null means "count everything" (unchanged behaviour for existing data).
+    ai_training_started_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text='Outcomes recorded before this timestamp are excluded from win-model training/progress for this company',
+    )
 
     # API usage tracking for plan limits (T1.3)
     api_calls_this_month = models.IntegerField(
