@@ -61,10 +61,12 @@ jobs:
             docker compose -f docker-compose.prod.yml ps
           '
 
+      # -L because nginx 301s http://<ip>/ to https://api.truckwys.com; without it
+      # this only ever sees the redirect and calls a healthy deploy broken.
       - name: Smoke test
         run: |
           for i in $(seq 1 12); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' "http://${{ secrets.EC2_HOST }}/api/docs/" || true)
+            code=$(curl -sSL -o /dev/null -w '%{http_code}' "http://${{ secrets.EC2_HOST }}/api/docs/" || true)
             if [ "$code" = "200" ]; then echo "/api/docs/ -> 200"; exit 0; fi
             echo "attempt $i: got '$code', retrying..."
             sleep 5
