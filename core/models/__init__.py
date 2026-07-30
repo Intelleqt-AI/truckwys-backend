@@ -32,8 +32,7 @@ from .toll_plaza import TollPlaza
 from .rag_chunk import InvoiceEmbedding
 from .border_crossing_fee import BorderCrossingFee
 from .country_transit_rate import CountryTransitRate
-from .push_subscription import PushSubscription
-from .pending_signup import PendingSignup
+from .fcm_device import FcmDevice
 
 __all__ = [
     'User',
@@ -75,6 +74,5 @@ __all__ = [
     'InvoiceEmbedding',
     'BorderCrossingFee',
     'CountryTransitRate',
-    'PushSubscription',
-    'PendingSignup',
+    'FcmDevice',
 ]

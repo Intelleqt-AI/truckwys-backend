@@ -48,3 +48,10 @@ Thumbs.db
 
 staticfiles/
 media/
+
+# Firebase service-account credentials — grants send-as-project rights.
+firebase-*.json
+*-firebase-adminsdk-*.json
+serviceAccountKey.json
+google-services.json
+GoogleService-Info.plist

@@ -75,7 +75,7 @@ import threading
 from .models import (
     User, Customer, Driver, Vehicle, VehicleLog, VehicleType, Load,
     Quote, Invoice, Payment, Expense, Settlement, Notification, Company, ActivityEvent,
-    UserSession
+    UserSession, FcmDevice
 )
 from .utils.request_meta import parse_device, client_ip, mask_email
 from .utils.auth_events import log_auth_event
@@ -768,6 +768,47 @@ class LoginActivityView(APIView):
 
 
 
+# Canonical notification-preference schema, shared by the web and mobile
+# clients. `product_news` defaults False on purpose: App Store Review 4.5.4
+# forbids using push for marketing or promotion without an express opt-in, so
+# campaign sends must be off until the user turns them on.
+NOTIFICATION_DEFAULTS = {
+    "email": {
+        "quotes": True,
+        "invoices": True,
+        "payments": True,
+        "fleet_alerts": True,
+        "weekly_reports": False,
+    },
+    "push": {
+        "new_bookings": True,
+        "payment_received": True,
+        "maintenance_due": True,
+        "driver_updates": False,
+        "product_news": False,
+    },
+    "sms": {"critical_alerts": False, "payment_confirmations": False},
+}
+
+
+def _merged_notification_settings(user):
+    """Stored prefs layered over the canonical defaults.
+
+    Older rows hold a legacy schema (push: quotes/bookings/alerts/messages).
+    Merging per channel and keeping only known keys migrates those rows lazily
+    on read, so a client never receives a key it doesn't understand — and never
+    misses one it does.
+    """
+    stored = user.notification_settings or {}
+    merged = {}
+    for channel, defaults in NOTIFICATION_DEFAULTS.items():
+        incoming = stored.get(channel) or {}
+        merged[channel] = {
+            key: bool(incoming.get(key, default)) for key, default in defaults.items()
+        }
+    return merged
+
+
 class NotificationSettingsView(APIView):
     """Per-user notification preferences, validated against the canonical
     schema (core/services/notification_prefs.py). Single write path — the
@@ -777,8 +818,7 @@ class NotificationSettingsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        from core.services.notification_prefs import get_prefs
-        return Response(get_prefs(request.user))
+        return Response(_merged_notification_settings(request.user))
 
     def patch(self, request):
         from core.services.notification_prefs import NOTIFICATION_DEFAULTS, get_prefs
@@ -786,72 +826,101 @@ class NotificationSettingsView(APIView):
             return Response({'detail': 'Body must be a JSON object of channels.'},
                             status=status.HTTP_400_BAD_REQUEST)
         user = request.user
-        settings = get_prefs(user)
-        for channel, defaults in NOTIFICATION_DEFAULTS.items():
-            incoming = request.data.get(channel)
-            if not isinstance(incoming, dict):
+        settings = _merged_notification_settings(user)
+
+        for channel, value in request.data.items():
+            if channel not in NOTIFICATION_DEFAULTS or not isinstance(value, dict):
                 continue
-            for key in defaults:
-                if key in incoming:
-                    settings[channel][key] = bool(incoming[key])
+            for key, enabled in value.items():
+                # Ignore unknown keys rather than letting clients write
+                # arbitrary JSON into the preferences blob.
+                if key in NOTIFICATION_DEFAULTS[channel]:
+                    settings[channel][key] = bool(enabled)
+
         user.notification_settings = settings
-        user.save(update_fields=['notification_settings', 'updated_at'])
+        user.save(update_fields=['notification_settings'])
         return Response(settings)
 
 
-class VapidPublicKeyView(APIView):
-    """Public VAPID key the browser needs to create a push subscription."""
-    permission_classes = [IsAuthenticated]
+class FcmDeviceView(APIView):
+    """Register / unregister this device's FCM token for the signed-in user.
 
-    def get(self, request):
-        from django.conf import settings as dj_settings
-        key = dj_settings.VAPID_PUBLIC_KEY
-        if not key:
-            return Response({'detail': 'Web push is not configured on this server.'},
-                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
-        return Response({'public_key': key})
+    POST is an upsert keyed on the token: one physical device is one row, so the
+    same handset signing into a different account moves to that account rather
+    than leaving two owners subscribed to it.
 
-
-class PushSubscriptionView(APIView):
-    """Register/unregister this browser's Web Push subscription.
-
-    POST body: the PushSubscription.toJSON() shape —
-        {"endpoint": ..., "keys": {"p256dh": ..., "auth": ...}}
-    DELETE body: {"endpoint": ...}
-    Upserts by endpoint (a browser re-subscribing moves the endpoint to the
-    currently logged-in user).
+    Rate-limited, length-bounded and capped per user — an authenticated client
+    should not be able to grow this table without limit, and an unbounded row
+    count per user would turn one business event into an unbounded fan-out.
     """
+
     permission_classes = [IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
+
+    # FCM registration tokens are ~150-260 chars today. Accept generous slack,
+    # reject anything that is clearly not a token.
+    MAX_TOKEN_LEN = 4096
+    # Newest N kept per user; older rows are pruned on registration.
+    MAX_DEVICES_PER_USER = 10
+
+    def _token(self, request):
+        token = (request.data.get('token') or '').strip()
+        if not token or len(token) > self.MAX_TOKEN_LEN:
+            return None
+        return token
 
     def post(self, request):
-        data = request.data if isinstance(request.data, dict) else {}
-        endpoint = data.get('endpoint')
-        keys = data.get('keys') or {}
-        if not endpoint or not keys.get('p256dh') or not keys.get('auth'):
-            return Response({'detail': 'endpoint and keys.p256dh/keys.auth are required.'},
-                            status=status.HTTP_400_BAD_REQUEST)
-        from core.models import PushSubscription
-        sub, created = PushSubscription.objects.update_or_create(
-            endpoint=endpoint,
+        token = self._token(request)
+        if not token:
+            return Response({'detail': 'A valid token is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        platform = (request.data.get('platform') or '').strip().lower()
+        if platform not in ('ios', 'android'):
+            platform = ''
+
+        existing_owner = (
+            FcmDevice.objects.filter(token=token).values_list('user_id', flat=True).first()
+        )
+        device, created = FcmDevice.objects.update_or_create(
+            token=token,
             defaults={
                 'user': request.user,
-                'p256dh': keys['p256dh'],
-                'auth': keys['auth'],
-                'user_agent': request.META.get('HTTP_USER_AGENT', '')[:300],
+                'platform': platform,
+                'device_name': str(request.data.get('device_name') or '')[:200],
+                'app_version': str(request.data.get('app_version') or '')[:20],
             },
         )
-        return Response({'id': sub.id, 'created': created},
-                        status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+        if existing_owner and existing_owner != request.user.id:
+            # Expected when a shared handset changes hands, but worth an audit
+            # trail: it is also what a stolen-token replay would look like.
+            _exc_logger.warning(
+                'FCM device %s reassigned from user %s to %s',
+                device.id, existing_owner, request.user.id,
+            )
+
+        # Prune this user's oldest registrations beyond the cap.
+        stale = list(
+            FcmDevice.objects.filter(user=request.user)
+            .order_by('-last_used_at')
+            .values_list('id', flat=True)[self.MAX_DEVICES_PER_USER:]
+        )
+        if stale:
+            FcmDevice.objects.filter(id__in=stale).delete()
+
+        return Response(
+            {'id': device.id, 'created': created},
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
 
     def delete(self, request):
-        data = request.data if isinstance(request.data, dict) else {}
-        endpoint = data.get('endpoint')
-        if not endpoint:
-            return Response({'detail': 'endpoint is required.'}, status=status.HTTP_400_BAD_REQUEST)
-        from core.models import PushSubscription
-        deleted, _ = PushSubscription.objects.filter(
-            endpoint=endpoint, user=request.user).delete()
-        return Response({'deleted': deleted})
+        token = self._token(request)
+        if not token:
+            return Response({'detail': 'A valid token is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        # Scoped to the requesting user so a token can't be used to unregister
+        # somebody else's device.
+        FcmDevice.objects.filter(token=token, user=request.user).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class SecuritySettingsView(APIView):
