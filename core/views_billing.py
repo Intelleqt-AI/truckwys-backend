@@ -100,13 +100,14 @@ def _activate_from_verified_charge(company, txn, data: dict) -> bool:
     if not company.subscription_start:
         company.subscription_start = timezone.now()
     # This charge covers the month it lands in — next one is due a month out.
-    from core.services.subscription_billing import add_one_month, record_charge_success
+    from core.services.subscription_billing import add_one_month, billing_at_for_date, record_charge_success
     company.next_billing_date = add_one_month(timezone.now().date())
+    company.next_billing_at = billing_at_for_date(company.next_billing_date)
     company.save(update_fields=[
         'subscription_plan', 'paystack_authorization_code',
         'paystack_authorization_email', 'paystack_card_last4', 'paystack_card_type',
         'paystack_bank', 'paystack_customer_code', 'subscription_start',
-        'next_billing_date', 'updated_at',
+        'next_billing_date', 'next_billing_at', 'updated_at',
     ])
     # record_charge_success only flips active/grace_period -> active — a
     # brand-new signup (status 'none') needs to go active explicitly here.
