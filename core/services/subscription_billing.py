@@ -42,6 +42,16 @@ def add_one_month(d: date) -> date:
     return date(year, month, day)
 
 
+def billing_at_for_date(d: date):
+    """The exact datetime a given next_billing_date will actually be
+    attempted — 07:00 SAST, matching run_monthly_subscription_billing's
+    Celery Beat schedule. Feeds Company.next_billing_at, which exists purely
+    for the billing page's live countdown — charging itself still keys off
+    next_billing_date (a plain date), unaffected by this."""
+    from datetime import datetime, time as dt_time
+    return timezone.make_aware(datetime.combine(d, dt_time(7, 0)))
+
+
 # ---------------------------------------------------------------------------
 # Shared state-machine transitions (spec §4) — called from every charge site:
 # charge_monthly_subscription_fee below, and delivery_fee_billing's charge +
@@ -163,7 +173,8 @@ def charge_monthly_subscription_fee(company) -> dict:
         txn.gateway_transaction_id = str((result['data'] or {}).get('id', ''))
         txn.save(update_fields=['status', 'payment_status', 'gateway_transaction_id', 'raw_gateway_response', 'updated_at'])
         company.next_billing_date = add_one_month(company.next_billing_date)
-        company.save(update_fields=['next_billing_date', 'updated_at'])
+        company.next_billing_at = billing_at_for_date(company.next_billing_date)
+        company.save(update_fields=['next_billing_date', 'next_billing_at', 'updated_at'])
         record_charge_success(company)
         title = 'Subscription fee charged'
         message = f'{MONTHLY_FEE_ITEM_NAME}: R{MONTHLY_FEE:,.2f} charged successfully.'

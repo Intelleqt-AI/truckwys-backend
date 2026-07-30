@@ -269,6 +269,17 @@ class Company(models.Model):
         null=True, blank=True,
         help_text='Next date the flat monthly fee is due; advanced by core.services.subscription_billing',
     )
+    # Display-only companion to next_billing_date, for a live countdown on
+    # the billing page. Deliberately NOT used by any charging/idempotency
+    # logic (which stays on next_billing_date, a plain calendar date, by
+    # design) — this just carries the time-of-day precision a ticking
+    # countdown needs. Normally this is midnight UTC on next_billing_date;
+    # it only becomes meaningfully more precise than that on an accelerated
+    # test cycle.
+    next_billing_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text='Display-only timestamp version of next_billing_date, for a live countdown on the billing page.',
+    )
 
     # TruckWys_Fee_Billing_Spec.pdf §7's suggested fields — stamped/managed by
     # core.services.subscription_billing's shared record_charge_* helpers,
