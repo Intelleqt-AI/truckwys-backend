@@ -88,9 +88,10 @@ def notify_company(company_id, ntype: str, title: str, message: str = '', link: 
         if fcm_configured() and recipients:
             allowed = [u.id for u in recipients if _push_allowed(u, event)]
             if allowed:
+                from core.services.notify_copy import channel_for
                 send_fcm_bulk(allowed, {
                     'title': title, 'message': message, 'link': link,
-                    'type': ntype, 'event_id': event,
+                    'type': ntype, 'event_id': event, 'channel': channel_for(event),
                 })
     except Exception as exc:
         logger.warning('notify_company mobile push failed: %s', exc)

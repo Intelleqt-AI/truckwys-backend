@@ -77,7 +77,7 @@ def _get_app():
     return _app
 
 
-def _build_message(messaging, token: str, title: str, body: str, data: dict):
+def _build_message(messaging, token: str, title: str, body: str, data: dict, channel: str):
     return messaging.Message(
         token=token,
         # A `notification` block is what makes the OS display this itself while
@@ -86,7 +86,12 @@ def _build_message(messaging, token: str, title: str, body: str, data: dict):
         data=data,
         android=messaging.AndroidConfig(
             priority='high',
-            notification=messaging.AndroidNotification(channel_id='default', sound='default'),
+            notification=messaging.AndroidNotification(
+                channel_id=channel, sound='default',
+                # Brand accent (src/theme/tokens.ts palette.dark.accent) — fixed
+                # regardless of the user's in-app theme, same as any OS chrome.
+                color='#4D9EFF',
+            ),
         ),
         apns=messaging.APNSConfig(
             headers={'apns-priority': '10'},
@@ -95,7 +100,7 @@ def _build_message(messaging, token: str, title: str, body: str, data: dict):
     )
 
 
-def _dispatch(messaging, devices, title: str, body: str, data: dict) -> int:
+def _dispatch(messaging, devices, title: str, body: str, data: dict, channel: str) -> int:
     """Send to a list of FcmDevice rows, pruning any the service rejects."""
     from core.models import FcmDevice
 
@@ -103,7 +108,7 @@ def _dispatch(messaging, devices, title: str, body: str, data: dict) -> int:
     stale = []
     for start in range(0, len(devices), FCM_BATCH_LIMIT):
         chunk = devices[start:start + FCM_BATCH_LIMIT]
-        messages = [_build_message(messaging, d.token, title, body, data) for d in chunk]
+        messages = [_build_message(messaging, d.token, title, body, data, channel) for d in chunk]
         try:
             # send_each reports per-message results, so one dead token cannot
             # fail the batch.
@@ -132,13 +137,21 @@ def _dispatch(messaging, devices, title: str, body: str, data: dict) -> int:
 def _payload_parts(payload: dict):
     title = str(payload.get('title') or 'Truckwys')
     body = str(payload.get('message') or '')
-    # Every FCM data value must be a string.
+    # 'bookings' matches notify_copy.channel_for's own fallback, so a caller
+    # that forgets to pass one still lands somewhere sensible rather than a
+    # channel id nothing created client-side.
+    channel = str(payload.get('channel') or 'bookings')
+    # Every FCM data value must be a string. `channel` rides along so the
+    # client's foreground presenter (which the OS doesn't auto-handle) puts
+    # the notification under the same channel the backgrounded/killed case
+    # gets from AndroidNotification.channel_id above.
     data = {
         'link': str(payload.get('link') or ''),
         'type': str(payload.get('type') or 'info'),
         'event_id': str(payload.get('event_id') or ''),
+        'channel': channel,
     }
-    return title, body, data
+    return title, body, data, channel
 
 
 def send_fcm(user, payload: dict) -> int:
@@ -151,8 +164,8 @@ def send_fcm(user, payload: dict) -> int:
     devices = list(FcmDevice.objects.filter(user=user)[:FCM_BATCH_LIMIT])
     if not devices:
         return 0
-    title, body, data = _payload_parts(payload)
-    return _dispatch(messaging, devices, title, body, data)
+    title, body, data, channel = _payload_parts(payload)
+    return _dispatch(messaging, devices, title, body, data, channel)
 
 
 def send_fcm_bulk(user_ids, payload: dict) -> int:
@@ -177,5 +190,5 @@ def send_fcm_bulk(user_ids, payload: dict) -> int:
     )
     if not devices:
         return 0
-    title, body, data = _payload_parts(payload)
-    return _dispatch(messaging, devices, title, body, data)
+    title, body, data, channel = _payload_parts(payload)
+    return _dispatch(messaging, devices, title, body, data, channel)
