@@ -33,15 +33,22 @@ def _push_allowed(user, event: str) -> bool:
         return True
 
 
-def notify_company(company_id, ntype: str, title: str, message: str = '', link: str = '', event: str = 'notification'):
+def notify_company(company_id, ntype: str, title: str, message: str = '', link: str = '',
+                    event: str = 'notification', exclude_user_id=None):
     if not company_id:
         return
-    # 1) Persist one notification per active user in the company.
+    # 1) Persist one notification per active user in the company — except the
+    # user who caused it, if the caller identifies one (nobody needs to be
+    # told about their own action). The exclusion carries through to the FCM
+    # step below via `recipients`.
     recipients = []
     try:
         from core.models import Notification
         from core.models import User
-        recipients = list(User.objects.filter(company_id=company_id, is_active=True))
+        qs = User.objects.filter(company_id=company_id, is_active=True)
+        if exclude_user_id:
+            qs = qs.exclude(id=exclude_user_id)
+        recipients = list(qs)
         rows = [
             Notification(user=u, type=ntype, title=title, message=message, link=link)
             for u in recipients
@@ -56,6 +63,11 @@ def notify_company(company_id, ntype: str, title: str, message: str = '', link: 
     # actor id and category ride along and the frontend self-suppresses.
     try:
         from core.ws.broadcast import broadcast_event
+        try:
+            from core.services.notification_prefs import category_for
+            push_cat = category_for(event, 'push')
+        except ImportError:
+            push_cat = None
         broadcast_event(
             company_id,
             event,
