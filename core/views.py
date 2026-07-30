@@ -75,7 +75,7 @@ import threading
 from .models import (
     User, Customer, Driver, Vehicle, VehicleLog, VehicleType, Load,
     Quote, Invoice, Payment, Expense, Settlement, Notification, Company, ActivityEvent,
-    UserSession, FcmDevice
+    UserSession, FcmDevice, PushSubscription
 )
 from .utils.request_meta import parse_device, client_ip, mask_email
 from .utils.auth_events import log_auth_event
@@ -920,6 +920,60 @@ class FcmDeviceView(APIView):
         # Scoped to the requesting user so a token can't be used to unregister
         # somebody else's device.
         FcmDevice.objects.filter(token=token, user=request.user).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class VapidPublicKeyView(APIView):
+    """Serve the VAPID public key so the browser can subscribe to Web Push."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from core.services.web_push import vapid_configured
+        if not vapid_configured():
+            return Response(
+                {'detail': 'Web push is not configured on this server.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        return Response({'public_key': settings.VAPID_PUBLIC_KEY})
+
+
+class PushSubscriptionView(APIView):
+    """Register / unregister a browser's Web Push subscription for the
+    signed-in user. POST is an upsert keyed on the endpoint URL, matching the
+    equivalent FcmDeviceView pattern for the mobile app."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        endpoint = (request.data.get('endpoint') or '').strip()
+        keys = request.data.get('keys') or {}
+        p256dh = (keys.get('p256dh') or '').strip()
+        auth = (keys.get('auth') or '').strip()
+        if not endpoint or not p256dh or not auth:
+            return Response(
+                {'detail': 'endpoint and keys.p256dh/auth are required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        sub, created = PushSubscription.objects.update_or_create(
+            endpoint=endpoint,
+            defaults={
+                'user': request.user,
+                'p256dh': p256dh,
+                'auth': auth,
+                'user_agent': request.META.get('HTTP_USER_AGENT', '')[:300],
+            },
+        )
+        return Response(
+            {'id': sub.id, 'created': created},
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+    def delete(self, request):
+        endpoint = (request.data.get('endpoint') or '').strip()
+        if not endpoint:
+            return Response({'detail': 'endpoint is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        # Scoped to the requesting user so an endpoint can't be used to
+        # unregister somebody else's subscription.
+        PushSubscription.objects.filter(endpoint=endpoint, user=request.user).delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 

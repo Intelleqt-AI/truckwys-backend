@@ -10,7 +10,9 @@ jobs:
 
     strategy:
       matrix:
-        python-version: ['3.11']
+        # 3.12, matching the Dockerfile and local dev. Django 6 requires >=3.12,
+        # so testing on 3.11 can't even install requirements.txt.
+        python-version: ['3.12']
 
     steps:
       - name: Checkout code
@@ -62,7 +64,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
 
       - name: Install safety
         run: |

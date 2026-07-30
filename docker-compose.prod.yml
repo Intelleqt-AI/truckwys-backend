@@ -1,0 +1,93 @@
+# TruckWys backend — single-server production stack (AWS EC2).
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Everything runs on one box: Postgres, Redis, gunicorn/uvicorn (ASGI, so
+# WebSockets work), a Celery worker and Celery beat. All configuration comes
+# from the .env file sitting next to this one — no secrets in this file, because
+# this file is committed and .env is not.
+#
+# See DEPLOY_EC2.md for the full walkthrough.
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-truckwys}
+      POSTGRES_USER: ${POSTGRES_USER:-truckwys}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # No ports: — Postgres is reachable only from the other containers, never
+    # from the internet. Use `docker compose exec db psql` to get a shell.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-truckwys}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Celery broker + Channels layer. Also container-only, no published port.
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  web:
+    build: .
+    command: ["web"]
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      # Invoice PDFs, PODs, receipts, avatars and the trained ML models all live
+      # under MEDIA_ROOT. Without this volume they vanish on every rebuild, and
+      # the worker wouldn't see what the web container wrote.
+      - media:/app/media
+    ports:
+      # Loopback only. nginx on the host owns 80/443, terminates TLS for
+      # api.truckwys.com and proxies here. Publishing 80 again collides with
+      # nginx and the container fails to start; publishing 0.0.0.0:8000 would
+      # let anyone skip TLS by hitting the port directly.
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: .
+    command: ["worker"]
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - media:/app/media
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  beat:
+    build: .
+    command: ["beat"]
+    restart: unless-stopped
+    env_file: .env
+    # CELERY_BEAT_SCHEDULE in settings.py drives fuel-price refresh, invoice and
+    # maintenance sweeps, RAG reindex and the Cartrack pollers. Without this
+    # service none of them ever fire.
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  redisdata:
+  media:

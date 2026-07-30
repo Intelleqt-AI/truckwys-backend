@@ -17,6 +17,7 @@ from .views import (
     TestEmailView, InviteView, InviteTokenView, InviteResendView,
     PublicQuoteView, PublicQuoteRespondView, PublicInvoiceView,
     EmailVerifyView, ResendVerificationView, CompleteSignupView, RetrySignupPaymentView,
+    VapidPublicKeyView, PushSubscriptionView,
 )
 from .views_ai_quote import (
     AIChatQuoteView, AIQuoteAnalyzeView, AIQuoteSuggestionView, AIVoiceQuoteView,

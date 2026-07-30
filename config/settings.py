@@ -101,6 +101,10 @@ CHANNEL_LAYERS = {
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    # Serves collectstatic output straight from gunicorn — no nginx/S3 needed for
+    # admin, DRF browsable API and Swagger assets. Must sit right after
+    # SecurityMiddleware and before everything else.
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -173,6 +177,15 @@ STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 MEDIA_URL = 'media/'
 MEDIA_ROOT = BASE_DIR / 'media'
+
+# WhiteNoise: gzip/brotli the collected static files. Deliberately NOT the
+# *Manifest* variant — a manifest raises at request time if any third-party
+# template references a file that didn't survive collectstatic, which would take
+# the whole admin down for a cosmetic problem.
+STORAGES = {
+    'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},
+    'staticfiles': {'BACKEND': 'whitenoise.storage.CompressedStaticFilesStorage'},
+}
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
@@ -305,8 +318,14 @@ FIREBASE_CREDENTIALS_JSON = config('FIREBASE_CREDENTIALS_JSON', default='')
 # Security Settings
 CSRF_COOKIE_HTTPONLY = True
 SESSION_COOKIE_HTTPONLY = True
-CSRF_COOKIE_SECURE = not DEBUG  # Only HTTPS in production
-SESSION_COOKIE_SECURE = not DEBUG  # Only HTTPS in production
+# Default to HTTPS-only cookies in production, but let a deployment opt out.
+# A Secure cookie is never stored over plain http://, so on an IP-only staging
+# box with DEBUG=False the browser drops the CSRF cookie and every admin login
+# dies with "CSRF verification failed". Set these False *only* on a host with no
+# TLS yet — cookies then travel in cleartext and are sniffable. Remove the
+# override the moment that host gets a certificate.
+CSRF_COOKIE_SECURE = config('CSRF_COOKIE_SECURE', default=not DEBUG, cast=bool)
+SESSION_COOKIE_SECURE = config('SESSION_COOKIE_SECURE', default=not DEBUG, cast=bool)
 SECURE_BROWSER_XSS_FILTER = True
 X_FRAME_OPTIONS = 'DENY'
 
