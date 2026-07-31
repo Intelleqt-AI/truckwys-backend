@@ -33,15 +33,22 @@ def _push_allowed(user, event: str) -> bool:
         return True
 
 
-def notify_company(company_id, ntype: str, title: str, message: str = '', link: str = '', event: str = 'notification'):
+def notify_company(company_id, ntype: str, title: str, message: str = '', link: str = '',
+                    event: str = 'notification', exclude_user_id=None):
     if not company_id:
         return
-    # 1) Persist one notification per active user in the company.
+    # 1) Persist one notification per active user in the company — except the
+    # user who caused it, if the caller identifies one (nobody needs to be
+    # told about their own action). The exclusion carries through to the FCM
+    # step below via `recipients`.
     recipients = []
     try:
         from core.models import Notification
         from core.models import User
-        recipients = list(User.objects.filter(company_id=company_id, is_active=True))
+        qs = User.objects.filter(company_id=company_id, is_active=True)
+        if exclude_user_id:
+            qs = qs.exclude(id=exclude_user_id)
+        recipients = list(qs)
         rows = [
             Notification(user=u, type=ntype, title=title, message=message, link=link)
             for u in recipients
@@ -56,6 +63,11 @@ def notify_company(company_id, ntype: str, title: str, message: str = '', link: 
     # actor id and category ride along and the frontend self-suppresses.
     try:
         from core.ws.broadcast import broadcast_event
+        try:
+            from core.services.notification_prefs import category_for
+            push_cat = category_for(event, 'push')
+        except ImportError:
+            push_cat = None
         broadcast_event(
             company_id,
             event,
@@ -76,9 +88,30 @@ def notify_company(company_id, ntype: str, title: str, message: str = '', link: 
         if fcm_configured() and recipients:
             allowed = [u.id for u in recipients if _push_allowed(u, event)]
             if allowed:
+                from core.services.notify_copy import channel_for
                 send_fcm_bulk(allowed, {
                     'title': title, 'message': message, 'link': link,
-                    'type': ntype, 'event_id': event,
+                    'type': ntype, 'event_id': event, 'channel': channel_for(event),
                 })
     except Exception as exc:
         logger.warning('notify_company mobile push failed: %s', exc)
+
+
+def notify_company_billing_email(company_id, title: str, message: str = '', link: str = ''):
+    """Mandatory billing email to every ADMIN of the company — every
+    subscription charge, take-rate charge, cancellation, failure, and freeze,
+    whether it succeeded or not. Deliberately NOT gated by notification
+    preferences (see send_billing_email) and NOT sent to every company user
+    (only admins manage billing) — call this ALONGSIDE notify_company, which
+    still handles the in-app bell/toast for everyone. Never raises.
+    """
+    if not company_id:
+        return
+    try:
+        from core.models import User
+        from core.services.email_service import send_billing_email
+        admins = User.objects.filter(company_id=company_id, is_active=True, role='ADMIN')
+        for u in admins:
+            send_billing_email(u.email, u.first_name or u.username, title, message, link)
+    except Exception as exc:
+        logger.warning('notify_company_billing_email failed: %s', exc)

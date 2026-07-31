@@ -84,10 +84,14 @@ def record_payment(company, user, data):
     if not fully_paid:
         try:
             from core.services.notify import notify_company
+            from core.services.notify_copy import customer_name, money, join_parts
+            detail = join_parts(
+                invoice.invoice_number, customer_name(invoice),
+                f'{money(amount)} received · {money(invoice.balance)} outstanding',
+            )
             notify_company(
-                invoice.company_id, 'INFO', 'Payment received',
-                f"Partial payment of R{amount} received on {invoice.invoice_number} "
-                f"(R{invoice.balance} outstanding)",
+                invoice.company_id, 'INFO', '💰 Payment received',
+                detail,
                 link=f"/finance/invoices/{invoice.id}", event='payment.received',
                 exclude_user_id=getattr(user, 'id', None),
             )

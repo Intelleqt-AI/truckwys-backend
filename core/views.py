@@ -2377,6 +2377,12 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         quote._notify_actor_id = request.user.id
         if new_status in ('ACCEPTED', 'IT'):
             quote._notify_handled = True
+        elif new_status == 'DECLINED':
+            # Set BEFORE save(), not after: the post_save signal (which builds
+            # the decline notification) fires during this save, and
+            # record_quote_outcome below wouldn't run until after — a
+            # notification built from the pre-decline (blank) value.
+            quote.rejection_reason = str(request.data.get('rejection_reason') or '')
         quote.save()
 
         # Status changes that decide the quote are ML training labels too.
@@ -2385,17 +2391,17 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
             record_quote_outcome(
                 quote,
                 'accepted' if new_status in ('ACCEPTED', 'IT') else 'rejected',
-                rejection_reason=str(request.data.get('rejection_reason') or ''),
+                rejection_reason=quote.rejection_reason if new_status == 'DECLINED' else '',
             )
 
         if new_status in ('ACCEPTED', 'IT'):
             try:
                 from core.services.notify import notify_company
+                from core.services.notify_copy import quote_accepted_copy
+                title, detail = quote_accepted_copy(quote)
                 notify_company(
                     getattr(quote, 'company_id', None),
-                    'SUCCESS', 'Quote accepted',
-                    f'{getattr(quote, "quote_number", None) or ("Quote " + str(quote.id))}'
-                    + (f' · {quote.customer.name}' if getattr(quote, 'customer', None) else ''),
+                    'SUCCESS', title, detail,
                     link=f'/bookings/quotes/{quote.id}', event='quote.accepted',
                     exclude_user_id=request.user.id,
                 )
@@ -2669,11 +2675,17 @@ class PublicQuoteRespondView(APIView):
                 })
             else:  # decline
                 quote.status = 'DECLINED'
+                # Set BEFORE save(), not after: the post_save signal (which
+                # builds the decline notification and surfaces this reason in
+                # it) fires during this save — record_quote_outcome below
+                # wouldn't run until afterward, which would leave the
+                # notification reading a blank reason.
+                quote.rejection_reason = str(request.data.get('reason') or 'Declined via client link')
                 quote.save()
                 from core.services.quote_outcome_capture import record_quote_outcome
                 record_quote_outcome(
                     quote, 'rejected',
-                    rejection_reason=str(request.data.get('reason') or 'Declined via client link'),
+                    rejection_reason=quote.rejection_reason,
                 )
                 return Response({
                     'message': 'Quote declined',
