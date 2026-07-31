@@ -61,6 +61,14 @@ FIELD_ENCRYPTION_KEY = config('FIELD_ENCRYPTION_KEY', default='')
 # so the receivable exists and becomes fast-pay eligible with no manual step.
 AUTO_INVOICE_ON_DELIVERY = config('AUTO_INVOICE_ON_DELIVERY', default=True, cast=bool)
 
+# 0.25% delivery take-rate — charged ad-hoc against the company's Paystack
+# card-on-file token the moment a load auto-invoices on delivery. Failed
+# charges retry (see core.management.commands.retry_delivery_fee_charges)
+# until DELIVERY_FEE_GRACE_DAYS elapses, then the company is frozen.
+AUTO_CHARGE_DELIVERY_FEE = config('AUTO_CHARGE_DELIVERY_FEE', default=True, cast=bool)
+DELIVERY_FEE_PCT = config('DELIVERY_FEE_PCT', default=0.25, cast=float)
+DELIVERY_FEE_GRACE_DAYS = config('DELIVERY_FEE_GRACE_DAYS', default=7, cast=int)
+
 INSTALLED_APPS = [
     'daphne',  # must be first — provides the ASGI-aware runserver for WebSockets
     'django.contrib.admin',
@@ -93,6 +101,10 @@ CHANNEL_LAYERS = {
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    # Serves collectstatic output straight from gunicorn — no nginx/S3 needed for
+    # admin, DRF browsable API and Swagger assets. Must sit right after
+    # SecurityMiddleware and before everything else.
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -166,6 +178,15 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 MEDIA_URL = 'media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
+# WhiteNoise: gzip/brotli the collected static files. Deliberately NOT the
+# *Manifest* variant — a manifest raises at request time if any third-party
+# template references a file that didn't survive collectstatic, which would take
+# the whole admin down for a cosmetic problem.
+STORAGES = {
+    'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},
+    'staticfiles': {'BACKEND': 'whitenoise.storage.CompressedStaticFilesStorage'},
+}
+
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 REST_FRAMEWORK = {
@@ -181,7 +202,7 @@ REST_FRAMEWORK = {
         # Secure by default: views must opt in to public access with
         # permission_classes = [AllowAny]. All genuinely public endpoints
         # (login, register, password reset, public/client quote, invite,
-        # PayFast ITN, partner/lender API key auth) already do.
+        # Paystack webhook, partner/lender API key auth) already do.
         'rest_framework.permissions.IsAuthenticated',
     ],
     'DEFAULT_FILTER_BACKENDS': [
@@ -262,6 +283,11 @@ DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='Truckwys <noreply@tru
 RESEND_API_KEY = config('RESEND_API_KEY', default='')
 EMAIL_FROM = config('EMAIL_FROM', default='TruckWys <noreply@mail.baselinq.ai>')
 
+# Web Push (VAPID) — generate a keypair with: manage.py generate_vapid_keys
+VAPID_PUBLIC_KEY = config('VAPID_PUBLIC_KEY', default='')
+VAPID_PRIVATE_KEY = config('VAPID_PRIVATE_KEY', default='')
+VAPID_CLAIM_EMAIL = config('VAPID_CLAIM_EMAIL', default='admin@truckwys.com')
+
 # RAG / embeddings (Copilot retrieval). OpenAI provides the embeddings; Claude
 # (ANTHROPIC_API_KEY) does the generation. Without OPENAI_API_KEY, RAG degrades
 # to the snapshot-only prompt.
@@ -276,11 +302,30 @@ COPILOT_LLM_PROVIDER = config('COPILOT_LLM_PROVIDER', default='auto')
 # Frontend URL for email links
 FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:3701')
 
+# Firebase Cloud Messaging — mobile push (Android natively, iOS via FCM's APNs
+# relay). This is the only channel that reaches a closed app.
+#
+# Supply the service-account credential ONE of two ways, never both:
+#   FIREBASE_CREDENTIALS       absolute path to the service-account JSON file
+#   FIREBASE_CREDENTIALS_JSON  the JSON itself, for hosts with no writable disk
+#
+# Either value grants send-as-this-project rights: keep it in the environment /
+# secret manager, never in the repo, and never log it. Both blank => push is a
+# silent no-op (see core/services/fcm_push.fcm_configured).
+FIREBASE_CREDENTIALS = config('FIREBASE_CREDENTIALS', default='')
+FIREBASE_CREDENTIALS_JSON = config('FIREBASE_CREDENTIALS_JSON', default='')
+
 # Security Settings
 CSRF_COOKIE_HTTPONLY = True
 SESSION_COOKIE_HTTPONLY = True
-CSRF_COOKIE_SECURE = not DEBUG  # Only HTTPS in production
-SESSION_COOKIE_SECURE = not DEBUG  # Only HTTPS in production
+# Default to HTTPS-only cookies in production, but let a deployment opt out.
+# A Secure cookie is never stored over plain http://, so on an IP-only staging
+# box with DEBUG=False the browser drops the CSRF cookie and every admin login
+# dies with "CSRF verification failed". Set these False *only* on a host with no
+# TLS yet — cookies then travel in cleartext and are sniffable. Remove the
+# override the moment that host gets a certificate.
+CSRF_COOKIE_SECURE = config('CSRF_COOKIE_SECURE', default=not DEBUG, cast=bool)
+SESSION_COOKIE_SECURE = config('SESSION_COOKIE_SECURE', default=not DEBUG, cast=bool)
 SECURE_BROWSER_XSS_FILTER = True
 X_FRAME_OPTIONS = 'DENY'
 
@@ -298,11 +343,9 @@ CSRF_TRUSTED_ORIGINS = config(
 # session/CSRF cookies above to be sent and for correct HTTPS URL building).
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
-# PayFast Billing Configuration
-PAYFAST_MERCHANT_ID = config('PAYFAST_MERCHANT_ID', default='10050612')
-PAYFAST_MERCHANT_KEY = config('PAYFAST_MERCHANT_KEY', default='hx33jdpodvres')
-PAYFAST_PASSPHRASE = config('PAYFAST_PASSPHRASE', default='')
-PAYFAST_SANDBOX = config('PAYFAST_SANDBOX', default=True, cast=bool)
+# Paystack Billing Configuration — sandbox vs live is purely which secret key
+# is set here (sk_test_... vs sk_live_...), no separate host/flag needed.
+PAYSTACK_SECRET_KEY = config('PAYSTACK_SECRET_KEY', default='')
 
 # ControlFleet Integration Configuration
 CONTROLFLEET_WEBHOOK_KEY = config('CONTROLFLEET_WEBHOOK_KEY', default='')
@@ -352,6 +395,24 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'core.tasks.retrain_win_model',
         'schedule': crontab(hour='3', minute='0'),
     },
+    # Retry failed 0.25% delivery take-rate charges daily at 07:30 SAST;
+    # freezes a company once a charge has failed past DELIVERY_FEE_GRACE_DAYS.
+    'retry-delivery-fee-charges': {
+        'task': 'core.tasks.retry_delivery_fee_charges',
+        'schedule': crontab(hour='7', minute='30'),
+    },
+    # Charge the flat monthly subscription fee for every company whose
+    # next_billing_date has arrived, daily at 07:00 SAST.
+    'run-monthly-subscription-billing': {
+        'task': 'core.tasks.run_monthly_subscription_billing',
+        'schedule': crontab(hour='7', minute='0'),
+    },
+    # Suspend any company whose grace period has expired with no successful
+    # charge, daily at 07:45 SAST (after both billing sweeps above have run).
+    'check-grace-period-expirations': {
+        'task': 'core.tasks.check_grace_period_expirations',
+        'schedule': crontab(hour='7', minute='45'),
+    },
     # Rebuild the Copilot RAG invoice embeddings for every company every 15 min so
     # retrieval stays fresh WITHOUT indexing on the chat request path. Incremental:
     # skips unchanged invoices (source_hash), so it's cheap between real changes.
@@ -370,5 +431,27 @@ CELERY_BEAT_SCHEDULE = {
     'poll-cartrack-door-events': {
         'task': 'core.tasks.poll_cartrack_door_events',
         'schedule': crontab(minute='*/2'),
+    },
+    # Notification sweeps — flip invoices past due to OVERDUE (07:00 daily),
+    # alert on vehicle maintenance due within 7 days (07:05 daily), expire
+    # SENT quotes past valid_until (07:10 daily). Each fires notify_company,
+    # which delivers per user preference (bell always; email/push gated).
+    'sweep-overdue-invoices': {
+        'task': 'core.tasks.sweep_overdue_invoices',
+        'schedule': crontab(hour='7', minute='0'),
+    },
+    'sweep-maintenance-due': {
+        'task': 'core.tasks.sweep_maintenance_due',
+        'schedule': crontab(hour='7', minute='5'),
+    },
+    'sweep-expired-quotes': {
+        'task': 'core.tasks.sweep_expired_quotes',
+        'schedule': crontab(hour='7', minute='10'),
+    },
+    # Weekly performance digest to opted-in users, Mondays 07:15 SAST.
+    # Idempotent per company per ISO week (cache-keyed).
+    'send-weekly-summaries': {
+        'task': 'core.tasks.send_weekly_summaries',
+        'schedule': crontab(day_of_week='mon', hour='7', minute='15'),
     },
 }

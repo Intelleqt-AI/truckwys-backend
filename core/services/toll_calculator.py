@@ -366,6 +366,11 @@ def calculate_tolls(
 # the route LINE (not just vertices), which removes parallel-road false positives.
 TOLL_MATCH_BUFFER_M = 300.0
 
+# Bounding-box pre-filter margin (degrees) for the geofence match below — a
+# generous superset of TOLL_MATCH_BUFFER_M (300m ≈ 0.003°) so it only ever
+# discards segments that are definitely out of range.
+_BBOX_PAD_DEG = 0.01
+
 
 def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Straight-line distance in metres between two WGS84 points."""
@@ -459,9 +464,17 @@ def calculate_tolls_by_geometry(
             warning='No toll plazas with GPS coordinates seeded — run seed_toll_data --force',
         )
 
-    # Build the list of consecutive polyline segments once.
+    # Build the list of consecutive polyline segments once, with each one's
+    # bounding box precomputed up front — these don't depend on the plaza
+    # being tested, so computing them fresh inside the per-plaza loop below
+    # (as before) redundantly re-ran the same min/max over every segment for
+    # every plaza.
     pts = [(float(p['lat']), float(p['lon'])) for p in route_points]
     segments = list(zip(pts, pts[1:]))
+    segment_boxes = [
+        (min(a[0], b[0]), max(a[0], b[0]), min(a[1], b[1]), max(a[1], b[1]), a, b)
+        for a, b in segments
+    ]
 
     matched: list[TollBreakdownItem] = []
     routes_hit: set[str] = set()
@@ -479,9 +492,22 @@ def calculate_tolls_by_geometry(
         # kills parallel/crossing-road false positives and windows the charge to the
         # trip's own segment (no whole-route summing).
         if segments:
+            # Cheap bounding-box pre-filter before the expensive trig-heavy
+            # point-to-segment math: a route can have thousands of polyline
+            # points, so checking every plaza against every segment directly
+            # (plazas × segments haversine calls) dominates request time on
+            # long routes. PAD_DEG (~1.1km) is a generous superset of the
+            # 300m buffer, so this only skips segments that are provably too
+            # far — it can never miss a real match, just cheaply reject the
+            # vast majority of segments before doing the real distance math.
+            candidates = [
+                (a, b) for (lat_min, lat_max, lon_min, lon_max, a, b) in segment_boxes
+                if (lat_min - _BBOX_PAD_DEG <= plaza_lat <= lat_max + _BBOX_PAD_DEG
+                    and lon_min - _BBOX_PAD_DEG <= plaza_lng <= lon_max + _BBOX_PAD_DEG)
+            ]
             dist = min(
-                _point_to_segment_m(plaza_lat, plaza_lng, a[0], a[1], b[0], b[1])
-                for a, b in segments
+                (_point_to_segment_m(plaza_lat, plaza_lng, a[0], a[1], b[0], b[1]) for a, b in candidates),
+                default=float('inf'),
             )
         else:
             dist = _haversine_m(plaza_lat, plaza_lng, pts[0][0], pts[0][1])

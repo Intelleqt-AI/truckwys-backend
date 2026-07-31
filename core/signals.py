@@ -41,6 +41,28 @@ def invoice_pre_save(sender, instance, **kwargs):
         instance._old_status = None
 
 
+@receiver(pre_save, sender='core.AdvanceRequest')
+def advance_pre_save(sender, instance, **kwargs):
+    if instance.pk:
+        try:
+            instance._old_status = sender.objects.values_list('status', flat=True).get(pk=instance.pk)
+        except sender.DoesNotExist:
+            instance._old_status = None
+    else:
+        instance._old_status = None
+
+
+@receiver(pre_save, sender='core.Driver')
+def driver_pre_save(sender, instance, **kwargs):
+    if instance.pk:
+        try:
+            instance._old_status = sender.objects.values_list('status', flat=True).get(pk=instance.pk)
+        except sender.DoesNotExist:
+            instance._old_status = None
+    else:
+        instance._old_status = None
+
+
 @receiver(post_save, sender='core.Load')
 def load_saved(sender, instance, created, **kwargs):
     """Fire webhook when load is created or status changes."""
@@ -69,18 +91,16 @@ def load_saved(sender, instance, created, **kwargs):
         # deep-link to the bookings detail route.
         try:
             from core.services.notify import notify_company
-            cust = instance.customer.name if getattr(instance, 'customer', None) else ''
-            route = (f'{instance.pickup_city} → {instance.delivery_city}'
-                     if getattr(instance, 'pickup_city', None) else '')
-            detail = f"{instance.load_number or ('Load ' + str(instance.id))}"
-            if cust:
-                detail += f' · {cust}'
-            elif route:
-                detail += f' · {route}'
+            from core.services.notify_copy import customer_name, load_route, join_parts
+            detail = join_parts(
+                instance.load_number or f'Load {instance.id}',
+                customer_name(instance),
+                load_route(instance),
+            )
             notify_company(
                 getattr(instance, 'company_id', None),
                 'INFO',
-                'New booking created',
+                '📦 New booking created',
                 detail,
                 link=f'/bookings/{instance.id}',
                 event='booking.created',
@@ -132,19 +152,23 @@ def load_saved(sender, instance, created, **kwargs):
             old = getattr(instance, '_old_status', None)
             if old != instance.status:
                 from core.services.notify import notify_company
+                from core.services.notify_copy import customer_name, load_route, join_parts
                 cid = getattr(instance, 'company_id', None)
                 num = instance.load_number or f'Load {instance.id}'
-                cust = instance.customer.name if getattr(instance, 'customer', None) else ''
-                detail = f'{num} · {cust}' if cust else num
+                route = load_route(instance)
+                cust = customer_name(instance)
+                # Route matters most while a job is moving (assigned/in transit);
+                # customer matters most once it's decided (delivered/cancelled).
                 _LOAD_STATUS_NOTIFY = {
-                    'ASSIGNED':   ('booking.assigned',   'Booking assigned',    'INFO'),
-                    'IN_TRANSIT': ('booking.in_transit',  'Booking in transit',  'INFO'),
-                    'DELIVERED':  ('booking.delivered',   'Booking delivered',   'SUCCESS'),
-                    'CANCELLED':  ('booking.cancelled',   'Booking cancelled',   'ALERT'),
+                    'ASSIGNED':   ('booking.assigned',   '🚚 Driver assigned',      'INFO',    join_parts(num, route)),
+                    'IN_TRANSIT': ('booking.in_transit', '🚛 On the way',           'INFO',    join_parts(num, route)),
+                    'DELIVERED':  ('booking.delivered',  '✅ Delivered!',            'SUCCESS', join_parts(num, cust, 'delivered successfully')),
+                    'CANCELLED':  ('booking.cancelled',  'Booking cancelled',      'ALERT',   join_parts(num, cust)),
                 }
                 if instance.status in _LOAD_STATUS_NOTIFY:
-                    event, title, ntype = _LOAD_STATUS_NOTIFY[instance.status]
-                    notify_company(cid, ntype, title, detail, link=f'/bookings/{instance.id}', event=event)
+                    event, title, ntype, detail = _LOAD_STATUS_NOTIFY[instance.status]
+                    notify_company(cid, ntype, title, detail, link=f'/bookings/{instance.id}', event=event,
+                                    exclude_user_id=getattr(instance, '_notify_actor_id', None))
         except Exception:
             pass
 
@@ -177,6 +201,17 @@ def _auto_invoice_on_delivery(load):
     except Exception as exc:  # never break the delivery save
         import logging
         logging.getLogger(__name__).warning('auto-invoice on delivery failed: %s', exc)
+        return
+
+    # 0.25% delivery take-rate — charged the same moment the invoice is
+    # auto-raised. Its own service never raises, but keep this defensive too:
+    # a billing hiccup must never be able to undo the delivery/invoice save.
+    try:
+        from core.services.delivery_fee_billing import charge_delivery_fee_for_invoice
+        charge_delivery_fee_for_invoice(invoice)
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning('delivery fee charge failed: %s', exc)
 
 
 @receiver(post_save, sender='core.Invoice')
@@ -201,8 +236,10 @@ def invoice_saved(sender, instance, created, **kwargs):
             company=getattr(instance, 'company', None),
             metadata={'invoice_number': instance.invoice_number, 'status': instance.status, 'amount': str(amount)}
         )
-    elif instance.status == 'PAID':
-        # Fire invoice.paid event (on status update to PAID)
+    elif instance.status == 'PAID' and getattr(instance, '_old_status', None) != 'PAID':
+        # Fire invoice.paid event (on status update to PAID) — guarded so a
+        # later unrelated save of an already-paid invoice doesn't re-dispatch
+        # the webhook or log a second "Invoice paid" activity entry.
         data = InvoiceSerializer(instance).data
         dispatch_webhook('invoice.paid', data)
         # Create activity event
@@ -221,17 +258,13 @@ def invoice_saved(sender, instance, created, **kwargs):
     if not created and instance.status == 'PAID' and getattr(instance, '_old_status', None) != 'PAID':
         try:
             from core.services.notify import notify_company
-            amount = getattr(instance, 'total_amount', 0)
-            cust = instance.customer.name if getattr(instance, 'customer', None) else ''
-            detail = instance.invoice_number
-            if cust:
-                detail += f' · {cust}'
-            if amount:
-                detail += f' · R{float(amount):,.0f}'
+            from core.services.notify_copy import customer_name, money, join_parts
+            detail = join_parts(instance.invoice_number, customer_name(instance),
+                                 money(getattr(instance, 'total_amount', 0)))
             notify_company(
                 getattr(instance, 'company_id', None),
                 'SUCCESS',
-                'Invoice paid',
+                '💰 Invoice paid',
                 detail,
                 link=f'/finance/invoices/{instance.id}',
                 event='invoice.paid',
@@ -239,20 +272,24 @@ def invoice_saved(sender, instance, created, **kwargs):
         except Exception:
             pass
 
-    # Live-push + persist notification for overdue invoices
-    if not created and instance.status == 'OVERDUE':
+    # Live-push + persist notification for overdue invoices. Invoice.save()
+    # re-sets status='OVERDUE' on every save while the invoice remains
+    # overdue (not just the save that first made it so) — without this
+    # old-status guard, any later touch of an overdue invoice (a note edit, a
+    # dunning pass, anything) re-fired this notification every single time.
+    if not created and instance.status == 'OVERDUE' and getattr(instance, '_old_status', None) != 'OVERDUE':
         try:
             from core.services.notify import notify_company
-            cust_name = instance.customer.name if getattr(instance, 'customer', None) else ''
-            detail = instance.invoice_number
-            if cust_name:
-                detail += f' · {cust_name}'
-            if getattr(instance, 'balance', None):
-                detail += f' · R{float(instance.balance):,.0f}'
+            from core.services.notify_copy import customer_name, money, join_parts
+            balance = money(getattr(instance, 'balance', None))
+            detail = join_parts(
+                instance.invoice_number, customer_name(instance),
+                f'{balance} outstanding' if balance else '',
+            )
             notify_company(
                 instance.company_id,
                 'ALERT',
-                'Invoice overdue',
+                '⚠️ Invoice overdue',
                 detail,
                 link=f'/finance/invoices/{instance.id}',
                 event='invoice.overdue',
@@ -284,19 +321,20 @@ def quote_saved(sender, instance, created, **kwargs):
             pass
         try:
             from core.services.notify import notify_company
-            cust = getattr(instance.customer, 'name', '') if getattr(instance, 'customer', None) else ''
-            detail = instance.quote_number or f'Quote {instance.id}'
-            if cust:
-                detail += f' · {cust}'
-            if getattr(instance, 'total_amount', None):
-                detail += f' · R{float(instance.total_amount):,.0f}'
+            from core.services.notify_copy import customer_name, quote_route, money, join_parts
+            detail = join_parts(
+                instance.quote_number or f'Quote {instance.id}',
+                customer_name(instance), quote_route(instance),
+                money(getattr(instance, 'total_amount', None)),
+            )
             notify_company(
                 getattr(instance, 'company_id', None),
                 'INFO',
-                'New quote created',
+                'New quote drafted',
                 detail,
-                link=f'/quotes/{instance.id}',
+                link=f'/bookings/quotes/{instance.id}',
                 event='quote.created',
+                exclude_user_id=getattr(instance, 'created_by_id', None),
             )
         except Exception:
             pass
@@ -305,26 +343,48 @@ def quote_saved(sender, instance, created, **kwargs):
     if not created:
         try:
             old = getattr(instance, '_old_status', None)
-            if old != instance.status:
+            if old != instance.status and instance.status != 'DECLINED':
+                # DECLINED is handled separately below — it surfaces the
+                # customer's typed reason (Quote.rejection_reason), which none
+                # of these other transitions have an equivalent of.
                 from core.services.notify import notify_company
-                cid = getattr(instance, 'company_id', None)
-                cust = getattr(instance.customer, 'name', '') if getattr(instance, 'customer', None) else ''
-                detail = instance.quote_number or f'Quote {instance.id}'
-                if cust:
-                    detail += f' · {cust}'
+                from core.services.notify_copy import customer_name, money, join_parts
+                ident = instance.quote_number or f'Quote {instance.id}'
+                cust = customer_name(instance)
+                amount = money(getattr(instance, 'total_amount', None))
                 _QUOTE_STATUS_NOTIFY = {
-                    'SENT':      ('quote.sent',      'Quote sent to customer', 'INFO'),
-                    'DECLINED':  ('quote.declined',  'Quote declined',         'ALERT'),
-                    'COMPLETED': ('quote.completed', 'Quote completed',        'SUCCESS'),
+                    'SENT':      ('quote.sent',      'Quote sent',        'INFO',    join_parts(ident, cust, f'{amount} — awaiting response' if amount else 'awaiting response')),
+                    'COMPLETED': ('quote.completed', '✅ Quote completed', 'SUCCESS', join_parts(ident, cust, 'delivered successfully')),
+                    'EXPIRED':   ('quote.expired',   '⏳ Quote expired',   'WARNING', join_parts(ident, cust, f'{amount} opportunity lost' if amount else 'opportunity lost')),
                 }
                 if instance.status in _QUOTE_STATUS_NOTIFY:
-                    event, title, ntype = _QUOTE_STATUS_NOTIFY[instance.status]
-                    notify_company(cid, ntype, title, detail, link=f'/quotes/{instance.id}', event=event)
+                    event, title, ntype, detail = _QUOTE_STATUS_NOTIFY[instance.status]
+                    notify_company(getattr(instance, 'company_id', None), ntype, title, detail,
+                                    link=f'/bookings/quotes/{instance.id}', event=event,
+                                    exclude_user_id=getattr(instance, '_notify_actor_id', None))
         except Exception:
             pass
 
-    # Only fire on status change to ACCEPTED
-    if not created and instance.status == 'ACCEPTED':
+    # DECLINED transition — separate block so it can surface the customer's
+    # typed reason without complicating the generic dict above.
+    if not created and instance.status == 'DECLINED' and getattr(instance, '_old_status', None) != 'DECLINED':
+        try:
+            from core.services.notify import notify_company
+            from core.services.notify_copy import quote_declined_copy
+            title, detail = quote_declined_copy(instance)
+            notify_company(getattr(instance, 'company_id', None), 'ALERT', title, detail,
+                            link=f'/bookings/quotes/{instance.id}', event='quote.declined',
+                            exclude_user_id=getattr(instance, '_notify_actor_id', None))
+        except Exception:
+            pass
+
+    # Only fire on the transition INTO ACCEPTED — not on every subsequent save
+    # of a quote that's already accepted. Unlike the block above, this used to
+    # check only `instance.status == 'ACCEPTED'` with no old-value comparison,
+    # so any later save of an already-accepted quote (an edit, an autosave,
+    # anything) re-fired the notification, the ActivityEvent log entry, AND
+    # the 'quote.accepted' webhook dispatch — every time.
+    if not created and instance.status == 'ACCEPTED' and getattr(instance, '_old_status', None) != 'ACCEPTED':
         try:
             dispatch_webhook('quote.accepted', {
                 'id': instance.id,
@@ -347,24 +407,26 @@ def quote_saved(sender, instance, created, **kwargs):
             )
         except Exception:
             pass
-        try:
-            from core.services.notify import notify_company
-            cust = getattr(instance.customer, 'name', '') if getattr(instance, 'customer', None) else ''
-            detail = instance.quote_number or f'Quote {instance.id}'
-            if cust:
-                detail += f' · {cust}'
-            if instance.total_amount:
-                detail += f' · R{float(instance.total_amount):,.0f}'
-            notify_company(
-                getattr(instance, 'company_id', None),
-                'SUCCESS',
-                'Quote accepted',
-                detail,
-                link=f'/quotes/{instance.id}',
-                event='quote.accepted',
-            )
-        except Exception:
-            pass
+        # Skip if the call site that changed the status (e.g. the authenticated
+        # update_status action) already sent this exact notification itself —
+        # without this guard, an authenticated accept fired it twice: once here
+        # (from the save signal) and once from the view's own direct call.
+        if not getattr(instance, '_notify_handled', False):
+            try:
+                from core.services.notify import notify_company
+                from core.services.notify_copy import quote_accepted_copy
+                title, detail = quote_accepted_copy(instance)
+                notify_company(
+                    getattr(instance, 'company_id', None),
+                    'SUCCESS',
+                    title,
+                    detail,
+                    link=f'/bookings/quotes/{instance.id}',
+                    event='quote.accepted',
+                    exclude_user_id=getattr(instance, '_notify_actor_id', None),
+                )
+            except Exception:
+                pass
 
 
 @receiver(post_save, sender='core.Customer')
@@ -406,7 +468,7 @@ def risk_score_saved(sender, instance, created, **kwargs):
                 type='INFO',
                 title="Risk Score Updated",
                 message=f"Invoice {instance.invoice.invoice_number} scored {instance.total_score} ({instance.tier})",
-                link=f"/invoices/{instance.invoice.id}"
+                link=f"/finance/invoices/{instance.invoice.id}"
             )
 
 
@@ -428,8 +490,13 @@ def advance_saved(sender, instance, created, **kwargs):
             metadata={'amount': str(instance.amount), 'status': instance.status}
         )
 
-    # Only fire on status change to APPROVED
-    if not created and instance.status == 'APPROVED':
+    old_status = getattr(instance, '_old_status', None)
+
+    # Only fire on the transition INTO APPROVED — not on every later save of
+    # an already-approved advance (e.g. the "notes" re-save right after
+    # advance.approve() in the approve view action would otherwise re-fire
+    # this every time).
+    if not created and instance.status == 'APPROVED' and old_status != 'APPROVED':
         dispatch_webhook('advance.approved', {
             'id': instance.id,
             'invoice_id': instance.invoice.id if instance.invoice else None,
@@ -449,20 +516,24 @@ def advance_saved(sender, instance, created, **kwargs):
             metadata={'amount': str(instance.amount), 'status': instance.status}
         )
 
-        # Live-push + persist notification for approved advance
-        from core.services.notify import notify_company
-        company_id = getattr(instance.invoice, 'company_id', None) if instance.invoice else None
-        inv_num = instance.invoice.invoice_number if instance.invoice else ''
-        notify_company(
-            company_id,
-            'SUCCESS',
-            'Advance approved',
-            f'R{float(instance.net_amount):,.0f} approved · {inv_num}',
-            link=f'/capital/advances/{instance.id}',
-            event='advance.approved',
-        )
+        # The approve() view action sends its own, better-worded notification
+        # right after calling advance.approve() — skip ours so the company
+        # doesn't get "Advance approved" twice for one approval.
+        if not getattr(instance, '_notify_handled', False):
+            from core.services.notify import notify_company
+            company_id = getattr(instance.invoice, 'company_id', None) if instance.invoice else None
+            inv_num = instance.invoice.invoice_number if instance.invoice else ''
+            notify_company(
+                company_id,
+                'SUCCESS',
+                'Advance approved',
+                f'R{float(instance.net_amount):,.0f} approved · {inv_num}',
+                link=f'/capital/advances/{instance.id}',
+                event='advance.approved',
+                exclude_user_id=getattr(instance, '_notify_actor_id', None),
+            )
 
-    elif not created and instance.status == 'DISBURSED':
+    elif not created and instance.status == 'DISBURSED' and old_status != 'DISBURSED':
         dispatch_webhook('advance.disbursed', {
             'id': instance.id,
             'invoice_id': instance.invoice.id if instance.invoice else None,
@@ -482,18 +553,21 @@ def advance_saved(sender, instance, created, **kwargs):
             metadata={'amount': str(instance.amount), 'status': instance.status}
         )
 
-        # Live-push + persist notification for disbursed advance
-        from core.services.notify import notify_company
-        company_id = getattr(instance.invoice, 'company_id', None) if instance.invoice else None
-        inv_num = instance.invoice.invoice_number if instance.invoice else ''
-        notify_company(
-            company_id,
-            'SUCCESS',
-            'Funds disbursed',
-            f'R{float(instance.net_amount):,.0f} disbursed · {inv_num}',
-            link=f'/capital/advances/{instance.id}',
-            event='advance.disbursed',
-        )
+        # Same dedup as APPROVED above — the disburse() view action already
+        # sends its own notification for this exact event.
+        if not getattr(instance, '_notify_handled', False):
+            from core.services.notify import notify_company
+            company_id = getattr(instance.invoice, 'company_id', None) if instance.invoice else None
+            inv_num = instance.invoice.invoice_number if instance.invoice else ''
+            notify_company(
+                company_id,
+                'SUCCESS',
+                'Funds disbursed',
+                f'R{float(instance.net_amount):,.0f} disbursed · {inv_num}',
+                link=f'/capital/advances/{instance.id}',
+                event='advance.disbursed',
+                exclude_user_id=getattr(instance, '_notify_actor_id', None),
+            )
 
 
 # ============================================================================
@@ -640,6 +714,29 @@ def driver_scores_on_save(sender, instance, created, **kwargs):
     try:
         from core.tasks import compute_driver_scores
         compute_driver_scores(instance.pk)
+    except Exception:
+        pass
+
+
+@receiver(post_save, sender='core.Driver')
+def driver_status_notify(sender, instance, created, **kwargs):
+    """Notify the company when a driver's status changes (category: driver_updates)."""
+    if created:
+        return
+    try:
+        old = getattr(instance, '_old_status', None)
+        if old and old != instance.status:
+            from core.services.notify import notify_company
+            name = ''
+            if getattr(instance, 'user', None):
+                name = (f"{instance.user.first_name} {instance.user.last_name}".strip()
+                        or instance.user.username)
+            detail = f"{name or 'Driver'} is now {instance.status}" + (f" (was {old})" if old else '')
+            notify_company(
+                instance.company_id, 'INFO', 'Driver status updated', detail,
+                link=f'/fleet/drivers/{instance.id}', event='driver.status_changed',
+                exclude_user_id=getattr(instance, '_notify_actor_id', None),
+            )
     except Exception:
         pass
 

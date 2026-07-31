@@ -4,6 +4,7 @@ Enforces per-plan resource and API call limits for Free, Pro, and Enterprise tie
 """
 from django.http import JsonResponse
 from django.utils import timezone
+from django.db import DatabaseError, transaction
 from django.db.models import F
 from datetime import date
 from core.models import Company, User, Vehicle
@@ -16,9 +17,12 @@ PLAN_LIMITS = {
         'max_vehicles': 5,
         'max_api_calls_per_month': 100,
     },
+    # 'pro' is the single flat-rate paid plan (see MONTHLY_FEE in
+    # services/paystack.py) — vehicles unlimited by design, fleet size
+    # doesn't affect price or limits.
     'pro': {
         'max_users': 20,
-        'max_vehicles': 50,
+        'max_vehicles': None,
         'max_api_calls_per_month': 10000,
     },
     'enterprise': {
@@ -31,12 +35,27 @@ PLAN_LIMITS = {
 # Paths exempt from API call counting and limit checks
 EXEMPT_PATHS = [
     '/api/auth/',
-    '/api/v1/billing/itn/',
+    '/api/v1/billing/webhook/',
     '/admin/',
     '/static/',
     '/media/',
     '/api/docs/',      # DRF Spectacular API documentation
     '/api/schema/',    # OpenAPI schema endpoint
+]
+
+# TruckWys_Fee_Billing_Spec.pdf §5: "Any endpoint that creates a quote,
+# accepts a quote, or generates an invoice should check subscription_status
+# == active before proceeding" — deliberately narrow (NOT a blanket block):
+# a suspended/cancelled company can still manage drivers/vehicles/users/
+# settings, and can still read everything (GET is never touched here).
+# (method, path-prefix) pairs; `PATCH`/`PUT` on /quotes/ covers status
+# changes generally, including acceptance (QuoteViewSet.update_status and
+# the customer-facing public respond link both live under this prefix).
+SUSPENDED_BLOCKED_REQUESTS = [
+    ('POST', '/api/v1/quotes/'),
+    ('PATCH', '/api/v1/quotes/'),
+    ('PUT', '/api/v1/quotes/'),
+    ('POST', '/api/v1/invoices/'),
 ]
 
 
@@ -60,9 +79,10 @@ class PlanLimitsMiddleware:
         if self._is_exempt_path(request.path):
             return self.get_response(request)
 
-        # Only check limits for authenticated requests
-        if not request.user or not request.user.is_authenticated:
+        user = self._resolve_user(request)
+        if not user or not user.is_authenticated:
             return self.get_response(request)
+        request.user = user
 
         # Superusers bypass all limits
         if request.user.is_superuser:
@@ -72,6 +92,15 @@ class PlanLimitsMiddleware:
         company = self._get_user_company(request.user)
         if not company:
             return self.get_response(request)
+
+        # Suspended/cancelled: block only quote creation, quote acceptance
+        # (any quote status change), and invoice generation — spec §5.
+        if company.subscription_status in ('suspended', 'cancelled') and self._is_suspended_blocked(request):
+            return JsonResponse({
+                'detail': 'Update your payment method to continue quoting.',
+                'account_suspended': True,
+                'subscription_status': company.subscription_status,
+            }, status=402)
 
         # Check plan limits
         plan = company.subscription_plan or 'free'
@@ -100,10 +129,38 @@ class PlanLimitsMiddleware:
 
         return response
 
+    def _resolve_user(self, request):
+        """The app authenticates purely via `Authorization: Token <key>`
+        (core.auth.session_auth.UserSessionTokenAuthentication) and never
+        calls django.contrib.auth.login() — no Django session is ever
+        created. That authentication only runs inside DRF's view dispatch,
+        which happens AFTER this middleware, so request.user is still
+        AnonymousUser here for every real request unless we resolve it
+        ourselves the same way DRF will. Falls back to request.user (set by
+        AuthenticationMiddleware from a session) for anything that does log
+        in via a session — e.g. the Django admin, or tests using client.login().
+        """
+        if getattr(request.user, 'is_authenticated', False):
+            return request.user
+        from core.auth.session_auth import UserSessionTokenAuthentication
+        try:
+            resolved = UserSessionTokenAuthentication().authenticate(request)
+        except Exception:
+            return request.user  # invalid/expired token — let the view reject it normally
+        return resolved[0] if resolved else request.user
+
     def _is_exempt_path(self, path):
         """Check if path is exempt from limit checks."""
         for exempt_path in EXEMPT_PATHS:
             if path.startswith(exempt_path):
+                return True
+        return False
+
+    def _is_suspended_blocked(self, request):
+        """True if this request is one of the spec's three named
+        money-generating actions (quote create/accept, invoice create)."""
+        for method, path_prefix in SUSPENDED_BLOCKED_REQUESTS:
+            if request.method == method and request.path.startswith(path_prefix):
                 return True
         return False
 
@@ -122,22 +179,33 @@ class PlanLimitsMiddleware:
             company.api_calls_reset_date.month != today.month or
             company.api_calls_reset_date.year != today.year):
 
-            # Use select_for_update to prevent multiple resets from concurrent requests
+            # Use select_for_update to prevent multiple resets from concurrent
+            # requests. It has to run inside an atomic block: Postgres raises
+            # TransactionManagementError under autocommit, which took down every
+            # authenticated request the first time a reset came due. SQLite has
+            # no SELECT ... FOR UPDATE so it skips the check entirely, which is
+            # why local dev never saw this.
             try:
-                locked_company = Company.objects.select_for_update(nowait=True).get(id=company.id)
-                # Double-check after acquiring lock (another request may have already reset)
-                if (not locked_company.api_calls_reset_date or
-                    locked_company.api_calls_reset_date.month != today.month or
-                    locked_company.api_calls_reset_date.year != today.year):
+                with transaction.atomic():
+                    locked_company = Company.objects.select_for_update(nowait=True).get(id=company.id)
+                    # Double-check after acquiring lock (another request may have already reset)
+                    if (not locked_company.api_calls_reset_date or
+                        locked_company.api_calls_reset_date.month != today.month or
+                        locked_company.api_calls_reset_date.year != today.year):
 
-                    locked_company.api_calls_this_month = 0
-                    locked_company.api_calls_reset_date = today
-                    locked_company.save(update_fields=['api_calls_this_month', 'api_calls_reset_date'])
-                    # Update the instance we're working with
-                    company.api_calls_this_month = 0
-                    company.api_calls_reset_date = today
+                        locked_company.api_calls_this_month = 0
+                        locked_company.api_calls_reset_date = today
+                        locked_company.save(update_fields=['api_calls_this_month', 'api_calls_reset_date'])
+                        # Update the instance we're working with
+                        company.api_calls_this_month = 0
+                        company.api_calls_reset_date = today
             except Company.DoesNotExist:
                 pass  # Company was deleted, skip reset
+            except DatabaseError:
+                # nowait=True: another request already holds the row lock and is
+                # doing this same reset. Skipping is the intended behaviour —
+                # letting it bubble would 500 the request over a counter reset.
+                pass
 
 
 def check_user_limit(company):

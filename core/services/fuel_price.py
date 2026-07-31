@@ -14,8 +14,16 @@ from decimal import Decimal, InvalidOperation
 from typing import Optional
 
 import requests
+from django.core.cache import cache
 
 logger = logging.getLogger(__name__)
+
+# A stale-fallback record makes every call site (route calc, AI quoting, quote
+# save/analysis) retry the live scrapers. Without a gate that reruns on *every*
+# request while the current month is stuck on fallback — if the scrape targets
+# are slow/blocked that's up to ~30s added to each one. Cap auto-retries to once
+# per hour; an explicit force_update=True (the daily cron) always bypasses this.
+_LIVE_RETRY_GATE_SECONDS = 3600
 
 # ---------------------------------------------------------------------------
 # Known recent prices (ZAR/litre) — used as fallback when live fetch fails.
@@ -121,7 +129,7 @@ def _fetch_from_aa_sa() -> Optional[dict]:
     try:
         from bs4 import BeautifulSoup
         url = 'https://www.aa.co.za/fuel/'
-        r = requests.get(url, headers=_HEADERS, timeout=10)
+        r = requests.get(url, headers=_HEADERS, timeout=5)
         r.raise_for_status()
         soup = BeautifulSoup(r.text, 'lxml')
         prices = _extract_prices_from_soup(soup)
@@ -140,7 +148,7 @@ def _fetch_from_sapia() -> Optional[dict]:
     try:
         from bs4 import BeautifulSoup
         url = 'https://www.sapia.org.za/fuel-prices/'
-        r = requests.get(url, headers=_HEADERS, timeout=10)
+        r = requests.get(url, headers=_HEADERS, timeout=5)
         r.raise_for_status()
         soup = BeautifulSoup(r.text, 'lxml')
         prices = _extract_prices_from_soup(soup)
@@ -159,7 +167,7 @@ def _fetch_from_dmre() -> Optional[dict]:
     try:
         from bs4 import BeautifulSoup
         url = 'https://www.dmre.gov.za/energy/petroleum-and-liquid-fuels/fuel-prices'
-        r = requests.get(url, headers=_HEADERS, timeout=10)
+        r = requests.get(url, headers=_HEADERS, timeout=5)
         r.raise_for_status()
         soup = BeautifulSoup(r.text, 'lxml')
         prices = _extract_prices_from_soup(soup)
@@ -206,6 +214,13 @@ def fetch_fuel_prices(
     if existing and not force_update and not is_stale_fallback:
         logger.info('FuelPrice for %s already exists — skipping fetch', target_date)
         return existing
+    if is_stale_fallback and not force_update:
+        gate_key = f'fuel_price_live_retry:{target_date.isoformat()}'
+        if cache.get(gate_key):
+            logger.info('FuelPrice for %s is a fallback but was retried recently — skipping', target_date)
+            return existing
+        cache.set(gate_key, True, _LIVE_RETRY_GATE_SECONDS)
+
     if is_stale_fallback:
         force_update = True  # ensure we overwrite rather than try to create
         logger.info('FuelPrice for %s is a fallback — retrying live sources', target_date)

@@ -210,8 +210,31 @@ def _label_for(field_name):
     return field_name.replace('_', ' ').title()
 
 
-def _display_rows(spec, payload, instance=None):
-    """[{label, value, old_value?}] — FKs rendered via their registry display."""
+def _validate_fk_scope(user, company, spec, payload):
+    """Reject any FK value pointing outside the caller's company — closes the
+    cross-tenant read-oracle (confirmation card) and write-through (execute).
+    Returns an error string, or None if every FK id is in-company."""
+    for field, (ref_table, _attr) in spec.get('fk', {}).items():
+        value = payload.get(field)
+        if value in (None, ''):
+            continue
+        if not scoped_queryset(user, company, ref_table).filter(pk=value).exists():
+            ref_label = ENTITY_REGISTRY[ref_table]['label']
+            return (f"No {ref_label} with id {value} in your company — "
+                    "resolve it via query_records first.")
+    return None
+
+
+def _scoped_fk_display(user, company, ref_table, ref_attr, value):
+    """Render an FK id as 'attr (#id)', resolving the row within the caller's
+    company only — an out-of-company id falls back to the bare id."""
+    ref = scoped_queryset(user, company, ref_table).filter(pk=value).first()
+    return f"{getattr(ref, ref_attr, value)} (#{value})" if ref is not None else value
+
+
+def _display_rows(user, company, spec, payload, instance=None):
+    """[{label, value, old_value?}] — FKs rendered via their registry display,
+    resolved only within the caller's company."""
     rows = []
     fk = spec.get('fk', {})
     for field, value in payload.items():
@@ -220,17 +243,13 @@ def _display_rows(spec, payload, instance=None):
         shown = value
         if field in fk and value is not None:
             ref_table, ref_attr = fk[field]
-            ref_spec = ENTITY_REGISTRY[ref_table]
-            ref = ref_spec['model'].objects.filter(pk=value).first()
-            if ref is not None:
-                shown = f"{getattr(ref, ref_attr, value)} (#{value})"
+            shown = _scoped_fk_display(user, company, ref_table, ref_attr, value)
         row = {'label': _label_for(field), 'value': _json_safe(shown)}
         if instance is not None:
             old = getattr(instance, f"{field}_id", None) if field in fk else getattr(instance, field, None)
             if field in fk and old is not None:
                 ref_table, ref_attr = fk[field]
-                ref = ENTITY_REGISTRY[ref_table]['model'].objects.filter(pk=old).first()
-                old = f"{getattr(ref, ref_attr, old)} (#{old})" if ref else old
+                old = _scoped_fk_display(user, company, ref_table, ref_attr, old)
             row['old_value'] = _json_safe(old)
         rows.append(row)
     # Deferred-creation extras get their own rows so the card is honest.
@@ -299,7 +318,11 @@ def propose_create(company, user, conversation, args):
     except ToolError as e:
         return {'error': str(e)}
 
-    display = _display_rows(spec, payload)
+    fk_err = _validate_fk_scope(user, company, spec, payload)
+    if fk_err:
+        return {'error': fk_err, 'hint': 'Resolve the correct id via query_records first.'}
+
+    display = _display_rows(user, company, spec, payload)
     proposal = _save_proposal(company, user, conversation, table, 'CREATE',
                               payload=payload, display=display, warning=warning)
     if dropped:
@@ -338,7 +361,11 @@ def propose_update(company, user, conversation, args):
     if not serializer.is_valid():
         return {'error': _serializer_error_text(serializer)}
 
-    display = _display_rows(spec, changed, instance=instance)
+    fk_err = _validate_fk_scope(user, company, spec, changed)
+    if fk_err:
+        return {'error': fk_err}
+
+    display = _display_rows(user, company, spec, changed, instance=instance)
     proposal = _save_proposal(company, user, conversation, table, 'UPDATE',
                               target_id=instance.pk, payload=changed, display=display)
     return {
@@ -683,6 +710,17 @@ def _execute_write_proposal(proposal, request_user, company):
         proposal.status = 'EXPIRED'
         proposal.save(update_fields=['status'])
         return False, {'error': 'This proposal has expired — ask the copilot to prepare it again.'}
+
+    # Defense-in-depth: re-assert every FK id in the payload is in-company, so a
+    # cross-tenant reference can never be persisted even if the payload were
+    # tampered with between propose and execute.
+    if proposal.operation in ('CREATE', 'UPDATE'):
+        fk_err = _validate_fk_scope(request_user, company, spec, proposal.payload)
+        if fk_err:
+            proposal.status = 'FAILED'
+            proposal.result = {'error': fk_err}
+            proposal.save(update_fields=['status', 'result'])
+            return False, {'error': fk_err}
 
     hooks = spec.get('hooks', {})
     label = spec['label']

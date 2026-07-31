@@ -1074,3 +1074,207 @@ class InvoiceEmailService:
             pdf_path=pdf_path,
             additional_recipients=additional_recipients
         )
+
+
+def send_notification_email(user, title: str, message: str = '', link: str = '') -> bool:
+    """Generic per-event notification email to a company USER (not a customer).
+
+    Sent by notify_company for users whose email preference for the event's
+    category is enabled (core/services/notification_prefs.py). Via Resend.
+    Returns True on success; never raises.
+    """
+    if not user.email:
+        return False
+    first_name = user.first_name or user.username
+    frontend = (getattr(settings, 'FRONTEND_URL', '') or 'http://localhost:3701').rstrip('/')
+    cta = f"""
+          <div style="text-align:center;margin:28px 0 8px;">
+            <a href="{frontend}{link}"
+               style="display:inline-block;background:#38BDF8;color:#0F172A;text-decoration:none;padding:12px 32px;border-radius:6px;font-weight:700;font-size:13px;letter-spacing:0.04em;">
+              VIEW IN TRUCKWYS
+            </a>
+          </div>""" if link else ''
+    html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>{title}</title></head>
+<body style="margin:0;padding:0;background:#0F172A;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0F172A;padding:48px 16px;">
+    <tr><td align="center">
+      <table width="500" cellpadding="0" cellspacing="0" style="background:#1E293B;border-radius:12px;overflow:hidden;border:1px solid #334155;">
+        <tr><td style="padding:24px 36px;border-bottom:1px solid #334155;">
+          <span style="font-size:11px;font-weight:700;letter-spacing:0.14em;color:#38BDF8;">TRUCKWYS &middot; NOTIFICATION</span>
+        </td></tr>
+        <tr><td style="padding:36px;">
+          <p style="margin:0 0 12px;font-size:20px;font-weight:600;color:#F8FAFC;">{title}</p>
+          <p style="margin:0 0 4px;font-size:14px;color:#94A3B8;line-height:1.6;">
+            Hi <strong style="color:#F8FAFC;">{first_name}</strong>,
+          </p>
+          <p style="margin:0;font-size:14px;color:#94A3B8;line-height:1.6;">{message or title}</p>
+{cta}
+          <p style="margin:20px 0 0;font-size:11px;color:#475569;line-height:1.7;">
+            You received this because your notification settings have this category enabled.
+            Manage preferences under Settings &rarr; Notifications.
+          </p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+    try:
+        resend.api_key = settings.RESEND_API_KEY
+        resend.Emails.send({
+            "from": settings.EMAIL_FROM,
+            "to": [user.email],
+            "subject": f"TruckWys: {title}",
+            "html": html_content,
+        })
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send notification email '{title}' to {user.email}: {e}")
+        return False
+
+
+def send_billing_email(email: str, first_name: str, title: str, message: str = '', link: str = '') -> bool:
+    """Mandatory billing/payment email — every subscription charge, take-rate
+    charge, cancellation, failure, and freeze, success or not. Unlike
+    send_notification_email this is NEVER gated by notification preferences
+    (core/services/notification_prefs.py) — billing transparency isn't
+    optional the way activity toasts are, and it takes a raw email/first_name
+    rather than a User so it also covers the pre-account-creation signup-
+    payment-failed case. Sent via core.services.notify.notify_company_billing_email
+    (which resolves the company's admins) or directly for that signup case.
+    Via Resend. Returns True on success; never raises.
+    """
+    if not email:
+        return False
+    frontend = (getattr(settings, 'FRONTEND_URL', '') or 'http://localhost:3701').rstrip('/')
+    cta = f"""
+          <div style="text-align:center;margin:28px 0 8px;">
+            <a href="{frontend}{link}"
+               style="display:inline-block;background:#38BDF8;color:#0F172A;text-decoration:none;padding:12px 32px;border-radius:6px;font-weight:700;font-size:13px;letter-spacing:0.04em;">
+              VIEW BILLING
+            </a>
+          </div>""" if link else ''
+    html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>{title}</title></head>
+<body style="margin:0;padding:0;background:#0F172A;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0F172A;padding:48px 16px;">
+    <tr><td align="center">
+      <table width="500" cellpadding="0" cellspacing="0" style="background:#1E293B;border-radius:12px;overflow:hidden;border:1px solid #334155;">
+        <tr><td style="padding:24px 36px;border-bottom:1px solid #334155;">
+          <span style="font-size:11px;font-weight:700;letter-spacing:0.14em;color:#38BDF8;">TRUCKWYS &middot; BILLING</span>
+        </td></tr>
+        <tr><td style="padding:36px;">
+          <p style="margin:0 0 12px;font-size:20px;font-weight:600;color:#F8FAFC;">{title}</p>
+          <p style="margin:0 0 4px;font-size:14px;color:#94A3B8;line-height:1.6;">
+            Hi <strong style="color:#F8FAFC;">{first_name}</strong>,
+          </p>
+          <p style="margin:0;font-size:14px;color:#94A3B8;line-height:1.6;">{message or title}</p>
+{cta}
+          <p style="margin:20px 0 0;font-size:11px;color:#475569;line-height:1.7;">
+            This is a billing notice for your TruckWys account, sent regardless of
+            notification preferences.
+          </p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+    # Retried up to 3 attempts with a short backoff — a payment notification
+    # is exactly the kind of email that must not silently vanish because of
+    # one transient network blip (reproduced live: a single Resend call can
+    # fail with a plain connection reset with no Resend-side error at all).
+    import time
+    resend.api_key = settings.RESEND_API_KEY
+    attempts = 3
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            resend.Emails.send({
+                "from": settings.EMAIL_FROM,
+                "to": [email],
+                "subject": f"TruckWys billing: {title}",
+                "html": html_content,
+            })
+            return True
+        except Exception as e:
+            last_error = e
+            if attempt < attempts:
+                time.sleep(attempt)  # 1s, then 2s
+    logger.error(f"Failed to send billing email '{title}' to {email} after {attempts} attempts: {last_error}")
+    return False
+
+
+def send_weekly_summary_email(user, company, stats: dict) -> bool:
+    """Monday performance digest for users with email.weekly_reports enabled.
+    stats: see core/services/notification_sweeps.send_weekly_summaries. Via Resend."""
+    if not user.email:
+        return False
+    first_name = user.first_name or user.username
+    company_name = getattr(company, 'company_name', '') or 'your company'
+    frontend = (getattr(settings, 'FRONTEND_URL', '') or 'http://localhost:3701').rstrip('/')
+
+    def _row(label, value):
+        return f"""
+          <tr>
+            <td style="padding:10px 16px;border-bottom:1px solid #334155;font-size:13px;color:#94A3B8;">{label}</td>
+            <td style="padding:10px 16px;border-bottom:1px solid #334155;font-size:13px;color:#F8FAFC;font-weight:600;text-align:right;">{value}</td>
+          </tr>"""
+
+    rows = (
+        _row('Bookings created', stats['bookings_created']) +
+        _row('Bookings delivered', stats['bookings_delivered']) +
+        _row('Quotes sent', stats['quotes_sent']) +
+        _row('Quotes accepted', stats['quotes_accepted']) +
+        _row('Invoiced', f"R{stats['invoiced_total']:,.2f}") +
+        _row('Payments collected', f"R{stats['collected_total']:,.2f}")
+    )
+    subject = f"Your weekly TruckWys summary — {stats['week_start']} to {stats['week_end']}"
+    html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>{subject}</title></head>
+<body style="margin:0;padding:0;background:#0F172A;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0F172A;padding:48px 16px;">
+    <tr><td align="center">
+      <table width="500" cellpadding="0" cellspacing="0" style="background:#1E293B;border-radius:12px;overflow:hidden;border:1px solid #334155;">
+        <tr><td style="padding:24px 36px;border-bottom:1px solid #334155;">
+          <span style="font-size:11px;font-weight:700;letter-spacing:0.14em;color:#38BDF8;">TRUCKWYS &middot; WEEKLY SUMMARY</span>
+        </td></tr>
+        <tr><td style="padding:36px;">
+          <p style="margin:0 0 8px;font-size:20px;font-weight:600;color:#F8FAFC;">Last week at {company_name}</p>
+          <p style="margin:0 0 24px;font-size:13px;color:#94A3B8;">
+            Hi <strong style="color:#F8FAFC;">{first_name}</strong> — here's {stats['week_start']} to {stats['week_end']} at a glance.
+          </p>
+          <table width="100%" cellpadding="0" cellspacing="0" style="background:#0F172A;border-radius:8px;border:1px solid #334155;overflow:hidden;margin-bottom:24px;">
+{rows}
+          </table>
+          <div style="text-align:center;margin-bottom:8px;">
+            <a href="{frontend}/"
+               style="display:inline-block;background:#38BDF8;color:#0F172A;text-decoration:none;padding:12px 32px;border-radius:6px;font-weight:700;font-size:13px;letter-spacing:0.04em;">
+              OPEN DASHBOARD
+            </a>
+          </div>
+          <p style="margin:20px 0 0;font-size:11px;color:#475569;line-height:1.7;">
+            You receive this digest because Weekly summary is enabled in Settings &rarr; Notifications.
+          </p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+    try:
+        resend.api_key = settings.RESEND_API_KEY
+        resend.Emails.send({
+            "from": settings.EMAIL_FROM,
+            "to": [user.email],
+            "subject": subject,
+            "html": html_content,
+        })
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send weekly summary to {user.email}: {e}")
+        return False

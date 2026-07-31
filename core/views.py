@@ -14,7 +14,7 @@
 # - UserViewSet: Admin-only, filters all users (needs multi-tenancy if non-admin users access) ⚠️
 
 import logging as _logging
-from rest_framework import viewsets, status, filters
+from rest_framework import viewsets, status, filters, mixins
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -75,9 +75,10 @@ import threading
 from .models import (
     User, Customer, Driver, Vehicle, VehicleLog, VehicleType, Load,
     Quote, Invoice, Payment, Expense, Settlement, Notification, Company, ActivityEvent,
-    UserSession
+    UserSession, FcmDevice, PushSubscription
 )
 from .utils.request_meta import parse_device, client_ip, mask_email
+from .utils.auth_events import log_auth_event
 from .serializers import (
     UserSerializer, CustomerSerializer, DriverSerializer,
     VehicleSerializer, VehicleTypeSerializer, VehicleLogSerializer, LoadSerializer,
@@ -95,10 +96,8 @@ class RegisterView(APIView):
 
     def post(self, request):
         import secrets
-        import logging
-        from django.core.cache import cache
         from django.contrib.auth.hashers import make_password
-        from core.services.email_service import send_verification_email
+        from core.models import PendingSignup
 
         email = request.data.get('email', '').strip().lower()
         password = request.data.get('password', '')
@@ -113,18 +112,26 @@ class RegisterView(APIView):
         if User.objects.filter(email__iexact=email).exists():
             return Response({'detail': 'An account with this email already exists.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Store registration data in cache — account is created only after OTP verification
-        cache.set(f'pending_registration_{email}', {
-            'email': email,
-            'username': username,
-            'first_name': first_name,
-            'last_name': last_name,
-            'password': make_password(password),
-            'company_name': company_name,
-        }, timeout=600)
-
+        # No free tier: the account itself isn't created here, or even after
+        # OTP verification — only after a successful Paystack payment (see
+        # CompleteSignupView). This row just holds the registration details
+        # until then (a real table, not a short-lived cache entry, since the
+        # checkout redirect can reasonably take longer than a few minutes).
         otp_code = str(secrets.randbelow(900000) + 100000)
-        cache.set(f'email_verify_{email}', otp_code, timeout=600)
+        PendingSignup.objects.update_or_create(
+            email=email,
+            defaults={
+                'username': username,
+                'first_name': first_name,
+                'last_name': last_name,
+                'password_hash': make_password(password),
+                'company_name': company_name,
+                'otp_code': otp_code,
+                'otp_expires_at': timezone.now() + timedelta(minutes=10),
+                'email_verified': False,
+                'paystack_reference': '',
+            },
+        )
         from core.tasks import send_verification_email_task
         send_verification_email_task(email, otp_code, first_name or username)
 
@@ -135,61 +142,217 @@ class RegisterView(APIView):
 
 
 class EmailVerifyView(APIView):
+    """Confirms email ownership, then starts the mandatory Paystack checkout —
+    it does NOT create the account. See CompleteSignupView for that."""
     permission_classes = [AllowAny]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = 'login'
 
     def post(self, request):
         import hmac
-        from django.core.cache import cache
-        from core.models import Company, Facility
-        from core.services.company_setup import seed_default_vehicle_types
+        from core.models import PendingSignup
+        from core.services import paystack
+        from core.services.paystack import MONTHLY_FEE
 
         email = request.data.get('email', '').strip().lower()
         code = request.data.get('code', '').strip()
+        return_url = request.data.get('return_url', '')
         if not email or not code:
             return Response({'detail': 'email and code are required.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        cached_code = cache.get(f'email_verify_{email}')
-        if not cached_code or not hmac.compare_digest(str(cached_code), str(code)):
+        pending = PendingSignup.objects.filter(email=email).first()
+        if not pending or not pending.otp_expires_at or pending.otp_expires_at < timezone.now():
             return Response({'detail': 'Invalid or expired verification code.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        pending = cache.get(f'pending_registration_{email}')
-        if not pending:
-            return Response({'detail': 'Registration session expired. Please register again.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not hmac.compare_digest(str(pending.otp_code), str(code)):
+            return Response({'detail': 'Invalid or expired verification code.'}, status=status.HTTP_400_BAD_REQUEST)
 
         # The email may have been taken between registration and verification
         if User.objects.filter(email__iexact=email).exists():
             return Response({'detail': 'An account with this email already exists.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Create user now that email is verified
-        user = User.objects.create(
-            email=pending['email'],
-            username=pending['username'],
-            first_name=pending['first_name'],
-            last_name=pending['last_name'],
-            password=pending['password'],
-            is_active=True,
+        pending.email_verified = True
+        pending.save(update_fields=['email_verified', 'updated_at'])
+
+        result = paystack.initialize_transaction(
+            email=email, amount=MONTHLY_FEE, callback_url=return_url,
+            metadata={'signup_email': email},
         )
+        if not result['success']:
+            return Response({'detail': f"Could not start checkout: {result['error']}"}, status=status.HTTP_502_BAD_GATEWAY)
 
-        company = Company.objects.create(company_name=pending['company_name'])
-        user.company = company
-        user.role = 'ADMIN'
-        user.save()
+        pending.paystack_reference = result['data']['reference']
+        pending.payment_failed_notified_at = None  # fresh checkout — re-arm the failure-email guard
+        pending.save(update_fields=['paystack_reference', 'payment_failed_notified_at', 'updated_at'])
 
-        Facility.objects.create(company=company, limit=1000000, outstanding=0, status='ACTIVE')
-        seed_default_vehicle_types(company)
+        return Response({
+            'authorization_url': result['data']['authorization_url'],
+            'reference': pending.paystack_reference,
+        })
 
-        cache.delete(f'email_verify_{email}')
-        cache.delete(f'pending_registration_{email}')
 
-        session = UserSession.objects.create(
-            user=user,
-            device=parse_device(request),
-            user_agent=(request.META.get('HTTP_USER_AGENT', '') or '')[:512],
-            ip_address=client_ip(request),
+def _notify_pending_signup_payment_failed(pending, message: str) -> None:
+    """Send the "payment could not be completed" signup email at most once
+    per checkout attempt (pending.payment_failed_notified_at is cleared back
+    to None every time a fresh checkout starts — see EmailVerifyView /
+    RetrySignupPaymentView). Shared by CompleteSignupView's own synchronous
+    check (the browser returning via return_url) and PaystackWebhookView's
+    charge.failed handler (the async safety net for when it never does) —
+    whichever notices the failure first wins; the other is a no-op.
+    """
+    from django.utils import timezone
+    from core.services.email_service import send_billing_email
+
+    if pending.payment_failed_notified_at:
+        return
+    send_billing_email(
+        pending.email, pending.first_name or pending.username, 'Payment could not be completed', message,
+    )
+    pending.payment_failed_notified_at = timezone.now()
+    pending.save(update_fields=['payment_failed_notified_at', 'updated_at'])
+
+
+class CompleteSignupView(APIView):
+    """POST /api/v1/auth/complete-signup/ {"reference": "..."}
+
+    Called by the frontend once Paystack redirects back from the checkout
+    started in EmailVerifyView. Only on a verified, successful, correct-amount
+    charge does the account (User + Company + Facility + default vehicle
+    types + the first BillingTransaction) actually get created — atomically,
+    so a mid-sequence failure can never leave a half-created company.
+    """
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
+
+    def post(self, request):
+        from django.db import transaction as db_transaction
+        from core.models import PendingSignup, Company, Facility, BillingTransaction
+        from core.services import paystack
+        from core.services.paystack import MONTHLY_FEE
+        from core.services.company_setup import seed_default_vehicle_types
+        from core.services.subscription_billing import add_one_month
+
+        reference = request.data.get('reference', '').strip()
+        if not reference:
+            return Response({'detail': 'reference is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        pending = PendingSignup.objects.filter(paystack_reference=reference).first()
+        if not pending or not pending.email_verified:
+            return Response({'detail': 'No matching signup found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        if User.objects.filter(email__iexact=pending.email).exists():
+            return Response({'detail': 'This account has already been created. Please log in.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        result = paystack.verify_transaction(reference)
+        if not result['success']:
+            _notify_pending_signup_payment_failed(
+                pending,
+                "We couldn't confirm your TruckWys subscription payment, so your account was not created. "
+                "Your registration details are saved — you can try the payment again.",
+            )
+            return Response({'detail': f"Payment could not be confirmed: {result['error']}"}, status=status.HTTP_402_PAYMENT_REQUIRED)
+
+        data = result['data'] or {}
+        expected_cents = int((MONTHLY_FEE * 100).quantize(Decimal('1')))
+        if data.get('status') != 'success' or int(data.get('amount', -1)) != expected_cents:
+            _notify_pending_signup_payment_failed(
+                pending,
+                "Your card was not charged, so your TruckWys account was not created. Your registration details "
+                "are saved — you can try the payment again.",
+            )
+            return Response({'detail': 'Payment was not successful.'}, status=status.HTTP_402_PAYMENT_REQUIRED)
+
+        authorization = data.get('authorization') or {}
+        customer = data.get('customer') or {}
+
+        from core.services.subscription_billing import billing_at_for_date
+
+        with db_transaction.atomic():
+            user = User.objects.create(
+                email=pending.email, username=pending.username,
+                first_name=pending.first_name, last_name=pending.last_name,
+                password=pending.password_hash, is_active=True,
+            )
+            first_billing_date = add_one_month(timezone.now().date())
+            company = Company.objects.create(
+                company_name=pending.company_name,
+                subscription_plan='pro', subscription_status='active',
+                paystack_authorization_code=authorization.get('authorization_code', '') or '',
+                paystack_authorization_email=customer.get('email') or pending.email,
+                paystack_card_last4=authorization.get('last4', '') or '',
+                paystack_card_type=authorization.get('card_type', '') or '',
+                paystack_bank=authorization.get('bank', '') or '',
+                paystack_customer_code=customer.get('customer_code', '') or '',
+                subscription_start=timezone.now(),
+                next_billing_date=first_billing_date,
+                next_billing_at=billing_at_for_date(first_billing_date),
+            )
+            user.company = company
+            user.role = 'ADMIN'
+            user.save()
+
+            Facility.objects.create(company=company, limit=1000000, outstanding=0, status='ACTIVE')
+            seed_default_vehicle_types(company)
+
+            BillingTransaction.objects.create(
+                company=company, amount=MONTHLY_FEE, payment_id=reference,
+                status='complete', plan='pro', payment_status='success',
+                gateway_transaction_id=str(data.get('id', '')), raw_gateway_response=data,
+            )
+            pending.delete()
+
+        from core.services.email_service import send_billing_email
+        send_billing_email(
+            user.email, user.first_name or user.username, 'Welcome to TruckWys — payment confirmed',
+            f'Your subscription is active: R{MONTHLY_FEE:,.2f}/month charged to your card ending '
+            f'{authorization.get("last4", "")}. Your next charge is due {company.next_billing_date.strftime("%d %b %Y")}.',
+            link='/settings/billing',
         )
-        return Response({'token': session.key, 'user': UserSerializer(user).data})
+        return complete_login(user, request)
+
+
+class RetrySignupPaymentView(APIView):
+    """POST /api/v1/auth/retry-signup-payment/ {"email": "...", "return_url": "..."}
+
+    A failed/abandoned signup checkout doesn't lose the registration — the
+    PendingSignup row survives, so this just starts a fresh Paystack checkout
+    against the same pending details rather than making them register again.
+    """
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
+
+    def post(self, request):
+        from core.models import PendingSignup
+        from core.services import paystack
+        from core.services.paystack import MONTHLY_FEE
+
+        email = request.data.get('email', '').strip().lower()
+        return_url = request.data.get('return_url', '')
+        if not email:
+            return Response({'detail': 'email is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        pending = PendingSignup.objects.filter(email=email, email_verified=True).first()
+        if not pending:
+            return Response({'detail': 'No pending signup found. Please register again.'}, status=status.HTTP_400_BAD_REQUEST)
+        if User.objects.filter(email__iexact=email).exists():
+            return Response({'detail': 'This account has already been created. Please log in.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        result = paystack.initialize_transaction(
+            email=email, amount=MONTHLY_FEE, callback_url=return_url,
+            metadata={'signup_email': email},
+        )
+        if not result['success']:
+            return Response({'detail': f"Could not start checkout: {result['error']}"}, status=status.HTTP_502_BAD_GATEWAY)
+
+        pending.paystack_reference = result['data']['reference']
+        pending.payment_failed_notified_at = None  # fresh checkout — re-arm the failure-email guard
+        pending.save(update_fields=['paystack_reference', 'payment_failed_notified_at', 'updated_at'])
+
+        return Response({
+            'authorization_url': result['data']['authorization_url'],
+            'reference': pending.paystack_reference,
+        })
 
 
 class ResendVerificationView(APIView):
@@ -199,22 +362,22 @@ class ResendVerificationView(APIView):
 
     def post(self, request):
         import secrets
-        import logging
-        from django.core.cache import cache
-        from core.services.email_service import send_verification_email
+        from core.models import PendingSignup
 
         email = request.data.get('email', '').strip().lower()
         if not email:
             return Response({'detail': 'email is required.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        pending = cache.get(f'pending_registration_{email}')
+        pending = PendingSignup.objects.filter(email=email).first()
         if not pending:
             return Response({'detail': 'No pending registration found. Please register again.'}, status=status.HTTP_400_BAD_REQUEST)
 
         otp_code = str(secrets.randbelow(900000) + 100000)
-        cache.set(f'email_verify_{email}', otp_code, timeout=600)
+        pending.otp_code = otp_code
+        pending.otp_expires_at = timezone.now() + timedelta(minutes=10)
+        pending.save(update_fields=['otp_code', 'otp_expires_at', 'updated_at'])
         from core.tasks import send_verification_email_task
-        send_verification_email_task(email, otp_code, pending.get('first_name') or pending.get('username') or email)
+        send_verification_email_task(email, otp_code, pending.first_name or pending.username or email)
         return Response({'detail': 'Verification code resent. Please check your email.'})
 
 
@@ -273,6 +436,7 @@ def complete_login(user, request):
         user_agent=(request.META.get('HTTP_USER_AGENT', '') or '')[:512],
         ip_address=ip,
     )
+    log_auth_event(user, 'login', request=request, session=session)
     if is_new_device and (user.security_settings or {}).get('login_alerts', True):
         from core.tasks import send_login_alert_email_task
         send_login_alert_email_task(
@@ -280,7 +444,9 @@ def complete_login(user, request):
             device, ip or 'Unknown',
             timezone.localtime().strftime('%d %b %Y, %H:%M'),
         )
-    return Response({'token': session.key, 'user': UserSerializer(user).data})
+    # context is required so ImageField URLs (avatar) come back absolute,
+    # matching auth/me/ — a relative /media/... URL 404s on the Vite origin.
+    return Response({'token': session.key, 'user': UserSerializer(user, context={'request': request}).data})
 
 
 class LoginView(APIView):
@@ -445,6 +611,7 @@ class LogoutView(APIView):
         # SessionAuthentication (admin/browsable API), so guard the type.
         session = request.auth
         if isinstance(session, UserSession):
+            log_auth_event(request.user, 'logout', request=request, session=session)
             session.delete()
         return Response({'message': 'Successfully logged out'})
 
@@ -474,6 +641,8 @@ class DeleteAccountView(APIView):
     permission_classes = [IsAuthenticated]
 
     def delete(self, request):
+        import uuid
+
         password = request.data.get('password') or ''
         if not request.user.check_password(password):
             return Response({'error': 'Password is incorrect'}, status=status.HTTP_400_BAD_REQUEST)
@@ -489,9 +658,18 @@ class DeleteAccountView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
+        # Free up the email/username so this person can sign up again later
+        # with a brand new account. Without this, the soft-deleted row keeps
+        # occupying both forever: `username` is DB-unique (and defaults to
+        # the email at registration), and every signup view treats email as
+        # effectively unique via an existence check — so "deleting" your
+        # account would otherwise permanently block re-registering with it.
+        tag = uuid.uuid4().hex[:12]
         request.user.is_active = False
         request.user.status = 'INACTIVE'
-        request.user.save(update_fields=['is_active', 'status'])
+        request.user.email = f'deleted-{tag}+{request.user.email}'
+        request.user.username = f'deleted-{tag}-{request.user.username}'[:150]
+        request.user.save(update_fields=['is_active', 'status', 'email', 'username'])
         request.user.sessions.all().delete()
 
         return Response({'detail': 'Account deleted'})
@@ -534,50 +712,273 @@ class SessionsView(APIView):
         } for s in request.user.sessions.all()]
         return Response(data)
 
-    def delete(self, request, session_id):
+    def delete(self, request, session_id=None):
+        if session_id is None:
+            # Bulk revoke: DELETE auth/sessions/?scope=others|all. 'others'
+            # keeps the current device signed in; 'all' kills it too (the
+            # client is expected to clear its token and return to login).
+            scope = (request.query_params.get('scope') or '').lower()
+            if scope not in ('others', 'all'):
+                return Response(
+                    {'detail': "scope must be 'others' or 'all'."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            current = request.auth if isinstance(request.auth, UserSession) else None
+            qs = request.user.sessions.all()
+            if scope == 'others' and current is not None:
+                qs = qs.exclude(pk=current.pk)
+            count = qs.count()
+            qs.delete()
+            # One aggregate activity row per bulk action, not one per session —
+            # keeps the 10-row activity feed from being flooded.
+            log_auth_event(
+                request.user, f'revoked_{scope}', request=request,
+                device=f"{count} session{'s' if count != 1 else ''}", count=count,
+            )
+            return Response({'revoked': count})
+
         # Scope the lookup to the user's own sessions — a missing or non-owned
         # id both return 404 (no existence leak).
         try:
             session = request.user.sessions.get(id=session_id)
         except UserSession.DoesNotExist:
             return Response({'detail': 'Session not found.'}, status=status.HTTP_404_NOT_FOUND)
+        log_auth_event(request.user, 'revoked', request=request, session=session)
         session.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+class LoginActivityView(APIView):
+    """Last 10 auth events (sign-ins / sign-outs / revocations) for this user.
+
+    Backed by AuditLog rows written via log_auth_event; the action filter keeps
+    business audit rows (CREATE/UPDATE/... written by signals) out of the feed.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from .models.audit_log import AuditLog
+        rows = AuditLog.objects.filter(
+            user=request.user, action__in=('LOGIN', 'LOGOUT'),
+        )[:10]  # Meta.ordering is -created_at; (user, -created_at) is indexed
+        return Response([{
+            'id': r.id,
+            'action': r.action,
+            'event': (r.details or {}).get('event') or ('login' if r.action == 'LOGIN' else 'logout'),
+            'device': (r.details or {}).get('device') or 'Unknown device',
+            'ip': r.ip_address or 'Unknown',
+            'time': r.created_at.isoformat(),
+        } for r in rows])
+
+
+
+# Canonical notification-preference schema, shared by the web and mobile
+# clients. `product_news` defaults False on purpose: App Store Review 4.5.4
+# forbids using push for marketing or promotion without an express opt-in, so
+# campaign sends must be off until the user turns them on.
+NOTIFICATION_DEFAULTS = {
+    "email": {
+        "quotes": True,
+        "invoices": True,
+        "payments": True,
+        "fleet_alerts": True,
+        "weekly_reports": False,
+    },
+    "push": {
+        "new_bookings": True,
+        "payment_received": True,
+        "maintenance_due": True,
+        "driver_updates": False,
+        "product_news": False,
+    },
+    "sms": {"critical_alerts": False, "payment_confirmations": False},
+}
+
+
+def _merged_notification_settings(user):
+    """Stored prefs layered over the canonical defaults.
+
+    Older rows hold a legacy schema (push: quotes/bookings/alerts/messages).
+    Merging per channel and keeping only known keys migrates those rows lazily
+    on read, so a client never receives a key it doesn't understand — and never
+    misses one it does.
+    """
+    stored = user.notification_settings or {}
+    merged = {}
+    for channel, defaults in NOTIFICATION_DEFAULTS.items():
+        incoming = stored.get(channel) or {}
+        merged[channel] = {
+            key: bool(incoming.get(key, default)) for key, default in defaults.items()
+        }
+    return merged
+
 
 class NotificationSettingsView(APIView):
+    """Per-user notification preferences, validated against the canonical
+    schema (core/services/notification_prefs.py). Single write path — the
+    field is read-only everywhere else. Preferences gate delivery (toast,
+    browser push, email); bell history is never filtered.
+    """
     permission_classes = [IsAuthenticated]
-    
+
     def get(self, request):
-        # Default settings if none exist
-        default_settings = {
-            "email": { "quotes": True, "bookings": True, "invoices": False, "alerts": True, "marketing": False },
-            "push": { "quotes": True, "bookings": True, "alerts": True, "messages": False },
-            "sms": { "alerts": True, "confirmations": False }
-        }
-        settings = request.user.notification_settings
-        if not settings:
-            settings = default_settings
-        return Response(settings)
-    
+        return Response(_merged_notification_settings(request.user))
+
     def patch(self, request):
+        from core.services.notification_prefs import NOTIFICATION_DEFAULTS, get_prefs
+        if not isinstance(request.data, dict):
+            return Response({'detail': 'Body must be a JSON object of channels.'},
+                            status=status.HTTP_400_BAD_REQUEST)
         user = request.user
-        settings = user.notification_settings or {
-            "email": { "quotes": True, "bookings": True, "invoices": False, "alerts": True, "marketing": False },
-            "push": { "quotes": True, "bookings": True, "alerts": True, "messages": False },
-            "sms": { "alerts": True, "confirmations": False }
-        }
-        
-        for key, value in request.data.items():
-            if isinstance(value, dict) and key in settings:
-                settings[key].update(value)
-            else:
-                settings[key] = value
-        
+        settings = _merged_notification_settings(user)
+
+        for channel, value in request.data.items():
+            if channel not in NOTIFICATION_DEFAULTS or not isinstance(value, dict):
+                continue
+            for key, enabled in value.items():
+                # Ignore unknown keys rather than letting clients write
+                # arbitrary JSON into the preferences blob.
+                if key in NOTIFICATION_DEFAULTS[channel]:
+                    settings[channel][key] = bool(enabled)
+
         user.notification_settings = settings
-        user.save()
-        return Response(user.notification_settings)
+        user.save(update_fields=['notification_settings'])
+        return Response(settings)
+
+
+class FcmDeviceView(APIView):
+    """Register / unregister this device's FCM token for the signed-in user.
+
+    POST is an upsert keyed on the token: one physical device is one row, so the
+    same handset signing into a different account moves to that account rather
+    than leaving two owners subscribed to it.
+
+    Rate-limited, length-bounded and capped per user — an authenticated client
+    should not be able to grow this table without limit, and an unbounded row
+    count per user would turn one business event into an unbounded fan-out.
+    """
+
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
+
+    # FCM registration tokens are ~150-260 chars today. Accept generous slack,
+    # reject anything that is clearly not a token.
+    MAX_TOKEN_LEN = 4096
+    # Newest N kept per user; older rows are pruned on registration.
+    MAX_DEVICES_PER_USER = 10
+
+    def _token(self, request):
+        token = (request.data.get('token') or '').strip()
+        if not token or len(token) > self.MAX_TOKEN_LEN:
+            return None
+        return token
+
+    def post(self, request):
+        token = self._token(request)
+        if not token:
+            return Response({'detail': 'A valid token is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        platform = (request.data.get('platform') or '').strip().lower()
+        if platform not in ('ios', 'android'):
+            platform = ''
+
+        existing_owner = (
+            FcmDevice.objects.filter(token=token).values_list('user_id', flat=True).first()
+        )
+        device, created = FcmDevice.objects.update_or_create(
+            token=token,
+            defaults={
+                'user': request.user,
+                'platform': platform,
+                'device_name': str(request.data.get('device_name') or '')[:200],
+                'app_version': str(request.data.get('app_version') or '')[:20],
+            },
+        )
+        if existing_owner and existing_owner != request.user.id:
+            # Expected when a shared handset changes hands, but worth an audit
+            # trail: it is also what a stolen-token replay would look like.
+            _exc_logger.warning(
+                'FCM device %s reassigned from user %s to %s',
+                device.id, existing_owner, request.user.id,
+            )
+
+        # Prune this user's oldest registrations beyond the cap.
+        stale = list(
+            FcmDevice.objects.filter(user=request.user)
+            .order_by('-last_used_at')
+            .values_list('id', flat=True)[self.MAX_DEVICES_PER_USER:]
+        )
+        if stale:
+            FcmDevice.objects.filter(id__in=stale).delete()
+
+        return Response(
+            {'id': device.id, 'created': created},
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+    def delete(self, request):
+        token = self._token(request)
+        if not token:
+            return Response({'detail': 'A valid token is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        # Scoped to the requesting user so a token can't be used to unregister
+        # somebody else's device.
+        FcmDevice.objects.filter(token=token, user=request.user).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class VapidPublicKeyView(APIView):
+    """Serve the VAPID public key so the browser can subscribe to Web Push."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from core.services.web_push import vapid_configured
+        if not vapid_configured():
+            return Response(
+                {'detail': 'Web push is not configured on this server.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        return Response({'public_key': settings.VAPID_PUBLIC_KEY})
+
+
+class PushSubscriptionView(APIView):
+    """Register / unregister a browser's Web Push subscription for the
+    signed-in user. POST is an upsert keyed on the endpoint URL, matching the
+    equivalent FcmDeviceView pattern for the mobile app."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        endpoint = (request.data.get('endpoint') or '').strip()
+        keys = request.data.get('keys') or {}
+        p256dh = (keys.get('p256dh') or '').strip()
+        auth = (keys.get('auth') or '').strip()
+        if not endpoint or not p256dh or not auth:
+            return Response(
+                {'detail': 'endpoint and keys.p256dh/auth are required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        sub, created = PushSubscription.objects.update_or_create(
+            endpoint=endpoint,
+            defaults={
+                'user': request.user,
+                'p256dh': p256dh,
+                'auth': auth,
+                'user_agent': request.META.get('HTTP_USER_AGENT', '')[:300],
+            },
+        )
+        return Response(
+            {'id': sub.id, 'created': created},
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+    def delete(self, request):
+        endpoint = (request.data.get('endpoint') or '').strip()
+        if not endpoint:
+            return Response({'detail': 'endpoint is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        # Scoped to the requesting user so an endpoint can't be used to
+        # unregister somebody else's subscription.
+        PushSubscription.objects.filter(endpoint=endpoint, user=request.user).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class SecuritySettingsView(APIView):
@@ -1751,28 +2152,48 @@ class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
             )
 
         load.status = new_status
+        # Read by the Load post_save signal so the acting user isn't notified
+        # about their own status change. ASSIGNED/IN_TRANSIT/DELIVERED/
+        # CANCELLED already get a specific, nicer-worded notification from
+        # that signal — only send this generic one for statuses it doesn't
+        # cover (PENDING/LOADING/INVOICED), so the company isn't told twice.
+        load._notify_actor_id = request.user.id
         load.save()
-        try:
-            from core.services.notify import notify_company
-            notify_company(
-                getattr(load, 'company_id', None),
-                'INFO',
-                'Booking status updated',
-                f'{load.load_number or ("Load " + str(load.id))} → {new_status}',
-                link=f'/bookings/{load.id}',
-                event='booking.status',
-            )
-        except Exception:
-            pass
+        _SIGNAL_HANDLED_STATUSES = {'ASSIGNED', 'IN_TRANSIT', 'DELIVERED', 'CANCELLED'}
+        if new_status not in _SIGNAL_HANDLED_STATUSES:
+            try:
+                from core.services.notify import notify_company
+                notify_company(
+                    getattr(load, 'company_id', None),
+                    'INFO',
+                    'Booking status updated',
+                    f'{load.load_number or ("Load " + str(load.id))} → {new_status}',
+                    link=f'/bookings/{load.id}',
+                    event='booking.status',
+                    exclude_user_id=request.user.id,
+                )
+            except Exception:
+                pass
         serializer = self.get_serializer(load)
         return Response(serializer.data)
 
     @action(detail=True, methods=['post'])
     def assign_driver(self, request, pk=None):
-        """Assign driver and vehicle to load"""
+        """Assign (or clear) driver and vehicle on a load. Body: { driver_id?, vehicle_id? }
+
+        Both fields together assign; both blank clears the assignment. A lone
+        one of the two is rejected as ambiguous — same rule as converting a
+        quote to a booking.
+        """
         load = self.get_object()
         driver_id = request.data.get('driver_id')
         vehicle_id = request.data.get('vehicle_id')
+
+        if bool(driver_id) != bool(vehicle_id):
+            return Response(
+                {'error': 'Provide both a driver and vehicle, or clear both to unassign'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         # Verify driver and vehicle belong to the requesting user's company
         if driver_id:
@@ -1787,9 +2208,15 @@ class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
                 return Response({'error': 'Vehicle not found'}, status=status.HTTP_404_NOT_FOUND)
 
         try:
-            load.driver_id = driver_id
-            load.vehicle_id = vehicle_id
-            load.status = 'ASSIGNED'
+            load.driver_id = driver_id or None
+            load.vehicle_id = vehicle_id or None
+            # Only move status at the two ends of the assignment lifecycle —
+            # don't downgrade a load that's already further along (loading,
+            # in transit, ...) just because its driver/vehicle got corrected.
+            if driver_id and vehicle_id and load.status == 'PENDING':
+                load.status = 'ASSIGNED'
+            elif not driver_id and not vehicle_id and load.status == 'ASSIGNED':
+                load.status = 'PENDING'
             load.save()
             serializer = self.get_serializer(load)
             return Response(serializer.data)
@@ -1820,10 +2247,14 @@ class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
                 'invoice_number': existing.invoice_number,
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        invoice, created = create_invoice_for_load(
-            load,
-            company=getattr(load, 'company', None) or getattr(request.user, 'company', None),
-        )
+        company = getattr(load, 'company', None) or getattr(request.user, 'company', None)
+        if company is not None and company.subscription_status in ('suspended', 'cancelled'):
+            return Response({
+                'error': 'Update your payment method to continue quoting.',
+                'account_suspended': True,
+            }, status=status.HTTP_402_PAYMENT_REQUIRED)
+
+        invoice, created = create_invoice_for_load(load, company=company)
         if not invoice:
             return Response({
                 'error': 'Load cannot be invoiced (needs a customer and a positive amount)',
@@ -1937,6 +2368,21 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
             )
         
         quote.status = new_status
+        # Read by the Quote post_save signal: an authenticated user made this
+        # change, so exclude them from their own "quote accepted/declined/…"
+        # notification — everyone else in the company still gets it. And for
+        # ACCEPTED/IT specifically, this view sends that notification itself
+        # right below (it needs the request-scoped actor), so tell the signal
+        # not to send its own copy too — otherwise the company gets it twice.
+        quote._notify_actor_id = request.user.id
+        if new_status in ('ACCEPTED', 'IT'):
+            quote._notify_handled = True
+        elif new_status == 'DECLINED':
+            # Set BEFORE save(), not after: the post_save signal (which builds
+            # the decline notification) fires during this save, and
+            # record_quote_outcome below wouldn't run until after — a
+            # notification built from the pre-decline (blank) value.
+            quote.rejection_reason = str(request.data.get('rejection_reason') or '')
         quote.save()
 
         # Status changes that decide the quote are ML training labels too.
@@ -1945,18 +2391,19 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
             record_quote_outcome(
                 quote,
                 'accepted' if new_status in ('ACCEPTED', 'IT') else 'rejected',
-                rejection_reason=str(request.data.get('rejection_reason') or ''),
+                rejection_reason=quote.rejection_reason if new_status == 'DECLINED' else '',
             )
 
         if new_status in ('ACCEPTED', 'IT'):
             try:
                 from core.services.notify import notify_company
+                from core.services.notify_copy import quote_accepted_copy
+                title, detail = quote_accepted_copy(quote)
                 notify_company(
                     getattr(quote, 'company_id', None),
-                    'SUCCESS', 'Quote accepted',
-                    f'{getattr(quote, "quote_number", None) or ("Quote " + str(quote.id))}'
-                    + (f' · {quote.customer.name}' if getattr(quote, 'customer', None) else ''),
-                    link=f'/quotes/{quote.id}', event='quote.accepted',
+                    'SUCCESS', title, detail,
+                    link=f'/bookings/quotes/{quote.id}', event='quote.accepted',
+                    exclude_user_id=request.user.id,
                 )
             except Exception:
                 pass
@@ -1965,7 +2412,16 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def convert_to_load(self, request, pk=None):
-        """Convert quote to load"""
+        """Convert quote to load. Body: { driver_id?, vehicle_id? }
+
+        A quote only captures a vehicle TYPE (category) for pricing — not a
+        real unit or person, since most quotes are sent before it's known
+        whether the customer will accept. Converting is a natural point to
+        commit a specific driver + vehicle, but it's optional — the caller
+        can supply both to assign now, or omit both to skip and assign later
+        via the existing assign_driver action. A lone one of the two is
+        rejected as ambiguous.
+        """
         import secrets
         quote = self.get_object()
 
@@ -1976,10 +2432,39 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        driver_id = request.data.get('driver_id')
+        vehicle_id = request.data.get('vehicle_id')
+        if bool(driver_id) != bool(vehicle_id):
+            return Response(
+                {'error': 'Select both a driver and vehicle, or leave both blank to assign later'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        driver = None
+        vehicle = None
+        if driver_id and vehicle_id:
+            try:
+                driver = Driver.objects.get(id=driver_id, company=request.user.company)
+            except Driver.DoesNotExist:
+                return Response({'error': 'Driver not found'}, status=status.HTTP_404_NOT_FOUND)
+            try:
+                vehicle = Vehicle.objects.get(id=vehicle_id, company=request.user.company)
+            except Vehicle.DoesNotExist:
+                return Response({'error': 'Vehicle not found'}, status=status.HTTP_404_NOT_FOUND)
+
         # Auto-generate unique load_number
         load_number = f'LOAD-{timezone.now().strftime("%Y%m%d")}-{secrets.randbelow(9000) + 1000}'
         while Load.objects.filter(load_number=load_number).exists():
             load_number = f'LOAD-{timezone.now().strftime("%Y%m%d")}-{secrets.randbelow(9000) + 1000}'
+
+        # Quote.pickup_date/delivery_date are plain dates; Load's equivalents
+        # are DateTimeFields, so a bare date must become a tz-aware datetime
+        # first — assigning the date object directly serializes fine on
+        # save() but blows up (AttributeError) the moment DRF's DateTimeField
+        # tries to enforce_timezone() on the response.
+        def _date_to_aware_datetime(d):
+            if not d:
+                return None
+            return timezone.make_aware(datetime.combine(d, datetime.min.time()))
 
         # Create load from quote (stamp the company so it's tenant-scoped/visible)
         load = Load.objects.create(
@@ -1987,18 +2472,21 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
             company=getattr(quote, 'company', None) or getattr(request.user, 'company', None),
             customer=quote.customer,
             quote=quote,
-            driver=quote.driver,
-            vehicle=quote.vehicle,
+            driver=driver,
+            vehicle=vehicle,
             pickup_location=quote.pickup_location,
             delivery_location=quote.delivery_location,
             pickup_city=quote.origin or 'TBD',
             pickup_state='GP',
             pickup_zip='0000',
-            pickup_date=timezone.now() + timedelta(days=2),
+            # Use the quote's own dates when it has them (now reliably
+            # captured via the AI/voice quote flow) instead of always
+            # discarding them for a generic +2/+4 day placeholder.
+            pickup_date=_date_to_aware_datetime(quote.pickup_date) or (timezone.now() + timedelta(days=2)),
             delivery_city=quote.destination or 'TBD',
             delivery_state='GP',
             delivery_zip='0000',
-            delivery_date=timezone.now() + timedelta(days=4),
+            delivery_date=_date_to_aware_datetime(quote.delivery_date) or (timezone.now() + timedelta(days=4)),
             cargo_description=quote.cargo_description,
             weight=quote.weight,
             distance=quote.distance,
@@ -2006,7 +2494,7 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
             fuel_surcharge=quote.fuel_surcharge,
             additional_charges=quote.additional_charges,
             total_amount=quote.total_amount,
-            status='PENDING',
+            status='ASSIGNED' if (driver and vehicle) else 'PENDING',
             created_by=request.user
         )
 
@@ -2187,11 +2675,17 @@ class PublicQuoteRespondView(APIView):
                 })
             else:  # decline
                 quote.status = 'DECLINED'
+                # Set BEFORE save(), not after: the post_save signal (which
+                # builds the decline notification and surfaces this reason in
+                # it) fires during this save — record_quote_outcome below
+                # wouldn't run until afterward, which would leave the
+                # notification reading a blank reason.
+                quote.rejection_reason = str(request.data.get('reason') or 'Declined via client link')
                 quote.save()
                 from core.services.quote_outcome_capture import record_quote_outcome
                 record_quote_outcome(
                     quote, 'rejected',
-                    rejection_reason=str(request.data.get('reason') or 'Declined via client link'),
+                    rejection_reason=quote.rejection_reason,
                 )
                 return Response({
                     'message': 'Quote declined',
@@ -2327,7 +2821,10 @@ class SettlementViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         return Response(serializer.data)
 
 
-class NotificationViewSet(viewsets.ModelViewSet):
+class NotificationViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
+                          viewsets.GenericViewSet):
+    """Read-only notification feed + mark-read actions. Rows are created by
+    notify_company only — no client create/update/delete."""
     serializer_class = NotificationSerializer
     permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
@@ -2337,19 +2834,29 @@ class NotificationViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         """Return notifications for the current user"""
         queryset = Notification.objects.filter(user=self.request.user)
-        
+
         unread_only = self.request.query_params.get('unread')
         if unread_only == 'true':
             queryset = queryset.filter(is_read=False)
-            
-        limit = self.request.query_params.get('limit')
+
+        return queryset
+
+    def list(self, request, *args, **kwargs):
+        # ?limit=N slices here (list only) so mark-read/unread_count and detail
+        # routes can still filter/update the unsliced queryset.
+        queryset = self.filter_queryset(self.get_queryset())
+        limit = request.query_params.get('limit')
         if limit:
             try:
                 queryset = queryset[:int(limit)]
             except ValueError:
                 pass
-                
-        return queryset
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
 
     @action(detail=False, methods=['post'], url_path='mark-read')
     def mark_read_bulk(self, request):
@@ -2534,6 +3041,26 @@ class RouteCalculatorView(APIView):
         else:
             countries = detect_countries(origin_label, dest_label, origin_iso, dest_iso)
         cross_border = countries is not None and len(countries) > 1
+
+        # Company policy gate: a route that genuinely crosses a border always
+        # gets detected (above) regardless of any client-side toggle — but a
+        # company whose fleet/insurance isn't set up for cross-border work
+        # can't actually run this load at all, so refuse rather than silently
+        # price it.
+        if cross_border:
+            company = getattr(request.user, 'company', None)
+            if company is not None and getattr(company, 'allow_cross_border', True) is False:
+                return Response({
+                    'success': False,
+                    'error': 'cross_border_not_allowed',
+                    'message': (
+                        f"This route crosses into {'/'.join(countries[1:])}, but your "
+                        "company isn't set up for cross-border routes. An admin can "
+                        "enable this in company settings, or choose a domestic "
+                        "destination for this quote."
+                    ),
+                    'countries': countries,
+                }, status=status.HTTP_403_FORBIDDEN)
 
         # Toll cost — matched PER ROUTE via point-to-polyline plaza matching.
         # resolve_toll_truck_type handles exact names, DB VehicleType names
@@ -3373,10 +3900,11 @@ class InviteTokenView(APIView):
             user_agent=(request.META.get('HTTP_USER_AGENT', '') or '')[:512],
             ip_address=client_ip(request),
         )
+        log_auth_event(user, 'login', request=request, session=session)
 
         return Response({
             'token': session.key,
-            'user': UserSerializer(user).data
+            'user': UserSerializer(user, context={'request': request}).data
         }, status=status.HTTP_200_OK)
 
 

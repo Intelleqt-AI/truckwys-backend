@@ -25,12 +25,16 @@ from .copilot_message import CopilotMessage, CopilotConversation, CopilotUserMem
 from .copilot_proposal import CopilotProposal
 from .webhook_subscription import WebhookSubscription
 from .billing import BillingTransaction
+from .delivery_fee_charge import DeliveryFeeCharge
 from .invite_token import InviteToken
 from .fuel_price import FuelPrice
 from .toll_plaza import TollPlaza
 from .rag_chunk import InvoiceEmbedding
 from .border_crossing_fee import BorderCrossingFee
 from .country_transit_rate import CountryTransitRate
+from .fcm_device import FcmDevice
+from .push_subscription import PushSubscription
+from .pending_signup import PendingSignup
 
 __all__ = [
     'User',
@@ -65,10 +69,14 @@ __all__ = [
     'ActivityEvent',
     'WebhookSubscription',
     'BillingTransaction',
+    'DeliveryFeeCharge',
     'InviteToken',
     'FuelPrice',
     'TollPlaza',
     'InvoiceEmbedding',
     'BorderCrossingFee',
     'CountryTransitRate',
+    'FcmDevice',
+    'PushSubscription',
+    'PendingSignup',
 ]

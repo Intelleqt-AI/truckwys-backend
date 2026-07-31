@@ -4,6 +4,7 @@ from .models import (
     User, Customer, Driver, Vehicle, VehicleLog, VehicleType, Load,
     Quote, Invoice, Payment, Expense, Settlement, Notification, Company, ActivityEvent
 )
+from .serializers_billing import DeliveryFeeChargeSerializer
 
 # User Serializer
 class UserSerializer(serializers.ModelSerializer):
@@ -37,8 +38,11 @@ class UserSerializer(serializers.ModelSerializer):
                   'role', 'status', 'phone', 'address', 'timezone', 'language', 'date_format',
                   'notification_settings', 'avatar', 'last_active', 'is_active', 'created_at', 'updated_at',
                   'is_superuser', 'company_id', 'company_name']
+        # notification_settings is read-only here: the validated
+        # NotificationSettingsView is the single write path for preferences.
         read_only_fields = ['id', 'created_at', 'updated_at', 'last_active',
-                           'is_superuser', 'company_id', 'company_name']
+                           'is_superuser', 'company_id', 'company_name',
+                           'notification_settings']
         extra_kwargs = {'password': {'write_only': True, 'required': False}}
 
     def validate_email(self, value):
@@ -275,14 +279,29 @@ class QuoteSerializer(serializers.ModelSerializer):
         fields = '__all__'
         read_only_fields = ['id', 'created_at', 'updated_at', 'created_by']
 
+    def _converted_load(self, obj):
+        # Assignment happens on the Load this quote was converted into (at
+        # conversion time or later from the Bookings page) — nothing syncs it
+        # back onto the quote's own vehicle/driver fields, so look there first.
+        # A quote converts to at most one load (convert_to_load blocks a
+        # second conversion), so the most recent is unambiguous. Not cached on
+        # self — this serializer instance is reused across every item when
+        # DRF serializes a list, so instance-level caching would leak the
+        # first quote's load onto every other quote in the list.
+        return obj.loads.select_related('vehicle', 'driver__user').order_by('-id').first()
+
     def get_vehicle_display(self, obj):
-        if obj.vehicle:
-            return f"{obj.vehicle.make} {obj.vehicle.model} ({obj.vehicle.plate})"
+        load = self._converted_load(obj)
+        vehicle = (load.vehicle if load else None) or obj.vehicle
+        if vehicle:
+            return f"{vehicle.make} {vehicle.model} ({vehicle.plate})"
         return None
 
     def get_driver_display(self, obj):
-        if obj.driver:
-            u = obj.driver.user
+        load = self._converted_load(obj)
+        driver = (load.driver if load else None) or obj.driver
+        if driver:
+            u = driver.user
             name = f"{u.first_name} {u.last_name}".strip() or u.username
             return name
         return None
@@ -292,11 +311,21 @@ class QuoteSerializer(serializers.ModelSerializer):
 class InvoiceSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source='customer.name', read_only=True)
     load_number = serializers.CharField(source='load.load_number', read_only=True)
-    
+    # The 0.25% take-rate charge on this invoice, if any — lets the operator
+    # see directly on the invoice whether/when the platform fee was taken.
+    # SerializerMethodField (not a plain nested serializer): the reverse
+    # OneToOneField raises DoesNotExist for any invoice with no charge yet
+    # (drafts, pre-this-feature invoices) — getattr's default swallows that.
+    delivery_fee_charge = serializers.SerializerMethodField()
+
     class Meta:
         model = Invoice
         fields = '__all__'
         read_only_fields = ['id', 'company', 'created_at', 'updated_at']
+
+    def get_delivery_fee_charge(self, obj):
+        charge = getattr(obj, 'delivery_fee_charge', None)
+        return DeliveryFeeChargeSerializer(charge).data if charge else None
 
 
 # Payment Serializer
