@@ -95,3 +95,23 @@ def notify_company(company_id, ntype: str, title: str, message: str = '', link: 
                 })
     except Exception as exc:
         logger.warning('notify_company mobile push failed: %s', exc)
+
+
+def notify_company_billing_email(company_id, title: str, message: str = '', link: str = ''):
+    """Mandatory billing email to every ADMIN of the company — every
+    subscription charge, take-rate charge, cancellation, failure, and freeze,
+    whether it succeeded or not. Deliberately NOT gated by notification
+    preferences (see send_billing_email) and NOT sent to every company user
+    (only admins manage billing) — call this ALONGSIDE notify_company, which
+    still handles the in-app bell/toast for everyone. Never raises.
+    """
+    if not company_id:
+        return
+    try:
+        from core.models import User
+        from core.services.email_service import send_billing_email
+        admins = User.objects.filter(company_id=company_id, is_active=True, role='ADMIN')
+        for u in admins:
+            send_billing_email(u.email, u.first_name or u.username, title, message, link)
+    except Exception as exc:
+        logger.warning('notify_company_billing_email failed: %s', exc)

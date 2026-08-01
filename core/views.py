@@ -265,12 +265,15 @@ class CompleteSignupView(APIView):
         authorization = data.get('authorization') or {}
         customer = data.get('customer') or {}
 
+        from core.services.subscription_billing import billing_at_for_date
+
         with db_transaction.atomic():
             user = User.objects.create(
                 email=pending.email, username=pending.username,
                 first_name=pending.first_name, last_name=pending.last_name,
                 password=pending.password_hash, is_active=True,
             )
+            first_billing_date = add_one_month(timezone.now().date())
             company = Company.objects.create(
                 company_name=pending.company_name,
                 subscription_plan='pro', subscription_status='active',
@@ -281,7 +284,8 @@ class CompleteSignupView(APIView):
                 paystack_bank=authorization.get('bank', '') or '',
                 paystack_customer_code=customer.get('customer_code', '') or '',
                 subscription_start=timezone.now(),
-                next_billing_date=add_one_month(timezone.now().date()),
+                next_billing_date=first_billing_date,
+                next_billing_at=billing_at_for_date(first_billing_date),
             )
             user.company = company
             user.role = 'ADMIN'

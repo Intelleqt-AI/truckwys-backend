@@ -23,6 +23,9 @@ NOTIFICATION_DEFAULTS = {
         "payment_received": True,
         "maintenance_due": True,
         "driver_updates": False,
+        # Defaults False: App Store Review 4.5.4 forbids marketing/promotion
+        # push without express opt-in. Mirrors core/views.py's NOTIFICATION_DEFAULTS.
+        "product_news": False,
     },
     # SMS is visible-but-disabled in the UI; kept in the schema so stored
     # values round-trip, but no sender consults it yet.
