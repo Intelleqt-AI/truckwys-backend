@@ -897,12 +897,33 @@ class AIVoiceQuoteView(APIView):
 
             import openai
             client = openai.OpenAI(api_key=openai_key)
-            # Explicit (name, bytes, content_type) tuple so Whisper detects the
-            # format from the extension. The frontend always sends a webm blob.
+            # Whisper keys off the filename's extension, not the multipart
+            # content-type, to detect the format — so the name passed here must
+            # match what the bytes actually are. Mobile sends real M4A/AAC;
+            # Safari's MediaRecorder falls back to MP4/AAC (it doesn't support
+            # audio/webm); only Chrome-family browsers actually send WebM. A
+            # filename hardcoded to "recording.webm" made every non-WebM
+            # upload undecodable to Whisper regardless of the bytes being
+            # perfectly valid audio — derive the extension from the upload's
+            # own (reliable, browser/RN-set) content-type instead.
+            content_type = (getattr(audio_file, 'content_type', '') or '').lower()
+            ext = {
+                'audio/webm': 'webm',
+                'audio/mp4': 'mp4',
+                'audio/m4a': 'm4a',
+                'audio/x-m4a': 'm4a',
+                'audio/mpeg': 'mp3',
+                'audio/mp3': 'mp3',
+                'audio/wav': 'wav',
+                'audio/wave': 'wav',
+                'audio/x-wav': 'wav',
+                'audio/ogg': 'ogg',
+                'audio/flac': 'flac',
+            }.get(content_type, 'webm')
             try:
                 transcript = client.audio.transcriptions.create(
                     model='whisper-1',
-                    file=('recording.webm', audio_bytes, 'audio/webm'),
+                    file=(f'recording.{ext}', audio_bytes, content_type or 'audio/webm'),
                 )
             except openai.OpenAIError as oe:
                 # Whisper rejected the audio (too short, undecodable format, etc.).
