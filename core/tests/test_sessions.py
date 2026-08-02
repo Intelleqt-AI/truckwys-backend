@@ -169,9 +169,9 @@ class SessionIdleTimeoutTestCase(TestCase):
         self.password = 'testpass123'
         self.user = User.objects.create_user(
             username='idleuser', email='idle@example.com', password=self.password,
-            # 2FA off so login returns a token directly. session_timeout is left
-            # unset so it takes its default (True) — the common case for real users.
-            security_settings={'two_factor': False, 'login_alerts': False},
+            # 2FA off so login returns a token directly. session_timeout is off
+            # by default, so it's explicit here — this fixture covers the "on" case.
+            security_settings={'two_factor': False, 'login_alerts': False, 'session_timeout': True},
         )
 
     def _login(self):
@@ -220,7 +220,7 @@ class SecuritySettingsTestCase(TestCase):
     def test_defaults_then_persist(self):
         resp = self.client.get('/api/v1/auth/security-settings/')
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        self.assertEqual(resp.json(), {'two_factor': True, 'session_timeout': True, 'login_alerts': True})
+        self.assertEqual(resp.json(), {'two_factor': False, 'session_timeout': False, 'login_alerts': True})
 
         resp = self.client.patch('/api/v1/auth/security-settings/', {'two_factor': False}, format='json')
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
@@ -319,7 +319,7 @@ class LoginTwoFactorTestCase(TestCase):
         self.password = 'testpass123'
         self.user = User.objects.create_user(
             username='tfa', email='tfa@example.com', password=self.password, first_name='Tara',
-            # two_factor defaults True; be explicit for clarity.
+            # two_factor is off by default — explicitly on since that's what this test covers.
             security_settings={'two_factor': True, 'login_alerts': True},
         )
 

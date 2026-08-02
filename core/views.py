@@ -493,7 +493,8 @@ class LoginView(APIView):
 
         # If 2FA is enabled (globally + for this user), issue an email OTP
         # challenge instead of a token. Nothing is created until it's verified.
-        two_factor_on = settings.LOGIN_2FA_ENABLED and (user.security_settings or {}).get('two_factor', True)
+        # Off by default — the user opts in via Settings > Security.
+        two_factor_on = settings.LOGIN_2FA_ENABLED and (user.security_settings or {}).get('two_factor', False)
         if not two_factor_on:
             return complete_login(user, request)
 
@@ -990,8 +991,8 @@ class SecuritySettingsView(APIView):
     permission_classes = [IsAuthenticated]
 
     DEFAULTS = {
-        "two_factor": True,
-        "session_timeout": True,
+        "two_factor": False,
+        "session_timeout": False,
         "login_alerts": True,
     }
 

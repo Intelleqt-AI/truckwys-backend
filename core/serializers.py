@@ -428,6 +428,7 @@ class CompanySerializer(serializers.ModelSerializer):
             'fuel_price_per_litre',
             'margin_at_risk_pct', 'margin_caution_pct', 'margin_target_pct',
             'default_toll_rate_per_km',
+            'onboarding_completed_at',
         ]
     
     def get_logo_url(self, obj):
