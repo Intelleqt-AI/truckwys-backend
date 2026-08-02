@@ -8,6 +8,14 @@ class Company(models.Model):
     website = models.URLField(blank=True)
     description = models.TextField(blank=True)
     logo = models.ImageField(upload_to='company_logos/', null=True, blank=True)
+
+    # Stamped once the admin skips or completes the post-signup onboarding
+    # wizard — the durable, per-company source of truth for "don't show
+    # onboarding again". Deliberately NOT keyed off vehicle count or any
+    # other business state (vehicles are optional/added later), and NOT
+    # solely a localStorage flag (that gets cleared on every logout, and
+    # doesn't exist on a different browser/device at all).
+    onboarding_completed_at = models.DateTimeField(null=True, blank=True)
     
     # Using JSONField for flexible nested structures as requested in the prompt
     address = models.JSONField(default=dict)

@@ -310,6 +310,9 @@ class QuoteSerializer(serializers.ModelSerializer):
 # Invoice Serializer
 class InvoiceSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source='customer.name', read_only=True)
+    # Lets a client offer "share this invoice on WhatsApp" without a second
+    # round-trip to the customer endpoint just for the number.
+    customer_phone = serializers.CharField(source='customer.phone', read_only=True)
     load_number = serializers.CharField(source='load.load_number', read_only=True)
     # The 0.25% take-rate charge on this invoice, if any — lets the operator
     # see directly on the invoice whether/when the platform fee was taken.
@@ -322,6 +325,24 @@ class InvoiceSerializer(serializers.ModelSerializer):
         model = Invoice
         fields = '__all__'
         read_only_fields = ['id', 'company', 'created_at', 'updated_at']
+        # Both are derivable server-side, so a client shouldn't have to send
+        # them. invoice_number especially: it's unique, and letting each client
+        # invent one (the web app used the last 6 digits of Date.now()) risks a
+        # collision that surfaces as an opaque 400.
+        extra_kwargs = {
+            'invoice_number': {'required': False},
+            'balance': {'required': False},
+        }
+
+    def create(self, validated_data):
+        if not validated_data.get('invoice_number'):
+            from core.services.invoicing import _unique_invoice_number
+            validated_data['invoice_number'] = _unique_invoice_number()
+        # Invoice.save() recomputes balance from total_amount - paid_amount, so
+        # this only has to satisfy the not-null column.
+        if validated_data.get('balance') is None:
+            validated_data['balance'] = validated_data.get('total_amount') or 0
+        return super().create(validated_data)
 
     def get_delivery_fee_charge(self, obj):
         charge = getattr(obj, 'delivery_fee_charge', None)
@@ -407,6 +428,7 @@ class CompanySerializer(serializers.ModelSerializer):
             'fuel_price_per_litre',
             'margin_at_risk_pct', 'margin_caution_pct', 'margin_target_pct',
             'default_toll_rate_per_km',
+            'onboarding_completed_at',
         ]
     
     def get_logo_url(self, obj):

@@ -45,8 +45,9 @@ class UserSessionTokenAuthentication(TokenAuthentication):
         now = timezone.now()
 
         # Auto sign-out after inactivity when the user opted into "Session timeout".
-        # Measured against the STORED last_activity, before the refresh below.
-        timeout_on = (session.user.security_settings or {}).get('session_timeout', True)
+        # Off by default — measured against the STORED last_activity, before
+        # the refresh below.
+        timeout_on = (session.user.security_settings or {}).get('session_timeout', False)
         if timeout_on and session.last_activity < now - SESSION_IDLE_TIMEOUT:
             session.delete()
             raise exceptions.AuthenticationFailed('Session expired due to inactivity.')
