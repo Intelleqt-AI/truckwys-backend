@@ -8,6 +8,10 @@ class Driver(models.Model):
     license_expiry = models.DateField()
     license_state = models.CharField(max_length=50)
     medical_card_expiry = models.DateField(null=True, blank=True)
+    # When we last sent a document-expiry alert for these, so the daily sweep
+    # re-alerts at most weekly (core/services/notification_sweeps.py).
+    license_alert_at = models.DateField(null=True, blank=True)
+    medical_card_alert_at = models.DateField(null=True, blank=True)
     hire_date = models.DateField()
     status = models.CharField(max_length=50, default='ACTIVE')
     emergency_contact = models.CharField(max_length=200, blank=True)

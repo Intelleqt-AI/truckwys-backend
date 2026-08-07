@@ -48,6 +48,10 @@ class Vehicle(models.Model):
     last_service_mileage = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, help_text='Odometer reading at last service')
     insurance_expiry = models.DateField(null=True, blank=True)
     registration_expiry = models.DateField(null=True, blank=True)
+    # When we last sent a document-expiry alert for these, so the daily sweep
+    # re-alerts at most weekly (core/services/notification_sweeps.py).
+    insurance_alert_at = models.DateField(null=True, blank=True)
+    registration_alert_at = models.DateField(null=True, blank=True)
     
     # AI Health Score fields
     ai_health_score = models.IntegerField(default=0)

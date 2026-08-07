@@ -47,7 +47,13 @@ def notify_company(company_id, ntype: str, title: str, message: str = '', link: 
         from core.models import User
         qs = User.objects.filter(company_id=company_id, is_active=True)
         if exclude_user_id:
+            # Legacy duplicate-email accounts (same person, two User rows)
+            # must both be excluded, or the actor gets emailed via their
+            # other account's inbox — same email, different id.
+            excluded_email = User.objects.filter(id=exclude_user_id).values_list('email', flat=True).first()
             qs = qs.exclude(id=exclude_user_id)
+            if excluded_email:
+                qs = qs.exclude(email__iexact=excluded_email)
         recipients = list(qs)
         rows = [
             Notification(user=u, type=ntype, title=title, message=message, link=link)
@@ -95,6 +101,31 @@ def notify_company(company_id, ntype: str, title: str, message: str = '', link: 
                 })
     except Exception as exc:
         logger.warning('notify_company mobile push failed: %s', exc)
+
+    # 3b) Desktop browser push via VAPID — same preference gate as FCM (both
+    # are "push to a device"; there is no separate web-push preference).
+    try:
+        from core.services.web_push import send_web_push, vapid_configured
+        if vapid_configured():
+            payload = {'title': title, 'message': message, 'link': link, 'type': ntype}
+            for u in recipients:
+                if _push_allowed(u, event):
+                    send_web_push(u, payload)
+    except Exception as exc:
+        logger.warning('notify_company web push failed: %s', exc)
+
+    # 4) Per-event notification email — one send per recipient whose email
+    # preference for this event's category is enabled. Best-effort, like FCM.
+    try:
+        from core.services.notification_prefs import category_for, should_notify
+        from core.services.email_service import send_notification_email
+        email_cat = category_for(event, 'email')
+        if email_cat:
+            for u in recipients:
+                if should_notify(u, 'email', email_cat):
+                    send_notification_email(u, title, message, link)
+    except Exception as exc:
+        logger.warning('notify_company per-event email failed: %s', exc)
 
 
 def notify_company_billing_email(company_id, title: str, message: str = '', link: str = ''):

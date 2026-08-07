@@ -624,3 +624,21 @@ def sweep_expired_quotes():
 def send_weekly_summaries():
     from core.services.notification_sweeps import send_weekly_summaries as run
     return run()
+
+
+@shared_task(name='core.tasks.sweep_driver_documents')
+def sweep_driver_documents():
+    from core.services.notification_sweeps import sweep_driver_documents as run
+    return run()
+
+
+@shared_task(name='core.tasks.sweep_vehicle_documents')
+def sweep_vehicle_documents():
+    from core.services.notification_sweeps import sweep_vehicle_documents as run
+    return run()
+
+
+@shared_task(name='core.tasks.sweep_intelligence_recommendations')
+def sweep_intelligence_recommendations():
+    from core.services.notification_sweeps import sweep_intelligence_recommendations as run
+    return run()

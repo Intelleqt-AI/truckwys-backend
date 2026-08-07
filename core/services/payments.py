@@ -76,6 +76,9 @@ def record_payment(company, user, data):
             invoice.paid_at = timezone.now()
         elif invoice.paid_amount > 0:
             invoice.status = 'PARTIALLY_PAID'
+        # Read by the invoice.paid signal handler to exclude whoever recorded
+        # this payment — same convention as booking/quote/advance actor exclusion.
+        invoice._notify_actor_id = getattr(user, 'id', None)
         invoice.save()
 
     # Partial payments previously notified nobody. Full payments already fire

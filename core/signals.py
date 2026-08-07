@@ -104,6 +104,7 @@ def load_saved(sender, instance, created, **kwargs):
                 detail,
                 link=f'/bookings/{instance.id}',
                 event='booking.created',
+                exclude_user_id=getattr(instance, 'created_by_id', None),
             )
         except Exception:
             pass
@@ -268,6 +269,7 @@ def invoice_saved(sender, instance, created, **kwargs):
                 detail,
                 link=f'/finance/invoices/{instance.id}',
                 event='invoice.paid',
+                exclude_user_id=getattr(instance, '_notify_actor_id', None),
             )
         except Exception:
             pass
@@ -453,23 +455,16 @@ def customer_saved(sender, instance, created, **kwargs):
 
 @receiver(post_save, sender='core.RiskScore')
 def risk_score_saved(sender, instance, created, **kwargs):
-    """Create notification when risk score is calculated."""
-    from core.models import Notification, User
-
-    if created:
-        # Create notification for new risk score
-        user = None
-        if instance.company:
-            user = User.objects.filter(company=instance.company, role='ADMIN', status='ACTIVE').first()
-
-        if user:
-            Notification.objects.create(
-                user=user,
-                type='INFO',
-                title="Risk Score Updated",
-                message=f"Invoice {instance.invoice.invoice_number} scored {instance.total_score} ({instance.tier})",
-                link=f"/finance/invoices/{instance.invoice.id}"
-            )
+    """Notify the company when a risk score is calculated."""
+    if not created or not instance.company_id:
+        return
+    from core.services.notify import notify_company
+    notify_company(
+        instance.company_id, 'INFO', 'Risk Score Updated',
+        f"Invoice {instance.invoice.invoice_number} scored {instance.total_score} ({instance.tier})",
+        link=f"/finance/invoices/{instance.invoice.id}",
+        event='risk_score.updated',
+    )
 
 
 @receiver(post_save, sender='core.AdvanceRequest')

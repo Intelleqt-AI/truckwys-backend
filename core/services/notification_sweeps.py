@@ -15,6 +15,8 @@ logger = logging.getLogger(__name__)
 
 MAINTENANCE_WINDOW_DAYS = 7   # alert when due within this many days
 MAINTENANCE_REALERT_DAYS = 7  # re-alert a vehicle at most this often
+DOCUMENT_WINDOW_DAYS = 30     # alert when a compliance document expires within this many days
+DOCUMENT_REALERT_DAYS = 7     # re-alert a driver/vehicle at most this often
 
 
 def sweep_overdue_invoices():
@@ -69,6 +71,76 @@ def sweep_maintenance_due():
             notified += 1
         except Exception as exc:
             logger.warning('maintenance sweep: vehicle %s failed: %s', vehicle.pk, exc)
+    return {'notified': notified}
+
+
+def sweep_driver_documents():
+    """Notify per driver whose license or medical card expires within the
+    window, at most once per DOCUMENT_REALERT_DAYS (event: driver.document_expiring)."""
+    from core.models import Driver
+    from core.services.notify import notify_company
+    today = date.today()
+    horizon = today + timedelta(days=DOCUMENT_WINDOW_DAYS)
+    realert_before = today - timedelta(days=DOCUMENT_REALERT_DAYS)
+    notified = 0
+    for field, alert_field, label in (
+        ('license_expiry', 'license_alert_at', 'license'),
+        ('medical_card_expiry', 'medical_card_alert_at', 'medical card'),
+    ):
+        candidates = Driver.objects.filter(
+            **{f'{field}__isnull': False, f'{field}__lte': horizon},
+            company__isnull=False,
+        ).filter(Q(**{f'{alert_field}__isnull': True}) | Q(**{f'{alert_field}__lte': realert_before}))
+        for driver in candidates.select_related('user').iterator():
+            expiry = getattr(driver, field)
+            overdue = expiry < today
+            name = driver.user.get_full_name() or driver.user.username
+            detail = (f"{name}'s {label} " + (f"expired {expiry}" if overdue else f"expires {expiry}"))
+            try:
+                notify_company(
+                    driver.company_id, 'ALERT' if overdue else 'WARNING',
+                    f'Driver {label} expiring', detail,
+                    link=f'/fleet/drivers/{driver.id}', event='driver.document_expiring',
+                )
+                Driver.objects.filter(pk=driver.pk).update(**{alert_field: today})
+                notified += 1
+            except Exception as exc:
+                logger.warning('driver document sweep: driver %s failed: %s', driver.pk, exc)
+    return {'notified': notified}
+
+
+def sweep_vehicle_documents():
+    """Notify per vehicle whose insurance or registration expires within the
+    window, at most once per DOCUMENT_REALERT_DAYS (event: vehicle.document_expiring)."""
+    from core.models import Vehicle
+    from core.services.notify import notify_company
+    today = date.today()
+    horizon = today + timedelta(days=DOCUMENT_WINDOW_DAYS)
+    realert_before = today - timedelta(days=DOCUMENT_REALERT_DAYS)
+    notified = 0
+    for field, alert_field, label in (
+        ('insurance_expiry', 'insurance_alert_at', 'insurance'),
+        ('registration_expiry', 'registration_alert_at', 'registration'),
+    ):
+        candidates = Vehicle.objects.filter(
+            **{f'{field}__isnull': False, f'{field}__lte': horizon},
+            company__isnull=False,
+        ).filter(Q(**{f'{alert_field}__isnull': True}) | Q(**{f'{alert_field}__lte': realert_before}))
+        for vehicle in candidates.iterator():
+            expiry = getattr(vehicle, field)
+            overdue = expiry < today
+            detail = (f"{vehicle.make} {vehicle.model} ({vehicle.plate}) — {label} "
+                      + (f"expired {expiry}" if overdue else f"expires {expiry}"))
+            try:
+                notify_company(
+                    vehicle.company_id, 'ALERT' if overdue else 'WARNING',
+                    f'Vehicle {label} expiring', detail,
+                    link=f'/fleet/vehicles/{vehicle.id}', event='vehicle.document_expiring',
+                )
+                Vehicle.objects.filter(pk=vehicle.pk).update(**{alert_field: today})
+                notified += 1
+            except Exception as exc:
+                logger.warning('vehicle document sweep: vehicle %s failed: %s', vehicle.pk, exc)
     return {'notified': notified}
 
 
@@ -138,3 +210,37 @@ def send_weekly_summaries():
         if delivered_any:
             cache.set(cache_key, True, 6 * 24 * 3600)  # block re-sends for 6 days
     return {'emails_sent': sent}
+
+
+def sweep_intelligence_recommendations():
+    """Route HIGH/MEDIUM-severity BI recommendations through notify_company,
+    once per company per finding per DOCUMENT_REALERT_DAYS-equivalent window
+    (event: intelligence.recommendation). Recommendations have no persistent
+    id, so dedup by a hash of company + title rather than a model field."""
+    import hashlib
+    from core.models import Company
+    from core.services.notify import notify_company
+    from core.services.intelligence import IntelligenceService
+    type_map = {'HIGH': 'ALERT', 'MEDIUM': 'WARNING'}
+    notified = 0
+    for company in Company.objects.all():
+        try:
+            recs = IntelligenceService(company).generate_recommendations()
+        except Exception as exc:
+            logger.warning('intelligence sweep: company %s failed: %s', company.pk, exc)
+            continue
+        for rec in recs:
+            severity = rec.get('severity', 'LOW')
+            if severity not in type_map:
+                continue
+            digest = hashlib.md5(f"{company.id}:{rec['title']}".encode()).hexdigest()
+            cache_key = f'intel_rec_{digest}'
+            if cache.get(cache_key):
+                continue
+            notify_company(
+                company.id, type_map[severity], rec['title'], rec.get('message', ''),
+                link=rec.get('link', ''), event='intelligence.recommendation',
+            )
+            cache.set(cache_key, True, 7 * 24 * 3600)
+            notified += 1
+    return {'notified': notified}

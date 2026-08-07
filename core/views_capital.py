@@ -347,6 +347,7 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
                 f'{invoice.invoice_number} — R{float(advance_request.net_amount):,.0f} net ({result.risk_tier} tier)',
                 link=f'/capital/advances/{advance_request.id}',
                 event='advance.created',
+                exclude_user_id=request.user.id,
             )
         except Exception:
             pass

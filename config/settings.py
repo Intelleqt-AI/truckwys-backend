@@ -448,6 +448,22 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'core.tasks.sweep_expired_quotes',
         'schedule': crontab(hour='7', minute='10'),
     },
+    # Compliance document expiry: driver license/medical card, vehicle
+    # insurance/registration, within 30 days (re-alerted at most weekly).
+    'sweep-driver-documents': {
+        'task': 'core.tasks.sweep_driver_documents',
+        'schedule': crontab(hour='7', minute='16'),
+    },
+    'sweep-vehicle-documents': {
+        'task': 'core.tasks.sweep_vehicle_documents',
+        'schedule': crontab(hour='7', minute='21'),
+    },
+    # BI recommendations (margin, DSO, overdue, cash flow, pricing, fleet
+    # efficiency), HIGH/MEDIUM severity only, deduped per company per finding.
+    'sweep-intelligence-recommendations': {
+        'task': 'core.tasks.sweep_intelligence_recommendations',
+        'schedule': crontab(hour='7', minute='26'),
+    },
     # Weekly performance digest to opted-in users, Mondays 07:15 SAST.
     # Idempotent per company per ISO week (cache-keyed).
     'send-weekly-summaries': {
