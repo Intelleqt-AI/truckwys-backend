@@ -493,7 +493,8 @@ class LoginView(APIView):
 
         # If 2FA is enabled (globally + for this user), issue an email OTP
         # challenge instead of a token. Nothing is created until it's verified.
-        two_factor_on = settings.LOGIN_2FA_ENABLED and (user.security_settings or {}).get('two_factor', True)
+        # Off by default — the user opts in via Settings > Security.
+        two_factor_on = settings.LOGIN_2FA_ENABLED and (user.security_settings or {}).get('two_factor', False)
         if not two_factor_on:
             return complete_login(user, request)
 
@@ -990,8 +991,8 @@ class SecuritySettingsView(APIView):
     permission_classes = [IsAuthenticated]
 
     DEFAULTS = {
-        "two_factor": True,
-        "session_timeout": True,
+        "two_factor": False,
+        "session_timeout": False,
         "login_alerts": True,
     }
 
@@ -2301,6 +2302,21 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     search_fields = ['quote_number', 'customer__name', 'pickup_location', 'delivery_location']
     ordering_fields = ['created_at', 'valid_until']
 
+    def perform_update(self, serializer):
+        # IT/COMPLETED describe an Order's delivery progress, not the quote
+        # itself — a quote's own lifecycle ends at ACCEPTED/DECLINED/EXPIRED.
+        # Reaching IT only ever happens through convert_to_load (which creates
+        # the real Load); COMPLETED tracking now lives entirely on Load.status.
+        # Blocked here (not just hidden in the UI) so a direct API call can't
+        # mark a quote "in transit"/"completed" with no Load behind it.
+        if serializer.validated_data.get('status') in ('IT', 'COMPLETED'):
+            from rest_framework.exceptions import ValidationError as DRFValidationError
+            raise DRFValidationError({
+                'status': 'Quotes no longer track In-Transit/Completed directly — '
+                          'use "Convert to booking" to create the Order, which tracks delivery status.'
+            })
+        serializer.save()
+
     def create(self, request, *args, **kwargs):
         from django.db import IntegrityError
         from rest_framework.exceptions import ValidationError as DRFValidationError
@@ -2366,7 +2382,15 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
                 {'error': 'Invalid status'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+        # See QuoteViewSet.perform_update — IT/COMPLETED belong to the Load
+        # created via convert_to_load, not to the quote directly.
+        if new_status in ('IT', 'COMPLETED'):
+            return Response(
+                {'error': 'Quotes no longer track In-Transit/Completed directly — '
+                          'use convert_to_load, which tracks delivery status on the Order.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         quote.status = new_status
         # Read by the Quote post_save signal: an authenticated user made this
         # change, so exclude them from their own "quote accepted/declined/…"
@@ -2425,8 +2449,10 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         import secrets
         quote = self.get_object()
 
-        # Check if quote already converted
-        if quote.status in ['IT', 'COMPLETED']:
+        # Check if quote already converted — a Load referencing this quote is
+        # the source of truth (not a quote.status value, which no longer
+        # advances past ACCEPTED once converted).
+        if quote.loads.exists():
             return Response(
                 {'error': 'Quote already converted'},
                 status=status.HTTP_400_BAD_REQUEST
@@ -2498,9 +2524,10 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
             created_by=request.user
         )
 
-        # Update quote status to In-Transit
-        quote.status = 'IT'
-        quote.save()
+        # Quote stays ACCEPTED — its own lifecycle ends here. The Load created
+        # above (status PENDING/ASSIGNED) now owns delivery progress
+        # (LOADING/IN_TRANSIT/DELIVERED/INVOICED), so nothing on the quote
+        # needs to track that.
 
         # Converting to a load IS a win — capture the ML label (idempotent:
         # no-ops when the quote was already recorded as accepted).
