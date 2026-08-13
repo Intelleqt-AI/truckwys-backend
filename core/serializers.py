@@ -456,7 +456,7 @@ class CompanySerializer(serializers.ModelSerializer):
             'default_base_rate_per_km', 'weight_surcharge_threshold_kg',
             'weight_surcharge_pct', 'default_sla_hours',
             'default_quote_validity_days', 'allow_cross_border',
-            'fuel_price_per_litre',
+            'fuel_price_per_litre', 'fuel_price_petrol', 'fuel_price_electric', 'fuel_price_hybrid',
             'margin_at_risk_pct', 'margin_caution_pct', 'margin_target_pct',
             'default_toll_rate_per_km',
             'onboarding_completed_at',
