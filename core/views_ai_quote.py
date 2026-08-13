@@ -59,12 +59,15 @@ def _sg_extract_json(text):
 
 
 class FuelPriceCurrentView(APIView):
-    """GET /api/v1/fuel-prices/current/ — returns current diesel price with staleness check."""
+    """GET /api/v1/fuel-prices/current/ — returns current diesel price with staleness check.
+    Pass ?force=true (e.g. a manual "Fetch Now" button) to bypass the normal
+    once-per-hour live-retry gate and re-check the live sources immediately."""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         try:
-            fuel_price = fetch_fuel_prices()
+            force = request.query_params.get('force', '').lower() == 'true'
+            fuel_price = fetch_fuel_prices(force_update=force)
 
             # Stale if: source is a fallback (live scrape failed), or data is >35 days old
             days_old = (timezone.now().date() - fuel_price.date).days

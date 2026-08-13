@@ -13,6 +13,10 @@ class VehicleType(models.Model):
         max_digits=5, decimal_places=2, default=36.0,
         help_text='Diesel consumption in litres per 100km (e.g. 32 for Flatbed)'
     )
+    FUEL_TYPE_CHOICES = [
+        ('Diesel', 'Diesel'), ('Petrol', 'Petrol'), ('Electric', 'Electric'), ('Hybrid', 'Hybrid'),
+    ]
+    fuel_type = models.CharField(max_length=20, choices=FUEL_TYPE_CHOICES, default='Diesel')
     active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

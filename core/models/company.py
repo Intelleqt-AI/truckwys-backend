@@ -21,10 +21,26 @@ class Company(models.Model):
     address = models.JSONField(default=dict)
     contact = models.JSONField(default=dict)
 
-    # NEW: Fuel price for expense calculations
+    # Default fuel prices, one per fuel type — used as the fallback price for
+    # a VehicleType of that fuel type that doesn't have its own fuel_price
+    # set. Diesel already has a live national-price feed elsewhere in the
+    # system, so it keeps a sensible default; the other three have no such
+    # feed, so they stay blank until the company sets a price manually.
     fuel_price_per_litre = models.DecimalField(
         max_digits=6, decimal_places=2, default=23.50,
-        help_text='Current fuel price per litre in ZAR (default: R23.50)'
+        help_text='Default Diesel price per litre in ZAR (default: R23.50)'
+    )
+    fuel_price_petrol = models.DecimalField(
+        max_digits=6, decimal_places=2, null=True, blank=True,
+        help_text='Default Petrol price per litre in ZAR'
+    )
+    fuel_price_electric = models.DecimalField(
+        max_digits=6, decimal_places=2, null=True, blank=True,
+        help_text='Default Electric price per kWh in ZAR'
+    )
+    fuel_price_hybrid = models.DecimalField(
+        max_digits=6, decimal_places=2, null=True, blank=True,
+        help_text='Default Hybrid price per litre in ZAR'
     )
 
     # Quote defaults — configurable per company
