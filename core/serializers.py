@@ -210,15 +210,46 @@ class VehicleTypeSerializer(serializers.ModelSerializer):
         }
 
     def get_available_vehicle_count(self, obj):
-        # Prefer the annotated value (set in VehicleTypeViewSet.get_queryset) to
-        # avoid an N+1; fall back to a direct count for un-annotated instances.
-        val = getattr(obj, 'avail_count', None)
-        if val is not None:
-            return val
-        try:
-            return obj.vehicles.filter(status='AVAILABLE').count()
-        except Exception:
-            return 0
+        # A vehicle counts toward this type if EITHER its vehicle_type link
+        # points here OR its own free-text `type` name matches this type's
+        # name (case-insensitive) — the link can silently drift from what a
+        # vehicle actually displays as its type (confirmed with real data:
+        # a vehicle whose visible type didn't match what it was linked to),
+        # so trusting the link alone can both hide a type you own and show
+        # one you don't. Also scoped to the requesting company only — these
+        # rows are frequently the shared (company=None) defaults, so counting
+        # through the bare link without a company filter would leak other
+        # companies' vehicles into the number.
+        request = self.context.get('request')
+        company = getattr(getattr(request, 'user', None), 'company', None)
+
+        if company is None:
+            # No company context (superuser browsing, an unauthenticated/test
+            # call) — fall back to the old link-only annotation/count so this
+            # never breaks other callers.
+            val = getattr(obj, 'avail_count', None)
+            if val is not None:
+                return val
+            try:
+                return obj.vehicles.filter(status='AVAILABLE').count()
+            except Exception:
+                return 0
+
+        # Cached on the serializer instance, not per-object: DRF reuses one
+        # serializer instance across every object in a list response, so this
+        # runs once per request, not once per vehicle type.
+        if not hasattr(self, '_available_vehicles_cache'):
+            from core.models import Vehicle
+            self._available_vehicles_cache = list(
+                Vehicle.objects.filter(company=company, status='AVAILABLE')
+                .values('vehicle_type_id', 'type')
+            )
+
+        name_lc = (obj.name or '').strip().lower()
+        return sum(
+            1 for v in self._available_vehicles_cache
+            if v['vehicle_type_id'] == obj.id or (v['type'] or '').strip().lower() == name_lc
+        )
 
 
 # VehicleLog Serializer

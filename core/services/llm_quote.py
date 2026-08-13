@@ -11,6 +11,7 @@ import difflib
 import json
 import logging
 import os
+import re
 from datetime import date
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -38,9 +39,16 @@ OPENAI_QUOTE_MODEL = (
 
 # Fallback only — used when the caller has no company context (tests, or a
 # request whose user has no company) to offer the LLM as candidates. The real
-# fleet's vehicle types (fetched per-request from VehicleType) always take
-# priority — see extract()'s vehicle_types param.
-VEHICLE_TYPES = ["Flatbed", "Tautliner", "Refrigerated", "Tanker", "Box Truck", "Danger Load"]
+# fleet's vehicle types (fetched per-request from VehicleType, including the
+# global company=None defaults every company can see) always take priority —
+# see extract()'s vehicle_types param. Kept in sync with the names actually
+# seeded by core/migrations/0041_seed_default_vehicle_types.py so this
+# fallback never diverges from what a real company could have on file.
+VEHICLE_TYPES = [
+    "Light Delivery Vehicle (LDV)", "Medium Truck (4–8 tonnes)", "Heavy Truck (8–16 tonnes)",
+    "Interlink / B-Train (34 tonnes)", "Semi-Truck / Horse & Trailer (30 tonnes)",
+    "Flatbed Truck", "Refrigerated Truck (Reefer)", "Tanker",
+]
 
 SYSTEM_PROMPT_BASE = (
     "You are the quoting assistant for TruckWys, a South African road-freight platform. "
@@ -116,11 +124,23 @@ EXTRACTION_SCHEMA = {
 }
 
 
+# Words generic enough that sharing one is meaningless for matching — every
+# "*Truck" vehicle-type name contains "truck", so a noisy transcription that
+# only picks up that word must not be allowed to collide-match any of them.
+_GENERIC_MATCH_WORDS = {"truck", "vehicle", "trailer"}
+
+
+def _significant_words(text: str) -> List[str]:
+    return [w for w in re.findall(r"[a-z0-9]+", text.lower()) if w not in _GENERIC_MATCH_WORDS]
+
+
 def _fuzzy_match(raw: str, candidates: List[str], cutoff: float = 0.45) -> Optional[str]:
     """Match free text the LLM extracted against a real list of names (vehicle
-    types, customers). Exact/case-insensitive first, then substring containment
-    (handles "rigid" -> "Rigid Truck"), then a fuzzy ratio as a last resort.
-    Returns None rather than forcing a bad guess when nothing is close enough.
+    types, customers). Exact/case-insensitive first, then a whole-word overlap
+    on the meaningful words (handles "rigid" -> "Rigid Truck", but a bare
+    "truck" can't collide-match every "*Truck" candidate), then a fuzzy ratio
+    as a last resort. Returns None rather than forcing a bad guess when
+    nothing is close enough.
     """
     raw = (raw or "").strip()
     if not raw or not candidates:
@@ -129,9 +149,13 @@ def _fuzzy_match(raw: str, candidates: List[str], cutoff: float = 0.45) -> Optio
     for c in candidates:
         if c.lower() == raw_lc:
             return c
-    for c in candidates:
-        if raw_lc in c.lower() or c.lower() in raw_lc:
-            return c
+
+    raw_words = set(_significant_words(raw))
+    if raw_words:
+        for c in candidates:
+            if raw_words & set(_significant_words(c)):
+                return c
+
     matches = difflib.get_close_matches(raw, candidates, n=1, cutoff=cutoff)
     return matches[0] if matches else None
 

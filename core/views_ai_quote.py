@@ -549,12 +549,18 @@ class AIChatQuoteView(APIView):
             # free text against these, not a hardcoded generic list (a company's
             # actual types like "Rigid Truck" or "Semi-Trailer Truck" otherwise
             # never match a fixed enum, and there'd be no way to capture a client).
+            # Includes the shared (company=None) default catalog too, mirroring
+            # VehicleTypeViewSet.get_queryset — otherwise a company that never had
+            # the defaults seeded onto its own account gives the matcher a much
+            # narrower (or empty) candidate pool than what the vehicle-type
+            # dropdown itself actually shows the user.
             company = getattr(request.user, 'company', None)
             vehicle_types = customers = None
             if company is not None:
                 from core.models import VehicleType, Customer
                 vehicle_types = list(
-                    VehicleType.objects.filter(company=company).values_list('name', flat=True)
+                    VehicleType.objects.filter(Q(company=None) | Q(company=company))
+                    .values_list('name', flat=True).distinct()
                 )
                 customers = list(
                     Customer.objects.filter(company=company).values('id', 'name')
