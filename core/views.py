@@ -2100,9 +2100,18 @@ class VehicleTypeViewSet(viewsets.ModelViewSet):
             qs = VehicleType.objects.all()
         else:
             qs = VehicleType.objects.filter(Q(company=None) | Q(company=user.company))
-        # Annotate count of AVAILABLE vehicles per type (read by the serializer)
+        # Fallback annotation only — the serializer's own get_available_vehicle_count
+        # does the real (company-scoped, link-or-name-matched) count per request and
+        # ignores this value whenever request.user.company is set. This stays scoped
+        # to the requester's own company too, so the one case that DOES fall back to
+        # it (no company context, e.g. a superuser) can't leak another company's
+        # vehicles through a shared (company=None) type.
+        company = getattr(user, 'company', None)
         return qs.annotate(
-            avail_count=Count('vehicles', filter=Q(vehicles__status='AVAILABLE'))
+            avail_count=Count(
+                'vehicles',
+                filter=Q(vehicles__status='AVAILABLE') & Q(vehicles__company=company),
+            )
         )
 
     def perform_create(self, serializer):
