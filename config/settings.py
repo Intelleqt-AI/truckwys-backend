@@ -347,9 +347,13 @@ SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 # is set here (sk_test_... vs sk_live_...), no separate host/flag needed.
 PAYSTACK_SECRET_KEY = config('PAYSTACK_SECRET_KEY', default='')
 
-# ControlFleet Integration Configuration
-CONTROLFLEET_WEBHOOK_KEY = config('CONTROLFLEET_WEBHOOK_KEY', default='')
-CONTROLFLEET_API_KEY = config('CONTROLFLEET_API_KEY', default='')
+# CtrlFleet Integration Configuration
+CTRLFLEET_WEBHOOK_KEY = config('CTRLFLEET_WEBHOOK_KEY', default='')
+CTRLFLEET_API_KEY = config('CTRLFLEET_API_KEY', default='')
+# CtrlFleet's real External API (confirmed against their docs) — a single
+# production server for every account; only the per-company key varies, saved
+# via the Connect flow (Company.ctrlfleet_api_key), not this env var.
+CTRLFLEET_BASE_URL = config('CTRLFLEET_BASE_URL', default='https://api.ctrlfleet.app/tower')
 
 # Redis — used by Django Channels (WebSocket channel layer)
 REDIS_URL = config('REDIS_URL', default='redis://localhost:6379/0')
@@ -430,6 +434,13 @@ CELERY_BEAT_SCHEDULE = {
     # Door events don't need sub-minute cadence like position does.
     'poll-cartrack-door-events': {
         'task': 'core.tasks.poll_cartrack_door_events',
+        'schedule': crontab(minute='*/2'),
+    },
+    # CtrlFleet is a plain REST poll (no push/streaming), so there's no reason
+    # to hit it as often as Cartrack's dedicated telematics feed — every 2
+    # minutes is plenty for a "where's my truck" live-map refresh.
+    'poll-ctrlfleet-positions': {
+        'task': 'core.tasks.poll_ctrlfleet_positions',
         'schedule': crontab(minute='*/2'),
     },
     # Notification sweeps — flip invoices past due to OVERDUE (07:00 daily),

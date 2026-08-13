@@ -44,6 +44,8 @@ from .views_integrations import (
     CreditLookupView, DashboardInsightsView, CashFlowForecastView,
     FleetTripSyncView, FleetTripBulkSyncView, TripSyncView,
     CartrackStatusView, CartrackConnectView,
+    CtrlFleetStatusView, CtrlFleetConnectView, CtrlFleetDisconnectView, CtrlFleetSyncVehiclesView,
+    CtrlFleetVehiclesView, CtrlFleetLinkVehicleView, CtrlFleetSyncPositionsView,
 )
 from .views import RouteCalculatorView, LocationSuggestView, DashboardSignalsView, PasswordResetRequestView, PasswordResetConfirmView, IntegrationAPIKeyViewSet
 from .views_lender import (
@@ -54,7 +56,7 @@ from .views_fleet import (
     FleetTripSyncAPIView, FleetBookingSyncAPIView, FleetVehicleStatusAPIView,
     FleetWebhookTripUpdateView, FleetWebhookVehicleEventView, FleetWebhookDriverEventView
 )
-from .integrations.controlfleet import ControlFleetWebhookView
+from .integrations.ctrlfleet import CtrlFleetWebhookView
 from .views_partner_api import (
     PartnerRiskAssessmentView, PartnerPortfolioSummaryView, PartnerEligibleInvoicesView,
     PartnerWebhookSubscriptionViewSet
@@ -212,6 +214,15 @@ urlpatterns = [
     path('integrations/cartrack/status/', CartrackStatusView.as_view(), name='cartrack-status'),
     path('integrations/cartrack/connect/', CartrackConnectView.as_view(), name='cartrack-connect'),
 
+    # CtrlFleet External API integration endpoints
+    path('integrations/ctrlfleet/status/', CtrlFleetStatusView.as_view(), name='ctrlfleet-status'),
+    path('integrations/ctrlfleet/connect/', CtrlFleetConnectView.as_view(), name='ctrlfleet-connect'),
+    path('integrations/ctrlfleet/disconnect/', CtrlFleetDisconnectView.as_view(), name='ctrlfleet-disconnect'),
+    path('integrations/ctrlfleet/sync-vehicles/', CtrlFleetSyncVehiclesView.as_view(), name='ctrlfleet-sync-vehicles'),
+    path('integrations/ctrlfleet/vehicles/', CtrlFleetVehiclesView.as_view(), name='ctrlfleet-vehicles'),
+    path('integrations/ctrlfleet/link-vehicle/', CtrlFleetLinkVehicleView.as_view(), name='ctrlfleet-link-vehicle'),
+    path('integrations/ctrlfleet/sync-positions/', CtrlFleetSyncPositionsView.as_view(), name='ctrlfleet-sync-positions'),
+
     # Fleet Integration endpoints (NEW - Phase 4)
     path('integrations/fleet/import-trips/', FleetImportTripsView.as_view(), name='fleet-import-trips'),
     path('integrations/fleet/sync/', FleetTripSyncView.as_view(), name='fleet-trip-sync'),
@@ -264,7 +275,7 @@ urlpatterns = [
     path('fleet/webhooks/trip-update/', FleetWebhookTripUpdateView.as_view(), name='fleet-webhook-trip-update'),
     path('fleet/webhooks/vehicle-event/', FleetWebhookVehicleEventView.as_view(), name='fleet-webhook-vehicle-event'),
     path('fleet/webhooks/driver-event/', FleetWebhookDriverEventView.as_view(), name='fleet-webhook-driver-event'),
-    path('fleet/webhooks/controlfleet/', ControlFleetWebhookView.as_view(), name='controlfleet-webhook'),
+    path('fleet/webhooks/ctrlfleet/', CtrlFleetWebhookView.as_view(), name='ctrlfleet-webhook'),
 
     # Partner/Capital API endpoints (API key authenticated)
     path('partners/risk-assessment/<int:invoice_id>/', PartnerRiskAssessmentView.as_view(), name='partner-risk-assessment'),

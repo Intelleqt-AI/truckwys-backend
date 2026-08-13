@@ -220,6 +220,20 @@ class Company(models.Model):
         help_text='Watermark for GET /alerts/notifications polling'
     )
 
+    # CtrlFleet integration fields (bring-your-own-account, mirrors Cartrack above).
+    # Unlike Cartrack there's no per-company base URL — CtrlFleet's External API has
+    # a single production server (CTRLFLEET_BASE_URL in settings), only the key varies.
+    ctrlfleet_api_key = models.TextField(
+        blank=True,
+        null=True,
+        help_text='CtrlFleet External API key, x-api-key header (encrypted at rest)'
+    )
+    ctrlfleet_connected_at = models.DateTimeField(null=True, blank=True)
+    ctrlfleet_last_vehicle_sync = models.DateTimeField(
+        null=True, blank=True,
+        help_text='Last time the vehicle roster was matched against CtrlFleet by licence plate'
+    )
+
     # Billing / subscription fields
     subscription_plan = models.CharField(
         max_length=20,
