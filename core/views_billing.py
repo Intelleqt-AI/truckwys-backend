@@ -99,10 +99,10 @@ def _activate_from_verified_charge(company, txn, data: dict) -> bool:
         company.paystack_customer_code = customer['customer_code']
     if not company.subscription_start:
         company.subscription_start = timezone.now()
-    # This charge covers the month it lands in — next one is due a month out.
-    from core.services.subscription_billing import add_one_month, billing_at_for_date, record_charge_success
-    company.next_billing_date = add_one_month(timezone.now().date())
-    company.next_billing_at = billing_at_for_date(company.next_billing_date)
+    # This charge covers the month it lands in — next one is due a month out
+    # (or SUBSCRIPTION_TEST_MODE minutes out, in test mode).
+    from core.services.subscription_billing import compute_next_cycle, record_charge_success
+    company.next_billing_date, company.next_billing_at = compute_next_cycle(None)
     company.save(update_fields=[
         'subscription_plan', 'paystack_authorization_code',
         'paystack_authorization_email', 'paystack_card_last4', 'paystack_card_type',
@@ -175,38 +175,98 @@ class SubscribeView(APIView):
 class CancelSubscriptionView(APIView):
     """POST /api/v1/billing/cancel/ — Stop the monthly fee (and take-rate)
     cron from charging this company further. The card stays on file in case
-    they resubscribe — nothing to revoke on Paystack's side.
+    they resubscribe/undo — nothing to revoke on Paystack's side.
 
-    Per TruckWys_Fee_Billing_Spec.pdf §4: cancellation is an immediate,
-    deliberate action ("Explicit cancellation action" -> 'cancelled', no
-    grace period) — unlike a failed charge, which moves to 'grace_period'
-    first. Quoting/invoicing block immediately (core/middleware/plan_limits.py).
+    Cancellation does NOT block access immediately for a paying company: the
+    period they already paid for (through next_billing_date) is honoured in
+    full — subscription_status stays 'active'/'grace_period' so every access
+    check keeps working exactly as it does today, and only
+    cancel_at_period_end flips true. run_monthly_subscription_billing already
+    skips charging companies with that flag set, and the daily
+    check_pending_cancellations sweep (core/tasks.py) is what finalises
+    subscription_status to 'cancelled' once next_billing_date actually
+    passes. 'trialing' is the one exception — there's no paid period to
+    honour there, so it cancels immediately, same as before.
     """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
         company = request.user.company
 
+        if company.cancel_at_period_end:
+            return Response(
+                {'detail': 'Subscription is already scheduled to cancel.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         if company.subscription_status not in ('active', 'grace_period', 'trialing'):
             return Response(
                 {'detail': 'No active subscription to cancel.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        company.subscription_status = 'cancelled'
-        company.next_billing_date = None
-        company.grace_period_expires_at = None
-        company.save(update_fields=['subscription_status', 'next_billing_date', 'grace_period_expires_at', 'updated_at'])
-
         from core.services.notify import notify_company_billing_email
+
+        if company.subscription_status == 'trialing':
+            company.subscription_status = 'cancelled'
+            company.next_billing_date = None
+            company.grace_period_expires_at = None
+            company.save(update_fields=['subscription_status', 'next_billing_date', 'grace_period_expires_at', 'updated_at'])
+            notify_company_billing_email(
+                company.id, 'Subscription cancelled',
+                f'Your {MONTHLY_FEE_ITEM_NAME} subscription has been cancelled — quoting/invoicing are now '
+                'blocked. You can resubscribe any time from Settings → Billing.',
+                link='/settings/billing',
+            )
+            return Response({'detail': 'Subscription cancelled successfully.'})
+
+        company.cancel_at_period_end = True
+        company.save(update_fields=['cancel_at_period_end', 'updated_at'])
+
+        end_date = company.next_billing_date
+        end_str = end_date.strftime('%d %b %Y') if end_date else 'the end of your current billing period'
         notify_company_billing_email(
-            company.id, 'Subscription cancelled',
-            f'Your {MONTHLY_FEE_ITEM_NAME} subscription has been cancelled — you will not be charged again, and '
-            'quoting/invoicing are now blocked. You can resubscribe any time from Settings → Billing.',
+            company.id, 'Subscription cancellation scheduled',
+            f'Your {MONTHLY_FEE_ITEM_NAME} subscription will end on {end_str} — you will not be charged again, '
+            'and access continues in full until then. You can undo this any time before that date from '
+            'Settings → Billing.',
             link='/settings/billing',
         )
 
-        return Response({'detail': 'Subscription cancelled successfully.'})
+        return Response({
+            'detail': 'Subscription will cancel at the end of the current billing period.',
+            'cancel_at_period_end': True,
+            'access_until': end_date,
+        })
+
+
+class UndoCancelSubscriptionView(APIView):
+    """POST /api/v1/billing/undo-cancel/ — Reverse a pending
+    cancel_at_period_end before the period actually ends. No new charge is
+    needed: the card on file and the already-paid period are both still
+    valid, so this just clears the flag and the monthly cron picks the
+    company back up on its existing, unchanged next_billing_date."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        company = request.user.company
+
+        if not company.cancel_at_period_end:
+            return Response(
+                {'detail': 'No pending cancellation to undo.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        company.cancel_at_period_end = False
+        company.save(update_fields=['cancel_at_period_end', 'updated_at'])
+
+        from core.services.notify import notify_company_billing_email
+        notify_company_billing_email(
+            company.id, 'Subscription cancellation undone',
+            f'Your {MONTHLY_FEE_ITEM_NAME} subscription will continue as normal — no changes were made to your billing.',
+            link='/settings/billing',
+        )
+
+        return Response({'detail': 'Cancellation undone — your subscription will continue.'})
 
 
 class BillingStatusView(APIView):

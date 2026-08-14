@@ -230,7 +230,7 @@ class CompleteSignupView(APIView):
         from core.services import paystack
         from core.services.paystack import MONTHLY_FEE
         from core.services.company_setup import seed_default_vehicle_types
-        from core.services.subscription_billing import add_one_month
+        from core.services.subscription_billing import compute_next_cycle
 
         reference = request.data.get('reference', '').strip()
         if not reference:
@@ -265,15 +265,13 @@ class CompleteSignupView(APIView):
         authorization = data.get('authorization') or {}
         customer = data.get('customer') or {}
 
-        from core.services.subscription_billing import billing_at_for_date
-
         with db_transaction.atomic():
             user = User.objects.create(
                 email=pending.email, username=pending.username,
                 first_name=pending.first_name, last_name=pending.last_name,
                 password=pending.password_hash, is_active=True,
             )
-            first_billing_date = add_one_month(timezone.now().date())
+            first_billing_date, first_billing_at = compute_next_cycle(None)
             company = Company.objects.create(
                 company_name=pending.company_name,
                 subscription_plan='pro', subscription_status='active',
@@ -285,7 +283,7 @@ class CompleteSignupView(APIView):
                 paystack_customer_code=customer.get('customer_code', '') or '',
                 subscription_start=timezone.now(),
                 next_billing_date=first_billing_date,
-                next_billing_at=billing_at_for_date(first_billing_date),
+                next_billing_at=first_billing_at,
             )
             user.company = company
             user.role = 'ADMIN'
@@ -2149,15 +2147,43 @@ class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         # company-scoped queries.
         serializer.save(created_by=self.request.user, company=self.request.user.company)
 
+    def _billing_blocked(self, request):
+        company = getattr(request.user, 'company', None)
+        return company is not None and company.subscription_status in ('suspended', 'cancelled')
+
+    def _billing_blocked_response(self):
+        return Response(
+            {'error': 'Update your payment method to continue managing orders.', 'account_suspended': True},
+            status=status.HTTP_402_PAYMENT_REQUIRED,
+        )
+
+    def update(self, request, *args, **kwargs):
+        # Manual status changes (drag-and-drop, the status dropdown, direct
+        # PATCH) are blocked for suspended/cancelled companies — the
+        # automatic delivery -> invoice flow doesn't go through this view, so
+        # it's unaffected.
+        if 'status' in request.data and self._billing_blocked(request):
+            return self._billing_blocked_response()
+        return super().update(request, *args, **kwargs)
+
     @action(detail=True, methods=['patch'])
     def update_status(self, request, pk=None):
         """Update load status"""
+        if self._billing_blocked(request):
+            return self._billing_blocked_response()
+
         load = self.get_object()
         new_status = request.data.get('status')
 
         if new_status not in dict(Load.STATUS_CHOICES).keys():
             return Response(
                 {'error': 'Invalid status'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if new_status == 'ASSIGNED' and not (load.driver_id and load.vehicle_id):
+            return Response(
+                {'error': 'Assign both a driver and a vehicle before this order can be marked Assigned.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -2195,6 +2221,9 @@ class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         one of the two is rejected as ambiguous — same rule as converting a
         quote to a booking.
         """
+        if self._billing_blocked(request):
+            return self._billing_blocked_response()
+
         load = self.get_object()
         driver_id = request.data.get('driver_id')
         vehicle_id = request.data.get('vehicle_id')

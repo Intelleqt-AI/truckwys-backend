@@ -1,7 +1,7 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views_billing import (
-    SubscribeView, CancelSubscriptionView, BillingStatusView,
+    SubscribeView, CancelSubscriptionView, UndoCancelSubscriptionView, BillingStatusView,
     BillingHistoryView, PaystackWebhookView, ConfirmPaymentView,
 )
 from .views import (
@@ -123,6 +123,7 @@ urlpatterns = [
     path('billing/history/', BillingHistoryView.as_view(), name='billing-history'),
     path('billing/subscribe/', SubscribeView.as_view(), name='billing-subscribe'),
     path('billing/cancel/', CancelSubscriptionView.as_view(), name='billing-cancel'),
+    path('billing/undo-cancel/', UndoCancelSubscriptionView.as_view(), name='billing-undo-cancel'),
     path('billing/webhook/', PaystackWebhookView.as_view(), name='billing-webhook'),
     path('billing/confirm/', ConfirmPaymentView.as_view(), name='billing-confirm'),
     path('auth/me/', UserProfileView.as_view(), name='user-profile'),

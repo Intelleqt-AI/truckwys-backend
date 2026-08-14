@@ -19,9 +19,16 @@ class UserSerializer(serializers.ModelSerializer):
     # since company can be null (legacy/seed accounts with no company bound).
     company_id = serializers.IntegerField(read_only=True)
     company_name = serializers.SerializerMethodField()
+    # Lets the frontend know upfront (from the same /auth/me/ call it already
+    # makes on every load) whether quoting/invoicing are blocked, instead of
+    # only discovering it reactively when PlanLimitsMiddleware 402s an action.
+    subscription_status = serializers.SerializerMethodField()
 
     def get_company_name(self, obj):
         return obj.company.company_name if obj.company_id else None
+
+    def get_subscription_status(self, obj):
+        return obj.company.subscription_status if obj.company_id else None
 
     def validate_role(self, value):
         if not isinstance(value, str):
@@ -37,7 +44,7 @@ class UserSerializer(serializers.ModelSerializer):
         fields = ['id', 'username', 'email', 'password', 'first_name', 'last_name', 'name', 'job_title',
                   'role', 'status', 'phone', 'address', 'timezone', 'language', 'date_format',
                   'notification_settings', 'avatar', 'last_active', 'is_active', 'created_at', 'updated_at',
-                  'is_superuser', 'company_id', 'company_name']
+                  'is_superuser', 'company_id', 'company_name', 'subscription_status']
         # notification_settings is read-only here: the validated
         # NotificationSettingsView is the single write path for preferences.
         read_only_fields = ['id', 'created_at', 'updated_at', 'last_active',
@@ -291,6 +298,21 @@ class LoadSerializer(serializers.ModelSerializer):
         if obj.quote:
             return obj.quote.quote_number
         return None
+
+    def validate(self, attrs):
+        # 'driver'/'vehicle' are absent from attrs on a partial update that
+        # doesn't touch them — fall back to the existing instance so a PATCH
+        # that only sends {status: 'ASSIGNED'} is checked against what's
+        # actually assigned, not treated as if both were blank.
+        has_key = lambda k: k in attrs
+        driver = attrs['driver'] if has_key('driver') else getattr(self.instance, 'driver', None)
+        vehicle = attrs['vehicle'] if has_key('vehicle') else getattr(self.instance, 'vehicle', None)
+        new_status = attrs.get('status', getattr(self.instance, 'status', None))
+        if new_status == 'ASSIGNED' and not (driver and vehicle):
+            raise serializers.ValidationError({
+                'status': 'Assign both a driver and a vehicle before this order can be marked Assigned.'
+            })
+        return attrs
 
 
 # Quote Serializer

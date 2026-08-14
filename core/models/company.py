@@ -269,6 +269,13 @@ class Company(models.Model):
         ],
         default='none',
     )
+    cancel_at_period_end = models.BooleanField(
+        default=False,
+        help_text="Explicit cancellation was requested while still active/grace_period — access and billing "
+                   "keep running until next_billing_date, at which point the daily "
+                   "check_pending_cancellations sweep finalises subscription_status to 'cancelled'. Left False "
+                   "once actually cancelled (a hard, immediate cancel from 'trialing' never sets this at all).",
+    )
 
     # Paystack card-on-file — captured from the first (card-verifying) checkout
     # and reused for every later charge_authorization call: both the flat

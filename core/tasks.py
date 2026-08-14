@@ -602,6 +602,17 @@ def check_grace_period_expirations():
     return summary
 
 
+@shared_task(name='core.tasks.check_pending_cancellations')
+def check_pending_cancellations():
+    """Daily sweep: finalise any company that cancelled while still
+    active/grace_period once the period they already paid for has ended."""
+    from core.services.subscription_billing import check_pending_cancellations as _check
+    summary = _check()
+    if summary['cancelled']:
+        logger.warning('Pending-cancellation check: %s company(ies) cancelled', summary['cancelled'])
+    return summary
+
+
 @shared_task(name='core.tasks.sweep_overdue_invoices')
 def sweep_overdue_invoices():
     from core.services.notification_sweeps import sweep_overdue_invoices as run

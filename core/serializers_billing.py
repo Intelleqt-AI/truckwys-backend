@@ -29,6 +29,7 @@ class BillingStatusSerializer(serializers.ModelSerializer):
             'subscription_end',
             'next_billing_date',
             'next_billing_at',
+            'cancel_at_period_end',
         ]
         read_only_fields = fields
 
