@@ -1,6 +1,7 @@
 """The flat R4,499/month subscription fee — charged ad-hoc via
-charge_authorization against the company's Paystack card-on-file, on the
-monthly anniversary of their first successful payment.
+charge_authorization against the company's Paystack card-on-file, every 30
+days from their first successful payment (a fixed cycle length, not a
+calendar-month anniversary — see add_billing_cycle for why).
 
 Also home to the shared state-machine transition helpers used by BOTH the
 monthly fee and the 0.25% delivery take-rate (core/services/delivery_fee_billing.py)
@@ -18,9 +19,8 @@ mechanism, shared with the take-rate.
 
 Never raises: a billing hiccup must never block anything else.
 """
-import calendar
 import logging
-from datetime import date
+from datetime import date, timedelta
 
 from django.utils import timezone
 
@@ -32,14 +32,29 @@ def _grace_days() -> int:
     return int(getattr(settings, 'DELIVERY_FEE_GRACE_DAYS', 7))
 
 
-def add_one_month(d: date) -> date:
-    """d one calendar month later, clamped to the target month's last day
-    (e.g. Jan 31 -> Feb 28/29, not Mar 3)."""
-    month = d.month + 1
-    year = d.year + (month - 1) // 12
-    month = (month - 1) % 12 + 1
-    day = min(d.day, calendar.monthrange(year, month)[1])
-    return date(year, month, day)
+def _test_mode() -> bool:
+    """Testing-only: compresses the ~monthly billing cycle down to a few
+    minutes (settings.SUBSCRIPTION_TEST_MODE) so subscribe -> auto-recharge
+    and cancel -> auto-finalize can be watched end-to-end without waiting
+    weeks. NEVER on in production — every function below that checks this
+    only adds a new branch; the default (off) path is untouched production
+    logic, unchanged from before test mode existed."""
+    from django.conf import settings
+    return bool(getattr(settings, 'SUBSCRIPTION_TEST_MODE', False))
+
+
+def _test_cycle_minutes() -> int:
+    from django.conf import settings
+    return int(getattr(settings, 'SUBSCRIPTION_TEST_CYCLE_MINUTES', 5))
+
+
+def add_billing_cycle(d: date) -> date:
+    """d 30 days later — a fixed-length cycle rather than 'same day next
+    calendar month', so the countdown a customer sees is always exactly 30
+    days regardless of which months it spans (a calendar-month step varies
+    28-31 days depending on the months involved — e.g. from a 31-day month
+    it reads as 31 days, from February as 28)."""
+    return d + timedelta(days=30)
 
 
 def billing_at_for_date(d: date):
@@ -50,6 +65,33 @@ def billing_at_for_date(d: date):
     next_billing_date (a plain date), unaffected by this."""
     from datetime import datetime, time as dt_time
     return timezone.make_aware(datetime.combine(d, dt_time(7, 0)))
+
+
+def compute_next_cycle(previous_next_billing_date):
+    """Returns (next_billing_date, next_billing_at) for the cycle after
+    previous_next_billing_date (None on first activation, in which case it's
+    based off today instead). Normally 30 days out; in test mode,
+    SUBSCRIPTION_TEST_CYCLE_MINUTES minutes from right now instead — a
+    DateField can't represent sub-day precision, so test mode is the one
+    case where next_billing_at (not next_billing_date) is what actually
+    governs due-ness; see _is_due below."""
+    if _test_mode():
+        next_at = timezone.now() + timezone.timedelta(minutes=_test_cycle_minutes())
+        return next_at.date(), next_at
+    base = previous_next_billing_date or timezone.now().date()
+    next_date = add_billing_cycle(base)
+    return next_date, billing_at_for_date(next_date)
+
+
+def _due_at(company):
+    """Precise fallback datetime a company's next charge is due — used only
+    by the test-mode branches below (production stays on the coarser,
+    unchanged next_billing_date/today date comparison)."""
+    if company.next_billing_at:
+        return company.next_billing_at
+    if company.next_billing_date:
+        return billing_at_for_date(company.next_billing_date)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +165,55 @@ def check_grace_period_expirations() -> dict:
     return summary
 
 
+def check_pending_cancellations() -> dict:
+    """Daily sweep (Celery Beat): finalise any company that requested
+    cancellation while still active/grace_period once the period they already
+    paid for actually runs out — see CancelSubscriptionView's docstring for
+    why the flip isn't immediate. Until this runs, cancel_at_period_end
+    companies keep full access exactly like any other active/grace_period
+    company (run_monthly_subscription_billing already skips charging them
+    again — see its own filter)."""
+    from core.models import Company
+    from core.services.notify import notify_company, notify_company_billing_email
+
+    today = timezone.now().date()
+    summary = {'checked': 0, 'cancelled': 0}
+
+    pending = Company.objects.filter(
+        cancel_at_period_end=True,
+        subscription_status__in=['active', 'grace_period'],
+        next_billing_date__isnull=False,
+    )
+    for company in pending:
+        summary['checked'] += 1
+        if _test_mode():
+            due_at = _due_at(company)
+            if due_at and due_at > timezone.now():
+                continue
+        elif company.next_billing_date > today:
+            continue
+
+        company.subscription_status = 'cancelled'
+        company.cancel_at_period_end = False
+        company.next_billing_date = None
+        company.grace_period_expires_at = None
+        company.save(update_fields=[
+            'subscription_status', 'cancel_at_period_end',
+            'next_billing_date', 'grace_period_expires_at', 'updated_at',
+        ])
+        summary['cancelled'] += 1
+
+        title = 'Subscription ended'
+        message = (
+            'Your subscription period has ended as scheduled — quoting and invoicing are now blocked. '
+            'You can resubscribe any time from Settings → Billing.'
+        )
+        notify_company(company.id, 'INFO', title, message, link='/settings/billing', event='subscription.cancelled')
+        notify_company_billing_email(company.id, title, message, link='/settings/billing')
+
+    return summary
+
+
 # ---------------------------------------------------------------------------
 # The flat monthly fee itself.
 # ---------------------------------------------------------------------------
@@ -141,19 +232,44 @@ def charge_monthly_subscription_fee(company) -> dict:
     from core.services.notify import notify_company, notify_company_billing_email
 
     today = timezone.now().date()
+    now = timezone.now()
 
     if company.subscription_status not in ('active', 'grace_period'):
         return {'charged': False, 'reason': 'not an active/grace-period subscription'}
-    if not company.next_billing_date or company.next_billing_date > today:
+    if company.cancel_at_period_end:
+        return {'charged': False, 'reason': 'cancelling at period end — not billed again'}
+
+    if _test_mode():
+        # A DateField can't represent "due in 5 minutes" — use the precise
+        # datetime instead. Production is untouched below (the elif).
+        due_at = _due_at(company)
+        if not due_at or due_at > now:
+            return {'charged': False, 'reason': 'not due yet'}
+    elif not company.next_billing_date or company.next_billing_date > today:
         return {'charged': False, 'reason': 'not due yet'}
+
     if not company.paystack_authorization_code:
         return {'charged': False, 'reason': 'no card on file'}
 
     # Idempotency: never bill the same cycle twice, even if the cron runs
-    # more than once on the due date.
-    already = BillingTransaction.objects.filter(
-        company=company, plan='pro', status='complete', created_at__date=today,
-    ).exists()
+    # more than once on the due date. Production dedups per calendar day
+    # (a whole month's cycle, so this is generous on purpose — see
+    # docstring). Test mode's cycle is itself only minutes long — a window
+    # anywhere near that length would wrongly block the NEXT genuine cycle
+    # too, since next_billing_at is only ever a few minutes out. This just
+    # needs to catch the cron firing twice for the same due moment (e.g.
+    # overlapping ticks), so a short fixed window is enough — the real
+    # protection against double-charging is next_billing_at itself already
+    # having been advanced past "now" by the time any later tick checks it.
+    if _test_mode():
+        already = BillingTransaction.objects.filter(
+            company=company, plan='pro', status='complete',
+            created_at__gt=now - timezone.timedelta(seconds=10),
+        ).exists()
+    else:
+        already = BillingTransaction.objects.filter(
+            company=company, plan='pro', status='complete', created_at__date=today,
+        ).exists()
     if already:
         return {'charged': False, 'reason': 'already billed this cycle'}
 
@@ -172,8 +288,7 @@ def charge_monthly_subscription_fee(company) -> dict:
         txn.payment_status = 'success'
         txn.gateway_transaction_id = str((result['data'] or {}).get('id', ''))
         txn.save(update_fields=['status', 'payment_status', 'gateway_transaction_id', 'raw_gateway_response', 'updated_at'])
-        company.next_billing_date = add_one_month(company.next_billing_date)
-        company.next_billing_at = billing_at_for_date(company.next_billing_date)
+        company.next_billing_date, company.next_billing_at = compute_next_cycle(company.next_billing_date)
         company.save(update_fields=['next_billing_date', 'next_billing_at', 'updated_at'])
         record_charge_success(company)
         title = 'Subscription fee charged'
@@ -210,6 +325,7 @@ def run_monthly_subscription_billing() -> dict:
 
     companies = Company.objects.filter(
         subscription_status__in=['active', 'grace_period'],
+        cancel_at_period_end=False,
         next_billing_date__lte=today,
         next_billing_date__isnull=False,
     )

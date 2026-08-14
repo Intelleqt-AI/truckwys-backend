@@ -69,6 +69,15 @@ AUTO_CHARGE_DELIVERY_FEE = config('AUTO_CHARGE_DELIVERY_FEE', default=True, cast
 DELIVERY_FEE_PCT = config('DELIVERY_FEE_PCT', default=0.25, cast=float)
 DELIVERY_FEE_GRACE_DAYS = config('DELIVERY_FEE_GRACE_DAYS', default=7, cast=int)
 
+# Testing-only: compresses the ~monthly subscription billing cycle down to a
+# few minutes (see core/services/subscription_billing.py's test-mode guards)
+# so subscribe -> auto-recharge and cancel -> auto-finalize can be watched
+# end-to-end without waiting weeks. Also speeds up the billing Celery Beat
+# sweeps below to run every minute instead of once daily. NEVER set true in
+# production — set only in a local/staging .env.
+SUBSCRIPTION_TEST_MODE = config('SUBSCRIPTION_TEST_MODE', default=False, cast=bool)
+SUBSCRIPTION_TEST_CYCLE_MINUTES = config('SUBSCRIPTION_TEST_CYCLE_MINUTES', default=5, cast=int)
+
 INSTALLED_APPS = [
     'daphne',  # must be first — provides the ASGI-aware runserver for WebSockets
     'django.contrib.admin',
@@ -382,6 +391,10 @@ CELERY_TASK_SERIALIZER = 'json'
 CELERY_ACCEPT_CONTENT = ['json']
 
 from celery.schedules import crontab  # noqa: E402
+# In SUBSCRIPTION_TEST_MODE, run every billing sweep every minute instead of
+# once daily, so a compressed test cycle (SUBSCRIPTION_TEST_CYCLE_MINUTES)
+# actually gets picked up promptly instead of waiting for tomorrow's cron.
+_BILLING_SWEEP_SCHEDULE = crontab(minute='*') if SUBSCRIPTION_TEST_MODE else None
 CELERY_BEAT_SCHEDULE = {
     # Refresh SA diesel price daily at 06:00 SAST.
     # force_update=True so a previously-stored fallback gets overwritten once live sources come back.
@@ -399,19 +412,26 @@ CELERY_BEAT_SCHEDULE = {
     # freezes a company once a charge has failed past DELIVERY_FEE_GRACE_DAYS.
     'retry-delivery-fee-charges': {
         'task': 'core.tasks.retry_delivery_fee_charges',
-        'schedule': crontab(hour='7', minute='30'),
+        'schedule': _BILLING_SWEEP_SCHEDULE or crontab(hour='7', minute='30'),
     },
     # Charge the flat monthly subscription fee for every company whose
     # next_billing_date has arrived, daily at 07:00 SAST.
     'run-monthly-subscription-billing': {
         'task': 'core.tasks.run_monthly_subscription_billing',
-        'schedule': crontab(hour='7', minute='0'),
+        'schedule': _BILLING_SWEEP_SCHEDULE or crontab(hour='7', minute='0'),
     },
     # Suspend any company whose grace period has expired with no successful
     # charge, daily at 07:45 SAST (after both billing sweeps above have run).
     'check-grace-period-expirations': {
         'task': 'core.tasks.check_grace_period_expirations',
-        'schedule': crontab(hour='7', minute='45'),
+        'schedule': _BILLING_SWEEP_SCHEDULE or crontab(hour='7', minute='45'),
+    },
+    # Finalise any company that cancelled while still active/grace_period
+    # once its paid-for period has ended, daily at 07:50 SAST (after the
+    # billing/grace sweeps above).
+    'check-pending-cancellations': {
+        'task': 'core.tasks.check_pending_cancellations',
+        'schedule': _BILLING_SWEEP_SCHEDULE or crontab(hour='7', minute='50'),
     },
     # Rebuild the Copilot RAG invoice embeddings for every company every 15 min so
     # retrieval stays fresh WITHOUT indexing on the chat request path. Incremental:
