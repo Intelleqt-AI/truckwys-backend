@@ -933,6 +933,7 @@ class AIVoiceQuoteView(APIView):
                 transcript = client.audio.transcriptions.create(
                     model='whisper-1',
                     file=(f'recording.{ext}', audio_bytes, content_type or 'audio/webm'),
+                    response_format='verbose_json',
                 )
             except openai.OpenAIError as oe:
                 # Whisper rejected the audio (too short, undecodable format, etc.).
@@ -947,9 +948,39 @@ class AIVoiceQuoteView(APIView):
                     'error': f'Could not transcribe the recording: {msg}',
                 }, status=502)
 
+            text = transcript.text
+            detected_lang = getattr(transcript, 'language', None)
+            # Whisper's blind language auto-detect can misfire on a short/noisy/
+            # accented clip and lock onto a wholly unrelated high-resource
+            # language, transcribing the audio phonetically into that
+            # language's script instead of failing loudly (e.g. English speech
+            # coming back as Bengali-script gibberish). This app only ever
+            # expects English or Afrikaans (Whisper's own supported-language
+            # list has no Bantu-language codes for isiZulu/isiXhosa, so those
+            # already transcribe as a best-effort approximation and can't be
+            # checked here) — anything else detected is almost certainly a
+            # misdetection, so re-anchor once on English rather than surface
+            # a garbled foreign-script transcript.
+            PLAUSIBLE_LANGS = {'en', 'af', 'english', 'afrikaans'}
+            if detected_lang and detected_lang.lower() not in PLAUSIBLE_LANGS:
+                logger.warning(
+                    'Whisper detected unexpected language %r for voice-quote audio '
+                    '(%d bytes) — retrying forced to English.',
+                    detected_lang, len(audio_bytes),
+                )
+                try:
+                    retry = client.audio.transcriptions.create(
+                        model='whisper-1',
+                        file=(f'recording.{ext}', audio_bytes, content_type or 'audio/webm'),
+                        language='en',
+                    )
+                    text = retry.text
+                except openai.OpenAIError as oe:
+                    logger.warning('Whisper English-forced retry failed: %s', oe)
+
             return Response({
                 'success': True,
-                'text': transcript.text,
+                'text': text,
             })
 
         except Exception as e:
