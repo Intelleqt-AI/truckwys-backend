@@ -1,8 +1,12 @@
 """
 Fuel price service — fetches South African monthly retail fuel prices.
 
-Primary source: SAPIA (South African Petroleum Industry Association)
-Fallback: FIASA / known recent prices seeded directly.
+Primary source: FIASA (Fuels Industry Association of South Africa) —
+confirmed live 2026-08; publishes the official DMRE-regulated monthly price.
+Further live attempts (AA SA, SAPIA, DMRE) are kept as fallbacks in the chain
+in case FIASA ever goes down too, though all three are currently dead on
+their own (moved page / 404 / unreachable). Final fallback: a hardcoded
+table of known recent prices seeded directly in this file.
 
 Alert: logs a WARNING when price changes >5% month-over-month.
 """
@@ -14,6 +18,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Optional
 
 import requests
+from django.utils import timezone as django_timezone
 from django.core.cache import cache
 
 logger = logging.getLogger(__name__)
@@ -124,6 +129,92 @@ def _extract_prices_from_soup(soup) -> Optional[dict]:
     return prices
 
 
+def _fiasa_row_value(cells: list) -> Optional[Decimal]:
+    """cells = [row label, month1, month2, ...], values in cents/litre with a
+    comma decimal (SA convention, e.g. '2530,01'). Returns the most recent
+    NON-EMPTY month as Rand (÷100) — trailing months are blank placeholders
+    for prices not yet officially announced, so the last cell isn't
+    necessarily the current one."""
+    for cell in reversed(cells[1:]):
+        cell = cell.strip()
+        if not cell:
+            continue
+        try:
+            cents = Decimal(cell.replace(',', '.'))
+            return (cents / 100).quantize(Decimal('0.0001'))
+        except InvalidOperation:
+            continue
+    return None
+
+
+def _fiasa_table_values(table) -> dict:
+    """One FIASA region table -> {'diesel': ..., 'petrol_95': ..., 'petrol_93': ...}."""
+    wanted = {'95 ulp': 'petrol_95', '93 ulp': 'petrol_93', 'diesel 0.05%': 'diesel'}
+    out: dict[str, Decimal] = {}
+    for tr in table.find_all('tr'):
+        cells = [c.get_text(strip=True) for c in tr.find_all(['th', 'td'])]
+        if not cells:
+            continue
+        label = cells[0].lower()
+        for prefix, key in wanted.items():
+            if key not in out and label.startswith(prefix):
+                val = _fiasa_row_value(cells)
+                if val is not None:
+                    out[key] = val
+    return out
+
+
+def _fetch_from_fiasa() -> Optional[dict]:
+    """Scrape FIASA (Fuels Industry Association of South Africa) — the actual
+    source the DMRE-regulated monthly price is published from, confirmed
+    live 2026-08 (unlike AA SA/SAPIA/DMRE below, which had all quietly gone
+    dead: AA's URL now redirects to an unrelated news article, SAPIA's page
+    404s, DMRE times out).
+
+    The page splits prices across two tabs by region: #tab-1 is Coastal (no
+    93-octane row — coastal/sea-level engines don't need it) and #tab-2 is
+    Gauteng/Inland (carries 93-octane, needed at altitude) — that presence/
+    absence of a 93 row, not any explicit label, is how the two are told
+    apart here. Values are cents/litre with a comma decimal."""
+    try:
+        from bs4 import BeautifulSoup
+        url = 'https://fuelsindustry.org.za/consumer-information/fuel-prices-current-past/'
+        r = requests.get(url, headers=_HEADERS, timeout=8)
+        r.raise_for_status()
+        soup = BeautifulSoup(r.text, 'lxml')
+
+        coastal_div = soup.find('div', id='tab-1')
+        inland_div = soup.find('div', id='tab-2')
+        coastal_table = coastal_div.find('table') if coastal_div else None
+        inland_table = inland_div.find('table') if inland_div else None
+        if not coastal_table or not inland_table:
+            return None
+
+        coastal = _fiasa_table_values(coastal_table)
+        inland = _fiasa_table_values(inland_table)
+        if 'diesel' not in coastal or 'diesel' not in inland:
+            return None
+
+        petrol_95 = inland.get('petrol_95') or coastal.get('petrol_95')
+        if petrol_95 is None:
+            return None
+
+        return {
+            'diesel_inland': inland['diesel'],
+            'diesel_coastal': coastal['diesel'],
+            'petrol_95': petrol_95,
+            # Coastal genuinely has no 93-octane grade — fall back to a
+            # typical differential below 95 rather than leave it unset.
+            'petrol_93': inland.get('petrol_93') or (petrol_95 - Decimal('0.75')),
+            'source': 'FIASA',
+        }
+    except ImportError:
+        logger.warning('beautifulsoup4/lxml not installed; FIASA scrape skipped')
+    except Exception as exc:
+        logger.debug('FIASA scrape failed: %s', exc)
+    return None
+
+
 def _fetch_from_aa_sa() -> Optional[dict]:
     """Scrape AA South Africa fuel prices page (most reliable free source)."""
     try:
@@ -225,8 +316,10 @@ def fetch_fuel_prices(
         force_update = True  # ensure we overwrite rather than try to create
         logger.info('FuelPrice for %s is a fallback — retrying live sources', target_date)
 
-    # Attempt live sources in priority order
-    data = _fetch_from_aa_sa() or _fetch_from_sapia() or _fetch_from_dmre()
+    # Attempt live sources in priority order — FIASA is the confirmed-working
+    # one; the other three are kept as further attempts in case it ever goes
+    # down too, even though all three are currently dead on their own.
+    data = _fetch_from_fiasa() or _fetch_from_aa_sa() or _fetch_from_sapia() or _fetch_from_dmre()
 
     if data is None:
         # Fall back to seeded table
@@ -263,6 +356,14 @@ def fetch_fuel_prices(
     for field in ('diesel_inland', 'diesel_coastal', 'petrol_95', 'petrol_93'):
         if not isinstance(data[field], Decimal):
             data[field] = _to_decimal(str(data[field]))
+
+    # Stamp when we actually checked — distinct from `date`, which is just
+    # the calendar month this price represents (always the 1st). Reaching
+    # this line means a real attempt just happened (live or fallen through
+    # to the hardcoded table); the early-returns above (already-fresh
+    # record, retry-gate still active) skip this entirely, correctly
+    # leaving a prior fetched_at untouched when no check actually occurred.
+    data['fetched_at'] = django_timezone.now()
 
     # Check for >5% month-over-month change
     _check_price_alert(target_date, data)

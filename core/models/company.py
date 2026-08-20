@@ -26,20 +26,25 @@ class Company(models.Model):
     # set. Diesel already has a live national-price feed elsewhere in the
     # system, so it keeps a sensible default; the other three have no such
     # feed, so they stay blank until the company sets a price manually.
+    # decimal_places=4 (not 2) to match FuelPrice's own precision — the live
+    # diesel feed's sub-cent values (e.g. 26.1721) get saved here verbatim
+    # via the "Fetch Now" nudge, and rounding to 2dp before storage would
+    # introduce a small but real, compounding error into fuel-cost
+    # calculations that fall back to this field.
     fuel_price_per_litre = models.DecimalField(
-        max_digits=6, decimal_places=2, default=23.50,
+        max_digits=8, decimal_places=4, default=23.50,
         help_text='Default Diesel price per litre in ZAR (default: R23.50)'
     )
     fuel_price_petrol = models.DecimalField(
-        max_digits=6, decimal_places=2, null=True, blank=True,
+        max_digits=8, decimal_places=4, null=True, blank=True,
         help_text='Default Petrol price per litre in ZAR'
     )
     fuel_price_electric = models.DecimalField(
-        max_digits=6, decimal_places=2, null=True, blank=True,
+        max_digits=8, decimal_places=4, null=True, blank=True,
         help_text='Default Electric price per kWh in ZAR'
     )
     fuel_price_hybrid = models.DecimalField(
-        max_digits=6, decimal_places=2, null=True, blank=True,
+        max_digits=8, decimal_places=4, null=True, blank=True,
         help_text='Default Hybrid price per litre in ZAR'
     )
 

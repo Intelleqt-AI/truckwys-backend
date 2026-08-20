@@ -3007,6 +3007,16 @@ class RouteCalculatorView(APIView):
         weight_kg = int(data.get('weight_kg') or data.get('weight') or 20000)
         vehicle_type = data.get('vehicle_type', 'Flatbed')
 
+        # Ordered intermediate stops between origin and destination — only
+        # entries with real coordinates are usable as routing waypoints; a
+        # stop still being typed in (no coords yet) is silently skipped
+        # rather than failing the whole route calculation.
+        stops = [
+            {'lat': float(s['lat']), 'lon': float(s['lon'])}
+            for s in (data.get('stops') or [])
+            if isinstance(s, dict) and s.get('lat') is not None and s.get('lon') is not None
+        ]
+
         # Country ISO from the picked suggestion (frontend). When coords are passed
         # directly we skip geocoding, so without this the country is unknown and
         # cross-border detection wrongly treats a foreign drop as domestic.
@@ -3032,8 +3042,9 @@ class RouteCalculatorView(APIView):
             if not d:
                 return Response({'success': False, 'error': f'Cannot geocode: {destination}'}, status=400)
 
-        # TomTom route(s) — best + up to 2 alternatives. routes_raw[0] is TomTom's best.
-        routes_raw = self._route(o, d, weight_kg)
+        # TomTom route(s) — best + up to 2 alternatives, or (with stops) the one
+        # route through every waypoint in order. routes_raw[0] is TomTom's best.
+        routes_raw = self._route(o, d, weight_kg, stops=stops)
         if routes_raw:
             best = routes_raw[0]
             distance_km = best['distance_km']
@@ -3189,6 +3200,11 @@ class RouteCalculatorView(APIView):
             'dest_coords': d,
             'origin_resolved': o.get('label', origin),
             'dest_resolved': d.get('label', destination),
+            # Tells the frontend whether this distance/route already routes
+            # through stops (alternatives are never available in that case —
+            # see _route's docstring) rather than it having to infer that
+            # from routes_out happening to contain only one entry.
+            'stops_count': len(stops),
         }
 
         # Add cross-border info if applicable
@@ -3291,24 +3307,42 @@ class RouteCalculatorView(APIView):
             pass
         return None
 
-    def _route(self, o, d, weight_kg):
-        """Call TomTom calculateRoute for the best route + up to 2 alternatives.
+    def _route(self, o, d, weight_kg, stops=None):
+        """Call TomTom calculateRoute for the best route + up to 2 alternatives —
+        or, when `stops` is given, one ordered route through every waypoint.
 
         Returns a list of parsed route dicts (index 0 = TomTom's own best) with
         geometry + summary fields, or None on failure. No custom ranking — order
-        is exactly what TomTom returns (routeType=fastest)."""
+        is exactly what TomTom returns (routeType=fastest).
+
+        TomTom's calculateRoute takes a colon-chained list of coordinates
+        (lat,lon:lat,lon:lat,lon:...) and treats every point after the first as
+        an ordered waypoint, returning ONE route through all of them with a
+        `legs` array — no code changes needed in _parse_route for this, since
+        it already flattens every leg's points into one geometry list and the
+        route-level `summary` TomTom returns is already the total across all
+        legs. The one thing that changes is alternatives: TomTom does not
+        compute them once waypoints are involved, so maxAlternatives is
+        dropped entirely rather than sent and silently ignored.
+        """
         try:
-            url = f"https://api.tomtom.com/routing/1/calculateRoute/{o['lat']},{o['lon']}:{d['lat']},{d['lon']}/json"
-            r = http_requests.get(url, params={
+            points = [f"{o['lat']},{o['lon']}"]
+            if stops:
+                points += [f"{s['lat']},{s['lon']}" for s in stops]
+            points.append(f"{d['lat']},{d['lon']}")
+            url = f"https://api.tomtom.com/routing/1/calculateRoute/{':'.join(points)}/json"
+            params = {
                 'key': self.TOMTOM_API_KEY,
                 'travelMode': 'truck',
                 'vehicleWeight': weight_kg,
                 'traffic': 'true',
                 'routeType': 'fastest',
-                'maxAlternatives': 2,
                 'computeTravelTimeFor': 'all',
                 'sectionType': ['traffic', 'toll', 'motorway', 'tunnel', 'country'],
-            }, timeout=20)
+            }
+            if not stops:
+                params['maxAlternatives'] = 2
+            r = http_requests.get(url, params=params, timeout=20)
             if r.status_code == 200:
                 parsed = [self._parse_route(rt) for rt in r.json().get('routes', [])]
                 parsed = [p for p in parsed if p]
