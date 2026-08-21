@@ -73,18 +73,44 @@ class FuelPriceCurrentView(APIView):
             days_old = (timezone.now().date() - fuel_price.date).days
             is_fallback = fuel_price.source in ('FALLBACK', 'FALLBACK_LATEST')
             is_stale = is_fallback or days_old > 35
-            stale_warning = None
-            if is_stale:
-                if is_fallback:
-                    stale_warning = "Live price fetch failed — showing estimated price. Update via Admin > Fuel Prices."
-                else:
-                    stale_warning = f"Last update {days_old} days ago; consider manual refresh"
+
+            if is_fallback:
+                # Don't hand over a substituted number dressed up as current —
+                # the live sources (AA SA, SAPIA, DMRE) are all presently
+                # broken (moved page / 404 / unreachable, not a transient
+                # blip — see fuel_price.py's scraper functions), so silently
+                # substituting an old figure would read as "the price" to
+                # anyone glancing at it. Leave the fields empty and say so
+                # plainly instead; a human can enter today's real price below.
+                return Response({
+                    'success': True,
+                    'inland_price': None,
+                    'coastal_price': None,
+                    'last_updated': None,
+                    # When we actually last checked a live source — distinct
+                    # from `last_updated`/`date`, which is just the calendar
+                    # month a price represents. Shown even on a fallback so
+                    # "checked 20 seconds ago and got nothing live" reads
+                    # differently from "hasn't been checked in days."
+                    'last_checked_at': fuel_price.fetched_at.isoformat(),
+                    'is_stale': True,
+                    'source': fuel_price.source,
+                    'stale_warning': "Couldn't reach any live fuel-price source right now — enter today's price manually below.",
+                    'date': None,
+                    'diesel_inland': None,
+                    'diesel_coastal': None,
+                    'petrol_95': None,
+                    'petrol_93': None,
+                })
+
+            stale_warning = f"Last update {days_old} days ago; consider manual refresh" if is_stale else None
 
             return Response({
                 'success': True,
                 'inland_price': float(fuel_price.diesel_inland),
                 'coastal_price': float(fuel_price.diesel_coastal),
                 'last_updated': fuel_price.date.isoformat(),
+                'last_checked_at': fuel_price.fetched_at.isoformat(),
                 'is_stale': is_stale,
                 'source': fuel_price.source,
                 'stale_warning': stale_warning,

@@ -459,7 +459,7 @@ def compute_all_driver_scores():
 @shared_task(bind=True, max_retries=3, default_retry_delay=21_600, name='core.tasks.refresh_fuel_price')
 def refresh_fuel_price(self):
     """
-    Fetch current SA diesel price from live sources (AA SA → SAPIA → DMRE).
+    Fetch current SA diesel price from live sources (FIASA → AA SA → SAPIA → DMRE).
     Retries up to 3× with 6-hour gaps if all live sources fail.
     SA prices are announced on the first Wednesday of each month.
     """
