@@ -59,7 +59,11 @@ SYSTEM_PROMPT_BASE = (
     "- vehicle_type: extract whatever vehicle/truck type the user mentions AS FREE TEXT, in their own "
     "words (e.g. 'rigid truck', 'flatbed', 'reefer', 'semi'). Do NOT restrict this to any fixed list or "
     "reject a value because it looks unfamiliar — the caller matches it against the fleet's real vehicle "
-    "types afterwards. If not mentioned, return \"\".\n"
+    "types afterwards. If the message is not in English, translate the vehicle/truck type phrase into "
+    "its closest common ENGLISH description before returning it (e.g. Afrikaans 'bakvrachtmotor' -> "
+    "'flatbed truck', Spanish 'camión refrigerado' -> 'refrigerated truck') — the fleet's real vehicle "
+    "types are named in English, and matching only works against English wording. If not mentioned, "
+    "return \"\".\n"
     "- customer_name: the name of the client/customer this quote is for, as free text, if the user "
     "mentions one (e.g. 'client is Acme', 'for John', 'customer will be Maru'). Extract exactly what "
     "they said, even a short/partial name — the caller matches it against real customer records "
@@ -89,7 +93,8 @@ SYSTEM_PROMPT_BASE = (
 )
 
 
-def _system_prompt(vehicle_types: Optional[List[str]] = None, customer_names: Optional[List[str]] = None) -> str:
+def _system_prompt(vehicle_types: Optional[List[str]] = None, customer_names: Optional[List[str]] = None,
+                    detected_language: Optional[str] = None) -> str:
     # Built per-call (not a module constant) so "today"/"tomorrow"/"in N days"
     # always resolve against the real current date, not whenever this process
     # happened to start, and so the fleet's actual vehicle types/customers (a
@@ -100,6 +105,18 @@ def _system_prompt(vehicle_types: Optional[List[str]] = None, customer_names: Op
         extra += f"\n\nThis fleet's configured vehicle types (prefer matching one of these if the user's wording is close): {', '.join(vehicle_types)}."
     if customer_names:
         extra += f"\n\nKnown clients for this company (prefer matching one of these if the user's wording is close): {', '.join(customer_names)}."
+    if detected_language:
+        # Authoritative — sourced from Whisper's own language detection (voice)
+        # or a dedicated text-language detector (typed), never from this model's
+        # own reading of the message. Deliberately unconditional (fires even for
+        # 'en') so there is one rule, not an English-default special case.
+        extra += (
+            f"\n\nLANGUAGE (authoritative — from the transcription/language-detection pipeline, not "
+            f"your own guess): the user's message has been confidently detected as language code "
+            f"'{detected_language}'. You MUST write the 'reply' field entirely in that language. Do not "
+            f"switch to English unless this code is exactly 'en'. Never invent or guess a different "
+            f"language than the one given here."
+        )
     return f"{SYSTEM_PROMPT_BASE}\n\nTODAY'S DATE: {today.isoformat()} ({today.strftime('%A')}).{extra}"
 
 
@@ -210,7 +227,8 @@ def _build_messages(message: str, history: Optional[List[Dict[str, Any]]],
 def extract(message: str, history: Optional[List[Dict[str, Any]]] = None,
             current_fields: Optional[Dict[str, Any]] = None,
             vehicle_types: Optional[List[str]] = None,
-            customers: Optional[List[Dict[str, Any]]] = None
+            customers: Optional[List[Dict[str, Any]]] = None,
+            detected_language: Optional[str] = None,
             ) -> Tuple[Dict[str, Any], str, Dict[str, Optional[str]]]:
     """Return (extracted_fields, reply, unmatched). Raises on SDK/API error so the
     caller can fall back.
@@ -230,6 +248,12 @@ def extract(message: str, history: Optional[List[Dict[str, Any]]] = None,
     opposed to not being mentioned at all). Lets the view offer to create it
     instead of silently dropping it — a real name that doesn't exist must never
     be presented to the user as if it had been captured.
+
+    detected_language: an authoritative language code from the transcription
+    pipeline (Whisper for voice) or a dedicated text-language detector (typed),
+    NOT this model's own guess — see language_detect.py. None means uncertain/
+    unavailable, in which case no language instruction is added and today's
+    default (English-leaning) model judgment applies, unchanged.
     """
     msgs = _build_messages(message, history, current_fields)
     provider = _provider()
@@ -241,7 +265,7 @@ def extract(message: str, history: Optional[List[Dict[str, Any]]] = None,
         response = client.messages.create(
             model=QUOTE_MODEL,
             max_tokens=600,
-            system=_system_prompt(vt_candidates, customer_names),
+            system=_system_prompt(vt_candidates, customer_names, detected_language),
             messages=msgs,
             output_config={"format": {"type": "json_schema", "schema": EXTRACTION_SCHEMA}},
         )
@@ -249,7 +273,7 @@ def extract(message: str, history: Optional[List[Dict[str, Any]]] = None,
         data = json.loads(text)
     elif provider == "openai":
         client = OpenAI(api_key=_openai_key())
-        sys = _system_prompt(vt_candidates, customer_names) + (
+        sys = _system_prompt(vt_candidates, customer_names, detected_language) + (
             "\n\nRespond ONLY with a JSON object with exactly these keys: pickup_location, "
             "delivery_location, weight_kg, vehicle_type, customer_name, cargo_description, "
             "pickup_date, delivery_date, valid_until, trip_type, reply."

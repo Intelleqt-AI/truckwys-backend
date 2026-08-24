@@ -25,6 +25,7 @@ daphne>=4.0
 uvicorn[standard]>=0.20.0
 channels_redis>=4.2
 openai>=1.30
+langdetect>=1.0.9  # text-language detection for typed (non-voice) chat messages
 
 # Transactional email (invoices, payment reminders / dunning)
 resend>=2.0

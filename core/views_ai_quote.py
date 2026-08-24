@@ -514,23 +514,29 @@ class AIChatQuoteView(APIView):
         return bool(cls._GREETING_RE.match(m) or cls._HELP_RE.search(m))
 
     @classmethod
-    def _conversational_reply(cls, message, merged):
+    def _conversational_reply(cls, message, merged, lang=None):
         """Deterministic answer to a greeting / capability question, kept
         quote-focused: explains what the assistant does and/or what it still
-        needs, instead of blankly repeating a field prompt."""
+        needs, instead of blankly repeating a field prompt. `lang`, when a
+        confidently-detected non-English code, gets the final English string
+        translated on the fly (see language_detect.translate_template)."""
         has_essentials = any(merged.get(k) for k in
                              ('pickup_location', 'delivery_location', 'cargo_description', 'weight'))
         if cls._is_help_question(message):
             cap = ("I turn a plain-English load description into a freight quote — give me the "
                    "pickup, delivery, cargo and weight and I'll price it.")
-            return f"{cap} {cls._fallback_reply(merged)}" if has_essentials \
+            reply = f"{cap} {cls._fallback_reply(merged)}" if has_essentials \
                 else f"{cap} What trip would you like to quote?"
-        # Plain greeting
-        return f"Happy to help! {cls._fallback_reply(merged)}" if has_essentials else cls.INTRO_REPLY
+        else:
+            # Plain greeting
+            reply = f"Happy to help! {cls._fallback_reply(merged)}" if has_essentials else cls.INTRO_REPLY
+        from core.services import language_detect
+        return language_detect.translate_template(reply, lang)
 
     @staticmethod
-    def _fallback_reply(merged):
-        """Build a friendly reply from the fields captured so far."""
+    def _fallback_reply(merged, lang=None):
+        """Build a friendly reply from the fields captured so far. `lang`, when
+        a confidently-detected non-English code, translates the final string."""
         missing = []
         if not merged.get('pickup_location'):
             missing.append('pickup location')
@@ -542,24 +548,28 @@ class AIChatQuoteView(APIView):
             missing.append('weight')
 
         if not missing:
-            return (
+            reply = (
                 f"Got it — {merged.get('cargo_description', 'your cargo')} from "
                 f"{merged.get('pickup_location')} to {merged.get('delivery_location')}, "
                 f"{merged.get('weight', 0) / 1000:.0f} tons. Ready to calculate your quote."
             )
-        if len(missing) <= 2:
-            return f"Almost there. Just need the {' and '.join(missing)} to complete the quote."
-        return f"Thanks! I still need the {', '.join(missing[:-1])} and {missing[-1]} to build your quote."
+        elif len(missing) <= 2:
+            reply = f"Almost there. Just need the {' and '.join(missing)} to complete the quote."
+        else:
+            reply = f"Thanks! I still need the {', '.join(missing[:-1])} and {missing[-1]} to build your quote."
+        from core.services import language_detect
+        return language_detect.translate_template(reply, lang)
 
     @classmethod
-    def _reply_for(cls, message, merged, extracted, llm_reply=''):
+    def _reply_for(cls, message, merged, extracted, llm_reply='', lang=None):
         """Pick the reply. A pure greeting / help question (no new load details
         this turn) is answered deterministically here, overriding whatever the LLM
         returned — so the assistant never ignores a direct question by repeating a
-        field prompt. Otherwise use the LLM's reply, or the field-progress fallback."""
+        field prompt. Otherwise use the LLM's reply (already in `lang`, per the
+        authoritative-language prompt directive) or the field-progress fallback."""
         if not extracted and cls._looks_conversational(message):
-            return cls._conversational_reply(message, merged)
-        return (llm_reply or '').strip() or cls._fallback_reply(merged)
+            return cls._conversational_reply(message, merged, lang)
+        return (llm_reply or '').strip() or cls._fallback_reply(merged, lang)
 
     def post(self, request):
         """
@@ -573,6 +583,17 @@ class AIChatQuoteView(APIView):
             history = request.data.get('history', [])
             pending_entity = request.data.get('pending_entity')
             declined_entities = request.data.get('declined_entities') or []
+
+            # Authoritative detected language: from Whisper (voice — passed
+            # through by the frontend from /ai/voice-quote/'s response) when
+            # present, else a dedicated text detector for typed messages (no
+            # transcription step exists for those). None means uncertain/
+            # unavailable — every reply-producing branch below then falls back
+            # to today's unchanged default behavior, never inventing a language.
+            from core.services import language_detect
+            detected_language = request.data.get('detected_language') or None
+            if not detected_language:
+                detected_language = language_detect.detect_text_language(message)
 
             # The fleet's real vehicle types and customers — extraction matches
             # free text against these, not a hardcoded generic list (a company's
@@ -601,7 +622,7 @@ class AIChatQuoteView(APIView):
             # entirely the user's answer to it, not new quote-field content.
             if pending_entity and company is not None:
                 nxt, ent_reply, created, link, declined_name = quote_entity_chat.advance_pending(
-                    pending_entity, message, company, request.user,
+                    pending_entity, message, company, request.user, detected_language=detected_language,
                 )
                 extracted = {}
                 if created:
@@ -609,7 +630,7 @@ class AIChatQuoteView(APIView):
                         {'customer_id': created['id'], 'customer_name': created['name']}
                         if created['table'] == 'customers' else {'vehicle_type': created['name']}
                     )
-                    ent_reply = f"{ent_reply} {self._fallback_reply({**current_fields, **extracted})}"
+                    ent_reply = f"{ent_reply} {self._fallback_reply({**current_fields, **extracted}, detected_language)}"
                 return Response({
                     'success': True,
                     'reply': ent_reply,
@@ -628,12 +649,14 @@ class AIChatQuoteView(APIView):
                     extracted, reply, unmatched = llm_quote.extract(
                         message, history, current_fields,
                         vehicle_types=vehicle_types, customers=customers,
+                        detected_language=detected_language,
                     )
                     if company is not None:
                         hit = quote_entity_chat.detect_unmatched(unmatched, declined_entities)
                         if hit:
                             table, raw_name = hit
-                            pending, ask_reply, link = quote_entity_chat.start_pending(table, raw_name, request.user)
+                            pending, ask_reply, link = quote_entity_chat.start_pending(
+                                table, raw_name, request.user, detected_language=detected_language)
                             return Response({
                                 'success': True,
                                 'reply': ask_reply,
@@ -645,8 +668,10 @@ class AIChatQuoteView(APIView):
                             })
                     merged = {**current_fields, **extracted}
                     # Deterministically answer a pure greeting / help question even
-                    # if the LLM returned a field-nag; otherwise keep the LLM reply.
-                    reply = self._reply_for(message, merged, extracted, llm_reply=reply)
+                    # if the LLM returned a field-nag; otherwise keep the LLM reply
+                    # (already in `detected_language`, per the extraction prompt's
+                    # authoritative-language directive).
+                    reply = self._reply_for(message, merged, extracted, llm_reply=reply, lang=detected_language)
                     return Response({
                         'success': True,
                         'reply': reply,
@@ -861,7 +886,8 @@ class AIChatQuoteView(APIView):
                 hit = quote_entity_chat.detect_unmatched(unmatched, declined_entities)
                 if hit:
                     table, raw_name = hit
-                    pending, ask_reply, link = quote_entity_chat.start_pending(table, raw_name, request.user)
+                    pending, ask_reply, link = quote_entity_chat.start_pending(
+                        table, raw_name, request.user, detected_language=detected_language)
                     return Response({
                         'success': True,
                         'reply': ask_reply,
@@ -876,7 +902,7 @@ class AIChatQuoteView(APIView):
 
             # Answer a greeting / "how can you help" instead of nagging for fields;
             # otherwise report progress on the still-missing essentials.
-            reply = self._reply_for(message, merged, extracted)
+            reply = self._reply_for(message, merged, extracted, lang=detected_language)
 
             return Response({
                 'success': True,
@@ -888,14 +914,39 @@ class AIChatQuoteView(APIView):
             })
 
         except Exception as e:
+            error_reply = ("I had trouble understanding that. Can you describe the load again? "
+                            "For example: '20 tons of pallets from Johannesburg to Cape Town, flatbed.'")
+            try:
+                from core.services import language_detect
+                error_reply = language_detect.translate_template(
+                    error_reply, request.data.get('detected_language') or None)
+            except Exception:
+                pass
             return Response({
                 'success': False,
-                'reply': "I had trouble understanding that. Can you describe the load again? For example: '20 tons of pallets from Johannesburg to Cape Town, flatbed.'",
+                'reply': error_reply,
                 'extracted_fields': {},
                 'pending_entity': None,
                 'link': None,
                 'declined_entity': None,
             })
+
+
+_LANGUAGE_CONFIDENCE_MARGIN = 0.10
+
+
+def _mean_avg_logprob(transcript):
+    """Mean per-segment avg_logprob from a verbose_json transcription response
+    — Whisper's own token-decoding confidence signal, used to arbitrate
+    between two forced-language transcriptions of the SAME audio (the hosted
+    API exposes no language-confidence score directly). None when there are
+    no scorable segments (e.g. silence) — a scoreless pass always loses the
+    comparison rather than crashing on an empty average."""
+    segments = getattr(transcript, 'segments', None) or []
+    scores = [s.avg_logprob for s in segments if getattr(s, 'avg_logprob', None) is not None]
+    if not scores:
+        return None
+    return sum(scores) / len(scores)
 
 
 class AIVoiceQuoteView(APIView):
@@ -955,12 +1006,24 @@ class AIVoiceQuoteView(APIView):
                 'audio/ogg': 'ogg',
                 'audio/flac': 'flac',
             }.get(content_type, 'webm')
-            try:
-                transcript = client.audio.transcriptions.create(
+            # Fully automatic, no picker — but scoped to a CLOSED pair of
+            # candidates (English, Afrikaans) rather than Whisper's own
+            # open-ended auto-detect. Open-ended detection is what caused
+            # repeated real-world failures (clear English speech confidently
+            # mis-identified as Bengali, with no confidence score from the
+            # hosted API to catch it) — by only ever forcing the audio through
+            # these two known-plausible languages and comparing decode
+            # confidence, an unrelated third language can never win by
+            # mistake, which is the actual failure mode this closes.
+            def _transcribe(language):
+                return client.audio.transcriptions.create(
                     model='whisper-1',
                     file=(f'recording.{ext}', audio_bytes, content_type or 'audio/webm'),
-                    response_format='verbose_json',
+                    language=language, response_format='verbose_json',
                 )
+
+            try:
+                en_transcript = _transcribe('en')
             except openai.OpenAIError as oe:
                 # Whisper rejected the audio (too short, undecodable format, etc.).
                 # Surface its message and log the details for diagnosis.
@@ -974,39 +1037,25 @@ class AIVoiceQuoteView(APIView):
                     'error': f'Could not transcribe the recording: {msg}',
                 }, status=502)
 
-            text = transcript.text
-            detected_lang = getattr(transcript, 'language', None)
-            # Whisper's blind language auto-detect can misfire on a short/noisy/
-            # accented clip and lock onto a wholly unrelated high-resource
-            # language, transcribing the audio phonetically into that
-            # language's script instead of failing loudly (e.g. English speech
-            # coming back as Bengali-script gibberish). This app only ever
-            # expects English or Afrikaans (Whisper's own supported-language
-            # list has no Bantu-language codes for isiZulu/isiXhosa, so those
-            # already transcribe as a best-effort approximation and can't be
-            # checked here) — anything else detected is almost certainly a
-            # misdetection, so re-anchor once on English rather than surface
-            # a garbled foreign-script transcript.
-            PLAUSIBLE_LANGS = {'en', 'af', 'english', 'afrikaans'}
-            if detected_lang and detected_lang.lower() not in PLAUSIBLE_LANGS:
-                logger.warning(
-                    'Whisper detected unexpected language %r for voice-quote audio '
-                    '(%d bytes) — retrying forced to English.',
-                    detected_lang, len(audio_bytes),
-                )
-                try:
-                    retry = client.audio.transcriptions.create(
-                        model='whisper-1',
-                        file=(f'recording.{ext}', audio_bytes, content_type or 'audio/webm'),
-                        language='en',
-                    )
-                    text = retry.text
-                except openai.OpenAIError as oe:
-                    logger.warning('Whisper English-forced retry failed: %s', oe)
+            text, detected_language = en_transcript.text, 'en'
+            try:
+                af_transcript = _transcribe('af')
+                en_score = _mean_avg_logprob(en_transcript)
+                af_score = _mean_avg_logprob(af_transcript)
+                # Afrikaans must clearly beat English (not just any amount)
+                # to be trusted — English wins every tie/near-tie, the safer
+                # default between exactly these two known options.
+                if af_score is not None and (en_score is None or af_score >= en_score + _LANGUAGE_CONFIDENCE_MARGIN):
+                    text, detected_language = af_transcript.text, 'af'
+            except openai.OpenAIError as oe:
+                # Best-effort second pass — if it fails, the English result
+                # already in hand is a perfectly good answer on its own.
+                logger.warning('Whisper Afrikaans comparison pass failed: %s', oe)
 
             return Response({
                 'success': True,
                 'text': text,
+                'detected_language': detected_language,
             })
 
         except Exception as e:

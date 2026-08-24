@@ -100,6 +100,65 @@ class AdvancePendingCustomerTests(TestCase):
         self.assertIsNone(created)
         self.assertEqual(declined, 'shefat')
 
+    def test_redirect_to_existing_customer_on_name_correction(self):
+        # Reproduces a real reported bug: the extracted name didn't match
+        # anything real, so the create-dialog started asking for an email;
+        # the user then tried to CORRECT the name to a real existing
+        # customer instead of supplying an email, and got stuck being told
+        # "that doesn't look like a valid email" forever. It should instead
+        # recognize the real customer and resolve to them.
+        Customer.objects.create(
+            company=self.company, name='Arifuzzaman Swapnil', email='arif@example.com',
+            phone='', address='', city='', state='', zip_code='',
+        )
+        pending, _, _ = qec.start_pending('customers', "Marika's German shop", self.admin)
+        pending2, reply, created, link, declined = qec.advance_pending(
+            pending, 'Client name will be Arifudjaman Swapnil.', self.company, self.admin)
+        self.assertIsNone(pending2)
+        self.assertIsNone(declined)
+        self.assertEqual(created, {'table': 'customers', 'id': Customer.objects.get(name='Arifuzzaman Swapnil').id,
+                                    'name': 'Arifuzzaman Swapnil'})
+        self.assertIn('arifuzzaman swapnil', reply.lower())
+
+    def test_redirect_to_existing_customer_on_explicit_existing_phrase(self):
+        Customer.objects.create(
+            company=self.company, name='Arifuzzaman Swapnil', email='arif@example.com',
+            phone='', address='', city='', state='', zip_code='',
+        )
+        pending, _, _ = qec.start_pending('customers', "Marika's German shop", self.admin)
+        pending2, reply, created, link, declined = qec.advance_pending(
+            pending, 'the client is existing one, name arifuzzaman swapnil', self.company, self.admin)
+        self.assertIsNone(pending2)
+        self.assertEqual(created['name'], 'Arifuzzaman Swapnil')
+
+    def test_no_existing_match_still_reasks_for_email(self):
+        # No real customer resembles this text at all -- must stay on the
+        # existing (unchanged) re-ask behavior, not false-positive redirect.
+        Customer.objects.create(
+            company=self.company, name='Totally Unrelated Ltd', email='x@example.com',
+            phone='', address='', city='', state='', zip_code='',
+        )
+        pending, _, _ = qec.start_pending('customers', 'shefat', self.admin)
+        pending2, reply, created, link, declined = qec.advance_pending(
+            pending, 'banana', self.company, self.admin)
+        self.assertEqual(pending2, pending)
+        self.assertIsNone(created)
+        self.assertIn('email', reply.lower())
+
+    def test_redirect_at_confirm_step_when_user_names_existing_customer(self):
+        Customer.objects.create(
+            company=self.company, name='Arifuzzaman Swapnil', email='arif@example.com',
+            phone='', address='', city='', state='', zip_code='',
+        )
+        pending, _, _ = qec.start_pending('customers', 'shefat', self.admin)
+        pending, _, _, _, _ = qec.advance_pending(pending, 'shefat@example.com', self.company, self.admin)
+        self.assertEqual(pending['missing'], ['__confirm__'])
+        pending2, reply, created, link, declined = qec.advance_pending(
+            pending, 'actually use arifuzzaman swapnil', self.company, self.admin)
+        self.assertIsNone(pending2)
+        self.assertEqual(created['name'], 'Arifuzzaman Swapnil')
+        self.assertFalse(Customer.objects.filter(name='shefat').exists())
+
     def test_duplicate_email_surfaces_error_and_keeps_pending(self):
         Customer.objects.create(
             company=self.company, name='Existing', email='dup@example.com',
@@ -157,3 +216,12 @@ class AdvancePendingVehicleTypeTests(TestCase):
         pending, _, _ = qec.start_pending('vehicle_types', 'Box Truck 2', self.admin)
         pending, _, _, _, _ = qec.advance_pending(pending, '5000 kg', self.company, self.admin)
         self.assertEqual(pending['collected']['capacity'], 5000)
+
+    def test_redirect_to_existing_vehicle_type_mid_dialog(self):
+        real = VehicleType.objects.create(
+            company=self.company, name='Rigid Truck', capacity=10000, max_distance=300, base_rate=3000)
+        pending, _, _ = qec.start_pending('vehicle_types', 'Cargo Truck', self.admin)
+        pending2, reply, created, link, declined = qec.advance_pending(
+            pending, 'actually this is the existing rigid truck', self.company, self.admin)
+        self.assertIsNone(pending2)
+        self.assertEqual(created, {'table': 'vehicle_types', 'id': real.id, 'name': 'Rigid Truck'})
