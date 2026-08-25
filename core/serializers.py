@@ -23,12 +23,21 @@ class UserSerializer(serializers.ModelSerializer):
     # makes on every load) whether quoting/invoicing are blocked, instead of
     # only discovering it reactively when PlanLimitsMiddleware 402s an action.
     subscription_status = serializers.SerializerMethodField()
+    # A company keeps full access (subscription_status stays 'active'/
+    # 'grace_period') for the rest of its paid period after cancelling — this
+    # is the only signal that a cancellation is pending, so the header badge
+    # can show "Cancelling" instead of silently staying "Online" until the
+    # daily sweep finalises subscription_status to 'cancelled'.
+    cancel_at_period_end = serializers.SerializerMethodField()
 
     def get_company_name(self, obj):
         return obj.company.company_name if obj.company_id else None
 
     def get_subscription_status(self, obj):
         return obj.company.subscription_status if obj.company_id else None
+
+    def get_cancel_at_period_end(self, obj):
+        return obj.company.cancel_at_period_end if obj.company_id else False
 
     def validate_role(self, value):
         if not isinstance(value, str):
@@ -44,7 +53,7 @@ class UserSerializer(serializers.ModelSerializer):
         fields = ['id', 'username', 'email', 'password', 'first_name', 'last_name', 'name', 'job_title',
                   'role', 'status', 'phone', 'address', 'timezone', 'language', 'date_format',
                   'notification_settings', 'avatar', 'last_active', 'is_active', 'created_at', 'updated_at',
-                  'is_superuser', 'company_id', 'company_name', 'subscription_status']
+                  'is_superuser', 'company_id', 'company_name', 'subscription_status', 'cancel_at_period_end']
         # notification_settings is read-only here: the validated
         # NotificationSettingsView is the single write path for preferences.
         read_only_fields = ['id', 'created_at', 'updated_at', 'last_active',

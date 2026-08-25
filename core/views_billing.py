@@ -272,6 +272,11 @@ class UndoCancelSubscriptionView(APIView):
 class BillingStatusView(APIView):
     """GET /api/v1/billing/status/ — Current billing status."""
     permission_classes = [IsAuthenticated]
+    # Polled every 60s by the Billing Settings page as a fallback in case the
+    # live WebSocket push misses an update — exempt from the default
+    # per-user throttle so it never competes with real usage for the same
+    # 60/minute budget.
+    throttle_classes = []
 
     def get(self, request):
         from core.services.subscription_billing import _grace_days
@@ -322,6 +327,8 @@ class BillingHistoryView(APIView):
     audit every deduction, not just the subscription ones.
     """
     permission_classes = [IsAuthenticated]
+    # Polled alongside BillingStatusView (see its comment) — same reasoning.
+    throttle_classes = []
 
     def get(self, request):
         from .models import DeliveryFeeCharge
