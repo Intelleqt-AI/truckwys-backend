@@ -13,7 +13,7 @@ aging analysis, and financial reporting.
 """
 
 from rest_framework import viewsets
-from .views import CompanyFilterMixin, status
+from .views import CompanyFilterMixin, BillingGateMixin, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -35,13 +35,19 @@ from core.services.email_service import InvoiceEmailService
 from core.services.aging_service import AgingAnalysisService
 
 
-class InvoiceFinanceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
+class InvoiceFinanceViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
     """
     Enhanced Invoice ViewSet with finance-specific actions.
     """
     queryset = Invoice.objects.all()
     serializer_class = InvoiceSerializer
     permission_classes = [IsAuthenticated]
+    billing_blocked_message = 'Update your payment method to continue quoting.'
+
+    def create(self, request, *args, **kwargs):
+        if self._billing_blocked(request):
+            return self._billing_blocked_response()
+        return super().create(request, *args, **kwargs)
 
     @action(detail=True, methods=['post'])
     def generate_pdf(self, request, pk=None):
@@ -211,6 +217,9 @@ class InvoiceFinanceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
             "separate": true   // if true, generate separate invoices
         }
         """
+        if self._billing_blocked(request):
+            return self._billing_blocked_response()
+
         from core.views import resolve_user_company
         company = resolve_user_company(request.user)
 

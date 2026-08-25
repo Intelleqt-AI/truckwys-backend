@@ -1,8 +1,8 @@
 """Tests for the 0.25% delivery take-rate: ad-hoc Paystack charging, retry/
 grace-period escalation to suspension, and the suspended-account gating in
-PlanLimitsMiddleware. All Paystack HTTP calls are mocked — no network access.
+BillingGateMixin (core/views.py, applied to QuoteViewSet/InvoiceFinanceViewSet).
+All Paystack HTTP calls are mocked — no network access.
 """
-import json
 from datetime import timedelta
 from decimal import Decimal
 from unittest import mock
@@ -344,10 +344,9 @@ class InvoiceSerializerDeliveryFeeChargeTests(DeliveryFeeBillingTestCase):
 
 
 class SuspendedMiddlewareTests(DeliveryFeeBillingTestCase):
-    """PlanLimitsMiddleware reads Django's request.user, which APIClient's
-    force_authenticate() never populates (it only patches the DRF-wrapped
-    request seen inside the view). A real session login is required so
-    AuthenticationMiddleware sets request.user before PlanLimitsMiddleware runs.
+    """BillingGateMixin (core/views.py), applied to QuoteViewSet and
+    InvoiceFinanceViewSet, blocks money-generating actions for a suspended/
+    cancelled company — TruckWys_Fee_Billing_Spec.pdf §5.
 
     Spec §5: only quote create/accept and invoice generation are blocked —
     everything else (reads, drivers/vehicles/users/settings, billing) stays
@@ -359,16 +358,14 @@ class SuspendedMiddlewareTests(DeliveryFeeBillingTestCase):
         self.user = User.objects.create_user(username='suspendeduser', email='suspended@test.com', password='testpass123')
         self.user.company = self.company
         self.user.save()
-        self.client.login(username='suspendeduser', password='testpass123')
+        self.client.force_authenticate(user=self.user)
         self.company.subscription_status = 'suspended'
         self.company.save()
 
     def test_post_to_new_quote_is_blocked_when_suspended(self):
-        # A plain Django JsonResponse (from the middleware, before the view
-        # ever runs) — not a DRF Response, so parse .content, not .data.
         response = self.client.post('/api/v1/quotes/', {}, format='json')
         self.assertEqual(response.status_code, 402)
-        self.assertTrue(json.loads(response.content).get('account_suspended'))
+        self.assertTrue(response.data.get('account_suspended'))
 
     def test_post_to_new_invoice_is_blocked_when_suspended(self):
         response = self.client.post('/api/v1/invoices/', {}, format='json')

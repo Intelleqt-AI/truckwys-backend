@@ -430,23 +430,6 @@ class EntityHookTests(TestCase):
         self.assertEqual(invoice.status, 'PAID')
         self.assertEqual(invoice.balance, Decimal('0'))
 
-    def test_vehicle_plan_limit_enforced_at_execute(self):
-        out = tools.propose_create(
-            self.company, self.admin, None,
-            {'table': 'vehicles', 'fields': {
-                'make': 'TATA', 'model': 'Prima', 'year': 2024, 'plate': 'CP 001 GP',
-                'capacity': '20', 'fuel_type': 'DIESEL',
-            }},
-        )
-        proposal = CopilotProposal.objects.get(id=out['proposal_id'])
-        with mock.patch('core.middleware.plan_limits.check_vehicle_limit',
-                        return_value=(False, 'Vehicle limit reached — upgrade your plan')):
-            ok, payload = tools.execute_proposal(proposal, self.admin, self.company)
-        self.assertFalse(ok)
-        self.assertIn('limit', payload['error'].lower())
-        self.assertFalse(Vehicle.objects.filter(plate='CP 001 GP').exists())
-
-
 class CrossTenantFKTests(TestCase):
     """A proposal's payload FK ids must belong to the caller's company. Otherwise
     the confirmation card leaks another tenant's data (read oracle) and execute

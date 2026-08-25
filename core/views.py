@@ -62,6 +62,24 @@ class CompanyFilterMixin:
             serializer.save(company=self.request.user.company)
         else:
             serializer.save()
+
+
+class BillingGateMixin:
+    """Blocks money-generating actions (quote create/status-change, invoice
+    create, order status-change/assignment) for suspended/cancelled companies
+    — TruckWys_Fee_Billing_Spec.pdf §5. `billing_blocked_message` is a class
+    attribute so each viewset can name the action it's blocking."""
+    billing_blocked_message = 'Update your payment method to continue.'
+
+    def _billing_blocked(self, request):
+        company = getattr(request.user, 'company', None)
+        return company is not None and company.subscription_status in ('suspended', 'cancelled')
+
+    def _billing_blocked_response(self):
+        return Response(
+            {'error': self.billing_blocked_message, 'account_suspended': True},
+            status=status.HTTP_402_PAYMENT_REQUIRED,
+        )
 from django.db.models import Sum, Count, Q, Avg, F, ExpressionWrapper, DecimalField
 from django.db.models.functions import TruncMonth
 from datetime import datetime, timedelta
@@ -677,6 +695,11 @@ class DeleteAccountView(APIView):
 class UserProfileView(APIView):
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
+    # /api/v1/auth/me/ is polled every 60s by AuthContext (app-wide, for the
+    # lifetime of the session) to keep subscription_status/cancel_at_period_end
+    # in sync — exempt from the default per-user throttle so that housekeeping
+    # traffic never competes with real usage for the same 60/minute budget.
+    throttle_classes = []
 
     def get(self, request):
         serializer = UserSerializer(request.user, context={'request': request})
@@ -1881,12 +1904,7 @@ class UserViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         """Bind newly-created users to the creating admin's company (multi-tenancy)."""
-        from core.middleware.plan_limits import check_user_limit
-        from rest_framework.exceptions import PermissionDenied
         company = resolve_user_company(self.request.user)
-        allowed, message = check_user_limit(company)
-        if not allowed:
-            raise PermissionDenied(detail=message)
         serializer.save(company=company)
 
     def partial_update(self, request, *args, **kwargs):
@@ -2051,18 +2069,6 @@ class VehicleViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-    def perform_create(self, serializer):
-        """Check plan limits before creating vehicle"""
-        from core.middleware.plan_limits import check_vehicle_limit
-
-        if self.request.user.company:
-            allowed, message = check_vehicle_limit(self.request.user.company)
-            if not allowed:
-                from rest_framework.exceptions import PermissionDenied
-                raise PermissionDenied(detail={'error': message, 'upgrade_required': True})
-
-        super().perform_create(serializer)
-
     @action(detail=True, methods=['get'])
     def logs(self, request, pk=None):
         """Get all logs for a specific vehicle"""
@@ -2129,7 +2135,7 @@ class VehicleLogViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         serializer.save(user=self.request.user)
 
 
-class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
+class LoadViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
     queryset = Load.objects.all()
     serializer_class = LoadSerializer
     permission_classes = [IsAuthenticated]
@@ -2137,6 +2143,7 @@ class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     filterset_fields = ['status', 'customer', 'driver', 'vehicle']
     search_fields = ['load_number', 'pickup_city', 'delivery_city', 'cargo_description']
     ordering_fields = ['created_at', 'pickup_date', 'delivery_date']
+    billing_blocked_message = 'Update your payment method to continue managing orders.'
 
     def perform_create(self, serializer):
         # Creation notification is raised by the Load post_save signal
@@ -2146,16 +2153,6 @@ class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         # without it loads are created with company=NULL and vanish from
         # company-scoped queries.
         serializer.save(created_by=self.request.user, company=self.request.user.company)
-
-    def _billing_blocked(self, request):
-        company = getattr(request.user, 'company', None)
-        return company is not None and company.subscription_status in ('suspended', 'cancelled')
-
-    def _billing_blocked_response(self):
-        return Response(
-            {'error': 'Update your payment method to continue managing orders.', 'account_suspended': True},
-            status=status.HTTP_402_PAYMENT_REQUIRED,
-        )
 
     def update(self, request, *args, **kwargs):
         # Manual status changes (drag-and-drop, the status dropdown, direct
@@ -2331,7 +2328,7 @@ class LoadViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         })
 
 
-class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
+class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
     queryset = Quote.objects.all()
     serializer_class = QuoteSerializer
     permission_classes = [IsAuthenticated]
@@ -2339,6 +2336,14 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     filterset_fields = ['status', 'customer']
     search_fields = ['quote_number', 'customer__name', 'pickup_location', 'delivery_location']
     ordering_fields = ['created_at', 'valid_until']
+    billing_blocked_message = 'Update your payment method to continue quoting.'
+
+    def update(self, request, *args, **kwargs):
+        # Unlike Loads (status-change only), every PATCH/PUT to a quote is
+        # blocked for a suspended/cancelled company — TruckWys_Fee_Billing_Spec.pdf §5.
+        if self._billing_blocked(request):
+            return self._billing_blocked_response()
+        return super().update(request, *args, **kwargs)
 
     def perform_update(self, serializer):
         # IT/COMPLETED describe an Order's delivery progress, not the quote
@@ -2356,6 +2361,8 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         serializer.save()
 
     def create(self, request, *args, **kwargs):
+        if self._billing_blocked(request):
+            return self._billing_blocked_response()
         from django.db import IntegrityError
         from rest_framework.exceptions import ValidationError as DRFValidationError
         try:
@@ -2412,6 +2419,9 @@ class QuoteViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=['patch'])
     def update_status(self, request, pk=None):
         """Update quote status"""
+        if self._billing_blocked(request):
+            return self._billing_blocked_response()
+
         quote = self.get_object()
         new_status = request.data.get('status')
         
@@ -2690,6 +2700,15 @@ class PublicQuoteRespondView(APIView):
                 return Response(
                     {'error': 'Invalid quote link'},
                     status=status.HTTP_404_NOT_FOUND
+                )
+
+            # A suspended/cancelled company's customer can't accept/decline
+            # either — this is a public AllowAny view, so there's no
+            # request.user.company to check, only the quote's own company.
+            if quote.company is not None and quote.company.subscription_status in ('suspended', 'cancelled'):
+                return Response(
+                    {'error': 'Update your payment method to continue quoting.', 'account_suspended': True},
+                    status=status.HTTP_402_PAYMENT_REQUIRED,
                 )
 
             # IT/COMPLETED are decided too — a stale link must never re-decide
@@ -3879,12 +3898,6 @@ class InviteView(APIView):
             return Response({'error': 'User with this email already exists'}, status=status.HTTP_400_BAD_REQUEST)
 
         company = resolve_user_company(request.user)
-
-        # Enforce per-plan user limit before creating a new user
-        from core.middleware.plan_limits import check_user_limit
-        allowed, message = check_user_limit(company)
-        if not allowed:
-            return Response({'error': message}, status=status.HTTP_402_PAYMENT_REQUIRED)
 
         # Generate secure token
         token = secrets.token_urlsafe(32)

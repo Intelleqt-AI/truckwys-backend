@@ -216,13 +216,6 @@ def _vehicle_pre_validate(company, user, payload):
     return payload, ''
 
 
-def _vehicle_check_limit(company):
-    from core.middleware.plan_limits import check_vehicle_limit
-    allowed, message = check_vehicle_limit(company)
-    if not allowed:
-        raise ToolError(message)
-
-
 def _invoice_pre_validate(company, user, payload):
     from decimal import Decimal, InvalidOperation
     payload = dict(payload)
@@ -351,8 +344,7 @@ ENTITY_REGISTRY = {
         'order': ['year', 'mileage', 'insurance_expiry', 'registration_expiry'],
         'agg': ['mileage', 'capacity'],
         'display': ['id', 'plate', 'make', 'model', 'year', 'status', 'insurance_expiry'],
-        'hooks': {'pre_validate': _vehicle_pre_validate,
-                  'pre_execute_create': _vehicle_check_limit},
+        'hooks': {'pre_validate': _vehicle_pre_validate},
     },
     'vehicle_types': {
         'model': VehicleType, 'serializer': VehicleTypeSerializer, 'label': 'Vehicle Type',
