@@ -45,7 +45,7 @@ from .views_integrations import (
     FleetTripSyncView, FleetTripBulkSyncView, TripSyncView,
     CartrackStatusView, CartrackConnectView,
 )
-from .views import RouteCalculatorView, LocationSuggestView, DashboardSignalsView, PasswordResetRequestView, PasswordResetConfirmView, IntegrationAPIKeyViewSet
+from .views import RouteCalculatorView, LocationSuggestView, LocationRecentView, DashboardSignalsView, PasswordResetRequestView, PasswordResetConfirmView, IntegrationAPIKeyViewSet
 from .views_lender import (
     LenderHealthView, LenderRiskProfileView, LenderEligibleInvoicesView,
     LenderAdvanceRequestView, LenderPortfolioView
@@ -225,6 +225,7 @@ urlpatterns = [
     # Route Calculator endpoint (NEW - Phase 4)
     path('route/calculate/', RouteCalculatorView.as_view(), name='route-calculate'),
     path('location/suggest/', LocationSuggestView.as_view(), name='location-suggest'),
+    path('location/recent/', LocationRecentView.as_view(), name='location-recent'),
 
     # Public endpoints (no auth required)
     path('quotes/public/<int:quote_id>/<str:token>/', PublicQuoteView.as_view(), name='public-quote-view'),
