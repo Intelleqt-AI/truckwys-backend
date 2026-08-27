@@ -210,6 +210,236 @@ class CartrackConnectView(APIView):
                         status=status.HTTP_200_OK)
 
 
+class CtrlFleetStatusView(APIView):
+    """
+    Get CtrlFleet connection status for the current user's company.
+    GET /api/v1/integrations/ctrlfleet/status/
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        company = _user_company(request)
+        matched_vehicles = Vehicle.objects.filter(company=company).exclude(
+            ctrlfleet_vehicle_code__isnull=True
+        ).exclude(ctrlfleet_vehicle_code='').count()
+
+        return Response({
+            'configured': bool(company.ctrlfleet_api_key),
+            'connected': bool(company.ctrlfleet_connected_at),
+            'connected_at': company.ctrlfleet_connected_at,
+            'last_vehicle_sync': company.ctrlfleet_last_vehicle_sync,
+            'matched_vehicles': matched_vehicles,
+        }, status=status.HTTP_200_OK)
+
+
+class CtrlFleetConnectView(APIView):
+    """
+    Save and validate this company's CtrlFleet API key, then run the
+    one-time vehicle-roster sync (matches CtrlFleet vehicles to ours by
+    licence plate).
+    POST /api/v1/integrations/ctrlfleet/connect/
+    Body: {api_key}
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from core.utils.crypto import encrypt_secret
+        from core.integrations.ctrlfleet import CtrlFleetClient, CtrlFleetAPIError
+        from core.services.ctrlfleet_sync import sync_ctrlfleet_vehicles
+
+        api_key = (request.data.get('api_key') or '').strip()
+        if not api_key:
+            return Response({'error': 'api_key is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            vehicles = CtrlFleetClient(api_key).list_vehicles()
+        except CtrlFleetAPIError as exc:
+            return Response(
+                {'error': f'Could not connect to CtrlFleet with this key: {exc}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        company = _user_company(request)
+        company.ctrlfleet_api_key = encrypt_secret(api_key)
+        company.ctrlfleet_connected_at = timezone.now()
+        company.save(update_fields=['ctrlfleet_api_key', 'ctrlfleet_connected_at'])
+
+        sync_result = sync_ctrlfleet_vehicles(company, vehicles=vehicles)
+
+        return Response({
+            'success': True,
+            'message': 'CtrlFleet connected successfully',
+            'sync': sync_result,
+        }, status=status.HTTP_200_OK)
+
+
+class CtrlFleetDisconnectView(APIView):
+    """
+    Disconnect CtrlFleet integration — clears the stored key and unlinks
+    every vehicle matched to a CtrlFleet vehicleCode.
+    POST /api/v1/integrations/ctrlfleet/disconnect/
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        company = _user_company(request)
+        company.ctrlfleet_api_key = None
+        company.ctrlfleet_connected_at = None
+        company.save(update_fields=['ctrlfleet_api_key', 'ctrlfleet_connected_at'])
+        Vehicle.objects.filter(company=company).update(ctrlfleet_vehicle_code=None)
+
+        return Response({'success': True, 'message': 'CtrlFleet disconnected'}, status=status.HTTP_200_OK)
+
+
+class CtrlFleetVehiclesView(APIView):
+    """
+    CtrlFleet's fleet roster, annotated with whatever TruckWys vehicle (if any)
+    each one is already linked to, plus this company's own vehicle list so the
+    frontend can offer a manual-link dropdown for unmatched entries.
+    GET /api/v1/integrations/ctrlfleet/vehicles/
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from core.integrations.ctrlfleet import CtrlFleetClient, CtrlFleetAPIError
+
+        company = _user_company(request)
+        if not company.ctrlfleet_api_key:
+            return Response(
+                {'error': 'CtrlFleet not connected. Please connect first.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            cf_vehicles = CtrlFleetClient.for_company(company).list_vehicles()
+        except CtrlFleetAPIError as exc:
+            return Response({'error': f'Could not fetch vehicles: {exc}'}, status=status.HTTP_502_BAD_GATEWAY)
+
+        local_vehicles = list(Vehicle.objects.filter(company=company))
+        local_by_code = {v.ctrlfleet_vehicle_code: v for v in local_vehicles if v.ctrlfleet_vehicle_code}
+
+        annotated = []
+        for cf in cf_vehicles:
+            code = cf.get('vehicleCode')
+            matched = local_by_code.get(code)
+            annotated.append({
+                'licence_number': cf.get('licenceNumber'),
+                'vehicle_code': code,
+                'type': cf.get('type'),
+                'device_name': cf.get('deviceName'),
+                'matched_vehicle_id': matched.id if matched else None,
+                'matched_vehicle_plate': matched.plate if matched else None,
+            })
+
+        return Response({
+            'ctrlfleet_vehicles': annotated,
+            'truckwys_vehicles': [
+                {
+                    'id': v.id,
+                    'plate': v.plate,
+                    'make': v.make,
+                    'model': v.model,
+                    'ctrlfleet_vehicle_code': v.ctrlfleet_vehicle_code,
+                }
+                for v in local_vehicles
+            ],
+        }, status=status.HTTP_200_OK)
+
+
+class CtrlFleetLinkVehicleView(APIView):
+    """
+    Manually link (or unlink) a TruckWys vehicle to a CtrlFleet vehicleCode —
+    for cases the automatic plate match misses (typo, different format, or a
+    CtrlFleet entry that isn't a real plate at all).
+    POST /api/v1/integrations/ctrlfleet/link-vehicle/
+    Body: {vehicle_id, ctrlfleet_vehicle_code}  # falsy code unlinks
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        company = _user_company(request)
+        vehicle_id = request.data.get('vehicle_id')
+        vehicle_code = (request.data.get('ctrlfleet_vehicle_code') or '').strip() or None
+
+        if not vehicle_id:
+            return Response({'error': 'vehicle_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            vehicle = Vehicle.objects.get(id=vehicle_id, company=company)
+        except Vehicle.DoesNotExist:
+            return Response({'error': 'Vehicle not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        vehicle.ctrlfleet_vehicle_code = vehicle_code
+        vehicle.save(update_fields=['ctrlfleet_vehicle_code'])
+
+        return Response({
+            'success': True,
+            'vehicle_id': vehicle.id,
+            'ctrlfleet_vehicle_code': vehicle_code,
+        }, status=status.HTTP_200_OK)
+
+
+class CtrlFleetSyncPositionsView(APIView):
+    """
+    Poll CtrlFleet for live positions of vehicles already linked to this
+    company, and update their latitude/longitude/heading/speed/last_location_at.
+    Runs on a schedule too (core.tasks.poll_ctrlfleet_positions); this is the
+    on-demand trigger for immediate feedback.
+    POST /api/v1/integrations/ctrlfleet/sync-positions/
+    Body (optional): {vehicle_id} — sync just that one vehicle (e.g. from an
+    order's "Sync Location" button) instead of the whole fleet.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from core.integrations.ctrlfleet import CtrlFleetAPIError
+        from core.services.ctrlfleet_sync import sync_ctrlfleet_positions
+
+        company = _user_company(request)
+        if not company.ctrlfleet_api_key:
+            return Response(
+                {'error': 'CtrlFleet not connected. Please connect first.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        vehicle_id = request.data.get('vehicle_id')
+        vehicle_ids = [vehicle_id] if vehicle_id else None
+
+        try:
+            sync_result = sync_ctrlfleet_positions(company, vehicle_ids=vehicle_ids)
+        except CtrlFleetAPIError as exc:
+            return Response({'error': f'Position sync failed: {exc}'}, status=status.HTTP_502_BAD_GATEWAY)
+
+        return Response({'success': True, 'sync': sync_result}, status=status.HTTP_200_OK)
+
+
+class CtrlFleetSyncVehiclesView(APIView):
+    """
+    Re-run the CtrlFleet vehicle-matching sync on demand (e.g. after adding
+    a new truck to the fleet).
+    POST /api/v1/integrations/ctrlfleet/sync-vehicles/
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from core.integrations.ctrlfleet import CtrlFleetAPIError
+        from core.services.ctrlfleet_sync import sync_ctrlfleet_vehicles
+
+        company = _user_company(request)
+        if not company.ctrlfleet_api_key:
+            return Response(
+                {'error': 'CtrlFleet not connected. Please connect first.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            sync_result = sync_ctrlfleet_vehicles(company)
+        except CtrlFleetAPIError as exc:
+            return Response({'error': f'Sync failed: {exc}'}, status=status.HTTP_502_BAD_GATEWAY)
+
+        return Response({'success': True, 'sync': sync_result}, status=status.HTTP_200_OK)
+
+
 class XeroSyncInvoicesView(APIView):
     """
     Push this company's outstanding invoices to Xero.

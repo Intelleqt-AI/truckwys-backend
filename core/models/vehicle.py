@@ -80,6 +80,15 @@ class Vehicle(models.Model):
         blank=True,
         help_text='Registration string Cartrack identifies this vehicle by, if it differs from plate'
     )
+
+    # CtrlFleet External API — set by the vehicle-roster sync, which matches this
+    # vehicle's plate against CtrlFleet's registered fleet for the company.
+    ctrlfleet_vehicle_code = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+        help_text='CtrlFleet vehicleCode this vehicle was matched to by licence plate'
+    )
     latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     heading = models.DecimalField(

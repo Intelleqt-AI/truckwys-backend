@@ -263,14 +263,14 @@ One substantive post: **"Fleet API + Power BI: build your dashboard"** (Dec 22, 
 
 TruckWys already has the scaffolding for this — it's "add a provider," not new infrastructure:
 
-- **Adapter location**: `backend/core/integrations/cartrack.py`, modeled on the existing `controlfleet.py` class-based adapter shape; implement it as a concrete subclass of `fleet.py`'s `FleetIntegrationBase` (`import_trips`, `get_vehicle_location`), whose docstring already anticipates Cartrack/MiX Telematics.
+- **Adapter location**: `backend/core/integrations/cartrack.py`, modeled on the existing `ctrlfleet.py` class-based adapter shape; implement it as a concrete subclass of `fleet.py`'s `FleetIntegrationBase` (`import_trips`, `get_vehicle_location`), whose docstring already anticipates Cartrack/MiX Telematics.
 - **Credentials**: follow `backend/config/settings.py`'s `python-decouple` pattern (`CARTRACK_USERNAME`, `CARTRACK_PASSWORD`, `CARTRACK_BASE_URL`, and `CARTRACK_WEBHOOK_SECRET` for HMAC verification). Check `backend/core/models/integration_api_key.py` — if TruckWys stores integration creds per-company (multi-tenant), Cartrack creds likely belong there so each company can bring their own account.
 - **Data mapping**:
   - Vehicle tracking (`GET /vehicles`, `/vehicles/status`, `/vehicles/events`) → `backend/core/models/vehicle.py` (`Vehicle`: `vin`, `plate`, `status`, `mileage`)
   - Alerts/geofences → no existing Alert model; reuse `backend/core/models/activity_event.py` or `notification.py`
   - Delivery jobs (`/delivery/jobs`, `/delivery/jobs/bulk-upload`) → `backend/core/models/load.py` (`Load`: `status`, `distance`, POD fields)
   - MiFleet cost entries (if pursuing the TCO dashboard idea from Section 7) → likely a new model, no existing analog found
-- **Inbound webhook**: `backend/core/urls.py` already routes provider webhooks at `fleet/webhooks/<provider>/` (see `ControlFleetWebhookView`). Add `fleet/webhooks/cartrack/` following that view's shape, but implement the HMAC-SHA256 verification from Section 2a instead of `ControlFleetWebhookView`'s header-key check — this is a genuinely different auth model, don't copy that part.
+- **Inbound webhook**: `backend/core/urls.py` already routes provider webhooks at `fleet/webhooks/<provider>/` (see `CtrlFleetWebhookView`). Add `fleet/webhooks/cartrack/` following that view's shape, but implement the HMAC-SHA256 verification from Section 2a instead of `CtrlFleetWebhookView`'s header-key check — this is a genuinely different auth model, don't copy that part.
 - **Polling**: Celery + Celery Beat are already configured (`backend/config/celery.py`, `backend/core/tasks.py`, celery app docstring already lists "fuel fetch" as an async task category). Add a periodic task polling `/vehicles/status` (respect the 60/min limit) and `/alerts/notifications`, registered in `CELERY_BEAT_SCHEDULE`.
 - **CORS note**: Cartrack's CORS being open (Section 1) does not mean TruckWys's frontend should call Cartrack directly — keep credentials server-side regardless.
 

@@ -1,12 +1,24 @@
 """
-ControlFleet Integration Adapter
-Handles inbound webhooks from ControlFleet fleet management system.
-Maps ControlFleet events to TruckWys Load/Vehicle/Driver models.
+CtrlFleet Integration
+Everything below CtrlFleetAdapter/CtrlFleetWebhookView was written against a
+guessed payload shape before CtrlFleet's real API docs were available, and is
+unconfirmed against a live account — see backend/plan/ctrlfleet-integration-requirements.md.
+
+CtrlFleetClient below it is the confirmed, real integration: CtrlFleet's
+"External API" (OAS 3.1, https://api.ctrlfleet.app/tower) is pull-based —
+we call them, they never call us. It auths with a plain `x-api-key` header
+and exposes exactly three endpoints: list vehicles, get vehicle positions,
+and list points of interest. No trip/delivery-status, POD, or driver-behavior
+data exists in it, so those still depend on CtrlFleet's response to the
+requirements doc.
 """
 
-from typing import Dict, Any, Optional
+import logging
+from typing import Any, Dict, List, Optional
 from datetime import datetime
 from decimal import Decimal
+
+import requests
 from django.conf import settings
 from django.utils import timezone
 from rest_framework import status
@@ -14,20 +26,90 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.models import Load, Vehicle, Driver, ActivityEvent
+from core.utils.crypto import decrypt_secret
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_TIMEOUT = 15
 
 
-class ControlFleetAdapter:
+class CtrlFleetAPIError(Exception):
+    """Raised when the CtrlFleet External API returns a non-2xx response."""
+
+
+class CtrlFleetClient:
+    """Thin HTTP client for CtrlFleet's real, confirmed "External API".
+
+    Auth: `x-api-key` header. There's a single production server for every
+    account (unlike Cartrack, which is per-region) — only the key varies
+    per company.
     """
-    Adapter for ControlFleet fleet management system integration.
+
+    def __init__(self, api_key: str, base_url: Optional[str] = None):
+        if not api_key:
+            raise ValueError('CtrlFleet api_key is required')
+        self.base_url = (base_url or settings.CTRLFLEET_BASE_URL).rstrip('/')
+        self._session = requests.Session()
+        self._session.headers.update({'x-api-key': api_key, 'Accept': 'application/json'})
+
+    @classmethod
+    def for_company(cls, company) -> 'CtrlFleetClient':
+        """Build a client from a Company's stored (encrypted) CtrlFleet key."""
+        return cls(api_key=decrypt_secret(company.ctrlfleet_api_key))
+
+    def _request(self, method: str, path: str, **kwargs) -> Any:
+        url = f'{self.base_url}{path}'
+        kwargs.setdefault('timeout', DEFAULT_TIMEOUT)
+        response = self._session.request(method, url, **kwargs)
+        if not response.ok:
+            raise CtrlFleetAPIError(
+                f'CtrlFleet {method} {path} failed: {response.status_code} {response.text[:500]}'
+            )
+        return response.json() if response.content else None
+
+    @staticmethod
+    def _as_list(data: Any) -> List[Dict[str, Any]]:
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            return data.get('data') or data.get('content') or []
+        return []
+
+    def list_vehicles(self) -> List[Dict[str, Any]]:
+        """GET /api/v1/external/vehicles — used to validate the key on connect,
+        and to match CtrlFleet vehicles to ours by licence plate."""
+        return self._as_list(self._request('GET', '/api/v1/external/vehicles'))
+
+    def get_vehicle_positions(
+        self, vehicle_codes: Optional[List[str]] = None, licence_numbers: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """POST /api/v1/external/vehicles/positions — latest position for a batch
+        of vehicles, identified by CtrlFleet vehicleCode or licence plate."""
+        body: Dict[str, Any] = {}
+        if vehicle_codes:
+            body['vehicleCodes'] = vehicle_codes
+        if licence_numbers:
+            body['licenceNumbers'] = licence_numbers
+        return self._as_list(self._request('POST', '/api/v1/external/vehicles/positions', json=body))
+
+    def list_points_of_interest(self) -> List[Dict[str, Any]]:
+        """GET /api/v1/external/points-of-interest — named locations (likely
+        depots/customer sites) configured in the company's CtrlFleet account."""
+        return self._as_list(self._request('GET', '/api/v1/external/points-of-interest'))
+
+
+class CtrlFleetAdapter:
+    """
+    Adapter for CtrlFleet fleet management system integration.
     Processes inbound webhook events and maps to TruckWys models.
     """
 
     def __init__(self):
-        self.api_key = settings.CONTROLFLEET_API_KEY
+        self.api_key = settings.CTRLFLEET_API_KEY
 
     def verify_api_key(self, request) -> bool:
         """
-        Verify X-ControlFleet-Key header against settings.CONTROLFLEET_WEBHOOK_KEY.
+        Verify X-CtrlFleet-Key header against settings.CTRLFLEET_WEBHOOK_KEY.
 
         Args:
             request: Django request object
@@ -35,16 +117,16 @@ class ControlFleetAdapter:
         Returns:
             True if API key is valid, False otherwise
         """
-        webhook_key = request.META.get('HTTP_X_CONTROLFLEET_KEY')
+        webhook_key = request.META.get('HTTP_X_CTRLFLEET_KEY')
         if not webhook_key:
             return False
 
-        expected_key = settings.CONTROLFLEET_WEBHOOK_KEY
+        expected_key = settings.CTRLFLEET_WEBHOOK_KEY
         return webhook_key == expected_key
 
     def handle_trip_update(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Handle trip update event from ControlFleet.
+        Handle trip update event from CtrlFleet.
 
         Expected payload:
         {
@@ -63,7 +145,7 @@ class ControlFleetAdapter:
         }
 
         Args:
-            data: Webhook payload from ControlFleet
+            data: Webhook payload from CtrlFleet
 
         Returns:
             Dict with status and message
@@ -125,8 +207,8 @@ class ControlFleetAdapter:
         # Create activity event
         ActivityEvent.objects.create(
             event_type='load',
-            title=f'ControlFleet: {event_type} for {load.load_number}',
-            description=f'Trip update from ControlFleet fleet management system',
+            title=f'CtrlFleet: {event_type} for {load.load_number}',
+            description=f'Trip update from CtrlFleet fleet management system',
             entity_id=load.id,
             entity_type='load',
             metadata=data
@@ -140,7 +222,7 @@ class ControlFleetAdapter:
 
     def handle_vehicle_event(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Handle vehicle event from ControlFleet.
+        Handle vehicle event from CtrlFleet.
 
         Expected payload:
         {
@@ -155,7 +237,7 @@ class ControlFleetAdapter:
         }
 
         Args:
-            data: Webhook payload from ControlFleet
+            data: Webhook payload from CtrlFleet
 
         Returns:
             Dict with status and message
@@ -194,8 +276,8 @@ class ControlFleetAdapter:
         # Create activity event
         ActivityEvent.objects.create(
             event_type='system',
-            title=f'ControlFleet: {event_type} for {vehicle.plate}',
-            description=f'Vehicle event from ControlFleet fleet management system',
+            title=f'CtrlFleet: {event_type} for {vehicle.plate}',
+            description=f'Vehicle event from CtrlFleet fleet management system',
             entity_id=vehicle.id,
             entity_type='vehicle',
             metadata=data
@@ -209,7 +291,7 @@ class ControlFleetAdapter:
 
     def handle_driver_event(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Handle driver event from ControlFleet.
+        Handle driver event from CtrlFleet.
 
         Expected payload:
         {
@@ -223,7 +305,7 @@ class ControlFleetAdapter:
         }
 
         Args:
-            data: Webhook payload from ControlFleet
+            data: Webhook payload from CtrlFleet
 
         Returns:
             Dict with status and message
@@ -262,8 +344,8 @@ class ControlFleetAdapter:
         # Create activity event
         ActivityEvent.objects.create(
             event_type='system',
-            title=f'ControlFleet: {event_type} for {driver.user.get_full_name()}',
-            description=data.get('description', f'Driver event from ControlFleet fleet management system'),
+            title=f'CtrlFleet: {event_type} for {driver.user.get_full_name()}',
+            description=data.get('description', f'Driver event from CtrlFleet fleet management system'),
             entity_id=driver.id,
             entity_type='driver',
             metadata=data
@@ -276,10 +358,10 @@ class ControlFleetAdapter:
         }
 
 
-class ControlFleetWebhookView(APIView):
+class CtrlFleetWebhookView(APIView):
     """
-    Public webhook endpoint for ControlFleet inbound events.
-    Authentication via X-ControlFleet-Key header (no JWT required).
+    Public webhook endpoint for CtrlFleet inbound events.
+    Authentication via X-CtrlFleet-Key header (no JWT required).
     """
 
     authentication_classes = []  # No JWT auth
@@ -287,17 +369,17 @@ class ControlFleetWebhookView(APIView):
 
     def post(self, request):
         """
-        Process ControlFleet webhook events.
+        Process CtrlFleet webhook events.
 
-        Expects X-ControlFleet-Key header for authentication.
+        Expects X-CtrlFleet-Key header for authentication.
         Routes to appropriate handler based on event_category.
         """
-        adapter = ControlFleetAdapter()
+        adapter = CtrlFleetAdapter()
 
         # Verify API key
         if not adapter.verify_api_key(request):
             return Response(
-                {'error': 'Invalid or missing X-ControlFleet-Key header'},
+                {'error': 'Invalid or missing X-CtrlFleet-Key header'},
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
