@@ -53,13 +53,21 @@ VEHICLE_TYPES = [
 SYSTEM_PROMPT_BASE = (
     "You are the quoting assistant for TruckWys, a South African road-freight platform. "
     "Extract structured load details from the user's message and the conversation so far.\n"
-    "- Locations are South African or SADC cities/towns. Normalise abbreviations "
-    "(JHB->Johannesburg, CPT->Cape Town, DBN->Durban, PTA->Pretoria, PE->Port Elizabeth, BFN->Bloemfontein).\n"
+    "- Locations: if the user gives a specific street address (a street number/name, building, or "
+    "landmark — not just a city), extract and return that exact address as they said it, in full — "
+    "do NOT shorten it to just the city or area name. Only when they mention nothing more specific "
+    "than a city/town, normalise abbreviations (JHB->Johannesburg, CPT->Cape Town, DBN->Durban, "
+    "PTA->Pretoria, PE->Port Elizabeth, BFN->Bloemfontein) and return that city/town name. Always "
+    "prefer the most specific location detail actually given, for both pickup and delivery.\n"
     "- weight_kg must be in kilograms. Convert tons/tonnes to kg (1 ton = 1000 kg).\n"
-    "- vehicle_type: extract whatever vehicle/truck type the user mentions AS FREE TEXT, in their own "
-    "words (e.g. 'rigid truck', 'flatbed', 'reefer', 'semi'). Do NOT restrict this to any fixed list or "
-    "reject a value because it looks unfamiliar — the caller matches it against the fleet's real vehicle "
-    "types afterwards. If the message is not in English, translate the vehicle/truck type phrase into "
+    "- vehicle_type: if 'This fleet's configured vehicle types' is listed below and the vehicle the "
+    "user describes plausibly corresponds to one of them — by body style (flatbed, reefer, tanker...), "
+    "by tonnage/weight mentioned anywhere in the conversation, or by common synonym (e.g. 'rigid "
+    "truck'/'box truck' most likely means one of the fleet's Truck entries, sized by whatever weight "
+    "was mentioned) — return that configured entry's name EXACTLY as listed, not a paraphrase. Only "
+    "when nothing in that list is a reasonable match, extract whatever the user said AS FREE TEXT "
+    "instead — the caller will offer to add it as a new type. Do NOT reject a value just because it "
+    "looks unfamiliar. If the message is not in English, translate the vehicle/truck type phrase into "
     "its closest common ENGLISH description before returning it (e.g. Afrikaans 'bakvrachtmotor' -> "
     "'flatbed truck', Spanish 'camión refrigerado' -> 'refrigerated truck') — the fleet's real vehicle "
     "types are named in English, and matching only works against English wording. If not mentioned, "
@@ -102,7 +110,7 @@ def _system_prompt(vehicle_types: Optional[List[str]] = None, customer_names: Op
     today = date.today()
     extra = ""
     if vehicle_types:
-        extra += f"\n\nThis fleet's configured vehicle types (prefer matching one of these if the user's wording is close): {', '.join(vehicle_types)}."
+        extra += f"\n\nThis fleet's configured vehicle types (return one of these EXACTLY when the user's described vehicle plausibly matches — see the vehicle_type rule above): {', '.join(vehicle_types)}."
     if customer_names:
         extra += f"\n\nKnown clients for this company (prefer matching one of these if the user's wording is close): {', '.join(customer_names)}."
     if detected_language:
@@ -123,8 +131,18 @@ def _system_prompt(vehicle_types: Optional[List[str]] = None, customer_names: Op
 EXTRACTION_SCHEMA = {
     "type": "object",
     "properties": {
-        "pickup_location": {"type": "string"},
-        "delivery_location": {"type": "string"},
+        "pickup_location": {
+            "type": "string",
+            "description": "The pickup location exactly as given — a full street address if the "
+                            "user provided one, otherwise just the city/town name. Never shorten a "
+                            "given street address down to only its city.",
+        },
+        "delivery_location": {
+            "type": "string",
+            "description": "The delivery location exactly as given — a full street address if the "
+                            "user provided one, otherwise just the city/town name. Never shorten a "
+                            "given street address down to only its city.",
+        },
         "weight_kg": {"type": "number"},
         "vehicle_type": {"type": "string"},
         "customer_name": {"type": "string"},
@@ -265,6 +283,7 @@ def extract(message: str, history: Optional[List[Dict[str, Any]]] = None,
         response = client.messages.create(
             model=QUOTE_MODEL,
             max_tokens=600,
+            temperature=0,
             system=_system_prompt(vt_candidates, customer_names, detected_language),
             messages=msgs,
             output_config={"format": {"type": "json_schema", "schema": EXTRACTION_SCHEMA}},
