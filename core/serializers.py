@@ -254,18 +254,11 @@ class VehicleTypeSerializer(serializers.ModelSerializer):
         # Cached on the serializer instance, not per-object: DRF reuses one
         # serializer instance across every object in a list response, so this
         # runs once per request, not once per vehicle type.
+        from core.services.vehicle_types import available_vehicle_rows, count_available
         if not hasattr(self, '_available_vehicles_cache'):
-            from core.models import Vehicle
-            self._available_vehicles_cache = list(
-                Vehicle.objects.filter(company=company, status='AVAILABLE')
-                .values('vehicle_type_id', 'type')
-            )
+            self._available_vehicles_cache = available_vehicle_rows(company)
 
-        name_lc = (obj.name or '').strip().lower()
-        return sum(
-            1 for v in self._available_vehicles_cache
-            if v['vehicle_type_id'] == obj.id or (v['type'] or '').strip().lower() == name_lc
-        )
+        return count_available(self._available_vehicles_cache, obj.id, obj.name)
 
 
 # VehicleLog Serializer

@@ -5,7 +5,7 @@ in the AI quote chat that doesn't match any real record for the company."""
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 
-from core.models import Company, Customer, VehicleType
+from core.models import Company, Customer, Vehicle, VehicleType
 from core.services import quote_entity_chat as qec
 
 User = get_user_model()
@@ -220,6 +220,13 @@ class AdvancePendingVehicleTypeTests(TestCase):
     def test_redirect_to_existing_vehicle_type_mid_dialog(self):
         real = VehicleType.objects.create(
             company=self.company, name='Rigid Truck', capacity=10000, max_distance=300, base_rate=3000)
+        # Resolution is availability-gated (a type with no AVAILABLE vehicle
+        # is excluded, same rule as the New Quote dropdown) — give it one.
+        Vehicle.objects.create(
+            company=self.company, vin='QECVIN1', plate='QEC001GP', vehicle_type=real,
+            make='Merc', model='Actros', year=2020, type='Rigid Truck',
+            capacity=10000, fuel_type='Diesel', status='AVAILABLE',
+        )
         pending, _, _ = qec.start_pending('vehicle_types', 'Cargo Truck', self.admin)
         pending2, reply, created, link, declined = qec.advance_pending(
             pending, 'actually this is the existing rigid truck', self.company, self.admin)

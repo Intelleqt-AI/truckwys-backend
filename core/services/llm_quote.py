@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+from collections import Counter
 from datetime import date
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -64,14 +65,17 @@ SYSTEM_PROMPT_BASE = (
     "user describes plausibly corresponds to one of them — by body style (flatbed, reefer, tanker...), "
     "by tonnage/weight mentioned anywhere in the conversation, or by common synonym (e.g. 'rigid "
     "truck'/'box truck' most likely means one of the fleet's Truck entries, sized by whatever weight "
-    "was mentioned) — return that configured entry's name EXACTLY as listed, not a paraphrase. Only "
-    "when nothing in that list is a reasonable match, extract whatever the user said AS FREE TEXT "
-    "instead — the caller will offer to add it as a new type. Do NOT reject a value just because it "
-    "looks unfamiliar. If the message is not in English, translate the vehicle/truck type phrase into "
-    "its closest common ENGLISH description before returning it (e.g. Afrikaans 'bakvrachtmotor' -> "
-    "'flatbed truck', Spanish 'camión refrigerado' -> 'refrigerated truck') — the fleet's real vehicle "
-    "types are named in English, and matching only works against English wording. If not mentioned, "
-    "return \"\".\n"
+    "was mentioned) — return that configured entry's PLAIN NAME EXACTLY as listed, not a paraphrase. "
+    "Some entries show their real max load as '(max ~X t)' — that is this fleet's actual capacity for "
+    "that type; weigh it when a weight was mentioned (don't pick one whose max is clearly below the "
+    "stated weight if a bigger configured type would fit), but NEVER include the '(max ~X t)' text "
+    "itself in the value you return, only the name before it. Only when nothing in that list is a "
+    "reasonable match, extract whatever the user said AS FREE TEXT instead — the caller will offer to "
+    "add it as a new type. Do NOT reject a value just because it looks unfamiliar. If the message is "
+    "not in English, translate the vehicle/truck type phrase into its closest common ENGLISH "
+    "description before returning it (e.g. Afrikaans 'bakvrachtmotor' -> 'flatbed truck', Spanish "
+    "'camión refrigerado' -> 'refrigerated truck') — the fleet's real vehicle types are named in "
+    "English, and matching only works against English wording. If not mentioned, return \"\".\n"
     "- customer_name: the name of the client/customer this quote is for, as free text, if the user "
     "mentions one (e.g. 'client is Acme', 'for John', 'customer will be Maru'). Extract exactly what "
     "they said, even a short/partial name — the caller matches it against real customer records "
@@ -173,13 +177,41 @@ def _significant_words(text: str) -> List[str]:
     return [w for w in re.findall(r"[a-z0-9]+", text.lower()) if w not in _GENERIC_MATCH_WORDS]
 
 
+# Legal/corporate-entity suffix words common across almost any real client
+# list, regardless of how a specific tenant's names happen to be spelled —
+# never trustworthy as a word-overlap match signal on their own, unlike the
+# per-call frequency check below (which only catches a word once it's
+# actually repeated in THIS company's own candidate list).
+_GENERIC_ENTITY_WORDS = {
+    "ltd", "limited", "pty", "proprietary", "inc", "incorporated", "corp",
+    "corporation", "llc", "plc", "co", "group", "holdings", "company",
+    "enterprises", "sa",
+}
+
+
 def _fuzzy_match(raw: str, candidates: List[str], cutoff: float = 0.45) -> Optional[str]:
-    """Match free text the LLM extracted against a real list of names (vehicle
-    types, customers). Exact/case-insensitive first, then a whole-word overlap
-    on the meaningful words (handles "rigid" -> "Rigid Truck", but a bare
-    "truck" can't collide-match every "*Truck" candidate), then a fuzzy ratio
-    as a last resort. Returns None rather than forcing a bad guess when
-    nothing is close enough.
+    """Match free text the LLM extracted against a real list of names
+    (customers — the only remaining caller; vehicle types use the stricter
+    match_vehicle_type). Exact/case-insensitive first, then a whole-word
+    overlap on the meaningful words (handles "shefat" -> "Shefat Ahmed"),
+    then a fuzzy ratio as a last resort. Returns None rather than forcing a
+    bad guess when nothing is close enough.
+
+    The word-overlap tier only accepts a shared word that DISTINGUISHES one
+    candidate from the rest of this same candidate list — i.e. it occurs in
+    exactly one of them AND isn't a generic legal/corporate-entity suffix
+    (_GENERIC_ENTITY_WORDS). A word shared by several real customers (a
+    common corporate suffix like "Ltd"/"Group"/"Holdings"/"(Pty)", found in
+    most company name lists) carries no matching signal on its own: a
+    mis-heard "Nempec Ltd" must not resolve to whichever "... Ltd" candidate
+    happens to come first, when the real "Nampak Ltd" is further down the
+    list. The per-candidate-list frequency check is computed per call, so it
+    adapts to whatever names each tenant actually has on file — but it isn't
+    enough by itself: a generic suffix can still look "rare" by pure spelling
+    coincidence (e.g. one client spelled "Limited" while every other client
+    in the same list spells the identical suffix "Ltd" instead, making
+    "limited" numerically unique without being an identifying word) — hence
+    the fixed stoplist on top of it.
     """
     raw = (raw or "").strip()
     if not raw or not candidates:
@@ -191,12 +223,132 @@ def _fuzzy_match(raw: str, candidates: List[str], cutoff: float = 0.45) -> Optio
 
     raw_words = set(_significant_words(raw))
     if raw_words:
+        word_counts = Counter(w for c in candidates for w in set(_significant_words(c)))
         for c in candidates:
-            if raw_words & set(_significant_words(c)):
+            distinguishing = raw_words & {
+                w for w in _significant_words(c)
+                if w not in _GENERIC_ENTITY_WORDS and word_counts[w] == 1
+            }
+            if distinguishing:
                 return c
 
     matches = difflib.get_close_matches(raw, candidates, n=1, cutoff=cutoff)
     return matches[0] if matches else None
+
+
+_VEHICLE_MATCH_CUTOFF = 0.75
+
+
+def _alpha_words(text: str) -> List[str]:
+    """Significant words with pure-digit tokens dropped too — "(Variant 16)"
+    must not overlap-match "Heavy Truck (8-16 tonnes)" on the shared "16"."""
+    return [w for w in _significant_words(text) if not w.isdigit()]
+
+
+def match_vehicle_type(raw: str, names: List[str]) -> Optional[str]:
+    """Match free text (LLM output, or a user's chat correction) to a real
+    fleet vehicle-type name. Deliberately not `_fuzzy_match`: every name in a
+    real fleet tends to end in "Truck", so difflib on the raw strings scores
+    e.g. "Heavy Truck" against "Tanker Truck" at ~0.61 — high enough to
+    silently substitute an unrelated real type for one that was removed from
+    the candidate list (because the company owns none of it). So the fuzzy
+    tier here compares the significant-word form (generic
+    "truck"/"vehicle"/"trailer" stripped) at a much stricter cutoff instead of
+    comparing raw strings loosely.
+    """
+    raw = (raw or "").strip()
+    if not raw or not names:
+        return None
+    raw_lc = raw.lower()
+    for n in names:
+        if n.lower() == raw_lc:
+            return n
+
+    raw_words = set(_alpha_words(raw))
+    if raw_words:
+        for n in names:
+            if raw_words & set(_alpha_words(n)):
+                return n
+
+    norm = {" ".join(_significant_words(n)): n for n in names}
+    hit = difflib.get_close_matches(
+        " ".join(_significant_words(raw)), list(norm), n=1, cutoff=_VEHICLE_MATCH_CUTOFF)
+    return norm[hit[0]] if hit else None
+
+
+def _candidate_labels(records: List[Dict[str, Any]]) -> List[str]:
+    """"Flatbed Truck (max ~20 t)" when capacity is known and plausible, bare
+    name otherwise — never a raw capacity value, since VehicleType.capacity
+    is a live mix of tonnes and kilograms across rows (see
+    vehicle_types.capacity_tonnes)."""
+    out = []
+    for r in records:
+        c = r.get("capacity_t")
+        out.append(f"{r['name']} (max ~{c:g} t)" if c else r["name"])
+    return out
+
+
+_CAPACITY_TOLERANCE = 0.02  # ignore rounding noise, not real overload
+
+
+def _resolve_vehicle_type(raw_vt: str, records: List[Dict[str, Any]], weight_kg: Optional[float],
+                           ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """-> (matched_name, unmatched_raw, note).
+
+    Matches `raw_vt` against `records` (this company's real, fulfillable
+    vehicle types), then — only when a numeric weight is known — checks the
+    match's real capacity against it. An undersized match is upgraded to the
+    smallest available type that actually covers the weight; if nothing in
+    the fleet can carry it, the type is left unset rather than forcing a bad
+    pick. `note`, when set, is one plain-English sentence explaining what
+    happened — a substitution or an "nothing fits" admission must never be
+    silent, or the mismatch just resurfaces later as confusion over pricing.
+    """
+    names = [r["name"] for r in records]
+    caps = {r["name"]: r.get("capacity_t") for r in records}
+    matched = match_vehicle_type(raw_vt, names)
+
+    if not weight_kg or weight_kg <= 0:
+        return (matched, None, None) if matched else (None, (raw_vt or None), None)
+
+    known = sorted((c, n) for n, c in caps.items() if c)  # plausible capacities only
+    cap = caps.get(matched) if matched else None
+    if matched and cap and weight_kg > cap * 1000 * (1 + _CAPACITY_TOLERANCE):
+        covering = [(c, n) for c, n in known if c * 1000 >= weight_kg]
+        if covering:
+            better = covering[0][1]
+            return better, None, (
+                f"{matched} tops out at {cap:g} t, so I've set {better} for this "
+                f"{weight_kg / 1000:g} t load."
+            )
+        biggest = known[-1] if known else None
+        note = (
+            f"Nothing in your available fleet carries {weight_kg / 1000:g} t"
+            + (f" — the largest is {biggest[1]} at {biggest[0]:g} t." if biggest else ".")
+            + " I've left the vehicle type unset."
+        )
+        return None, None, note
+
+    return (matched, None, None) if matched else (None, (raw_vt or None), None)
+
+
+def _known_weight_kg(current_fields: Optional[Dict[str, Any]], extracted: Dict[str, Any]) -> Optional[float]:
+    """The weight (kg) known for this quote so far, checked in priority
+    order: this turn's own extraction, then `weight_kg` (what the live
+    frontend actually sends in current_fields), then `weight` (what
+    extract() itself emits, and what existing tests construct) — extraction
+    used to only ever check the last of these, silently missing the real
+    frontend payload shape."""
+    for v in (extracted.get("weight"),
+              (current_fields or {}).get("weight_kg"),
+              (current_fields or {}).get("weight")):
+        try:
+            f = float(v or 0)
+        except (TypeError, ValueError):
+            continue
+        if f > 0:
+            return f
+    return None
 
 
 def _anthropic_key() -> str:
@@ -244,7 +396,7 @@ def _build_messages(message: str, history: Optional[List[Dict[str, Any]]],
 
 def extract(message: str, history: Optional[List[Dict[str, Any]]] = None,
             current_fields: Optional[Dict[str, Any]] = None,
-            vehicle_types: Optional[List[str]] = None,
+            vehicle_types: Optional[List[Any]] = None,
             customers: Optional[List[Dict[str, Any]]] = None,
             detected_language: Optional[str] = None,
             ) -> Tuple[Dict[str, Any], str, Dict[str, Optional[str]]]:
@@ -255,9 +407,18 @@ def extract(message: str, history: Optional[List[Dict[str, Any]]] = None,
     with JSON mode. Both return the same {pickup_location, delivery_location, weight_kg,
     vehicle_type, cargo_description, reply} shape.
 
-    vehicle_types: the calling company's actual VehicleType names (e.g. "Rigid
-    Truck", "Semi-Trailer Truck") — the LLM extracts vehicle_type as free text
-    and it's fuzzy-matched against this real list, not a hardcoded generic one.
+    vehicle_types: the calling company's actual, currently fulfillable
+    VehicleType records — either [{'name': str, 'capacity_t': float|None}, ...]
+    (what views_ai_quote.py's AIChatQuoteView passes, from
+    core.services.vehicle_types.available_vehicle_types) or a flat list of
+    plain names (accepted for backward compatibility). The LLM extracts
+    vehicle_type as free text; it's matched against this real list (never a
+    hardcoded generic one) and, when a weight is known, cross-checked against
+    the matched entry's real capacity — see _resolve_vehicle_type. None means
+    no company context (tests, superuser): falls back to the hardcoded
+    VEHICLE_TYPES catalog with capacity unknown. [] is meaningful — "this
+    company can fulfil nothing right now" — and is never replaced by the
+    fallback catalog.
     customers: [{'id': int, 'name': str}, ...] for the calling company — same
     fuzzy-match treatment, returned as customer_id/customer_name when matched.
 
@@ -275,7 +436,17 @@ def extract(message: str, history: Optional[List[Dict[str, Any]]] = None,
     """
     msgs = _build_messages(message, history, current_fields)
     provider = _provider()
-    vt_candidates = vehicle_types or VEHICLE_TYPES
+    # None (no company context — tests, superuser) still falls back to the
+    # hardcoded catalog, capacity unknown. [] (a company that can fulfil
+    # NOTHING right now) must NOT be replaced by it — that's exactly how an
+    # unavailable global default ("Heavy Truck (8-16 tonnes)") got offered as
+    # if this company actually had one.
+    if vehicle_types is None:
+        vt_records = [{"name": n, "capacity_t": None} for n in VEHICLE_TYPES]
+    elif vehicle_types and not isinstance(vehicle_types[0], dict):
+        vt_records = [{"name": n, "capacity_t": None} for n in vehicle_types]
+    else:
+        vt_records = list(vehicle_types)
     customer_names = [c["name"] for c in customers] if customers else None
 
     if provider == "anthropic":
@@ -284,7 +455,7 @@ def extract(message: str, history: Optional[List[Dict[str, Any]]] = None,
             model=QUOTE_MODEL,
             max_tokens=600,
             temperature=0,
-            system=_system_prompt(vt_candidates, customer_names, detected_language),
+            system=_system_prompt(_candidate_labels(vt_records), customer_names, detected_language),
             messages=msgs,
             output_config={"format": {"type": "json_schema", "schema": EXTRACTION_SCHEMA}},
         )
@@ -292,7 +463,7 @@ def extract(message: str, history: Optional[List[Dict[str, Any]]] = None,
         data = json.loads(text)
     elif provider == "openai":
         client = OpenAI(api_key=_openai_key())
-        sys = _system_prompt(vt_candidates, customer_names, detected_language) + (
+        sys = _system_prompt(_candidate_labels(vt_records), customer_names, detected_language) + (
             "\n\nRespond ONLY with a JSON object with exactly these keys: pickup_location, "
             "delivery_location, weight_kg, vehicle_type, customer_name, cargo_description, "
             "pickup_date, delivery_date, valid_until, trip_type, reply."
@@ -314,12 +485,6 @@ def extract(message: str, history: Optional[List[Dict[str, Any]]] = None,
         extracted["pickup_location"] = data["pickup_location"].strip()
     if data.get("delivery_location"):
         extracted["delivery_location"] = data["delivery_location"].strip()
-    raw_vt = (data.get("vehicle_type") or "").strip()
-    matched_vt = _fuzzy_match(raw_vt, vt_candidates)
-    if matched_vt:
-        extracted["vehicle_type"] = matched_vt
-    elif raw_vt:
-        unmatched["vehicle_type"] = raw_vt
     raw_customer_name = (data.get("customer_name") or "").strip()
     if customers:
         matched_name = _fuzzy_match(raw_customer_name, customer_names)
@@ -338,6 +503,18 @@ def extract(message: str, history: Optional[List[Dict[str, Any]]] = None,
     if weight > 0:
         extracted["weight"] = weight
 
+    # Vehicle type is resolved after weight so a stated tonnage can be
+    # cross-checked against the matched type's real capacity — see
+    # _resolve_vehicle_type. known_weight_kg falls back to whatever the form
+    # already had when this turn didn't mention a new weight.
+    raw_vt = (data.get("vehicle_type") or "").strip()
+    known_weight_kg = _known_weight_kg(current_fields, extracted)
+    matched_vt, unmatched_vt, note = _resolve_vehicle_type(raw_vt, vt_records, known_weight_kg)
+    if matched_vt:
+        extracted["vehicle_type"] = matched_vt
+    if unmatched_vt:
+        unmatched["vehicle_type"] = unmatched_vt
+
     for date_field in ("pickup_date", "delivery_date", "valid_until"):
         raw = (data.get(date_field) or "").strip()
         if raw:
@@ -351,4 +528,9 @@ def extract(message: str, history: Optional[List[Dict[str, Any]]] = None,
     if trip_type in ("ONE_WAY", "ROUND_TRIP"):
         extracted["trip_type"] = trip_type
 
-    return extracted, (data.get("reply") or "").strip(), unmatched
+    reply = (data.get("reply") or "").strip()
+    if note:
+        from core.services import language_detect
+        reply = f"{reply} {language_detect.translate_template(note, detected_language)}".strip()
+
+    return extracted, reply, unmatched

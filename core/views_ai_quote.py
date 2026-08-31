@@ -537,6 +537,11 @@ class AIChatQuoteView(APIView):
     def _fallback_reply(merged, lang=None):
         """Build a friendly reply from the fields captured so far. `lang`, when
         a confidently-detected non-English code, translates the final string."""
+        # The live frontend sends the field as `weight_kg` in current_fields;
+        # extract() itself only ever emits `weight` — accept either so a
+        # weight already on the form isn't nagged for again as "missing".
+        weight_kg = merged.get('weight') or merged.get('weight_kg') or 0
+
         missing = []
         if not merged.get('pickup_location'):
             missing.append('pickup location')
@@ -544,14 +549,14 @@ class AIChatQuoteView(APIView):
             missing.append('delivery location')
         if not merged.get('cargo_description'):
             missing.append('cargo type')
-        if not merged.get('weight'):
+        if not weight_kg:
             missing.append('weight')
 
         if not missing:
             reply = (
                 f"Got it — {merged.get('cargo_description', 'your cargo')} from "
                 f"{merged.get('pickup_location')} to {merged.get('delivery_location')}, "
-                f"{merged.get('weight', 0) / 1000:.0f} tons. Ready to calculate your quote."
+                f"{weight_kg / 1000:.0f} tons. Ready to calculate your quote."
             )
         elif len(missing) <= 2:
             reply = f"Almost there. Just need the {' and '.join(missing)} to complete the quote."
@@ -599,19 +604,17 @@ class AIChatQuoteView(APIView):
             # free text against these, not a hardcoded generic list (a company's
             # actual types like "Rigid Truck" or "Semi-Trailer Truck" otherwise
             # never match a fixed enum, and there'd be no way to capture a client).
-            # Includes the shared (company=None) default catalog too, mirroring
-            # VehicleTypeViewSet.get_queryset — otherwise a company that never had
-            # the defaults seeded onto its own account gives the matcher a much
-            # narrower (or empty) candidate pool than what the vehicle-type
-            # dropdown itself actually shows the user.
+            # vehicle_types is restricted to types the company can actually
+            # fulfil right now (>=1 AVAILABLE vehicle) via the same rule the
+            # vehicle-type dropdown itself uses (VehicleTypeSerializer) — the
+            # assistant must never be able to select an option the dropdown
+            # doesn't also offer.
             company = getattr(request.user, 'company', None)
             vehicle_types = customers = None
             if company is not None:
-                from core.models import VehicleType, Customer
-                vehicle_types = list(
-                    VehicleType.objects.filter(Q(company=None) | Q(company=company))
-                    .values_list('name', flat=True).distinct()
-                )
+                from core.models import Customer
+                from core.services.vehicle_types import available_vehicle_types
+                vehicle_types = available_vehicle_types(company)  # [] is meaningful — never replace it
                 customers = list(
                     Customer.objects.filter(company=company).values('id', 'name')
                 )
@@ -813,7 +816,7 @@ class AIChatQuoteView(APIView):
                     extracted['weight'] = val
                 else:
                     extracted['weight'] = val * 1000  # convert tons to kg
-            elif not current_fields.get('weight'):
+            elif not (current_fields.get('weight') or current_fields.get('weight_kg')):
                 # Bare number fallback — if weight is still missing and user sends just a number, treat as kg
                 bare_number_match = re.search(r'^\s*(\d+(?:\.\d+)?)\s*$', message.strip())
                 if bare_number_match:
@@ -830,10 +833,11 @@ class AIChatQuoteView(APIView):
             # unmatched instead so the caller can offer to create it.
             matched_vt = None
             for vt in (vehicle_types or []):
-                vt_lc = vt.lower()
+                vt_name = vt['name'] if isinstance(vt, dict) else vt
+                vt_lc = vt_name.lower()
                 significant = [w for w in vt_lc.split() if w not in ('truck', 'vehicle')]
                 if vt_lc in msg_lower or any(w in msg_lower for w in significant):
-                    matched_vt = vt
+                    matched_vt = vt_name
                     break
             if matched_vt:
                 extracted['vehicle_type'] = matched_vt

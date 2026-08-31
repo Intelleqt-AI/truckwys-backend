@@ -46,17 +46,21 @@ def _try_resolve_existing(table: str, text: str, company) -> Optional[Dict[str, 
     otherwise has no way back out to a real record once it starts collecting
     fields for a new one. Returns the same {'table', 'id', 'name'} shape a
     real creation returns, so callers can treat it identically."""
-    from django.db.models import Q
-    from core.models import Customer, VehicleType
-    from core.services.llm_quote import _fuzzy_match
+    from core.models import Customer
+    from core.services.llm_quote import _fuzzy_match, match_vehicle_type
 
     if table == 'customers':
         candidates = list(Customer.objects.filter(company=company).values('id', 'name'))
+        names = [c['name'] for c in candidates]
+        matched_name = _fuzzy_match(text, names)
     else:
-        candidates = list(
-            VehicleType.objects.filter(Q(company=None) | Q(company=company)).values('id', 'name'))
-    names = [c['name'] for c in candidates]
-    matched_name = _fuzzy_match(text, names)
+        # Restricted to types the company can actually fulfil (>=1 AVAILABLE
+        # vehicle) — otherwise a mid-dialog correction could redirect back to
+        # an unavailable global default the New Quote dropdown never offers.
+        from core.services.vehicle_types import available_vehicle_types
+        candidates = available_vehicle_types(company)
+        names = [c['name'] for c in candidates]
+        matched_name = match_vehicle_type(text, names)
     if not matched_name:
         return None
     match = next(c for c in candidates if c['name'] == matched_name)

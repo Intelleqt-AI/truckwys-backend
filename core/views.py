@@ -2094,6 +2094,14 @@ class VehicleTypeViewSet(viewsets.ModelViewSet):
     filterset_fields = ['active']
     search_fields = ['name', 'description']
     ordering_fields = ['name', 'capacity', 'base_rate']
+    # Reference/lookup list, not a browsable feed: every consumer (New Quote
+    # dropdown, Add/Edit Vehicle drawers, Onboarding, Settings > Vehicle
+    # Types, the AI quote assistant) renders the whole list, and none of them
+    # paginate — but the global PAGE_SIZE=20 silently truncated any tenant
+    # with >20 visible types, so the AI assistant (reading the same rows
+    # unpaginated server-side) could offer a type the dropdown wasn't
+    # showing at all.
+    pagination_class = None
 
     def get_queryset(self):
         from django.db.models import Q, Count
