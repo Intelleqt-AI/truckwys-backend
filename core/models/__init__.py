@@ -35,6 +35,7 @@ from .country_transit_rate import CountryTransitRate
 from .fcm_device import FcmDevice
 from .push_subscription import PushSubscription
 from .pending_signup import PendingSignup
+from .location_search_history import LocationSearchHistory
 
 __all__ = [
     'User',
@@ -78,5 +79,6 @@ __all__ = [
     'CountryTransitRate',
     'FcmDevice',
     'PushSubscription',
+    'LocationSearchHistory',
     'PendingSignup',
 ]

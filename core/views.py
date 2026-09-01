@@ -93,7 +93,7 @@ import threading
 from .models import (
     User, Customer, Driver, Vehicle, VehicleLog, VehicleType, Load,
     Quote, Invoice, Payment, Expense, Settlement, Notification, Company, ActivityEvent,
-    UserSession, FcmDevice, PushSubscription
+    UserSession, FcmDevice, PushSubscription, LocationSearchHistory
 )
 from .utils.request_meta import parse_device, client_ip, mask_email
 from .utils.auth_events import log_auth_event
@@ -2561,6 +2561,8 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
             pickup_city=quote.origin or 'TBD',
             pickup_state='GP',
             pickup_zip='0000',
+            pickup_lat=quote.pickup_lat,
+            pickup_lng=quote.pickup_lng,
             # Use the quote's own dates when it has them (now reliably
             # captured via the AI/voice quote flow) instead of always
             # discarding them for a generic +2/+4 day placeholder.
@@ -2568,7 +2570,12 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
             delivery_city=quote.destination or 'TBD',
             delivery_state='GP',
             delivery_zip='0000',
+            delivery_lat=quote.delivery_lat,
+            delivery_lng=quote.delivery_lng,
             delivery_date=_date_to_aware_datetime(quote.delivery_date) or (timezone.now() + timedelta(days=4)),
+            # Same list, verbatim — the order's route must show identically
+            # to what the customer actually quoted/accepted.
+            stops=quote.stops,
             cargo_description=quote.cargo_description,
             weight=quote.weight,
             distance=quote.distance,
@@ -2672,6 +2679,11 @@ class PublicQuoteView(APIView):
                 'company_logo_url': company_logo_url,
                 'pickup_location': quote.pickup_location,
                 'delivery_location': quote.delivery_location,
+                'pickup_lat': str(quote.pickup_lat) if quote.pickup_lat is not None else None,
+                'pickup_lng': str(quote.pickup_lng) if quote.pickup_lng is not None else None,
+                'delivery_lat': str(quote.delivery_lat) if quote.delivery_lat is not None else None,
+                'delivery_lng': str(quote.delivery_lng) if quote.delivery_lng is not None else None,
+                'stops': quote.stops,
                 'origin': quote.origin,
                 'destination': quote.destination,
                 'cargo_description': quote.cargo_description,
@@ -3593,6 +3605,58 @@ class LocationSuggestView(APIView):
             return Response(suggestions)
         except Exception:
             return Response([])
+
+
+class LocationRecentView(APIView):
+    """Company-shared "recently/frequently used" locations for the Collection/
+    Delivery fields — GET returns them (optionally filtered by q), POST
+    records a pick. Kept separate from LocationSuggestView (the live TomTom
+    proxy): the frontend merges both lists client-side, this one first.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        company = getattr(request.user, 'company', None)
+        if company is None:
+            return Response([])
+        q = request.query_params.get('q', '').strip()
+        qs = LocationSearchHistory.objects.filter(company=company)
+        limit = 8
+        if q:
+            qs = qs.filter(location_text__icontains=q)
+            limit = 5
+        rows = qs[:limit]
+        return Response([
+            {'label': r.location_text, 'lat': float(r.lat), 'lon': float(r.lon), 'is_recent': True}
+            for r in rows
+        ])
+
+    def post(self, request):
+        company = getattr(request.user, 'company', None)
+        if company is None:
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        location_text = (request.data.get('location_text') or '').strip()
+        lat = request.data.get('lat')
+        lon = request.data.get('lon')
+        if not location_text or lat is None or lon is None:
+            return Response({'error': 'location_text, lat and lon are required'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            lat = float(lat)
+            lon = float(lon)
+        except (TypeError, ValueError):
+            return Response({'error': 'lat/lon must be numeric'}, status=status.HTTP_400_BAD_REQUEST)
+
+        obj, created = LocationSearchHistory.objects.get_or_create(
+            company=company, location_text=location_text,
+            defaults={'lat': lat, 'lon': lon},
+        )
+        if not created:
+            # last_used_at is auto_now=True, so this save() also bumps it —
+            # F() keeps the increment atomic under concurrent picks.
+            LocationSearchHistory.objects.filter(pk=obj.pk).update(use_count=F('use_count') + 1, lat=lat, lon=lon)
+            obj.refresh_from_db()
+            obj.save(update_fields=['last_used_at'])
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class DashboardOverviewView(APIView):

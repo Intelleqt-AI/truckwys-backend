@@ -44,6 +44,15 @@ class Quote(models.Model):
     delivery_lat = models.DecimalField(max_digits=12, decimal_places=7, null=True, blank=True)
     delivery_lng = models.DecimalField(max_digits=12, decimal_places=7, null=True, blank=True)
 
+    # Intermediate stops between pickup and delivery, in order — e.g.
+    # [{"location": "Bloemfontein, FS", "lat": -29.12, "lon": 26.21}, ...].
+    # Was previously UI-only in QuoteBuilder (used for live route pricing,
+    # then discarded) — this is what makes them a real, saved part of the
+    # quote, carried through to the converted Load and shown on every route
+    # view (Quote Detail, the quotes table, the customer share link, Order
+    # detail).
+    stops = models.JSONField(default=list, blank=True)
+
     origin = models.CharField(max_length=50, blank=True)  # e.g., "JHB", "CPT"
     destination = models.CharField(max_length=50, blank=True)  # e.g., "DUR", "PE"
     

@@ -546,6 +546,26 @@ def poll_cartrack_vehicle_status():
     return {'companies_polled': companies_polled, 'vehicles_matched': total_matched}
 
 
+@shared_task(name='core.tasks.poll_ctrlfleet_positions')
+def poll_ctrlfleet_positions():
+    """Poll POST /vehicles/positions from CtrlFleet for every company that has
+    a key configured, updating each linked Vehicle's live location fields.
+    One company's failure never blocks the others."""
+    from core.models import Company
+    from core.services.ctrlfleet_sync import sync_ctrlfleet_positions
+
+    companies_polled = 0
+    total_updated = 0
+    for company in Company.objects.exclude(ctrlfleet_api_key__isnull=True).exclude(ctrlfleet_api_key=''):
+        try:
+            result = sync_ctrlfleet_positions(company)
+            companies_polled += 1
+            total_updated += result['updated']
+        except Exception:
+            logger.exception('CtrlFleet position poll failed for company %s', company.id)
+    return {'companies_polled': companies_polled, 'vehicles_updated': total_updated}
+
+
 @shared_task(name='core.tasks.poll_cartrack_door_events')
 def poll_cartrack_door_events():
     """Poll GET /topics/vehicles/door from Cartrack for every company that has

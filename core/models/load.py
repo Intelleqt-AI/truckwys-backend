@@ -28,13 +28,21 @@ class Load(models.Model):
     pickup_state = models.CharField(max_length=50)
     pickup_zip = models.CharField(max_length=20)
     pickup_date = models.DateTimeField()
-    
+    pickup_lat = models.DecimalField(max_digits=12, decimal_places=7, null=True, blank=True)
+    pickup_lng = models.DecimalField(max_digits=12, decimal_places=7, null=True, blank=True)
+
     delivery_location = models.CharField(max_length=500)
     delivery_city = models.CharField(max_length=100)
     delivery_state = models.CharField(max_length=50)
     delivery_zip = models.CharField(max_length=20)
     delivery_date = models.DateTimeField()
-    
+    delivery_lat = models.DecimalField(max_digits=12, decimal_places=7, null=True, blank=True)
+    delivery_lng = models.DecimalField(max_digits=12, decimal_places=7, null=True, blank=True)
+
+    # Carried straight over from the quote at conversion time — see
+    # Quote.stops for the shape and why this exists.
+    stops = models.JSONField(default=list, blank=True)
+
     cargo_description = models.TextField()
     weight = models.DecimalField(max_digits=10, decimal_places=2)
     distance = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
