@@ -367,6 +367,22 @@ def quote_saved(sender, instance, created, **kwargs):
         except Exception:
             pass
 
+    # SENT transition — the actual customer-facing side effect (share
+    # token + email), not just the in-app notification above. Fires on
+    # ANY path that lands a quote on SENT — the dedicated send_to_customer
+    # action, a plain status PATCH from the detail page's dropdown, or a
+    # Kanban drag on the quotes board — so they all behave identically and
+    # a quote is never "Sent" in the UI without actually having been sent.
+    if not created and instance.status == 'SENT' and getattr(instance, '_old_status', None) != 'SENT':
+        try:
+            from core.services.quote_share import ensure_quote_token, send_quote_to_customer_email
+            ensure_quote_token(instance)
+            email_sent, recipient = send_quote_to_customer_email(instance)
+            instance._share_email_sent = email_sent
+            instance._share_recipient = recipient
+        except Exception:
+            pass
+
     # DECLINED transition — separate block so it can surface the customer's
     # typed reason without complicating the generic dict above.
     if not created and instance.status == 'DECLINED' and getattr(instance, '_old_status', None) != 'DECLINED':

@@ -303,17 +303,17 @@ class LoadSerializer(serializers.ModelSerializer):
         return None
 
     def validate(self, attrs):
-        # 'driver'/'vehicle' are absent from attrs on a partial update that
-        # doesn't touch them — fall back to the existing instance so a PATCH
-        # that only sends {status: 'ASSIGNED'} is checked against what's
-        # actually assigned, not treated as if both were blank.
+        # 'vehicle' is absent from attrs on a partial update that doesn't
+        # touch it — fall back to the existing instance so a PATCH that only
+        # sends {status: 'ASSIGNED'} is checked against what's actually
+        # assigned, not treated as if it were blank. Driver is optional — a
+        # vehicle alone is enough to mark an order Assigned.
         has_key = lambda k: k in attrs
-        driver = attrs['driver'] if has_key('driver') else getattr(self.instance, 'driver', None)
         vehicle = attrs['vehicle'] if has_key('vehicle') else getattr(self.instance, 'vehicle', None)
         new_status = attrs.get('status', getattr(self.instance, 'status', None))
-        if new_status == 'ASSIGNED' and not (driver and vehicle):
+        if new_status == 'ASSIGNED' and not vehicle:
             raise serializers.ValidationError({
-                'status': 'Assign both a driver and a vehicle before this order can be marked Assigned.'
+                'status': 'Assign a vehicle before this order can be marked Assigned.'
             })
         return attrs
 

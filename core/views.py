@@ -2186,9 +2186,9 @@ class LoadViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        if new_status == 'ASSIGNED' and not (load.driver_id and load.vehicle_id):
+        if new_status == 'ASSIGNED' and not load.vehicle_id:
             return Response(
-                {'error': 'Assign both a driver and a vehicle before this order can be marked Assigned.'},
+                {'error': 'Assign a vehicle before this order can be marked Assigned.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -2222,9 +2222,10 @@ class LoadViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
     def assign_driver(self, request, pk=None):
         """Assign (or clear) driver and vehicle on a load. Body: { driver_id?, vehicle_id? }
 
-        Both fields together assign; both blank clears the assignment. A lone
-        one of the two is rejected as ambiguous — same rule as converting a
-        quote to a booking.
+        Vehicle is required to assign; driver is optional. A driver without a
+        vehicle is rejected as ambiguous (a driver needs a truck) — same rule
+        as converting a quote to a booking. Clearing the vehicle also clears
+        the driver.
         """
         if self._billing_blocked(request):
             return self._billing_blocked_response()
@@ -2233,9 +2234,9 @@ class LoadViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         driver_id = request.data.get('driver_id')
         vehicle_id = request.data.get('vehicle_id')
 
-        if bool(driver_id) != bool(vehicle_id):
+        if driver_id and not vehicle_id:
             return Response(
-                {'error': 'Provide both a driver and vehicle, or clear both to unassign'},
+                {'error': 'A driver needs a vehicle — assign a vehicle too, or clear the driver'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -2257,9 +2258,10 @@ class LoadViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
             # Only move status at the two ends of the assignment lifecycle —
             # don't downgrade a load that's already further along (loading,
             # in transit, ...) just because its driver/vehicle got corrected.
-            if driver_id and vehicle_id and load.status == 'PENDING':
+            # Vehicle alone is enough to assign; driver is optional.
+            if vehicle_id and load.status == 'PENDING':
                 load.status = 'ASSIGNED'
-            elif not driver_id and not vehicle_id and load.status == 'ASSIGNED':
+            elif not vehicle_id and load.status == 'ASSIGNED':
                 load.status = 'PENDING'
             load.save()
             serializer = self.get_serializer(load)
@@ -2325,7 +2327,11 @@ class LoadViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         load.pod_document = file
         load.pod_received_by = request.data.get('received_by', file.name)
         load.pod_signature = f'POD: {file.name} ({file.size} bytes)'
-        if load.status == 'IN_TRANSIT':
+        # A POD in hand means the order reached the customer — treat it as
+        # proof of delivery from either point still short of Delivered, not
+        # just the strict IN_TRANSIT step (e.g. a driver skipped logging
+        # "in transit" and goes straight from Assigned to handing over POD).
+        if load.status in ('ASSIGNED', 'IN_TRANSIT'):
             load.status = 'DELIVERED'
         load.save()
         return Response({
@@ -2498,9 +2504,9 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         real unit or person, since most quotes are sent before it's known
         whether the customer will accept. Converting is a natural point to
         commit a specific driver + vehicle, but it's optional — the caller
-        can supply both to assign now, or omit both to skip and assign later
-        via the existing assign_driver action. A lone one of the two is
-        rejected as ambiguous.
+        can supply a vehicle (with or without a driver) to assign now, or
+        omit both to skip and assign later via the existing assign_driver
+        action. A driver without a vehicle is rejected as ambiguous.
         """
         import secrets
         quote = self.get_object()
@@ -2516,22 +2522,23 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
 
         driver_id = request.data.get('driver_id')
         vehicle_id = request.data.get('vehicle_id')
-        if bool(driver_id) != bool(vehicle_id):
+        if driver_id and not vehicle_id:
             return Response(
-                {'error': 'Select both a driver and vehicle, or leave both blank to assign later'},
+                {'error': 'A driver needs a vehicle — select a vehicle too, or leave both blank to assign later'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         driver = None
         vehicle = None
-        if driver_id and vehicle_id:
-            try:
-                driver = Driver.objects.get(id=driver_id, company=request.user.company)
-            except Driver.DoesNotExist:
-                return Response({'error': 'Driver not found'}, status=status.HTTP_404_NOT_FOUND)
+        if vehicle_id:
             try:
                 vehicle = Vehicle.objects.get(id=vehicle_id, company=request.user.company)
             except Vehicle.DoesNotExist:
                 return Response({'error': 'Vehicle not found'}, status=status.HTTP_404_NOT_FOUND)
+        if driver_id:
+            try:
+                driver = Driver.objects.get(id=driver_id, company=request.user.company)
+            except Driver.DoesNotExist:
+                return Response({'error': 'Driver not found'}, status=status.HTTP_404_NOT_FOUND)
 
         # Auto-generate unique load_number
         load_number = f'LOAD-{timezone.now().strftime("%Y%m%d")}-{secrets.randbelow(9000) + 1000}'
@@ -2576,6 +2583,7 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
             # Same list, verbatim — the order's route must show identically
             # to what the customer actually quoted/accepted.
             stops=quote.stops,
+            route_geometry=quote.route_geometry,
             cargo_description=quote.cargo_description,
             weight=quote.weight,
             distance=quote.distance,
@@ -2583,7 +2591,7 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
             fuel_surcharge=quote.fuel_surcharge,
             additional_charges=quote.additional_charges,
             total_amount=quote.total_amount,
-            status='ASSIGNED' if (driver and vehicle) else 'PENDING',
+            status='ASSIGNED' if vehicle else 'PENDING',
             created_by=request.user
         )
 
@@ -2615,28 +2623,30 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def send_to_customer(self, request, pk=None):
-        """Generate shareable link for customer to view and respond to quote"""
-        from django.conf import settings
-        from core.services.email_service import send_quote_share_email
+        """Generate/refresh the shareable quote link and email it to the customer.
+
+        The actual send lives in one place — the SENT-transition post_save
+        signal (core/signals.py, via core.services.quote_share) — so this,
+        a plain status PATCH, and a Kanban drag into "Sent" all converge on
+        identical behavior. This action's own job: move status into SENT the
+        first time (which is what fires that signal), or, if it's already
+        SENT, explicitly resend — a same-status save wouldn't be a
+        transition and so wouldn't re-fire the signal on its own.
+        """
+        from core.services.quote_share import ensure_quote_token, quote_share_url, send_quote_to_customer_email
         quote = self.get_object()
 
-        # Update status to SENT
-        quote.status = 'SENT'
-        if not quote.token:
-            import secrets
-            quote.token = secrets.token_urlsafe(32)
-        quote.save()
-
-        # Generate share URL
-        frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:3701')
-        share_url = f"{frontend_url}/quotes/view/{quote.id}/{quote.token}"
-
-        # Email the link to the customer; the share URL is returned regardless
-        recipient = quote.customer.email if quote.customer else None
-        email_sent = send_quote_share_email(quote, share_url) if recipient else False
+        if quote.status != 'SENT':
+            quote.status = 'SENT'
+            quote.save()  # fires quote_saved -> send_quote_to_customer_email once
+            email_sent = getattr(quote, '_share_email_sent', False)
+            recipient = getattr(quote, '_share_recipient', None)
+        else:
+            ensure_quote_token(quote)
+            email_sent, recipient = send_quote_to_customer_email(quote)
 
         return Response({
-            'share_url': share_url,
+            'share_url': quote_share_url(quote),
             'quote_number': quote.quote_number,
             'status': quote.status,
             'email_sent': email_sent,
@@ -2684,6 +2694,7 @@ class PublicQuoteView(APIView):
                 'delivery_lat': str(quote.delivery_lat) if quote.delivery_lat is not None else None,
                 'delivery_lng': str(quote.delivery_lng) if quote.delivery_lng is not None else None,
                 'stops': quote.stops,
+                'route_geometry': quote.route_geometry,
                 'origin': quote.origin,
                 'destination': quote.destination,
                 'cargo_description': quote.cargo_description,
