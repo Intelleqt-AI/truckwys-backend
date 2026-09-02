@@ -116,10 +116,34 @@ def _activate_from_verified_charge(company, txn, data: dict) -> bool:
         company.subscription_status = 'active'
         company.save(update_fields=['subscription_status', 'updated_at'])
 
+    # SubscribeView folds any still-'failed' delivery take-rate charges into
+    # this same payment (see amount_owed_for_card_update) — settle exactly
+    # the ones it quoted for (echoed back via Paystack metadata), not
+    # whatever happens to be 'failed' right now, so a charge that failed for
+    # the first time in the gap between checkout and confirmation isn't
+    # wrongly marked paid.
+    included_ids = (data.get('metadata') or {}).get('delivery_fee_charge_ids') or []
+    settled_total = Decimal('0')
+    settled_count = 0
+    if included_ids:
+        from django.db.models import Sum
+        from core.models import DeliveryFeeCharge
+        settled_qs = DeliveryFeeCharge.objects.filter(id__in=included_ids, company=company, status='failed')
+        settled_total = settled_qs.aggregate(total=Sum('amount'))['total'] or Decimal('0')
+        settled_count = settled_qs.update(status='charged', charged_at=timezone.now(), failure_reason='')
+
+    subscription_portion = txn.amount - settled_total
+    if settled_count:
+        detail = (
+            f'R{subscription_portion:,.2f} for {MONTHLY_FEE_ITEM_NAME} plus R{settled_total:,.2f} across '
+            f'{settled_count} previously failed delivery fee charge{"s" if settled_count != 1 else ""} — '
+            f'R{txn.amount:,.2f} total. Your subscription is active and every outstanding charge is now clear.'
+        )
+    else:
+        detail = f'{MONTHLY_FEE_ITEM_NAME}: R{txn.amount:,.2f} charged successfully. Your subscription is active.'
+
     notify_company_billing_email(
-        company.id, 'Subscription payment confirmed',
-        f'{MONTHLY_FEE_ITEM_NAME}: R{MONTHLY_FEE:,.2f} charged successfully. Your subscription is active.',
-        link='/settings/billing',
+        company.id, 'Subscription payment confirmed', detail, link='/settings/billing',
     )
     return True
 
@@ -145,11 +169,20 @@ class SubscribeView(APIView):
         if company.paystack_authorization_code and company.subscription_status == 'active':
             logger.info('Company %s starting a new checkout with an active card on file already.', company.id)
 
+        # A brand-new/reactivating company has no failed delivery-fee charges
+        # (invoicing is gated to active/grace_period — see
+        # core/services/invoicing.py), so this naturally reduces to just
+        # MONTHLY_FEE for that case; it only adds anything for an
+        # active/grace_period company using this same endpoint to update its
+        # card, where it folds in whatever take-rate charges are still 'failed'.
+        from core.services.subscription_billing import amount_owed_for_card_update
+        total_due, failed_charge_ids = amount_owed_for_card_update(company)
+
         result = paystack.initialize_transaction(
             email=user.email or '',
-            amount=MONTHLY_FEE,
+            amount=total_due,
             callback_url=return_url,
-            metadata={'company_id': company.id, 'plan': 'pro'},
+            metadata={'company_id': company.id, 'plan': 'pro', 'delivery_fee_charge_ids': failed_charge_ids},
         )
         if not result['success']:
             return Response({'detail': f"Could not start checkout: {result['error']}"}, status=status.HTTP_502_BAD_GATEWAY)
@@ -157,7 +190,7 @@ class SubscribeView(APIView):
         reference = result['data']['reference']
         BillingTransaction.objects.create(
             company=company,
-            amount=MONTHLY_FEE,
+            amount=total_due,
             payment_id=reference,
             status='pending',
             plan='pro',
@@ -167,7 +200,7 @@ class SubscribeView(APIView):
             'authorization_url': result['data']['authorization_url'],
             'reference': reference,
             'plan': 'pro',
-            'amount': str(MONTHLY_FEE),
+            'amount': str(total_due),
             'item_name': MONTHLY_FEE_ITEM_NAME,
         }, status=status.HTTP_200_OK)
 
@@ -279,11 +312,48 @@ class BillingStatusView(APIView):
     throttle_classes = []
 
     def get(self, request):
-        from core.services.subscription_billing import _grace_days
+        from core.models import DeliveryFeeCharge
+        from core.services.subscription_billing import _grace_days, amount_owed_for_card_update
 
         company = request.user.company
         serializer = BillingStatusSerializer(company)
-        is_paid = company.subscription_plan not in ('free', 'starter') and company.subscription_status == 'active'
+        # Shown in the "Update payment method" confirm dialog before the user
+        # is redirected to Paystack, so the combined figure (monthly fee +
+        # any failed delivery-fee charges it'll clear) isn't a surprise.
+        update_card_total, failed_charge_ids = amount_owed_for_card_update(company)
+
+        # Itemized breakdown for the UI to actually list, not just total —
+        # the subscription line only appears if its OWN most recent attempt
+        # failed (checking the latest BillingTransaction, not summing every
+        # historical failed one — a card that's been failing for 3 days of
+        # daily retries has 3 'failed' rows for the SAME unpaid cycle, not 3
+        # cycles owed).
+        failed_items = []
+        # -id tiebreaks -created_at: two attempts in the same test/request can
+        # land on the same timestamp at Python's microsecond resolution.
+        latest_sub_txn = BillingTransaction.objects.filter(company=company, plan='pro').order_by('-created_at', '-id').first()
+        if latest_sub_txn and latest_sub_txn.status == 'failed':
+            failed_items.append({
+                'kind': 'subscription',
+                'label': MONTHLY_FEE_ITEM_NAME,
+                'amount': str(MONTHLY_FEE),
+                'failed_at': latest_sub_txn.updated_at,
+            })
+        failed_items += [
+            {
+                'kind': 'delivery_fee',
+                'label': f'Delivery fee · {c.invoice.invoice_number}',
+                'amount': str(c.amount),
+                'failed_at': c.last_attempted_at or c.updated_at,
+            }
+            for c in DeliveryFeeCharge.objects.filter(id__in=failed_charge_ids).select_related('invoice')
+        ]
+        # grace_period still counts as paid (spec §4: active AND grace_period
+        # both keep full access) — matches BillingSettings.tsx's `isPaid`.
+        # Excluding grace_period here made this endpoint report amount:'0.00'
+        # / item_name:'Free' for an account the rest of the page (and the
+        # rest of this same response's `grace` block) was treating as paid.
+        is_paid = company.subscription_plan not in ('free', 'starter') and company.subscription_status in ('active', 'grace_period')
 
         grace = None
         if company.subscription_status == 'grace_period' and company.grace_period_expires_at:
@@ -306,6 +376,16 @@ class BillingStatusView(APIView):
                 # BEFORE anyone adds a card — not just after the fact on an
                 # invoice. Single source of truth: settings.DELIVERY_FEE_PCT.
                 'take_rate_pct': str(getattr(settings, 'DELIVERY_FEE_PCT', 0.25)),
+            },
+            'update_card': {
+                'total': str(update_card_total),
+                'failed_delivery_fees_total': str(update_card_total - MONTHLY_FEE),
+                'failed_delivery_fees_count': len(failed_charge_ids),
+                'subscription_failed': bool(failed_items and failed_items[0]['kind'] == 'subscription'),
+                # Itemized so the UI can literally list what's failed, not
+                # just show a total — one row per failed delivery fee, plus a
+                # subscription row only when its own latest attempt failed.
+                'items': failed_items,
             },
             'card': {
                 'last4': company.paystack_card_last4,
