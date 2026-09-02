@@ -48,6 +48,58 @@ def _test_cycle_minutes() -> int:
     return int(getattr(settings, 'SUBSCRIPTION_TEST_CYCLE_MINUTES', 5))
 
 
+def amount_owed_for_card_update(company):
+    """Total to charge when a company updates/replaces its card (Billing
+    Settings' "Update payment method"): every delivery take-rate charge still
+    sitting 'failed', PLUS the flat monthly fee — but only when the
+    subscription itself actually needs charging. Folding failed take-rate
+    charges into this one payment clears them immediately instead of leaving
+    them to core.services.delivery_fee_billing.retry_failed_delivery_fee_charges'
+    independent daily sweep — which would otherwise keep retrying (and could
+    keep failing) against a card the company has already told us is bad, days
+    after they thought billing was fixed.
+
+    The subscription itself is NOT re-charged just because *something* on the
+    account failed — a company can be paid up in full for its current cycle
+    (subscription_status='active'/'grace_period', last subscription attempt
+    'complete') while a delivery-fee charge failed independently (spec §3: the
+    take-rate is its own real-time card-health check, decoupled from the
+    monthly cycle). Charging the flat fee again there would silently reset a
+    cycle the company already paid for. The flat fee is only added when: the
+    subscription has never been paid at all (fresh signup), its own most
+    recent attempt failed, or the account has fallen out of active/grace_period
+    (suspended/cancelled — a genuine reactivation). If NOTHING has actually
+    failed (someone just proactively hits this button), it still falls back
+    to the flat fee — Paystack has no zero-charge way to just capture a card,
+    so there must be a non-zero amount to attach the new authorization to.
+
+    Returns (total: Decimal, failed_charge_ids: list[int]).
+    """
+    from decimal import Decimal
+    from django.db.models import Sum
+    from core.models import BillingTransaction, DeliveryFeeCharge
+    from core.services.paystack import MONTHLY_FEE
+
+    failed = DeliveryFeeCharge.objects.filter(company=company, status='failed')
+    failed_ids = list(failed.values_list('id', flat=True))
+    failed_total = failed.aggregate(total=Sum('amount'))['total'] or Decimal('0')
+
+    latest_sub_txn = BillingTransaction.objects.filter(company=company, plan='pro').order_by('-created_at', '-id').first()
+    subscription_needs_charge = (
+        latest_sub_txn is None  # never subscribed — first checkout must charge
+        or latest_sub_txn.status == 'failed'  # its own last attempt failed
+        or company.subscription_status not in ('active', 'grace_period')  # suspended/cancelled/none
+    )
+    include_monthly_fee = subscription_needs_charge or failed_total <= 0
+    monthly_portion = MONTHLY_FEE if include_monthly_fee else Decimal('0')
+
+    # SQLite's Sum() over a DecimalField round-trips through float and comes
+    # back with extra trailing precision (e.g. 4513.3800000000000) — normalise
+    # so this matches the plain 2dp Decimal amounts used everywhere else.
+    total = (monthly_portion + failed_total).quantize(Decimal('0.01'))
+    return total, failed_ids
+
+
 def add_billing_cycle(d: date) -> date:
     """d 30 days later — a fixed-length cycle rather than 'same day next
     calendar month', so the countdown a customer sees is always exactly 30
