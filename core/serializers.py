@@ -335,6 +335,26 @@ class QuoteSerializer(serializers.ModelSerializer):
         fields = '__all__'
         read_only_fields = ['id', 'created_at', 'updated_at', 'created_by']
 
+    def validate(self, attrs):
+        # Safety net behind the frontend's own capacity check (QuoteBuilder's
+        # weightBlockedMessage) — a load can't legally exceed the selected
+        # vehicle type's rated capacity, so reject it here too rather than
+        # trust every caller to have checked client-side. Quote.vehicle_type
+        # is a plain name string (no FK), same lookup the frontend already
+        # does by name+company.
+        vt_name = attrs.get('vehicle_type', getattr(self.instance, 'vehicle_type', None))
+        weight_kg = attrs.get('weight', getattr(self.instance, 'weight', None))
+        if vt_name and weight_kg:
+            request = self.context.get('request')
+            company = getattr(getattr(request, 'user', None), 'company', None)
+            vt = VehicleType.objects.filter(name=vt_name, company=company).first() if company else None
+            if vt and vt.capacity and float(weight_kg) > float(vt.capacity) * 1000:
+                raise serializers.ValidationError({
+                    'weight': f"{float(weight_kg) / 1000:.1f}t exceeds the {vt_name}'s rated capacity "
+                              f"of {vt.capacity}t — this can't be priced as a standard quote."
+                })
+        return attrs
+
     def _converted_load(self, obj):
         # Assignment happens on the Load this quote was converted into (at
         # conversion time or later from the Bookings page) — nothing syncs it
@@ -478,8 +498,7 @@ class CompanySerializer(serializers.ModelSerializer):
             'company_name', 'registration_number', 'vat_number',
             'industry', 'website', 'description', 'logo_url',
             'address', 'contact',
-            'default_base_rate_per_km', 'weight_surcharge_threshold_kg',
-            'weight_surcharge_pct', 'default_sla_hours',
+            'default_base_rate_per_km', 'default_sla_hours',
             'default_quote_validity_days', 'allow_cross_border',
             'fuel_price_per_litre', 'fuel_price_petrol', 'fuel_price_electric', 'fuel_price_hybrid',
             'margin_at_risk_pct', 'margin_caution_pct', 'margin_target_pct',
