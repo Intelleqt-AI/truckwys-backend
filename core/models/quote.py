@@ -53,6 +53,13 @@ class Quote(models.Model):
     # detail).
     stops = models.JSONField(default=list, blank=True)
 
+    # The exact selected route's path, as [{"lat": ..., "lon": ...}, ...] —
+    # same "calculated live, never saved" gap as stops had. Without this,
+    # any map showing this quote/order later has to re-run its own routing
+    # call, which can return a materially different road path than the one
+    # actually priced and shown to the customer.
+    route_geometry = models.JSONField(default=list, blank=True)
+
     origin = models.CharField(max_length=50, blank=True)  # e.g., "JHB", "CPT"
     destination = models.CharField(max_length=50, blank=True)  # e.g., "DUR", "PE"
     

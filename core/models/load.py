@@ -40,8 +40,9 @@ class Load(models.Model):
     delivery_lng = models.DecimalField(max_digits=12, decimal_places=7, null=True, blank=True)
 
     # Carried straight over from the quote at conversion time — see
-    # Quote.stops for the shape and why this exists.
+    # Quote.stops / Quote.route_geometry for the shapes and why these exist.
     stops = models.JSONField(default=list, blank=True)
+    route_geometry = models.JSONField(default=list, blank=True)
 
     cargo_description = models.TextField()
     weight = models.DecimalField(max_digits=10, decimal_places=2)
