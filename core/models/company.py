@@ -53,14 +53,6 @@ class Company(models.Model):
         max_digits=8, decimal_places=2, default=10.00,
         help_text='Default base rate per km used when creating a new quote (ZAR)'
     )
-    weight_surcharge_threshold_kg = models.IntegerField(
-        default=5000,
-        help_text='Cargo weight above which a surcharge is applied (kg)'
-    )
-    weight_surcharge_pct = models.DecimalField(
-        max_digits=5, decimal_places=2, default=15.00,
-        help_text='Weight surcharge percentage applied to base cost when threshold is exceeded'
-    )
     default_sla_hours = models.IntegerField(
         default=48,
         help_text='Default SLA delivery time in hours'
