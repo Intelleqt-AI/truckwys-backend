@@ -13,6 +13,11 @@ class VehicleType(models.Model):
         max_digits=5, decimal_places=2, default=36.0,
         help_text='Diesel consumption in litres per 100km (e.g. 32 for Flatbed)'
     )
+    fuel_consumption_sensitivity_pct = models.DecimalField(
+        max_digits=4, decimal_places=2, default=2.0,
+        help_text='Extra fuel burned per tonne over the reference capacity, as a percent '
+                   '(e.g. 2.0 = +2%/tonne). Reference tonnage is this type\'s own "capacity" field.'
+    )
     FUEL_TYPE_CHOICES = [
         ('Diesel', 'Diesel'), ('Petrol', 'Petrol'), ('Electric', 'Electric'), ('Hybrid', 'Hybrid'),
     ]
