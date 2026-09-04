@@ -673,3 +673,31 @@ def sweep_vehicle_documents():
 def sweep_intelligence_recommendations():
     from core.services.notification_sweeps import sweep_intelligence_recommendations as run
     return run()
+
+
+# ---------------------------------------------------------------------------
+# Demo company reset (Celery Beat — nightly, before the sweeps above)
+# ---------------------------------------------------------------------------
+
+@shared_task(name='core.tasks.reset_demo_company_task')
+def reset_demo_company_task():
+    """Runs frequently (see config/settings.py's CELERY_BEAT_SCHEDULE) but
+    only actually wipes-and-reseeds the shared public demo company's
+    fleet/quote/order data once it's been idle for an hour since the last
+    real activity — see core.services.demo_seed.reset_demo_company_if_idle().
+    A visit-free stretch is a no-op: nothing to reset. Never touches the
+    Company row or the demo login (demo@truckwys.com), only the data
+    around it."""
+    try:
+        from core.services.demo_seed import reset_demo_company_if_idle
+        summary = reset_demo_company_if_idle()
+        if summary is None:
+            return {'reset': False}
+        logger.info(
+            'Demo company reset: company_id=%s vehicles=%s drivers=%s customers=%s quotes=%s loads=%s',
+            summary['company'].pk, summary['vehicles'], summary['drivers'],
+            summary['customers'], summary['quotes'], summary['loads'],
+        )
+        return {'reset': True, 'company_id': summary['company'].pk}
+    except Exception:
+        logger.exception('reset_demo_company_task failed')

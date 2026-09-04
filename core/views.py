@@ -36,8 +36,10 @@ def custom_exception_handler(exc, context):
         status=status.HTTP_500_INTERNAL_SERVER_ERROR,
     )
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
+from rest_framework.pagination import PageNumberPagination
 from django.contrib.auth import authenticate
 from django_filters.rest_framework import DjangoFilterBackend
+import django_filters
 from django.utils import timezone
 from django.conf import settings
 from decouple import config
@@ -80,6 +82,52 @@ class BillingGateMixin:
             {'error': self.billing_blocked_message, 'account_suspended': True},
             status=status.HTTP_402_PAYMENT_REQUIRED,
         )
+
+
+class DemoFixedDataMixin:
+    """Blocks writes to fixed demo-tenant data (fleet/clients) — the shared
+    public demo account's fleet and client list are pre-seeded and must
+    stay intact between visitors; only reads are allowed."""
+    demo_blocked_message = "This is fixed demo data and can't be changed in the demo."
+
+    def _demo_blocked(self):
+        company = getattr(self.request.user, 'company', None)
+        return bool(company and company.is_demo)
+
+    def _demo_blocked_response(self):
+        return Response({'error': self.demo_blocked_message}, status=status.HTTP_403_FORBIDDEN)
+
+    def perform_create(self, serializer):
+        if self._demo_blocked():
+            from rest_framework.exceptions import ValidationError as DRFValidationError
+            raise DRFValidationError({'error': self.demo_blocked_message})
+        super().perform_create(serializer)
+
+    def perform_update(self, serializer):
+        if self._demo_blocked():
+            from rest_framework.exceptions import ValidationError as DRFValidationError
+            raise DRFValidationError({'error': self.demo_blocked_message})
+        super().perform_update(serializer)
+
+    def perform_destroy(self, instance):
+        if self._demo_blocked():
+            from rest_framework.exceptions import ValidationError as DRFValidationError
+            raise DRFValidationError({'error': self.demo_blocked_message})
+        super().perform_destroy(instance)
+
+
+DEMO_SETTINGS_LOCKED_MESSAGE = "Settings can't be changed in the demo account."
+
+
+def _demo_settings_locked(user):
+    """True when an account/security/company-settings write must be
+    blocked for the shared public demo account — reads stay open (a demo
+    user can see every settings page), only writes are refused, since the
+    login itself and the company profile are shared across every visitor."""
+    company = getattr(user, 'company', None)
+    return bool(company and company.is_demo)
+
+
 from django.db.models import Sum, Count, Q, Avg, F, ExpressionWrapper, DecimalField
 from django.db.models.functions import TruncMonth
 from datetime import datetime, timedelta
@@ -638,6 +686,8 @@ class ChangePasswordView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        if _demo_settings_locked(request.user):
+            return Response({'error': DEMO_SETTINGS_LOCKED_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
         current = request.data.get('current_password') or ''
         new = request.data.get('new_password') or ''
         if len(new) < 8:
@@ -660,6 +710,8 @@ class DeleteAccountView(APIView):
     def delete(self, request):
         import uuid
 
+        if _demo_settings_locked(request.user):
+            return Response({'error': DEMO_SETTINGS_LOCKED_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
         password = request.data.get('password') or ''
         if not request.user.check_password(password):
             return Response({'error': 'Password is incorrect'}, status=status.HTTP_400_BAD_REQUEST)
@@ -706,6 +758,8 @@ class UserProfileView(APIView):
         return Response(serializer.data)
 
     def patch(self, request):
+        if _demo_settings_locked(request.user):
+            return Response({'error': DEMO_SETTINGS_LOCKED_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
         serializer = UserSerializer(request.user, data=request.data, partial=True, context={'request': request})
         if serializer.is_valid():
             serializer.save()
@@ -847,6 +901,8 @@ class NotificationSettingsView(APIView):
         return Response(_merged_notification_settings(request.user))
 
     def patch(self, request):
+        if _demo_settings_locked(request.user):
+            return Response({'error': DEMO_SETTINGS_LOCKED_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
         from core.services.notification_prefs import NOTIFICATION_DEFAULTS, get_prefs
         if not isinstance(request.data, dict):
             return Response({'detail': 'Body must be a JSON object of channels.'},
@@ -1022,6 +1078,8 @@ class SecuritySettingsView(APIView):
         return Response(settings)
 
     def patch(self, request):
+        if _demo_settings_locked(request.user):
+            return Response({'error': DEMO_SETTINGS_LOCKED_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
         user = request.user
         settings = {**self.DEFAULTS, **(user.security_settings or {})}
         for key in self.DEFAULTS:
@@ -1096,9 +1154,11 @@ class CompanyProfileView(APIView):
         return Response(serializer.data)
     
     def patch(self, request):
+        if _demo_settings_locked(request.user):
+            return Response({'error': DEMO_SETTINGS_LOCKED_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
         company = self.get_object()
         data = request.data.copy()
-        
+
         # Handle nested updates for address and contact
         if 'address' in data and isinstance(data['address'], dict):
             current_address = company.address or {}
@@ -1977,7 +2037,7 @@ class UserViewSet(viewsets.ModelViewSet):
         }, status=status.HTTP_201_CREATED)
 
 
-class CustomerViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
+class CustomerViewSet(DemoFixedDataMixin, CompanyFilterMixin, viewsets.ModelViewSet):
     queryset = Customer.objects.all()
     serializer_class = CustomerSerializer
     permission_classes = [IsAuthenticated]
@@ -2003,7 +2063,7 @@ class CustomerViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         return Response(serializer.data)
 
 
-class DriverViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
+class DriverViewSet(DemoFixedDataMixin, CompanyFilterMixin, viewsets.ModelViewSet):
     queryset = Driver.objects.all()
     serializer_class = DriverSerializer
     permission_classes = [IsAuthenticated]
@@ -2033,7 +2093,7 @@ class DriverViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         return Response(serializer.data)
 
 
-class VehicleViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
+class VehicleViewSet(DemoFixedDataMixin, CompanyFilterMixin, viewsets.ModelViewSet):
     queryset = Vehicle.objects.all()
     serializer_class = VehicleSerializer
     permission_classes = [IsAuthenticated]
@@ -2086,7 +2146,7 @@ class VehicleViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         return Response(serializer.data)
 
 
-class VehicleTypeViewSet(viewsets.ModelViewSet):
+class VehicleTypeViewSet(DemoFixedDataMixin, viewsets.ModelViewSet):
     queryset = VehicleType.objects.all()
     serializer_class = VehicleTypeSerializer
     permission_classes = [IsAuthenticated]
@@ -2127,6 +2187,9 @@ class VehicleTypeViewSet(viewsets.ModelViewSet):
         )
 
     def perform_create(self, serializer):
+        if self._demo_blocked():
+            from rest_framework.exceptions import ValidationError as DRFValidationError
+            raise DRFValidationError({'error': self.demo_blocked_message})
         serializer.save(company=self.request.user.company)
 
 
@@ -2342,15 +2405,60 @@ class LoadViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         })
 
 
+class QuoteResultsPagination(PageNumberPagination):
+    """Same default page size as everywhere else (20), but lets a caller
+    opt into a smaller page via ?page_size= — the quotes board fetches each
+    pipeline column independently, 10 at a time with a "load more" button,
+    rather than pulling every quote up front."""
+    page_size_query_param = 'page_size'
+    max_page_size = 100
+
+
+class QuoteFilterSet(django_filters.FilterSet):
+    # A quote's own lifecycle ends at ACCEPTED/DECLINED — IT/COMPLETED are
+    # legacy statuses from before Order delivery tracking moved to Load
+    # (see QuoteViewSet.perform_update). The board still lumps any
+    # leftover IT/COMPLETED quote in with "Accepted" (it was accepted, just
+    # tagged with a status this app no longer produces), so filtering the
+    # Accepted column by status alone must not silently drop them.
+    status = django_filters.CharFilter(method='filter_status')
+
+    class Meta:
+        model = Quote
+        fields = ['status', 'customer']
+
+    def filter_status(self, queryset, name, value):
+        if value == 'ACCEPTED':
+            return queryset.filter(status__in=['ACCEPTED', 'IT', 'COMPLETED'])
+        return queryset.filter(status=value)
+
+
 class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
     queryset = Quote.objects.all()
     serializer_class = QuoteSerializer
     permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = ['status', 'customer']
+    filterset_class = QuoteFilterSet
     search_fields = ['quote_number', 'customer__name', 'pickup_location', 'delivery_location']
     ordering_fields = ['created_at', 'valid_until']
+    pagination_class = QuoteResultsPagination
     billing_blocked_message = 'Update your payment method to continue quoting.'
+
+    def list(self, request, *args, **kwargs):
+        # Adds `total_amount` — the sum over every quote matching the
+        # current filters (status/search), not just the current page — so
+        # the board's per-column total doesn't have to be recomputed
+        # client-side from whatever page happens to be loaded so far.
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        total_amount = queryset.aggregate(total=Sum('total_amount'))['total'] or 0
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            response = self.get_paginated_response(serializer.data)
+            response.data['total_amount'] = total_amount
+            return response
+        serializer = self.get_serializer(queryset, many=True)
+        return Response({'results': serializer.data, 'total_amount': total_amount})
 
     def update(self, request, *args, **kwargs):
         # Unlike Loads (status-change only), every PATCH/PUT to a quote is
@@ -2377,10 +2485,19 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
     def create(self, request, *args, **kwargs):
         if self._billing_blocked(request):
             return self._billing_blocked_response()
+        company = getattr(request.user, 'company', None)
+        if company and company.is_demo and company.demo_quota_used >= 1:
+            return Response(
+                {'error': 'This demo allows one quote — it resets daily, come back tomorrow for a fresh one.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         from django.db import IntegrityError
         from rest_framework.exceptions import ValidationError as DRFValidationError
         try:
-            return super().create(request, *args, **kwargs)
+            response = super().create(request, *args, **kwargs)
+            if company and company.is_demo and response.status_code == 201:
+                Company.objects.filter(pk=company.pk).update(demo_quota_used=F('demo_quota_used') + 1)
+            return response
         except IntegrityError as exc:
             msg = str(exc)
             if 'quote_number' in msg.lower():
@@ -2645,13 +2762,25 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
             ensure_quote_token(quote)
             email_sent, recipient = send_quote_to_customer_email(quote)
 
+        # A recipient with email_sent False and NOT no_customer_email means
+        # quote_share.py deliberately skipped a real send (the shared public
+        # demo account) — distinguish that from "no email on file" so the
+        # frontend shows accurate copy instead of implying the customer has
+        # no address at all.
+        if not recipient:
+            skipped_reason = 'no_customer_email'
+        elif not email_sent and quote.company_id and quote.company.is_demo:
+            skipped_reason = 'demo_mode'
+        else:
+            skipped_reason = None
+
         return Response({
             'share_url': quote_share_url(quote),
             'quote_number': quote.quote_number,
             'status': quote.status,
             'email_sent': email_sent,
             'customer_email': recipient,
-            'email_skipped_reason': None if recipient else 'no_customer_email',
+            'email_skipped_reason': skipped_reason,
         })
 
 
@@ -3965,6 +4094,13 @@ class InviteView(APIView):
         from django.core.cache import cache
         from django.conf import settings
         from core.services.email_service import send_invite_email
+
+        demo_company = getattr(request.user, 'company', None)
+        if demo_company and demo_company.is_demo:
+            return Response(
+                {'error': 'Inviting teammates is not available in the demo.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         email = request.data.get('email', '').strip().lower()
         role = (request.data.get('role') or 'DISPATCHER').upper()

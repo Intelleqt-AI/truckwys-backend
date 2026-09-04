@@ -29,6 +29,11 @@ class UserSerializer(serializers.ModelSerializer):
     # can show "Cancelling" instead of silently staying "Online" until the
     # daily sweep finalises subscription_status to 'cancelled'.
     cancel_at_period_end = serializers.SerializerMethodField()
+    # Lets the frontend block the shared public demo company's one-quote cap
+    # client-side (same /auth/me/ call above) instead of only discovering it
+    # reactively when the quote-create endpoint rejects it server-side.
+    is_demo = serializers.SerializerMethodField()
+    demo_quota_used = serializers.SerializerMethodField()
 
     def get_company_name(self, obj):
         return obj.company.company_name if obj.company_id else None
@@ -38,6 +43,12 @@ class UserSerializer(serializers.ModelSerializer):
 
     def get_cancel_at_period_end(self, obj):
         return obj.company.cancel_at_period_end if obj.company_id else False
+
+    def get_is_demo(self, obj):
+        return obj.company.is_demo if obj.company_id else False
+
+    def get_demo_quota_used(self, obj):
+        return obj.company.demo_quota_used if obj.company_id else 0
 
     def validate_role(self, value):
         if not isinstance(value, str):
@@ -53,7 +64,8 @@ class UserSerializer(serializers.ModelSerializer):
         fields = ['id', 'username', 'email', 'password', 'first_name', 'last_name', 'name', 'job_title',
                   'role', 'status', 'phone', 'address', 'timezone', 'language', 'date_format',
                   'notification_settings', 'avatar', 'last_active', 'is_active', 'created_at', 'updated_at',
-                  'is_superuser', 'company_id', 'company_name', 'subscription_status', 'cancel_at_period_end']
+                  'is_superuser', 'company_id', 'company_name', 'subscription_status', 'cancel_at_period_end',
+                  'is_demo', 'demo_quota_used']
         # notification_settings is read-only here: the validated
         # NotificationSettingsView is the single write path for preferences.
         read_only_fields = ['id', 'created_at', 'updated_at', 'last_active',

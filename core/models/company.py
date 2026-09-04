@@ -288,6 +288,22 @@ class Company(models.Model):
                    "once actually cancelled (a hard, immediate cancel from 'trialing' never sets this at all).",
     )
 
+    # is_demo marks the single shared public demo company used for unauthenticated/public
+    # demo access. It bypasses billing gates (subscription_status is kept 'active' so the
+    # usual quoting/invoicing checks pass) and is subject to extra access restrictions
+    # enforced elsewhere in the codebase — fixed fleet/client data, a one-quote cap, and no
+    # real customer emails ever being sent. demo_quota_used tracks that one-quote cap: it
+    # counts quotes created by the demo user since the last nightly reset (capped at 1) and
+    # is reset back to 0 by a nightly job.
+    is_demo = models.BooleanField(default=False)
+    demo_quota_used = models.IntegerField(default=0)  # quotes created by the demo user since the last reset; cap is 1
+    # Idle-timeout reset instead of a fixed schedule: a frequent Celery beat
+    # check (core.tasks.reset_demo_company_task) only actually wipes/reseeds
+    # once an hour has passed with no new activity since demo_last_reset_at —
+    # see core.services.demo_seed.reset_demo_company_if_idle(). An untouched
+    # demo (nobody visited) never resets, since there's nothing to reset.
+    demo_last_reset_at = models.DateTimeField(null=True, blank=True)
+
     # Paystack card-on-file — captured from the first (card-verifying) checkout
     # and reused for every later charge_authorization call: both the flat
     # monthly fee (core/services/subscription_billing.py) and the 0.25%
