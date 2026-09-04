@@ -29,11 +29,17 @@ class UserSerializer(serializers.ModelSerializer):
     # can show "Cancelling" instead of silently staying "Online" until the
     # daily sweep finalises subscription_status to 'cancelled'.
     cancel_at_period_end = serializers.SerializerMethodField()
-    # Lets the frontend block the shared public demo company's one-quote cap
+    # Lets the frontend block the demo's one-quote-per-session cap
     # client-side (same /auth/me/ call above) instead of only discovering it
     # reactively when the quote-create endpoint rejects it server-side.
     is_demo = serializers.SerializerMethodField()
-    demo_quota_used = serializers.SerializerMethodField()
+    # Per-session, not per-company: every demo visitor shares the same
+    # demo@truckwys.com login, so a company-wide flag would mean the first
+    # visitor anywhere locks out every other visitor. This reads the current
+    # request's own UserSession (core.models.UserSession, set by
+    # core.auth.session_auth.UserSessionTokenAuthentication as request.auth)
+    # — see QuoteViewSet.create for where it's actually enforced.
+    demo_quote_used = serializers.SerializerMethodField()
 
     def get_company_name(self, obj):
         return obj.company.company_name if obj.company_id else None
@@ -47,8 +53,11 @@ class UserSerializer(serializers.ModelSerializer):
     def get_is_demo(self, obj):
         return obj.company.is_demo if obj.company_id else False
 
-    def get_demo_quota_used(self, obj):
-        return obj.company.demo_quota_used if obj.company_id else 0
+    def get_demo_quote_used(self, obj):
+        from core.models import UserSession
+        request = self.context.get('request')
+        session = getattr(request, 'auth', None) if request else None
+        return bool(isinstance(session, UserSession) and session.demo_quote_used)
 
     def validate_role(self, value):
         if not isinstance(value, str):
@@ -65,7 +74,7 @@ class UserSerializer(serializers.ModelSerializer):
                   'role', 'status', 'phone', 'address', 'timezone', 'language', 'date_format',
                   'notification_settings', 'avatar', 'last_active', 'is_active', 'created_at', 'updated_at',
                   'is_superuser', 'company_id', 'company_name', 'subscription_status', 'cancel_at_period_end',
-                  'is_demo', 'demo_quota_used']
+                  'is_demo', 'demo_quote_used']
         # notification_settings is read-only here: the validated
         # NotificationSettingsView is the single write path for preferences.
         read_only_fields = ['id', 'created_at', 'updated_at', 'last_active',
