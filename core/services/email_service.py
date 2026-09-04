@@ -4,6 +4,7 @@ and transactional auth emails (verification, etc.) via Resend.
 """
 
 from typing import Optional
+from urllib.parse import quote
 from django.core.mail import EmailMultiAlternatives
 from django.utils.html import strip_tags
 from django.conf import settings
@@ -223,6 +224,11 @@ def send_login_otp_email(email: str, code: str, first_name: str) -> bool:
 def send_password_reset_email(email: str, first_name: str, reset_code: str) -> bool:
     """Send password reset OTP via Django SMTP backend."""
     subject = "Your TruckWys password reset code"
+    # Deep-links straight past the "request a code" step (one's already been
+    # sent — this email) to the code-entry step, with the email prefilled.
+    # The code itself stays out of the URL (referrer/history/log exposure)
+    # and is only ever readable inside the email body.
+    reset_url = f"{settings.FRONTEND_URL.rstrip('/')}/password-reset?email={quote(email)}&step=confirm"
     html_content = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -240,12 +246,19 @@ def send_password_reset_email(email: str, first_name: str, reset_code: str) -> b
         <tr><td style="padding:36px;">
           <p style="margin:0 0 6px;font-size:22px;font-weight:600;color:#F8FAFC;text-align:center;">Reset your password</p>
           <p style="margin:0 0 32px;font-size:14px;color:#94A3B8;line-height:1.6;text-align:center;">
-            Hi <strong style="color:#F8FAFC;">{first_name}</strong>, use the code below to reset your TruckWys password.
+            Hi <strong style="color:#F8FAFC;">{first_name}</strong>, click below to set a new TruckWys password.
           </p>
+
+          <div style="text-align:center;margin-bottom:28px;">
+            <a href="{reset_url}"
+               style="display:inline-block;background:#F59E0B;color:#0F172A;text-decoration:none;padding:14px 36px;border-radius:6px;font-weight:700;font-size:14px;letter-spacing:0.04em;">
+              SET NEW PASSWORD
+            </a>
+          </div>
 
           <!-- OTP Box -->
           <div style="background:#0F172A;border:1px solid #F59E0B;border-radius:8px;padding:28px 24px;text-align:center;margin-bottom:28px;">
-            <div style="font-size:11px;color:#64748B;letter-spacing:0.12em;font-family:monospace;margin-bottom:12px;">YOUR RESET CODE</div>
+            <div style="font-size:11px;color:#64748B;letter-spacing:0.12em;font-family:monospace;margin-bottom:12px;">OR ENTER THIS CODE MANUALLY</div>
             <div style="font-size:42px;font-weight:700;letter-spacing:0.22em;color:#F59E0B;font-family:monospace;">{reset_code}</div>
             <div style="margin-top:14px;display:inline-block;background:#2D1F00;border:1px solid #334155;border-radius:4px;padding:4px 12px;">
               <span style="font-size:11px;color:#64748B;font-family:monospace;letter-spacing:0.08em;">Expires in 1 hour</span>
@@ -257,7 +270,7 @@ def send_password_reset_email(email: str, first_name: str, reset_code: str) -> b
               <table width="100%" cellpadding="0" cellspacing="0">
                 <tr>
                   <td width="28" style="font-size:13px;color:#F59E0B;vertical-align:top;padding-top:1px;font-family:monospace;">01</td>
-                  <td style="font-size:13px;color:#94A3B8;line-height:1.5;">Enter this code on the password reset page</td>
+                  <td style="font-size:13px;color:#94A3B8;line-height:1.5;">Click "Set new password" above, or go to the password reset page and enter the code by hand</td>
                 </tr>
                 <tr><td colspan="2" style="height:8px;"></td></tr>
                 <tr>

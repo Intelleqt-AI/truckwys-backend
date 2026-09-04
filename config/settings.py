@@ -393,11 +393,23 @@ CELERY_TASK_SERIALIZER = 'json'
 CELERY_ACCEPT_CONTENT = ['json']
 
 from celery.schedules import crontab  # noqa: E402
+from datetime import timedelta  # noqa: E402
 # In SUBSCRIPTION_TEST_MODE, run every billing sweep every minute instead of
 # once daily, so a compressed test cycle (SUBSCRIPTION_TEST_CYCLE_MINUTES)
 # actually gets picked up promptly instead of waiting for tomorrow's cron.
 _BILLING_SWEEP_SCHEDULE = crontab(minute='*') if SUBSCRIPTION_TEST_MODE else None
 CELERY_BEAT_SCHEDULE = {
+    # Checks every 15 min whether the shared public demo company has gone
+    # idle (no quote/order activity for an hour) and only then wipes and
+    # reseeds its fleet/quote/order data — see
+    # core.services.demo_seed.reset_demo_company_if_idle(). A visit-free
+    # stretch is a cheap no-op, not a real reset, so this can run often
+    # without doing anything wasteful. Never touches the Company row or the
+    # demo login itself.
+    'reset-demo-company': {
+        'task': 'core.tasks.reset_demo_company_task',
+        'schedule': timedelta(minutes=15),
+    },
     # Refresh SA diesel price daily at 06:00 SAST.
     # force_update=True so a previously-stored fallback gets overwritten once live sources come back.
     'refresh-fuel-price': {

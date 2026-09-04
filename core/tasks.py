@@ -20,6 +20,8 @@ from datetime import date
 from celery import shared_task
 from django.db.models import Sum
 
+from core.services.task_run import track_task_run
+
 logger = logging.getLogger(__name__)
 
 
@@ -457,6 +459,7 @@ def compute_all_driver_scores():
 # ---------------------------------------------------------------------------
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=21_600, name='core.tasks.refresh_fuel_price')
+@track_task_run('refresh_fuel_price')
 def refresh_fuel_price(self):
     """
     Fetch current SA diesel price from live sources (FIASA → AA SA → SAPIA → DMRE).
@@ -489,6 +492,7 @@ def refresh_fuel_price(self):
 # ---------------------------------------------------------------------------
 
 @shared_task(name='core.tasks.retrain_win_model')
+@track_task_run('retrain_win_model')
 def retrain_win_model():
     """Nightly retrain of the quote win-probability model from captured
     QuoteOutcome data. Idempotent: no-ops with a clear reason until enough
@@ -593,6 +597,7 @@ def poll_cartrack_door_events():
 # ---------------------------------------------------------------------------
 
 @shared_task(name='core.tasks.retry_delivery_fee_charges')
+@track_task_run('retry_delivery_fee_charges')
 def retry_delivery_fee_charges():
     """Daily retry of failed 0.25% delivery take-rate charges; freezes a
     company once its charges have failed past DELIVERY_FEE_GRACE_DAYS."""
@@ -604,6 +609,7 @@ def retry_delivery_fee_charges():
 
 
 @shared_task(name='core.tasks.run_monthly_subscription_billing')
+@track_task_run('run_monthly_subscription_billing')
 def run_monthly_subscription_billing():
     """Daily sweep: charge the flat monthly fee for every company whose
     next_billing_date has arrived."""
@@ -612,6 +618,7 @@ def run_monthly_subscription_billing():
 
 
 @shared_task(name='core.tasks.check_grace_period_expirations')
+@track_task_run('check_grace_period_expirations')
 def check_grace_period_expirations():
     """Daily sweep: suspend any company whose grace period has expired with
     no successful charge (TruckWys_Fee_Billing_Spec.pdf §4)."""
@@ -623,6 +630,7 @@ def check_grace_period_expirations():
 
 
 @shared_task(name='core.tasks.check_pending_cancellations')
+@track_task_run('check_pending_cancellations')
 def check_pending_cancellations():
     """Daily sweep: finalise any company that cancelled while still
     active/grace_period once the period they already paid for has ended."""
@@ -673,3 +681,32 @@ def sweep_vehicle_documents():
 def sweep_intelligence_recommendations():
     from core.services.notification_sweeps import sweep_intelligence_recommendations as run
     return run()
+
+
+# ---------------------------------------------------------------------------
+# Demo company reset (Celery Beat — nightly, before the sweeps above)
+# ---------------------------------------------------------------------------
+
+@shared_task(name='core.tasks.reset_demo_company_task')
+@track_task_run('reset_demo_company_task')
+def reset_demo_company_task():
+    """Runs frequently (see config/settings.py's CELERY_BEAT_SCHEDULE) but
+    only actually wipes-and-reseeds the shared public demo company's
+    fleet/quote/order data once it's been idle for an hour since the last
+    real activity — see core.services.demo_seed.reset_demo_company_if_idle().
+    A visit-free stretch is a no-op: nothing to reset. Never touches the
+    Company row or the demo login (demo@truckwys.com), only the data
+    around it."""
+    try:
+        from core.services.demo_seed import reset_demo_company_if_idle
+        summary = reset_demo_company_if_idle()
+        if summary is None:
+            return {'reset': False}
+        logger.info(
+            'Demo company reset: company_id=%s vehicles=%s drivers=%s customers=%s quotes=%s loads=%s',
+            summary['company'].pk, summary['vehicles'], summary['drivers'],
+            summary['customers'], summary['quotes'], summary['loads'],
+        )
+        return {'reset': True, 'company_id': summary['company'].pk}
+    except Exception:
+        logger.exception('reset_demo_company_task failed')

@@ -30,5 +30,12 @@ def send_quote_to_customer_email(quote) -> tuple[bool, str | None]:
     """
     from core.services.email_service import send_quote_share_email
     recipient = quote.customer.email if quote.customer else None
+    if recipient and quote.company.is_demo:
+        # The shared public demo account's seeded customers have
+        # real-looking emails, but the demo must never actually send mail
+        # to them — report the recipient as usual (so callers can tell
+        # this apart from the "no customer on file" case) while skipping
+        # the real send_quote_share_email() call entirely.
+        return False, recipient
     email_sent = send_quote_share_email(quote, quote_share_url(quote)) if recipient else False
     return email_sent, recipient

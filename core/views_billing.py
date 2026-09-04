@@ -158,6 +158,9 @@ class SubscribeView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        if request.user.company.is_demo:
+            return Response({'error': 'Billing is not available in the demo account.'}, status=status.HTTP_403_FORBIDDEN)
+
         serializer = SubscribeSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
