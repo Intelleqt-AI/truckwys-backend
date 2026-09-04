@@ -4,6 +4,12 @@ from .views_billing import (
     SubscribeView, CancelSubscriptionView, UndoCancelSubscriptionView, BillingStatusView,
     BillingHistoryView, PaystackWebhookView, ConfirmPaymentView,
 )
+from .views_admin import (
+    AdminOverviewView, AdminCompaniesView, AdminUsersView, AdminDemoStatusView,
+    AdminCompanyActionView, AdminCompanyBillingView, AdminRecordPaymentView,
+    AdminCreateUserView, AdminUserActionView, AdminUserRoleView,
+    AdminSearchView, AdminJobHealthView, AdminIntegrationsHealthView, AdminAuditLogView,
+)
 from .views import (
     UserViewSet, CustomerViewSet, DriverViewSet,
     VehicleViewSet, VehicleTypeViewSet, VehicleLogViewSet, LoadViewSet,
@@ -127,6 +133,21 @@ urlpatterns = [
     path('billing/cancel/', CancelSubscriptionView.as_view(), name='billing-cancel'),
     path('billing/undo-cancel/', UndoCancelSubscriptionView.as_view(), name='billing-undo-cancel'),
     path('billing/webhook/', PaystackWebhookView.as_view(), name='billing-webhook'),
+    # Platform admin dashboard (superuser only)
+    path('admin/overview/', AdminOverviewView.as_view(), name='admin-overview'),
+    path('admin/companies/', AdminCompaniesView.as_view(), name='admin-companies'),
+    path('admin/users/', AdminUsersView.as_view(), name='admin-users'),
+    path('admin/demo-status/', AdminDemoStatusView.as_view(), name='admin-demo-status'),
+    path('admin/companies/<int:company_id>/action/', AdminCompanyActionView.as_view(), name='admin-company-action'),
+    path('admin/companies/<int:company_id>/billing/', AdminCompanyBillingView.as_view(), name='admin-company-billing'),
+    path('admin/companies/<int:company_id>/record-payment/', AdminRecordPaymentView.as_view(), name='admin-record-payment'),
+    path('admin/users/create/', AdminCreateUserView.as_view(), name='admin-create-user'),
+    path('admin/users/<int:user_id>/action/', AdminUserActionView.as_view(), name='admin-user-action'),
+    path('admin/users/<int:user_id>/role/', AdminUserRoleView.as_view(), name='admin-user-role'),
+    path('admin/search/', AdminSearchView.as_view(), name='admin-search'),
+    path('admin/job-health/', AdminJobHealthView.as_view(), name='admin-job-health'),
+    path('admin/integrations-health/', AdminIntegrationsHealthView.as_view(), name='admin-integrations-health'),
+    path('admin/audit-log/', AdminAuditLogView.as_view(), name='admin-audit-log'),
     path('billing/confirm/', ConfirmPaymentView.as_view(), name='billing-confirm'),
     path('auth/me/', UserProfileView.as_view(), name='user-profile'),
     path('auth/sessions/', SessionsView.as_view(), name='auth-sessions'),

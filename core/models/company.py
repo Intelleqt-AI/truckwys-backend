@@ -304,6 +304,13 @@ class Company(models.Model):
     # demo (nobody visited) never resets, since there's nothing to reset.
     demo_last_reset_at = models.DateTimeField(null=True, blank=True)
 
+    # Admin-dashboard soft-delete (core/views_admin.py) — mirrors
+    # DeleteAccountView's own soft-deactivate pattern for users, not a hard
+    # delete, since Quote/Load/Invoice/etc. all FK back to Company. Excluded
+    # from the admin dashboard's default company list/overview counts once set.
+    is_deleted = models.BooleanField(default=False)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+
     # Paystack card-on-file — captured from the first (card-verifying) checkout
     # and reused for every later charge_authorization call: both the flat
     # monthly fee (core/services/subscription_billing.py) and the 0.25%

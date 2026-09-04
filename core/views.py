@@ -1095,6 +1095,14 @@ class IsAdmin(IsAuthenticated):
         return super().has_permission(request, view) and hasattr(request.user, 'role') and request.user.role == 'ADMIN'
 
 
+class IsSuperUser(IsAuthenticated):
+    """Django's own is_superuser flag — a platform operator, not a company's
+    own ADMIN role (see IsAdmin above, a completely separate concept). Gates
+    the cross-tenant admin dashboard (core/views_admin.py)."""
+    def has_permission(self, request, view):
+        return super().has_permission(request, view) and bool(request.user.is_superuser)
+
+
 def resolve_user_company(user):
     """Return the user's own Company, creating+binding one if they have none yet
     (legacy/seed accounts). This replaces the old global Company id=1 singleton so
@@ -2216,6 +2224,21 @@ class LoadViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
     ordering_fields = ['created_at', 'pickup_date', 'delivery_date']
     billing_blocked_message = 'Update your payment method to continue managing orders.'
 
+    def create(self, request, *args, **kwargs):
+        # The demo's only legitimate way to get a Load is converting its one
+        # quote (QuoteViewSet.convert_to_load, itself capped by the demo
+        # quote quota) — there's no direct "create load" UI, so a raw POST
+        # here for a demo company is a bypass around that cap, not a real
+        # user flow. Managing an already-converted load (status changes,
+        # assign_driver, POD, convert_to_invoice) stays open.
+        company = getattr(request.user, 'company', None)
+        if company and company.is_demo:
+            return Response(
+                {'error': 'Convert the demo quote to a booking instead of creating an order directly.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return super().create(request, *args, **kwargs)
+
     def perform_create(self, serializer):
         # Creation notification is raised by the Load post_save signal
         # (notify_company), which covers all creation paths, not just this view.
@@ -2486,18 +2509,28 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         if self._billing_blocked(request):
             return self._billing_blocked_response()
         company = getattr(request.user, 'company', None)
-        if company and company.is_demo and company.demo_quota_used >= 1:
-            return Response(
-                {'error': 'This demo allows one quote — it resets daily, come back tomorrow for a fresh one.'},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-        from django.db import IntegrityError
+        from django.db import IntegrityError, transaction
         from rest_framework.exceptions import ValidationError as DRFValidationError
         try:
-            response = super().create(request, *args, **kwargs)
-            if company and company.is_demo and response.status_code == 201:
-                Company.objects.filter(pk=company.pk).update(demo_quota_used=F('demo_quota_used') + 1)
-            return response
+            if company and company.is_demo:
+                # select_for_update serializes concurrent requests for this
+                # one shared demo company, so the quota check and the
+                # increment below can't race — without the lock, two
+                # simultaneous requests can both read demo_quota_used=0 and
+                # both slip past the cap before either's increment lands.
+                with transaction.atomic():
+                    locked_company = Company.objects.select_for_update().get(pk=company.pk)
+                    if locked_company.demo_quota_used >= 1:
+                        return Response(
+                            {'error': 'This demo allows one quote — it resets daily, come back tomorrow for a fresh one.'},
+                            status=status.HTTP_403_FORBIDDEN,
+                        )
+                    response = super().create(request, *args, **kwargs)
+                    if response.status_code == 201:
+                        locked_company.demo_quota_used = F('demo_quota_used') + 1
+                        locked_company.save(update_fields=['demo_quota_used'])
+                    return response
+            return super().create(request, *args, **kwargs)
         except IntegrityError as exc:
             msg = str(exc)
             if 'quote_number' in msg.lower():
@@ -3023,7 +3056,7 @@ class PaymentViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     ordering_fields = ['payment_date', 'amount']
 
 
-class ExpenseViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
+class ExpenseViewSet(DemoFixedDataMixin, CompanyFilterMixin, viewsets.ModelViewSet):
     queryset = Expense.objects.all()
     serializer_class = ExpenseSerializer
     permission_classes = [IsAuthenticated]
@@ -3033,6 +3066,13 @@ class ExpenseViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     ordering_fields = ['expense_date', 'amount']
 
     def perform_create(self, serializer):
+        # This class-level override replaces DemoFixedDataMixin.perform_create
+        # entirely (a subclass's own method always wins over an inherited
+        # one, mixin included) — so the demo guard has to be re-applied here
+        # explicitly rather than relying on the mixin firing on its own.
+        if self._demo_blocked():
+            from rest_framework.exceptions import ValidationError as DRFValidationError
+            raise DRFValidationError({'error': self.demo_blocked_message})
         serializer.save(created_by=self.request.user)
 
 
