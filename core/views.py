@@ -2513,22 +2513,39 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         from rest_framework.exceptions import ValidationError as DRFValidationError
         try:
             if company and company.is_demo:
-                # select_for_update serializes concurrent requests for this
-                # one shared demo company, so the quota check and the
-                # increment below can't race — without the lock, two
-                # simultaneous requests can both read demo_quota_used=0 and
-                # both slip past the cap before either's increment lands.
+                # Every demo visitor logs into the exact same shared
+                # demo@truckwys.com account, so the cap can't live on the
+                # User or Company — every visitor would share one counter
+                # (the original bug: the first visitor anywhere uses it up
+                # and everyone else sees "quota reached" with no way to see
+                # the pricing engine at all). Each login already gets its own
+                # UserSession row (core.auth.session_auth), so the cap lives
+                # there instead — one free quote per session, independent of
+                # what any other visitor has done.
+                from core.models import UserSession
+                session = request.auth if isinstance(request.auth, UserSession) else None
+                if session is None:
+                    return Response(
+                        {'error': 'Demo session not recognized — please log in again.'},
+                        status=status.HTTP_403_FORBIDDEN,
+                    )
+                # select_for_update serializes concurrent requests from this
+                # one session, so the check and the flip to True below can't
+                # race the same way the old company-wide counter could.
                 with transaction.atomic():
-                    locked_company = Company.objects.select_for_update().get(pk=company.pk)
-                    if locked_company.demo_quota_used >= 1:
+                    locked_session = UserSession.objects.select_for_update().get(pk=session.pk)
+                    if locked_session.demo_quote_used:
                         return Response(
-                            {'error': 'This demo allows one quote — it resets daily, come back tomorrow for a fresh one.'},
+                            {'error': "You've used this demo session's one free quote. Log out and log back in (or click \"View Demo\" again) to start a fresh session."},
                             status=status.HTTP_403_FORBIDDEN,
                         )
                     response = super().create(request, *args, **kwargs)
                     if response.status_code == 201:
-                        locked_company.demo_quota_used = F('demo_quota_used') + 1
-                        locked_company.save(update_fields=['demo_quota_used'])
+                        locked_session.demo_quote_used = True
+                        locked_session.save(update_fields=['demo_quote_used'])
+                        # Running total across every visitor, for the admin
+                        # dashboard only — no longer used to gate anything.
+                        Company.objects.filter(pk=company.pk).update(demo_quota_used=F('demo_quota_used') + 1)
                     return response
             return super().create(request, *args, **kwargs)
         except IntegrityError as exc:

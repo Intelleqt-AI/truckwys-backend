@@ -32,7 +32,7 @@ from django.utils import timezone
 
 from core.models import (
     Company, User, VehicleType, Vehicle, Driver, Customer, Quote, Load,
-    Invoice, Payment, AdvanceRequest, PaymentOutcome,
+    Invoice, Payment, AdvanceRequest, PaymentOutcome, UserSession,
 )
 
 IDLE_RESET_AFTER = timedelta(hours=1)
@@ -422,6 +422,13 @@ def reset_demo_company():
 
     company.demo_quota_used = 0
     company.save(update_fields=['demo_quota_used'])
+
+    # Per-visitor quote cap lives on UserSession, not Company (see
+    # QuoteViewSet.create) — a browser tab that's stayed open across this
+    # reset would otherwise stay locked out of its one quote forever, since
+    # nothing else clears that flag. A reset is exactly the "start fresh"
+    # moment, so give every existing demo session a clean slate too.
+    UserSession.objects.filter(user__username=DEMO_USER_EMAIL).update(demo_quote_used=False)
 
     return seed_demo_company()
 

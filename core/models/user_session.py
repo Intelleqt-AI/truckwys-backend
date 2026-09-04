@@ -31,6 +31,14 @@ class UserSession(models.Model):
     ip_address = models.CharField(max_length=45, blank=True, default='')  # 45 = max IPv6 text length
     created_at = models.DateTimeField(auto_now_add=True)
     last_activity = models.DateTimeField(default=timezone.now)
+    # The shared public demo login (demo@truckwys.com) is one Django User
+    # shared by every visitor, so the one-quote cap can't live on that User
+    # or its Company — every visitor would share the same counter. It lives
+    # here instead, since a fresh login already gets its own UserSession row
+    # (core.auth.session_auth.UserSessionTokenAuthentication) — giving each
+    # visitor their own quote independent of what anyone else has used.
+    # Meaningless (stays False) for every non-demo session.
+    demo_quote_used = models.BooleanField(default=False)
 
     class Meta:
         db_table = 'user_sessions'
