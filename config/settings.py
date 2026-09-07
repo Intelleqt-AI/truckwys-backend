@@ -228,6 +228,11 @@ REST_FRAMEWORK = {
         'login': '5/minute',  # Stricter rate for login/signup
         'otp_verify': '10/minute',  # 2FA code verification (per-challenge cap of 5 also applies)
         'otp_resend': '3/minute',   # 2FA code resend (plus a per-challenge 60s cooldown)
+        # Own scope rather than reusing 'login': ScopedRateThrottle keys anonymous
+        # requests by client IP, and a shared scope would let a burst of handoff
+        # exchanges from one IP (mobile carrier NAT) throttle normal password
+        # logins from that same IP, and vice versa.
+        'handoff': '10/minute',
         'lender': '120/minute',  # Per-API-key cap for the lender API
         # Copilot chat is far more expensive than a normal API call (LLM + RAG +
         # snapshot). A tighter per-user cap prevents runaway OpenAI spend.

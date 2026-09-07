@@ -25,6 +25,7 @@ from .views import (
     PublicQuoteView, PublicQuoteRespondView, PublicInvoiceView,
     EmailVerifyView, ResendVerificationView, CompleteSignupView, RetrySignupPaymentView,
     VapidPublicKeyView, PushSubscriptionView,
+    AuthHandoffMintView, AuthHandoffExchangeView,
 )
 from .views_ai_quote import (
     AIChatQuoteView, AIQuoteAnalyzeView, AIQuoteSuggestionView, AIVoiceQuoteView,
@@ -159,6 +160,8 @@ urlpatterns = [
     path('auth/password-reset/confirm/', PasswordResetConfirmView.as_view(), name='password-reset-confirm'),
     path('auth/verify-email/', EmailVerifyView.as_view(), name='verify-email'),
     path('auth/complete-signup/', CompleteSignupView.as_view(), name='complete-signup'),
+    path('auth/handoff/', AuthHandoffMintView.as_view(), name='auth-handoff'),
+    path('auth/handoff/exchange/', AuthHandoffExchangeView.as_view(), name='auth-handoff-exchange'),
     path('auth/retry-signup-payment/', RetrySignupPaymentView.as_view(), name='retry-signup-payment'),
     path('auth/resend-verification/', ResendVerificationView.as_view(), name='resend-verification'),
     path('auth/invite/', InviteView.as_view(), name='auth-invite'),

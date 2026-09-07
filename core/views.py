@@ -668,6 +668,57 @@ class LoginResendOtpView(APIView):
         return Response({'detail': 'A new code has been sent.'})
 
 
+class AuthHandoffMintView(APIView):
+    """Web -> app auth handoff, step 1. The web app (already signed in) mints a
+    single-use, 60-second code and links to truckwys://auth/callback?code=...,
+    which the mobile app exchanges for its own session (AuthHandoffExchangeView).
+    Never puts the real token in the URL — see complete_login for why that matters."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        import secrets
+        from django.core.cache import cache
+
+        code = secrets.token_urlsafe(32)
+        cache.set(f'handoff_{code}', {'user_id': request.user.id}, timeout=60)
+        return Response({'code': code})
+
+
+class AuthHandoffExchangeView(APIView):
+    """Web -> app auth handoff, step 2. Exchanges a one-time code minted by
+    AuthHandoffMintView for a normal session, via complete_login — so device
+    fingerprinting, new-device alerts, last_login and UserSession creation all
+    behave identically to a direct login."""
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'handoff'
+
+    def post(self, request):
+        from django.core.cache import cache
+        from .models import User
+
+        code = (request.data.get('code') or '').strip()
+        invalid = Response({'detail': 'Invalid or expired code.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not code:
+            return invalid
+
+        key = f'handoff_{code}'
+        data = cache.get(key)
+        if not data:
+            return invalid
+        # Delete is the claim, not a side effect of a separate lookup: cache.delete()
+        # returns whether it actually removed a key, so two concurrent exchanges of
+        # the same code can't both read it before either deletes it — exactly one
+        # request sees True and proceeds.
+        if not cache.delete(key):
+            return invalid
+
+        user = User.objects.filter(id=data.get('user_id')).first()
+        if not user or not user.is_active:
+            return invalid
+        return complete_login(user, request)
+
+
 class LogoutView(APIView):
     permission_classes = [IsAuthenticated]
 
