@@ -319,6 +319,9 @@ class AdminCompanyBillingView(APIView):
         return Response({'company_id': company.id, 'results': results})
 
     def patch(self, request, company_id):
+        from django.utils.dateparse import parse_date
+        from core.services.subscription_billing import billing_at_for_date
+
         try:
             company = Company.objects.get(pk=company_id)
         except Company.DoesNotExist:
@@ -327,10 +330,22 @@ class AdminCompanyBillingView(APIView):
         next_billing_date = request.data.get('next_billing_date')
         if not next_billing_date:
             return Response({'error': 'next_billing_date is required'}, status=status.HTTP_400_BAD_REQUEST)
-        company.next_billing_date = next_billing_date
-        company.save(update_fields=['next_billing_date', 'updated_at'])
-        _log(request, 'UPDATE', 'Company', company.pk, admin_action='adjust_billing_date', next_billing_date=str(next_billing_date))
-        return Response({'id': company.id, 'next_billing_date': company.next_billing_date})
+        parsed_date = parse_date(next_billing_date)
+        if not parsed_date:
+            return Response({'error': 'next_billing_date must be YYYY-MM-DD'}, status=status.HTTP_400_BAD_REQUEST)
+
+        company.next_billing_date = parsed_date
+        # next_billing_at is a separate field the customer-facing billing
+        # page's countdown actually reads (Company.next_billing_at's own
+        # docstring, core/models/company.py) — every other code path that
+        # sets next_billing_date sets this alongside it via the same helper
+        # (compute_next_cycle/billing_at_for_date), so an admin edit that
+        # only touched next_billing_date left the customer-visible countdown
+        # silently stale.
+        company.next_billing_at = billing_at_for_date(parsed_date)
+        company.save(update_fields=['next_billing_date', 'next_billing_at', 'updated_at'])
+        _log(request, 'UPDATE', 'Company', company.pk, admin_action='adjust_billing_date', next_billing_date=str(parsed_date))
+        return Response({'id': company.id, 'next_billing_date': company.next_billing_date, 'next_billing_at': company.next_billing_at})
 
 
 class AdminRecordPaymentView(APIView):
@@ -618,9 +633,14 @@ class AdminAuditLogView(APIView):
 
         search = request.query_params.get('search', '').strip()
         if search:
+            # details is where the actually-identifying info usually lives
+            # (an email, an old/new role, an invoice number, ...) — resource_id
+            # alone is just a numeric FK, so a search that only checked the
+            # fields above could never find "what happened to this email".
             qs = qs.filter(
                 Q(user__email__icontains=search) | Q(action__icontains=search) |
-                Q(resource_type__icontains=search) | Q(resource_id__icontains=search)
+                Q(resource_type__icontains=search) | Q(resource_id__icontains=search) |
+                Q(details__icontains=search)
             )
 
         page_qs, count, page, page_size, num_pages = _paginate(qs, request)
