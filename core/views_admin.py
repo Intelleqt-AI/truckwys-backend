@@ -27,6 +27,30 @@ def _log(request, action, resource_type, resource_id, **details):
     )
 
 
+def _paginate(queryset, request, default_size=20, max_size=100):
+    """Page a queryset from ?page=/?page_size= — the admin dashboard's list
+    views (companies/users/audit-log) are plain APIViews building hand-rolled
+    response dicts, not DRF generic views, so they don't get pagination for
+    free the way a ModelViewSet.list would. Same page-size cap convention as
+    QuoteResultsPagination (core/views.py). Returns (page_qs, count, page,
+    page_size, num_pages) — count is the FULL queryset count, not len(page_qs).
+    """
+    try:
+        page = max(1, int(request.query_params.get('page', 1)))
+    except (TypeError, ValueError):
+        page = 1
+    try:
+        page_size = int(request.query_params.get('page_size', default_size))
+    except (TypeError, ValueError):
+        page_size = default_size
+    page_size = max(1, min(page_size, max_size))
+
+    count = queryset.count()
+    num_pages = max(1, -(-count // page_size))  # ceil division
+    start = (page - 1) * page_size
+    return queryset[start:start + page_size], count, page, page_size, num_pages
+
+
 class AdminOverviewView(APIView):
     """Platform snapshot: company counts by subscription status, total
     users/quotes/loads (all-time and this month), and an MRR estimate."""
@@ -92,6 +116,7 @@ class AdminCompaniesView(APIView):
         if status_filter:
             qs = qs.filter(subscription_status__in=status_filter.split(','))
 
+        page_qs, count, page, page_size, num_pages = _paginate(qs, request)
         results = [{
             'id': c.id,
             'company_name': c.company_name,
@@ -104,9 +129,9 @@ class AdminCompaniesView(APIView):
             'user_count': c.user_count,
             'quote_count': c.quote_count,
             'load_count': c.load_count,
-        } for c in qs[:200]]
+        } for c in page_qs]
 
-        return Response({'count': qs.count(), 'results': results})
+        return Response({'count': count, 'page': page, 'page_size': page_size, 'num_pages': num_pages, 'results': results})
 
 
 class AdminUsersView(APIView):
@@ -138,6 +163,7 @@ class AdminUsersView(APIView):
         elif status_filter == 'inactive':
             qs = qs.filter(is_active=False)
 
+        page_qs, count, page, page_size, num_pages = _paginate(qs, request)
         results = [{
             'id': u.id,
             'name': f'{u.first_name} {u.last_name}'.strip() or u.username,
@@ -149,9 +175,9 @@ class AdminUsersView(APIView):
             'is_superuser': u.is_superuser,
             'is_deleted': u.email.startswith('deleted-'),
             'last_login': u.last_login,
-        } for u in qs[:200]]
+        } for u in page_qs]
 
-        return Response({'count': qs.count(), 'results': results})
+        return Response({'count': count, 'page': page, 'page_size': page_size, 'num_pages': num_pages, 'results': results})
 
 
 class AdminDemoStatusView(APIView):
@@ -524,13 +550,25 @@ class AdminAuditLogView(APIView):
     permission_classes = [IsSuperUser]
 
     def get(self, request):
-        rows = AuditLog.objects.filter(user__is_superuser=True).select_related('user').order_by('-created_at')[:100]
-        return Response({'results': [{
-            'id': r.id,
-            'actor': r.user.email if r.user else None,
-            'action': r.action,
-            'resource_type': r.resource_type,
-            'resource_id': r.resource_id,
-            'details': r.details,
-            'created_at': r.created_at,
-        } for r in rows]})
+        qs = AuditLog.objects.filter(user__is_superuser=True).select_related('user').order_by('-created_at')
+
+        search = request.query_params.get('search', '').strip()
+        if search:
+            qs = qs.filter(
+                Q(user__email__icontains=search) | Q(action__icontains=search) |
+                Q(resource_type__icontains=search) | Q(resource_id__icontains=search)
+            )
+
+        page_qs, count, page, page_size, num_pages = _paginate(qs, request)
+        return Response({
+            'count': count, 'page': page, 'page_size': page_size, 'num_pages': num_pages,
+            'results': [{
+                'id': r.id,
+                'actor': r.user.email if r.user else None,
+                'action': r.action,
+                'resource_type': r.resource_type,
+                'resource_id': r.resource_id,
+                'details': r.details,
+                'created_at': r.created_at,
+            } for r in page_qs],
+        })
