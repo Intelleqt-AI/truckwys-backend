@@ -275,14 +275,14 @@ class AdminCompanyBillingView(APIView):
 
         transactions = company.billing_transactions.all()
         results = [{
-            'id': f'sub-{t.id}', 'kind': 'subscription', 'label': MONTHLY_FEE_ITEM_NAME,
+            'id': f'sub-{t.id}', 'raw_id': t.id, 'kind': 'subscription', 'label': MONTHLY_FEE_ITEM_NAME,
             'amount': str(t.amount), 'status': t.status,
             'reference': t.gateway_transaction_id or t.payment_id, 'created_at': t.created_at,
         } for t in transactions]
 
         charges = DeliveryFeeCharge.objects.filter(company=company).select_related('invoice')
         results += [{
-            'id': f'dfc-{c.id}', 'kind': 'delivery_fee',
+            'id': f'dfc-{c.id}', 'raw_id': c.id, 'kind': 'delivery_fee',
             'label': f'Delivery fee · {c.invoice.invoice_number}',
             'amount': str(c.amount),
             # DeliveryFeeCharge/BillingTransaction use different status
@@ -361,6 +361,47 @@ class AdminRecordPaymentView(APIView):
             'transaction_id': txn.id, 'company_id': company.id,
             'subscription_status': company.subscription_status, 'next_billing_date': company.next_billing_date,
         })
+
+
+class AdminMarkDeliveryFeeChargePaidView(APIView):
+    """Marks one failed delivery-fee (0.25% take-rate) charge as paid outside
+    Paystack — same field-set the real settle-on-payment path already uses
+    (SubscribeView, core/views_billing.py:133): status='charged',
+    charged_at=now(), failure_reason cleared.
+
+    Deliberately NOT the same shape as AdminRecordPaymentView (which creates
+    a brand-new BillingTransaction so a failed subscription charge stays
+    visible in history exactly as it happened). A DeliveryFeeCharge is a
+    different kind of record — one mutable row per invoice that's meant to
+    be corrected/retried in place (it already gets attempt_count/
+    last_attempted_at rewritten by the automatic retry task), not an
+    immutable ledger entry — so editing it directly here doesn't erase any
+    history the way rewriting a BillingTransaction would.
+    """
+    permission_classes = [IsSuperUser]
+
+    def post(self, request, charge_id):
+        from core.models import DeliveryFeeCharge
+
+        try:
+            charge = DeliveryFeeCharge.objects.select_related('company', 'invoice').get(pk=charge_id)
+        except DeliveryFeeCharge.DoesNotExist:
+            return Response({'error': 'Delivery fee charge not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if charge.status == 'charged':
+            return Response({'error': 'This charge is already marked paid.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        charge.status = 'charged'
+        charge.charged_at = timezone.now()
+        charge.failure_reason = ''
+        charge.save(update_fields=['status', 'charged_at', 'failure_reason', 'updated_at'])
+
+        _log(
+            request, 'UPDATE', 'DeliveryFeeCharge', charge.pk,
+            admin_action='mark_paid', company_id=charge.company_id, amount=str(charge.amount),
+            invoice_number=charge.invoice.invoice_number,
+        )
+        return Response({'id': charge.id, 'status': charge.status, 'charged_at': charge.charged_at})
 
 
 def _send_password_reset_code(user):
