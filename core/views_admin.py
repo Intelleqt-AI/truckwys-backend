@@ -95,14 +95,33 @@ class AdminOverviewView(APIView):
 
 class AdminCompaniesView(APIView):
     """Every company on the platform (including the demo one, flagged via
-    is_demo), searchable by name. Read-only."""
+    is_demo), searchable by name or owner email. Read-only.
+
+    company_name is rarely unique in practice — self-service signup defaults
+    it to "<first name>'s Transport" (RegisterView, core/views.py), and
+    DeleteAccountView's soft-delete only deactivates the User, never the
+    Company, so every signup-then-delete cycle leaves an identically-named
+    orphaned company behind. owner_email is the disambiguator: the company's
+    real (non soft-deleted) user if one exists, otherwise its most recent
+    soft-deleted one — so an all-orphaned row still shows *something*
+    identifying, with the 'deleted-' prefix itself signaling "abandoned"."""
     permission_classes = [IsSuperUser]
 
     def get(self, request):
+        from django.db.models import Case, When, Value, IntegerField, OuterRef, Subquery
+
+        owner_subquery = User.objects.filter(company=OuterRef('pk')).annotate(
+            _deleted_rank=Case(
+                When(email__startswith='deleted-', then=Value(1)),
+                default=Value(0), output_field=IntegerField(),
+            )
+        ).order_by('_deleted_rank', '-date_joined').values('email')[:1]
+
         qs = Company.objects.annotate(
             user_count=Count('users', distinct=True),
             quote_count=Count('quotes', distinct=True),
             load_count=Count('loads', distinct=True),
+            owner_email=Subquery(owner_subquery),
         ).order_by('-created_at')
 
         if not request.query_params.get('include_deleted'):
@@ -110,7 +129,10 @@ class AdminCompaniesView(APIView):
 
         search = request.query_params.get('search', '').strip()
         if search:
-            qs = qs.filter(company_name__icontains=search)
+            qs = qs.filter(
+                Q(company_name__icontains=search) |
+                Q(id__in=User.objects.filter(email__icontains=search).values('company_id'))
+            )
 
         status_filter = request.query_params.get('status', '').strip()
         if status_filter:
@@ -120,6 +142,7 @@ class AdminCompaniesView(APIView):
         results = [{
             'id': c.id,
             'company_name': c.company_name,
+            'owner_email': c.owner_email,
             'subscription_status': c.subscription_status,
             'is_demo': c.is_demo,
             'is_deleted': c.is_deleted,
