@@ -7,6 +7,7 @@ from .views_billing import (
 from .views_admin import (
     AdminOverviewView, AdminCompaniesView, AdminUsersView, AdminDemoStatusView,
     AdminCompanyActionView, AdminCompanyBillingView, AdminRecordPaymentView,
+    AdminMarkDeliveryFeeChargePaidView,
     AdminCreateUserView, AdminUserActionView, AdminUserRoleView,
     AdminSearchView, AdminJobHealthView, AdminIntegrationsHealthView, AdminAuditLogView,
 )
@@ -141,6 +142,7 @@ urlpatterns = [
     path('admin/companies/<int:company_id>/action/', AdminCompanyActionView.as_view(), name='admin-company-action'),
     path('admin/companies/<int:company_id>/billing/', AdminCompanyBillingView.as_view(), name='admin-company-billing'),
     path('admin/companies/<int:company_id>/record-payment/', AdminRecordPaymentView.as_view(), name='admin-record-payment'),
+    path('admin/delivery-fee-charges/<int:charge_id>/mark-paid/', AdminMarkDeliveryFeeChargePaidView.as_view(), name='admin-delivery-fee-mark-paid'),
     path('admin/users/create/', AdminCreateUserView.as_view(), name='admin-create-user'),
     path('admin/users/<int:user_id>/action/', AdminUserActionView.as_view(), name='admin-user-action'),
     path('admin/users/<int:user_id>/role/', AdminUserRoleView.as_view(), name='admin-user-role'),

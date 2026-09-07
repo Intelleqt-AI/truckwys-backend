@@ -27,6 +27,30 @@ def _log(request, action, resource_type, resource_id, **details):
     )
 
 
+def _paginate(queryset, request, default_size=20, max_size=100):
+    """Page a queryset from ?page=/?page_size= — the admin dashboard's list
+    views (companies/users/audit-log) are plain APIViews building hand-rolled
+    response dicts, not DRF generic views, so they don't get pagination for
+    free the way a ModelViewSet.list would. Same page-size cap convention as
+    QuoteResultsPagination (core/views.py). Returns (page_qs, count, page,
+    page_size, num_pages) — count is the FULL queryset count, not len(page_qs).
+    """
+    try:
+        page = max(1, int(request.query_params.get('page', 1)))
+    except (TypeError, ValueError):
+        page = 1
+    try:
+        page_size = int(request.query_params.get('page_size', default_size))
+    except (TypeError, ValueError):
+        page_size = default_size
+    page_size = max(1, min(page_size, max_size))
+
+    count = queryset.count()
+    num_pages = max(1, -(-count // page_size))  # ceil division
+    start = (page - 1) * page_size
+    return queryset[start:start + page_size], count, page, page_size, num_pages
+
+
 class AdminOverviewView(APIView):
     """Platform snapshot: company counts by subscription status, total
     users/quotes/loads (all-time and this month), and an MRR estimate."""
@@ -71,14 +95,33 @@ class AdminOverviewView(APIView):
 
 class AdminCompaniesView(APIView):
     """Every company on the platform (including the demo one, flagged via
-    is_demo), searchable by name. Read-only."""
+    is_demo), searchable by name or owner email. Read-only.
+
+    company_name is rarely unique in practice — self-service signup defaults
+    it to "<first name>'s Transport" (RegisterView, core/views.py), and
+    DeleteAccountView's soft-delete only deactivates the User, never the
+    Company, so every signup-then-delete cycle leaves an identically-named
+    orphaned company behind. owner_email is the disambiguator: the company's
+    real (non soft-deleted) user if one exists, otherwise its most recent
+    soft-deleted one — so an all-orphaned row still shows *something*
+    identifying, with the 'deleted-' prefix itself signaling "abandoned"."""
     permission_classes = [IsSuperUser]
 
     def get(self, request):
+        from django.db.models import Case, When, Value, IntegerField, OuterRef, Subquery
+
+        owner_subquery = User.objects.filter(company=OuterRef('pk')).annotate(
+            _deleted_rank=Case(
+                When(email__startswith='deleted-', then=Value(1)),
+                default=Value(0), output_field=IntegerField(),
+            )
+        ).order_by('_deleted_rank', '-date_joined').values('email')[:1]
+
         qs = Company.objects.annotate(
             user_count=Count('users', distinct=True),
             quote_count=Count('quotes', distinct=True),
             load_count=Count('loads', distinct=True),
+            owner_email=Subquery(owner_subquery),
         ).order_by('-created_at')
 
         if not request.query_params.get('include_deleted'):
@@ -86,15 +129,20 @@ class AdminCompaniesView(APIView):
 
         search = request.query_params.get('search', '').strip()
         if search:
-            qs = qs.filter(company_name__icontains=search)
+            qs = qs.filter(
+                Q(company_name__icontains=search) |
+                Q(id__in=User.objects.filter(email__icontains=search).values('company_id'))
+            )
 
         status_filter = request.query_params.get('status', '').strip()
         if status_filter:
             qs = qs.filter(subscription_status__in=status_filter.split(','))
 
+        page_qs, count, page, page_size, num_pages = _paginate(qs, request)
         results = [{
             'id': c.id,
             'company_name': c.company_name,
+            'owner_email': c.owner_email,
             'subscription_status': c.subscription_status,
             'is_demo': c.is_demo,
             'is_deleted': c.is_deleted,
@@ -104,9 +152,9 @@ class AdminCompaniesView(APIView):
             'user_count': c.user_count,
             'quote_count': c.quote_count,
             'load_count': c.load_count,
-        } for c in qs[:200]]
+        } for c in page_qs]
 
-        return Response({'count': qs.count(), 'results': results})
+        return Response({'count': count, 'page': page, 'page_size': page_size, 'num_pages': num_pages, 'results': results})
 
 
 class AdminUsersView(APIView):
@@ -138,6 +186,7 @@ class AdminUsersView(APIView):
         elif status_filter == 'inactive':
             qs = qs.filter(is_active=False)
 
+        page_qs, count, page, page_size, num_pages = _paginate(qs, request)
         results = [{
             'id': u.id,
             'name': f'{u.first_name} {u.last_name}'.strip() or u.username,
@@ -149,9 +198,9 @@ class AdminUsersView(APIView):
             'is_superuser': u.is_superuser,
             'is_deleted': u.email.startswith('deleted-'),
             'last_login': u.last_login,
-        } for u in qs[:200]]
+        } for u in page_qs]
 
-        return Response({'count': qs.count(), 'results': results})
+        return Response({'count': count, 'page': page, 'page_size': page_size, 'num_pages': num_pages, 'results': results})
 
 
 class AdminDemoStatusView(APIView):
@@ -249,14 +298,14 @@ class AdminCompanyBillingView(APIView):
 
         transactions = company.billing_transactions.all()
         results = [{
-            'id': f'sub-{t.id}', 'kind': 'subscription', 'label': MONTHLY_FEE_ITEM_NAME,
+            'id': f'sub-{t.id}', 'raw_id': t.id, 'kind': 'subscription', 'label': MONTHLY_FEE_ITEM_NAME,
             'amount': str(t.amount), 'status': t.status,
             'reference': t.gateway_transaction_id or t.payment_id, 'created_at': t.created_at,
         } for t in transactions]
 
         charges = DeliveryFeeCharge.objects.filter(company=company).select_related('invoice')
         results += [{
-            'id': f'dfc-{c.id}', 'kind': 'delivery_fee',
+            'id': f'dfc-{c.id}', 'raw_id': c.id, 'kind': 'delivery_fee',
             'label': f'Delivery fee · {c.invoice.invoice_number}',
             'amount': str(c.amount),
             # DeliveryFeeCharge/BillingTransaction use different status
@@ -270,6 +319,9 @@ class AdminCompanyBillingView(APIView):
         return Response({'company_id': company.id, 'results': results})
 
     def patch(self, request, company_id):
+        from django.utils.dateparse import parse_date
+        from core.services.subscription_billing import billing_at_for_date
+
         try:
             company = Company.objects.get(pk=company_id)
         except Company.DoesNotExist:
@@ -278,10 +330,22 @@ class AdminCompanyBillingView(APIView):
         next_billing_date = request.data.get('next_billing_date')
         if not next_billing_date:
             return Response({'error': 'next_billing_date is required'}, status=status.HTTP_400_BAD_REQUEST)
-        company.next_billing_date = next_billing_date
-        company.save(update_fields=['next_billing_date', 'updated_at'])
-        _log(request, 'UPDATE', 'Company', company.pk, admin_action='adjust_billing_date', next_billing_date=str(next_billing_date))
-        return Response({'id': company.id, 'next_billing_date': company.next_billing_date})
+        parsed_date = parse_date(next_billing_date)
+        if not parsed_date:
+            return Response({'error': 'next_billing_date must be YYYY-MM-DD'}, status=status.HTTP_400_BAD_REQUEST)
+
+        company.next_billing_date = parsed_date
+        # next_billing_at is a separate field the customer-facing billing
+        # page's countdown actually reads (Company.next_billing_at's own
+        # docstring, core/models/company.py) — every other code path that
+        # sets next_billing_date sets this alongside it via the same helper
+        # (compute_next_cycle/billing_at_for_date), so an admin edit that
+        # only touched next_billing_date left the customer-visible countdown
+        # silently stale.
+        company.next_billing_at = billing_at_for_date(parsed_date)
+        company.save(update_fields=['next_billing_date', 'next_billing_at', 'updated_at'])
+        _log(request, 'UPDATE', 'Company', company.pk, admin_action='adjust_billing_date', next_billing_date=str(parsed_date))
+        return Response({'id': company.id, 'next_billing_date': company.next_billing_date, 'next_billing_at': company.next_billing_at})
 
 
 class AdminRecordPaymentView(APIView):
@@ -335,6 +399,47 @@ class AdminRecordPaymentView(APIView):
             'transaction_id': txn.id, 'company_id': company.id,
             'subscription_status': company.subscription_status, 'next_billing_date': company.next_billing_date,
         })
+
+
+class AdminMarkDeliveryFeeChargePaidView(APIView):
+    """Marks one failed delivery-fee (0.25% take-rate) charge as paid outside
+    Paystack — same field-set the real settle-on-payment path already uses
+    (SubscribeView, core/views_billing.py:133): status='charged',
+    charged_at=now(), failure_reason cleared.
+
+    Deliberately NOT the same shape as AdminRecordPaymentView (which creates
+    a brand-new BillingTransaction so a failed subscription charge stays
+    visible in history exactly as it happened). A DeliveryFeeCharge is a
+    different kind of record — one mutable row per invoice that's meant to
+    be corrected/retried in place (it already gets attempt_count/
+    last_attempted_at rewritten by the automatic retry task), not an
+    immutable ledger entry — so editing it directly here doesn't erase any
+    history the way rewriting a BillingTransaction would.
+    """
+    permission_classes = [IsSuperUser]
+
+    def post(self, request, charge_id):
+        from core.models import DeliveryFeeCharge
+
+        try:
+            charge = DeliveryFeeCharge.objects.select_related('company', 'invoice').get(pk=charge_id)
+        except DeliveryFeeCharge.DoesNotExist:
+            return Response({'error': 'Delivery fee charge not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if charge.status == 'charged':
+            return Response({'error': 'This charge is already marked paid.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        charge.status = 'charged'
+        charge.charged_at = timezone.now()
+        charge.failure_reason = ''
+        charge.save(update_fields=['status', 'charged_at', 'failure_reason', 'updated_at'])
+
+        _log(
+            request, 'UPDATE', 'DeliveryFeeCharge', charge.pk,
+            admin_action='mark_paid', company_id=charge.company_id, amount=str(charge.amount),
+            invoice_number=charge.invoice.invoice_number,
+        )
+        return Response({'id': charge.id, 'status': charge.status, 'charged_at': charge.charged_at})
 
 
 def _send_password_reset_code(user):
@@ -524,13 +629,30 @@ class AdminAuditLogView(APIView):
     permission_classes = [IsSuperUser]
 
     def get(self, request):
-        rows = AuditLog.objects.filter(user__is_superuser=True).select_related('user').order_by('-created_at')[:100]
-        return Response({'results': [{
-            'id': r.id,
-            'actor': r.user.email if r.user else None,
-            'action': r.action,
-            'resource_type': r.resource_type,
-            'resource_id': r.resource_id,
-            'details': r.details,
-            'created_at': r.created_at,
-        } for r in rows]})
+        qs = AuditLog.objects.filter(user__is_superuser=True).select_related('user').order_by('-created_at')
+
+        search = request.query_params.get('search', '').strip()
+        if search:
+            # details is where the actually-identifying info usually lives
+            # (an email, an old/new role, an invoice number, ...) — resource_id
+            # alone is just a numeric FK, so a search that only checked the
+            # fields above could never find "what happened to this email".
+            qs = qs.filter(
+                Q(user__email__icontains=search) | Q(action__icontains=search) |
+                Q(resource_type__icontains=search) | Q(resource_id__icontains=search) |
+                Q(details__icontains=search)
+            )
+
+        page_qs, count, page, page_size, num_pages = _paginate(qs, request)
+        return Response({
+            'count': count, 'page': page, 'page_size': page_size, 'num_pages': num_pages,
+            'results': [{
+                'id': r.id,
+                'actor': r.user.email if r.user else None,
+                'action': r.action,
+                'resource_type': r.resource_type,
+                'resource_id': r.resource_id,
+                'details': r.details,
+                'created_at': r.created_at,
+            } for r in page_qs],
+        })
