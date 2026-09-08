@@ -62,9 +62,12 @@ FIELD_ENCRYPTION_KEY = config('FIELD_ENCRYPTION_KEY', default='')
 AUTO_INVOICE_ON_DELIVERY = config('AUTO_INVOICE_ON_DELIVERY', default=True, cast=bool)
 
 # 0.25% delivery take-rate — charged ad-hoc against the company's Paystack
-# card-on-file token the moment a load auto-invoices on delivery. Failed
-# charges retry (see core.management.commands.retry_delivery_fee_charges)
-# until DELIVERY_FEE_GRACE_DAYS elapses, then the company is frozen.
+# card-on-file token the moment a load auto-invoices on delivery. A failed
+# charge moves the company to grace_period and is retried daily (see
+# core.management.commands.retry_delivery_fee_charges); once
+# DELIVERY_FEE_GRACE_DAYS elapses check_grace_period_expirations suspends it.
+# ("Frozen" was the pre-0086 wording, when Company.take_rate_frozen was a
+# separate field — it is subscription_status='suspended' now.)
 AUTO_CHARGE_DELIVERY_FEE = config('AUTO_CHARGE_DELIVERY_FEE', default=True, cast=bool)
 DELIVERY_FEE_PCT = config('DELIVERY_FEE_PCT', default=0.25, cast=float)
 DELIVERY_FEE_GRACE_DAYS = config('DELIVERY_FEE_GRACE_DAYS', default=7, cast=int)
@@ -397,6 +400,27 @@ CELERY_TIMEZONE = 'Africa/Johannesburg'
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_ACCEPT_CONTENT = ['json']
 
+# Beat froze silently in production twice (05-07 Sept and 08 Sept 2026): the
+# process stayed alive, the container reported healthy, the log showed no
+# error, and no scheduled task ran for hours. Beat's loop is single-threaded,
+# so one publish blocking on a dead-but-not-closed TCP socket stops the whole
+# scheduler — and with no socket timeout it blocks forever. These bound the
+# wait so a broken connection surfaces as a retry instead of a hang.
+CELERY_BROKER_TRANSPORT_OPTIONS = {
+    'socket_timeout': 15.0,
+    'socket_connect_timeout': 10.0,
+    'socket_keepalive': True,
+    'retry_on_timeout': True,
+}
+CELERY_REDIS_SOCKET_KEEPALIVE = True
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+# Written on every tick, so its mtime is a liveness signal — the beat
+# container's healthcheck watches this path (see docker-compose.prod.yml).
+# Keep it out of /app so a deploy's rsync can't clobber it mid-tick.
+CELERY_BEAT_SCHEDULE_FILENAME = config(
+    'CELERY_BEAT_SCHEDULE_FILENAME', default=str(BASE_DIR / 'celerybeat-schedule')
+)
+
 from celery.schedules import crontab  # noqa: E402
 from datetime import timedelta  # noqa: E402
 # In SUBSCRIPTION_TEST_MODE, run every billing sweep every minute instead of
@@ -427,8 +451,9 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'core.tasks.retrain_win_model',
         'schedule': crontab(hour='3', minute='0'),
     },
-    # Retry failed 0.25% delivery take-rate charges daily at 07:30 SAST;
-    # freezes a company once a charge has failed past DELIVERY_FEE_GRACE_DAYS.
+    # Retry failed 0.25% delivery take-rate charges daily at 07:30 SAST. A
+    # failed charge moves the company into grace_period; the suspension after
+    # DELIVERY_FEE_GRACE_DAYS is check-grace-period-expirations' job below.
     'retry-delivery-fee-charges': {
         'task': 'core.tasks.retry_delivery_fee_charges',
         'schedule': _BILLING_SWEEP_SCHEDULE or crontab(hour='7', minute='30'),
@@ -515,5 +540,16 @@ CELERY_BEAT_SCHEDULE = {
     'send-weekly-summaries': {
         'task': 'core.tasks.send_weekly_summaries',
         'schedule': crontab(day_of_week='mon', hour='7', minute='15'),
+    },
+    # Dead-man's-switch for everything above: emails the superusers when a
+    # tracked task has gone quiet or is failing every run. 09:00 SAST, i.e.
+    # after the 07:00-07:50 sweep window, so a missed sweep is caught the same
+    # morning. Rides on this same beat, so it cannot report beat being fully
+    # dead — the watchdog in docker-entrypoint.sh covers that; this covers one
+    # task breaking while beat is otherwise fine. See
+    # core.services.task_run.TRACKED_TASKS for the list and its thresholds.
+    'alert-stale-scheduled-tasks': {
+        'task': 'core.tasks.alert_stale_scheduled_tasks',
+        'schedule': crontab(hour='9', minute='0'),
     },
 }

@@ -39,3 +39,11 @@ cryptography>=42.0
 
 # Mobile push (Firebase Cloud Messaging; iOS via FCM's APNs relay)
 firebase-admin>=6.5.0
+
+# Desktop browser push (VAPID/Web Push). Separate channel from FCM above, not
+# a duplicate — core/services/notify.py sends to both. Dropped by accident
+# when PR #73 resolved this file in favour of the FCM branch, which left
+# core/services/web_push.py importing a package that wasn't installed: every
+# send logged "pywebpush not installed" and returned 0, silently, while the
+# VAPID keys in .env made the config look healthy.
+pywebpush>=2.0

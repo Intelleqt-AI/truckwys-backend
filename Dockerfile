@@ -23,7 +23,13 @@ COPY . .
 RUN chmod +x docker-entrypoint.sh \
     && useradd -m appuser \
     && mkdir -p staticfiles media \
-    && chown -R appuser /app
+    && chown -R appuser /app \
+    # Beat's schedule/liveness file lives here on a named volume. The directory
+    # has to exist in the image and be owned by appuser: Docker gives a fresh
+    # named volume the ownership of the image path it mounts over, and root
+    # would leave beat (non-root) unable to write its schedule at all.
+    && mkdir -p /var/run/celery \
+    && chown appuser /var/run/celery
 USER appuser
 
 EXPOSE $PORT

@@ -599,12 +599,20 @@ def poll_cartrack_door_events():
 @shared_task(name='core.tasks.retry_delivery_fee_charges')
 @track_task_run('retry_delivery_fee_charges')
 def retry_delivery_fee_charges():
-    """Daily retry of failed 0.25% delivery take-rate charges; freezes a
-    company once its charges have failed past DELIVERY_FEE_GRACE_DAYS."""
+    """Daily retry of failed 0.25% delivery take-rate charges. A company whose
+    charge fails moves into grace_period here; the actual suspension once
+    DELIVERY_FEE_GRACE_DAYS runs out belongs to check_grace_period_expirations."""
     from core.services.delivery_fee_billing import retry_failed_delivery_fee_charges
     summary = retry_failed_delivery_fee_charges()
-    if summary['frozen']:
-        logger.warning('Delivery fee retry: %s company(ies) frozen', summary['frozen'])
+    if summary['entered_grace']:
+        logger.warning(
+            'Delivery fee retry: %s company(ies) entered grace period', summary['entered_grace']
+        )
+    if summary['dead_authorization']:
+        logger.error(
+            'Delivery fee retry: cleared %s permanently-invalid card authorization(s)',
+            summary['dead_authorization'],
+        )
     return summary
 
 
@@ -710,3 +718,59 @@ def reset_demo_company_task():
         return {'reset': True, 'company_id': summary['company'].pk}
     except Exception:
         logger.exception('reset_demo_company_task failed')
+
+
+# ---------------------------------------------------------------------------
+# Scheduler dead-man's-switch
+# ---------------------------------------------------------------------------
+
+@shared_task(name='core.tasks.alert_stale_scheduled_tasks')
+def alert_stale_scheduled_tasks():
+    """Email the superusers when a tracked scheduled task has gone quiet or is
+    failing every run.
+
+    This exists because both of those failures are invisible otherwise. Beat
+    froze twice in Sept 2026 with the container reporting healthy and nothing
+    in the log, and retry_delivery_fee_charges raised KeyError on every single
+    run for days — in both cases the only symptom was work silently not
+    happening, spotted days later by hand.
+
+    Deliberately NOT wrapped in @track_task_run: it would be watching itself,
+    and a row saying "the watchdog ran" adds nothing. It is also not the
+    primary defence — this task rides on the same beat that it is monitoring,
+    so a fully dead beat takes the alert with it. The beat watchdog in
+    docker-entrypoint.sh is what catches that; this catches the narrower case
+    of one task being broken while beat is fine.
+    """
+    from django.contrib.auth import get_user_model
+    from core.services.task_run import stale_tracked_tasks
+
+    problems = stale_tracked_tasks()
+    if not problems:
+        return {'stale': 0}
+
+    lines = '\n'.join(f'- {name}: {reason}' for name, reason in problems)
+    logger.error('Scheduled task health check found %s problem(s):\n%s', len(problems), lines)
+
+    title = f'{len(problems)} scheduled task(s) need attention'
+    message = (
+        'The following Celery beat tasks have not run recently, or their last run failed:\n\n'
+        f'{lines}\n\n'
+        'Check the Job Health panel in the admin dashboard, then the beat container '
+        '(docker compose -f docker-compose.prod.yml logs --tail=100 beat).'
+    )
+
+    recipients = get_user_model().objects.filter(
+        is_superuser=True, is_active=True
+    ).exclude(email='')
+    sent = 0
+    for user in recipients:
+        try:
+            from core.services.email_service import send_notification_email
+            if send_notification_email(user, title, message, link='/admin-dashboard'):
+                sent += 1
+        except Exception:
+            # An alert that raises is worse than one that logs — the ERROR
+            # line above is already on record either way.
+            logger.exception('alert_stale_scheduled_tasks: could not email %s', user.pk)
+    return {'stale': len(problems), 'notified': sent, 'tasks': [n for n, _ in problems]}

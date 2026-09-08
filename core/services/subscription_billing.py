@@ -352,6 +352,23 @@ def charge_monthly_subscription_fee(company) -> dict:
     txn.status = 'failed'
     txn.payment_status = 'failed'
     txn.save(update_fields=['status', 'payment_status', 'raw_gateway_response', 'updated_at'])
+
+    if result.get('dead_authorization'):
+        # Permanently invalid token: clear it so tomorrow's sweep doesn't fire
+        # the identical doomed charge at Paystack again. The grace clock below
+        # still starts, so the company is still pushed to fix it.
+        company.paystack_authorization_code = ''
+        company.save(update_fields=['paystack_authorization_code', 'updated_at'])
+        title = 'Your saved card is no longer valid'
+        message = (
+            f"We couldn't charge your {MONTHLY_FEE_ITEM_NAME} subscription (R{MONTHLY_FEE:,.2f}) "
+            "because the saved card can no longer be charged. Please add a payment method "
+            "again to keep your account active."
+        )
+        notify_company(company.id, 'ALERT', title, message, link='/settings/billing',
+                       event='subscription.failed')
+        notify_company_billing_email(company.id, title, message, link='/settings/billing')
+
     entered_grace = record_charge_failure(company)
     if entered_grace:
         grace_deadline = company.grace_period_expires_at

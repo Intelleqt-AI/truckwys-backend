@@ -584,15 +584,14 @@ class AdminJobHealthView(APIView):
     core/services/task_run.py for what "succeed" can and can't detect."""
     permission_classes = [IsSuperUser]
 
-    TRACKED_TASKS = [
-        'reset_demo_company_task', 'refresh_fuel_price', 'run_monthly_subscription_billing',
-        'check_grace_period_expirations', 'check_pending_cancellations',
-        'retry_delivery_fee_charges', 'retrain_win_model',
-    ]
-
     def get(self, request):
+        # TRACKED_TASKS lives in core.services.task_run so this panel and the
+        # staleness alert (core.tasks.alert_stale_scheduled_tasks) always watch
+        # the same list.
+        from core.services.task_run import TRACKED_TASKS
+
         results = []
-        for task_name in self.TRACKED_TASKS:
+        for task_name in TRACKED_TASKS:
             row = TaskRunLog.objects.filter(task_name=task_name).order_by('-started_at').first()
             results.append({
                 'task_name': task_name,

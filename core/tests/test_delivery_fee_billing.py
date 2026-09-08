@@ -51,6 +51,20 @@ def _api_error_response():
     return resp
 
 
+def _dead_authorization_response():
+    """The real 400 body Paystack returned on production every day for a
+    company whose stored token had gone bad — the retry sweep kept firing it
+    and never noticed the token itself was the problem."""
+    resp = mock.Mock(status_code=400)
+    resp.json.return_value = {
+        'status': False,
+        'message': 'Authorization code is invalid',
+        'type': 'validation_error',
+        'code': 'invalid_authorization_code',
+    }
+    return resp
+
+
 class WebhookSignatureTests(TestCase):
     def test_valid_signature_accepted(self):
         import hashlib, hmac
@@ -108,6 +122,22 @@ class ChargeAuthorizationTests(TestCase):
         result = charge_authorization('AUTH_abc', 'a@test.com', Decimal('10.00'))
         self.assertFalse(result['success'])
         self.assertIn('network down', result['error'])
+
+    @mock.patch('core.services.paystack.requests.request')
+    def test_invalid_authorization_code_is_flagged_as_dead(self, req):
+        req.return_value = _dead_authorization_response()
+        result = charge_authorization('AUTH_dead', 'a@test.com', Decimal('10.00'))
+        self.assertFalse(result['success'])
+        self.assertTrue(result.get('dead_authorization'))
+
+    @mock.patch('core.services.paystack.requests.request')
+    def test_ordinary_decline_is_not_flagged_as_dead(self, req):
+        # A declined card must stay retryable — only the token being invalid
+        # should stop us trying again.
+        req.return_value = _declined_response()
+        result = charge_authorization('AUTH_abc', 'a@test.com', Decimal('10.00'))
+        self.assertFalse(result['success'])
+        self.assertFalse(result.get('dead_authorization'))
 
 
 class DeliveryFeeBillingTestCase(TestCase):
@@ -258,6 +288,35 @@ class RetryFailedDeliveryFeeChargesTests(DeliveryFeeBillingTestCase):
         self.assertEqual(summary['entered_grace'], 1)
         self.company.refresh_from_db()
         self.assertEqual(self.company.subscription_status, 'grace_period')
+
+    @mock.patch('core.services.paystack.requests.request')
+    def test_dead_authorization_is_cleared_and_not_retried_again(self, req):
+        # In production this sweep re-sent the same doomed charge every day
+        # (12 rejected attempts in 10 minutes after one beat restart), which
+        # against a live key reads as card-testing. Once Paystack says the
+        # token itself is invalid, drop it.
+        req.return_value = _dead_authorization_response()
+        self._make_failed_charge()
+        summary = retry_failed_delivery_fee_charges()
+
+        self.assertEqual(summary['dead_authorization'], 1)
+        self.company.refresh_from_db()
+        self.assertEqual(self.company.paystack_authorization_code, '')
+        # Still escalates — clearing the token doesn't excuse the unpaid fee.
+        self.assertEqual(self.company.subscription_status, 'grace_period')
+
+        # Next sweep must short-circuit locally instead of calling Paystack.
+        req.reset_mock()
+        retry_failed_delivery_fee_charges()
+        req.assert_not_called()
+
+    @mock.patch('core.services.paystack.requests.request')
+    def test_ordinary_decline_keeps_the_card_on_file(self, req):
+        req.return_value = _declined_response()
+        self._make_failed_charge()
+        retry_failed_delivery_fee_charges()
+        self.company.refresh_from_db()
+        self.assertEqual(self.company.paystack_authorization_code, 'AUTH_xyz')
         self.assertIsNotNone(self.company.grace_period_expires_at)
 
     @mock.patch('core.services.paystack.requests.request')

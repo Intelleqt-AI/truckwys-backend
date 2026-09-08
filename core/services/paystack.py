@@ -98,6 +98,15 @@ def verify_transaction(reference: str) -> dict:
     return _request('GET', f'/transaction/verify/{reference}')
 
 
+# Paystack error codes meaning the stored authorization itself is bad, not
+# that this particular charge failed — no amount of retrying fixes them.
+_DEAD_AUTHORIZATION_CODES = {'invalid_authorization_code'}
+
+
+def _is_dead_authorization(payload) -> bool:
+    return isinstance(payload, dict) and payload.get('code') in _DEAD_AUTHORIZATION_CODES
+
+
 def charge_authorization(authorization_code: str, email: str, amount: Decimal, metadata: dict = None) -> dict:
     """Charge an arbitrary amount against an existing authorization — the
     card-on-file captured by initialize_transaction/verify_transaction.
@@ -117,6 +126,17 @@ def charge_authorization(authorization_code: str, email: str, amount: Decimal, m
     }
     result = _request('POST', '/transaction/charge_authorization', json=body)
     if not result['success']:
+        if _is_dead_authorization(result.get('raw')):
+            # Distinguish "this card was declined today" from "this token will
+            # never work again". Retrying the latter is pointless and, hammered
+            # daily against a live key, looks like card-testing to Paystack.
+            # Callers should clear the stored authorization instead of retrying.
+            result['dead_authorization'] = True
+            logger.error(
+                'Paystack authorization is permanently invalid (%s) — caller should '
+                'clear the stored token and ask the customer to re-add their card',
+                result.get('error'),
+            )
         return result
 
     # A 2xx `status: true` envelope can still describe a declined charge —

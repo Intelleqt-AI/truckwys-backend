@@ -129,7 +129,13 @@ def retry_failed_delivery_fee_charges() -> dict:
     from core.services.subscription_billing import record_charge_attempt, record_charge_success, record_charge_failure
 
     now = timezone.now()
-    summary = {'retried': 0, 'charged': 0, 'still_failing': 0, 'entered_grace': 0, 'skipped_not_billable': 0}
+    summary = {
+        'retried': 0, 'charged': 0, 'still_failing': 0, 'entered_grace': 0,
+        'skipped_not_billable': 0,
+        # Cards whose stored authorization is permanently dead — cleared here
+        # rather than retried forever. Callers print this; keep the key.
+        'dead_authorization': 0,
+    }
 
     charges = DeliveryFeeCharge.objects.filter(status='failed').select_related('company', 'invoice')
     for charge in charges:
@@ -165,6 +171,26 @@ def retry_failed_delivery_fee_charges() -> dict:
 
         charge.failure_reason = result['error'] or 'Unknown error'
         charge.save()
+
+        if result.get('dead_authorization'):
+            # The token is permanently invalid — every future sweep would fail
+            # on it identically. Clear it so charge_authorization() short-circuits
+            # ("No Paystack authorization on file") instead of hitting Paystack
+            # again daily, and tell the company to re-add their card. The grace
+            # clock below still runs, so this doesn't let them off the hook.
+            company.paystack_authorization_code = ''
+            company.save(update_fields=['paystack_authorization_code', 'updated_at'])
+            summary['dead_authorization'] += 1
+            title = 'Your saved card is no longer valid'
+            message = (
+                f"We couldn't charge R{float(charge.amount):,.2f} (0.25% of "
+                f"{charge.invoice.invoice_number}) because the saved card can no longer be "
+                "charged. Please add a payment method again to keep your account active."
+            )
+            notify_company(company.id, 'ALERT', title, message, link='/settings/billing',
+                           event='delivery_fee.failed')
+            notify_company_billing_email(company.id, title, message, link='/settings/billing')
+
         entered_grace = record_charge_failure(company)
         if entered_grace:
             summary['entered_grace'] += 1

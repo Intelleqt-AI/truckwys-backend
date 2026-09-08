@@ -81,6 +81,26 @@ services:
     # CELERY_BEAT_SCHEDULE in settings.py drives fuel-price refresh, invoice and
     # maintenance sweeps, RAG reindex and the Cartrack pollers. Without this
     # service none of them ever fire.
+    environment:
+      # On a volume, so the liveness file below survives a deploy's rsync and
+      # a container recreate instead of resetting the schedule state.
+      CELERY_BEAT_SCHEDULE_FILENAME: /var/run/celery/celerybeat-schedule
+    volumes:
+      - beatstate:/var/run/celery
+    # Beat can freeze with the process still alive: single-threaded loop, one
+    # publish blocked on a dead socket, no error logged, container "Up" and
+    # restarts=0 while nothing has been scheduled for hours (happened twice,
+    # 05-07 and 08 Sept 2026). Liveness therefore has to be measured by
+    # progress, not by the process existing — beat rewrites the schedule file
+    # every tick, so an mtime older than 3 minutes means it has stopped
+    # working and `restart: unless-stopped` replaces it.
+    healthcheck:
+      test: ["CMD-SHELL", "test $(( $(date +%s) - $(stat -c %Y /var/run/celery/celerybeat-schedule) )) -lt 180"]
+      interval: 60s
+      timeout: 10s
+      # Generous, because the file only appears after the first tick.
+      start_period: 120s
+      retries: 3
     depends_on:
       db:
         condition: service_healthy
@@ -91,3 +111,6 @@ volumes:
   pgdata:
   redisdata:
   media:
+  # Beat's schedule/liveness file. Separate from the app image so a deploy
+  # can't reset it and the healthcheck has a stable path to stat.
+  beatstate:
