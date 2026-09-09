@@ -414,12 +414,20 @@ CELERY_BROKER_TRANSPORT_OPTIONS = {
 }
 CELERY_REDIS_SOCKET_KEEPALIVE = True
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
-# Written on every tick, so its mtime is a liveness signal — the beat
-# container's healthcheck watches this path (see docker-compose.prod.yml).
-# Keep it out of /app so a deploy's rsync can't clobber it mid-tick.
+# The schedule file's mtime is what the beat watchdog reads as a liveness
+# signal (docker-entrypoint.sh). Keep it out of /app so a deploy's rsync can't
+# clobber it mid-tick.
 CELERY_BEAT_SCHEDULE_FILENAME = config(
     'CELERY_BEAT_SCHEDULE_FILENAME', default=str(BASE_DIR / 'celerybeat-schedule')
 )
+# Sync the schedule file after every dispatched task instead of on
+# PersistentScheduler's default 3-minute timer. Without this the mtime only
+# moves every ~180s, which is far too coarse to distinguish "beat is fine,
+# just between syncs" from "beat has wedged" — the first watchdog build used a
+# 180s limit against that 180s cadence and killed a perfectly healthy beat 57
+# times in a day. With a task dispatched every 20s this writes ~3x/minute,
+# which is cheap and makes the signal genuinely tick-by-tick.
+CELERY_BEAT_SYNC_EVERY = 1
 
 from celery.schedules import crontab  # noqa: E402
 from datetime import timedelta  # noqa: E402

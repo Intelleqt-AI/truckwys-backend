@@ -31,7 +31,13 @@ case "$ROLE" in
     # stops advancing we kill beat and exit non-zero, which is the exit
     # Docker's restart policy does act on.
     SCHEDULE_FILE="${CELERY_BEAT_SCHEDULE_FILENAME:-/var/run/celery/celerybeat-schedule}"
-    STALL_SECONDS="${BEAT_STALL_SECONDS:-180}"
+    # Must stay well clear of how often beat actually writes this file, or the
+    # watchdog kills a healthy process. The first version used 180s against
+    # PersistentScheduler's 180s sync timer and restarted beat 57 times in a
+    # day, every time reporting 191-195s. CELERY_BEAT_SYNC_EVERY=1 now writes
+    # it every ~20s, and 600s leaves a wide margin while still catching the
+    # real failure — the stalls this exists for lasted 6h and 54h.
+    STALL_SECONDS="${BEAT_STALL_SECONDS:-600}"
     mkdir -p "$(dirname "$SCHEDULE_FILE")"
 
     celery -A config beat --loglevel=info --schedule "$SCHEDULE_FILE" &
