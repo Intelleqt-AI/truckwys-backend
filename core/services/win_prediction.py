@@ -84,23 +84,99 @@ def resolve_prediction_context(user, company) -> PredictionContext:
     return PredictionContext(True, scope, sample_count, model.predict_proba)
 
 
+def _tier_artifact_exists(scope: str, user_id=None) -> bool:
+    """Whether a trained artifact actually exists for one tier. Never raises —
+    model_progress is called from a status endpoint and must not be the thing
+    that takes it down."""
+    if scope == 'user' and not user_id:
+        # Constructing one anyway would mkdir ml_models/users/None.
+        return False
+    try:
+        from core.services.quote_ml import WIN_ML_AVAILABLE, WinProbabilityModel
+        if not WIN_ML_AVAILABLE:
+            return False
+        return WinProbabilityModel(scope=scope, user_id=user_id).is_trained()
+    except Exception as exc:
+        logger.warning('win model artifact check failed (scope=%s, user=%s): %s', scope, user_id, exc)
+        return False
+
+
+def _last_rejection_reason(scope: str, user_id=None) -> Optional[str]:
+    """Why the most recent training attempt for this tier produced nothing —
+    the AUC regression gate and the round-trip sanity check both record one."""
+    try:
+        from core.models import MLModelVersion
+        qs = MLModelVersion.objects.filter(scope=scope, status__in=['failed', 'rejected'])
+        qs = qs.filter(user_id=user_id) if scope == 'user' else qs.filter(user__isnull=True)
+        row = qs.order_by('-created_at').first()
+        return (row.rejection_reason or None) if row else None
+    except Exception:
+        return None
+
+
 def model_progress(user, company) -> dict:
-    """Two-tier progress for the UI's 'still learning' chip — computed
-    directly from QuoteOutcome counts, independent of whether a model FILE
-    actually exists yet, so the progress bar is meaningful even at 0/40."""
+    """Two-tier status for the UI's 'still learning' banner.
+
+    Counts alone used to be the whole of this, and that made the banner
+    contradict itself: production sat at 73/40 platform outcomes with the bar
+    full and "AI pricing isn't ready yet" printed beside it, because every one
+    of those outcomes was 'accepted' and a classifier needs both classes
+    (quote_training.py, "only one outcome class present"). The count was never
+    the only gate — it was just the only one reported.
+
+    So each tier now also carries the class split, whether an artifact really
+    exists, and `blocker`: the one thing actually standing in the way, or None.
+    Any future gate that trips after the count gate passes (a feature-schema
+    mismatch, the AUC regression gate) surfaces here rather than reappearing as
+    the same silent contradiction.
+    """
     from django.conf import settings
+    from django.db.models import Count
     from core.models import QuoteOutcome
+    from core.services.quote_ml import WIN_ML_AVAILABLE
 
     user_needed = int(getattr(settings, 'WIN_MODEL_USER_MIN_SAMPLES', 40))
     global_needed = int(getattr(settings, 'WIN_MODEL_GLOBAL_MIN_SAMPLES', 40))
 
-    def _counts(qs, needed):
-        n = qs.count()
+    def _counts(qs, needed, scope, user_id=None):
+        by_label = {
+            row['outcome']: row['n']
+            for row in qs.values('outcome').annotate(n=Count('id'))
+        }
+        accepted = by_label.get('accepted', 0)
+        rejected = by_label.get('rejected', 0)
+        n = accepted + rejected
+        ready = _tier_artifact_exists(scope, user_id)
+
+        blocker = None
+        detail = None
+        if not WIN_ML_AVAILABLE:
+            blocker = 'ml_unavailable'
+        elif ready:
+            pass
+        elif n < needed:
+            blocker = 'insufficient_data'
+        elif rejected == 0:
+            blocker = 'needs_lost_quotes'
+        elif accepted == 0:
+            blocker = 'needs_won_quotes'
+        else:
+            # Every gate this layer can see is satisfied, so the artifact is
+            # simply not written yet: the nightly retrain hasn't run, or the
+            # last attempt was rejected for a reason only training knows.
+            blocker = 'awaiting_retrain'
+            detail = _last_rejection_reason(scope, user_id)
+
         return {
             'outcomes_collected': n,
             'outcomes_needed': needed,
             'progress_pct': min(100, round(n / needed * 100)) if needed else 0,
             'qualifies': n >= needed,
+            'accepted': accepted,
+            'rejected': rejected,
+            'ready': ready,
+            'blocker': blocker,
+            'blocker_detail': detail,
         }
 
     base = QuoteOutcome.objects.filter(outcome__in=['accepted', 'rejected'])
@@ -112,6 +188,6 @@ def model_progress(user, company) -> dict:
     # ai_training_started_at reset — one tenant resetting their own clock
     # shouldn't hide the rest of the platform's contribution to the shared model.
     return {
-        'user': _counts(user_qs, user_needed),
-        'global': _counts(base, global_needed),
+        'user': _counts(user_qs, user_needed, 'user', user_id),
+        'global': _counts(base, global_needed, 'global'),
     }

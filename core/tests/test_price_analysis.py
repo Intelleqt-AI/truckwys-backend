@@ -574,6 +574,99 @@ class ModelStatsScopingTests(TestCase):
             self.assertEqual(win['user']['outcomes_collected'], 0)
 
 
+class ModelProgressBlockerTests(IsolatedModelStorageMixin, TestCase):
+    """model_progress must name the gate that's actually in the way.
+
+    Reporting only outcomes_collected/outcomes_needed let the UI contradict
+    itself: production showed "73/40 platform" with the bar full next to "AI
+    pricing isn't ready yet", because all 73 outcomes were 'accepted' and
+    training needs both classes. The count had passed; nothing said what
+    hadn't. The mixin matters here — `ready` reads the real filesystem.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.company = Company.objects.create(company_name='Blocker Co')
+        self.customer = Customer.objects.create(
+            company=self.company, name='B Ltd', email='blocker@x.test',
+            phone='', address='', city='', state='', zip_code='',
+        )
+        self.user = User.objects.create_user(
+            username='blocker-user', password='x', company=self.company)
+        self._n = 0
+
+    def _outcomes(self, label, count):
+        for _ in range(count):
+            self._n += 1
+            q = make_quote(self.company, self.customer, number=f'BLK-{self._n:03d}')
+            QuoteOutcome.objects.create(
+                quote=q, company=self.company, created_by=self.user,
+                outcome=label, final_price=Decimal('20000'),
+            )
+
+    def _progress(self):
+        from core.services.win_prediction import model_progress
+        return model_progress(self.user, self.company)
+
+    def test_all_accepted_past_the_floor_reports_needs_lost_quotes(self):
+        # Exactly the production state, and the one the old payload could not
+        # express: qualifies is True and the model still cannot train.
+        self._outcomes('accepted', 41)
+        tier = self._progress()['global']
+
+        self.assertTrue(tier['qualifies'])
+        self.assertEqual(tier['blocker'], 'needs_lost_quotes')
+        self.assertEqual((tier['accepted'], tier['rejected']), (41, 0))
+        self.assertFalse(tier['ready'])
+
+    def test_all_rejected_past_the_floor_reports_needs_won_quotes(self):
+        self._outcomes('rejected', 41)
+        self.assertEqual(self._progress()['global']['blocker'], 'needs_won_quotes')
+
+    def test_below_the_floor_reports_insufficient_data(self):
+        self._outcomes('accepted', 3)
+        self._outcomes('rejected', 2)
+        tier = self._progress()['global']
+
+        self.assertFalse(tier['qualifies'])
+        self.assertEqual(tier['blocker'], 'insufficient_data')
+        self.assertEqual(tier['outcomes_collected'], 5)
+
+    def test_both_classes_past_the_floor_but_no_artifact_awaits_retrain(self):
+        self._outcomes('accepted', 25)
+        self._outcomes('rejected', 20)
+        tier = self._progress()['global']
+
+        self.assertEqual(tier['blocker'], 'awaiting_retrain')
+        self.assertFalse(tier['ready'])
+
+    def test_awaiting_retrain_surfaces_the_last_rejection_reason(self):
+        from core.models import MLModelVersion
+        self._outcomes('accepted', 25)
+        self._outcomes('rejected', 20)
+        MLModelVersion.objects.create(
+            scope='global', status='rejected',
+            rejection_reason='roc_auc regressed 0.780 -> 0.700 vs active model',
+        )
+        tier = self._progress()['global']
+
+        self.assertEqual(tier['blocker'], 'awaiting_retrain')
+        self.assertIn('roc_auc regressed', tier['blocker_detail'])
+
+    def test_user_tier_is_scoped_and_never_touches_a_none_model_dir(self):
+        self._outcomes('accepted', 41)
+        progress = self._progress()
+
+        self.assertEqual(progress['user']['accepted'], 41)
+        self.assertEqual(progress['user']['blocker'], 'needs_lost_quotes')
+        # Anonymous callers get an empty user tier, not a users/None lookup.
+        from core.services.win_prediction import model_progress
+        anon = model_progress(None, self.company)
+        self.assertEqual(anon['user']['outcomes_collected'], 0)
+        self.assertFalse(anon['user']['ready'])
+        self.assertEqual(anon['user']['blocker'], 'insufficient_data')
+
+
 class LegacyEndpointPredictProbaRegressionTests(IsolatedModelStorageMixin, TestCase):
     """AIQuoteSuggestionView and QuoteWinProbabilityView both call
     predict_proba(features: dict) internally now (the interface changed from
