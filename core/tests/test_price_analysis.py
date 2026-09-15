@@ -2,18 +2,48 @@
 capture (the ML flywheel), snapshot-based training, market-rate resolution
 guards, and tenant scoping of model stats."""
 
+import shutil
+import tempfile
 from datetime import date, timedelta
 from decimal import Decimal
 from unittest import mock
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
 from core.models import Company, Customer, Quote, QuoteOutcome
 
 User = get_user_model()
+
+
+class IsolatedModelStorageMixin:
+    """Per-test temp MEDIA_ROOT + a cleared model-resolution cache.
+
+    WinProbabilityModel persists to the real filesystem (settings.MEDIA_ROOT),
+    which Django's per-test DB transaction rollback does NOT clean up. Any
+    test that exercises analyze_quote()/optimize_price()/
+    resolve_prediction_context() and asserts heuristic-mode (no trained
+    model) behaviour MUST use this mixin -- otherwise it silently depends on
+    there being no REAL trained model file on this machine, which stops
+    being true the moment anyone seeds real demo data (core.services.
+    quote_training.retrain_win_model_for_scope writes to the real
+    media/ml_models/ directory, same as production). Also clears the
+    process-local _MODEL_CACHE so a model resolved during one test can't
+    leak into another via the shared module-level cache.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._tmp_media = tempfile.mkdtemp(prefix='tw-win-model-test-')
+        self._override = override_settings(MEDIA_ROOT=self._tmp_media)
+        self._override.enable()
+        self.addCleanup(self._override.disable)
+        self.addCleanup(lambda: shutil.rmtree(self._tmp_media, ignore_errors=True))
+        from core.services.quote_ml import _MODEL_CACHE
+        _MODEL_CACHE.clear()
+        self.addCleanup(_MODEL_CACHE.clear)
 
 
 def make_quote(company, customer, *, number, total=25000, origin='JHB',
@@ -37,7 +67,7 @@ def make_quote(company, customer, *, number, total=25000, origin='JHB',
     return Quote.objects.create(**fields)
 
 
-class OptimizerCostBasisTests(TestCase):
+class OptimizerCostBasisTests(IsolatedModelStorageMixin, TestCase):
     """A1: expected profit must be computed against direct cost, with the
     candidate band anchored on the market rate."""
 
@@ -106,6 +136,118 @@ class OptimizerCostBasisTests(TestCase):
         self.assertIn('target margin', low['suggested_price_rationale'])
         # Same costs => same suggestion, regardless of what the user typed.
         self.assertEqual(low['suggested_price'], high['suggested_price'])
+
+
+class AiPredictionContractTests(IsolatedModelStorageMixin, TestCase):
+    """The 'ai_prediction' block is the ONLY place a caller should trust as a
+    real trained-model result — never let heuristic-driven price_optimization
+    masquerade as it, and never let a resolver failure break the manual flow."""
+
+    @mock.patch('core.services.fuel_price.fetch_fuel_prices', side_effect=Exception('offline'))
+    def test_unavailable_by_default_but_manual_flow_still_works(self, _fp):
+        from core.services.quote_analysis import analyze_quote
+
+        result = analyze_quote({'quote_total': 25000, 'direct_cost': 12000, 'market_rate': 25000})
+        self.assertTrue(result['success'])
+        self.assertEqual(result['ai_prediction'], {'available': False, 'reason': 'insufficient_training_data'})
+        # Manual/heuristic flow is completely unaffected.
+        self.assertIsNotNone(result['price_optimization']['optimal_price'])
+        self.assertIsNotNone(result['suggested_price'])
+
+    @mock.patch('core.services.fuel_price.fetch_fuel_prices', side_effect=Exception('offline'))
+    def test_available_shape_when_a_model_resolves(self, _fp):
+        from core.services.quote_analysis import analyze_quote
+        from core.services.win_prediction import PredictionContext
+
+        fake_ctx = PredictionContext(True, 'user', 72, lambda features: 0.6)
+        with mock.patch('core.services.win_prediction.resolve_prediction_context', return_value=fake_ctx):
+            result = analyze_quote({'quote_total': 25000, 'direct_cost': 12000, 'market_rate': 25000})
+
+        ai = result['ai_prediction']
+        self.assertTrue(ai['available'])
+        self.assertEqual(ai['model_scope'], 'user')
+        self.assertEqual(ai['training_samples'], 72)
+        self.assertIn('recommended_price', ai)
+        self.assertIn('win_probability', ai)
+        self.assertIn('price_vs_market_pct', ai)
+
+    @mock.patch('core.services.fuel_price.fetch_fuel_prices', side_effect=Exception('offline'))
+    def test_resolver_exception_degrades_gracefully(self, _fp):
+        from core.services.quote_analysis import analyze_quote
+
+        with mock.patch('core.services.win_prediction.resolve_prediction_context', side_effect=RuntimeError('boom')):
+            result = analyze_quote({'quote_total': 25000, 'direct_cost': 12000, 'market_rate': 25000})
+        # analyze_quote's own try/except around base_features/opt construction
+        # must never let a resolver failure propagate into a 500.
+        self.assertTrue(result['success'])
+        self.assertFalse(result['ai_prediction']['available'])
+
+
+class OptimizerConstraintTests(IsolatedModelStorageMixin, TestCase):
+    """New business-constraint knobs on optimize_price(): clamp-then-relax,
+    never a hard refusal, and byte-identical behaviour for legacy callers
+    that don't pass them at all."""
+
+    def test_legacy_callers_without_new_kwargs_are_unaffected(self):
+        from core.services.margin_optimizer import optimize_price
+
+        result = optimize_price(total_cost=10000, market_rate=25000)
+        self.assertIn('constraints_applied', result)
+        self.assertFalse(result['constraints_relaxed'])
+        self.assertEqual(result['constraint_notes'], [])
+        # Default min_win_probability=0 means every candidate is "feasible",
+        # so the constrained and unconstrained argmax coincide.
+        unconstrained = optimize_price(total_cost=10000, market_rate=25000)
+        self.assertEqual(result['optimal_price'], unconstrained['optimal_price'])
+
+    def test_min_win_probability_clamps_the_search(self):
+        from core.services.margin_optimizer import optimize_price
+
+        # The heuristic's max achievable win-prob within this band (at the
+        # cheapest swept price, ratio=0.75) is ~0.85 -- 0.7 is comfortably
+        # reachable without hitting the "infeasible floor" relax path (that's
+        # covered separately below).
+        loose = optimize_price(total_cost=10000, market_rate=25000, min_win_probability=0.0)
+        tight = optimize_price(total_cost=10000, market_rate=25000, min_win_probability=0.7)
+        self.assertGreaterEqual(tight['win_probability_at_optimal'], 0.7 - 1e-6)
+        self.assertLessEqual(tight['optimal_price'], loose['optimal_price'])
+        self.assertFalse(tight['constraints_relaxed'])
+
+    def test_infeasible_win_probability_floor_relaxes_but_still_returns_a_price(self):
+        from core.services.margin_optimizer import optimize_price
+
+        result = optimize_price(total_cost=10000, market_rate=25000, min_win_probability=0.999)
+        self.assertTrue(result['constraints_relaxed'])
+        self.assertTrue(result['constraint_notes'])
+        self.assertIsNotNone(result['optimal_price'])
+        self.assertGreater(result['optimal_price'], 0)
+
+    def test_max_market_deviation_caps_the_band(self):
+        from core.services.margin_optimizer import optimize_price
+
+        result = optimize_price(total_cost=10000, market_rate=25000, max_market_deviation=0.10)
+        prices = [p['price'] for p in result['curve']]
+        self.assertLessEqual(max(prices), 25000 * 1.10 + 1)
+        self.assertEqual(result['constraints_applied']['max_market_deviation_pct'], 10.0)
+
+    def test_base_features_price_ratio_is_overwritten_per_candidate(self):
+        """base_features is used as-is except price_ratio, which must vary
+        across the sweep regardless of what the caller seeded it with."""
+        from core.services.margin_optimizer import optimize_price
+
+        seen = []
+
+        def spy(features):
+            seen.append(features['price_ratio'])
+            return 0.5
+
+        optimize_price(
+            total_cost=10000, market_rate=25000, predict_proba_fn=spy,
+            base_features={'price_ratio': 999.0, 'client_tier': 2},
+        )
+        self.assertGreater(len(seen), 1)
+        self.assertNotIn(999.0, seen)
+        self.assertEqual(len(set(seen)), len(seen))  # every candidate got a distinct ratio
 
     @mock.patch('core.services.fuel_price.fetch_fuel_prices', side_effect=Exception('offline'))
     def test_no_market_data_uses_company_margin_target(self, _fp):
@@ -241,7 +383,10 @@ class OutcomeCaptureTests(TestCase):
 
 
 class TrainingMatrixSnapshotTests(TestCase):
-    """B3: training rows come from the stored snapshots, not reconstruction."""
+    """B3: training rows prefer the stored feature_snapshot (v2) over live
+    reconstruction, and per-user scope never mixes users. Leakage-cutoff
+    correctness lives in test_quote_features.py — this class is about the
+    matrix builder's own row-selection/scoping behaviour."""
 
     def setUp(self):
         self.company = Company.objects.create(company_name='Train Co')
@@ -249,36 +394,76 @@ class TrainingMatrixSnapshotTests(TestCase):
             company=self.company, name='T Ltd', email='t@x.test',
             phone='', address='', city='', state='', zip_code='',
         )
+        self.user = User.objects.create_user(username='train-user', password='x', company=self.company)
 
     def test_matrix_prefers_snapshot_fields(self):
-        from core.services.quote_training import build_win_training_matrix
+        from core.services.quote_training import build_win_training_matrix_for_scope
+        from core.services import quote_features
 
-        q1 = make_quote(self.company, self.customer, number='Q-T1')
+        q1 = make_quote(self.company, self.customer, number='Q-T1', created_by=self.user)
+        snap1 = {
+            'feature_version': quote_features.FEATURE_VERSION,
+            'features': {name: 0.11 for name in quote_features.CORE_FEATURES},
+        }
         QuoteOutcome.objects.create(
-            quote=q1, company=self.company, outcome='accepted',
-            final_price=Decimal('20000'), client_tier='regular',
-            origin='JHB', destination='CPT',
-            price_ratio=Decimal('0.9'), days_until_departure=4,
-            quote_month=2, quote_dow=3,
-            historical_acceptance_rate=Decimal('0.75'),
+            quote=q1, company=self.company, created_by=self.user, outcome='accepted',
+            final_price=Decimal('20000'), feature_snapshot=snap1,
         )
-        q2 = make_quote(self.company, self.customer, number='Q-T2')
+        q2 = make_quote(self.company, self.customer, number='Q-T2', created_by=self.user)
+        snap2 = {
+            'feature_version': quote_features.FEATURE_VERSION,
+            'features': {name: 0.22 for name in quote_features.CORE_FEATURES},
+        }
         QuoteOutcome.objects.create(
-            quote=q2, company=self.company, outcome='rejected',
-            final_price=Decimal('30000'), client_tier='new',
-            origin='JHB', destination='CPT',
-            price_ratio=Decimal('1.2'), days_until_departure=12,
-            quote_month=8, quote_dow=0,
-            historical_acceptance_rate=Decimal('0.25'),
+            quote=q2, company=self.company, created_by=self.user, outcome='rejected',
+            final_price=Decimal('30000'), feature_snapshot=snap2,
         )
 
-        X, y, n = build_win_training_matrix()
+        X, y, n, names = build_win_training_matrix_for_scope('global')
         self.assertEqual(n, 2)
+        self.assertEqual(names, quote_features.CORE_FEATURES)
         rows = {tuple(row) for row in X.tolist()}
-        # [price_ratio, tier, days, hist, month, dow, popularity]
-        self.assertIn((0.9, 1.0, 4.0, 0.75, 2.0, 3.0, 1.0), rows)
-        self.assertIn((1.2, 0.0, 12.0, 0.25, 8.0, 0.0, 1.0), rows)
+        self.assertIn(tuple(0.11 for _ in names), rows)
+        self.assertIn(tuple(0.22 for _ in names), rows)
         self.assertEqual(sorted(y.tolist()), [0, 1])
+
+    def test_legacy_row_without_snapshot_reconstructs_live(self):
+        from core.services.quote_training import build_win_training_matrix_for_scope
+
+        q = make_quote(self.company, self.customer, number='Q-LEGACY', created_by=self.user)
+        # No feature_snapshot -- simulates a pre-v2 row (empty dict default).
+        QuoteOutcome.objects.create(
+            quote=q, company=self.company, created_by=self.user, outcome='accepted',
+            final_price=Decimal('20000'),
+        )
+        X, y, n, names = build_win_training_matrix_for_scope('global')
+        self.assertEqual(n, 1)
+        self.assertEqual(len(X[0]), len(names))
+
+    def test_user_scope_never_mixes_users(self):
+        from core.services.quote_training import build_win_training_matrix_for_scope
+
+        other_user = User.objects.create_user(username='other-user', password='x', company=self.company)
+        q_mine = make_quote(self.company, self.customer, number='Q-MINE', created_by=self.user)
+        QuoteOutcome.objects.create(quote=q_mine, company=self.company, created_by=self.user,
+                                    outcome='accepted', final_price=Decimal('20000'))
+        q_other = make_quote(self.company, self.customer, number='Q-OTHER', created_by=other_user)
+        QuoteOutcome.objects.create(quote=q_other, company=self.company, created_by=other_user,
+                                    outcome='rejected', final_price=Decimal('20000'))
+
+        _, _, n_mine, _ = build_win_training_matrix_for_scope('user', user_id=self.user.id)
+        self.assertEqual(n_mine, 1)
+        _, _, n_other, _ = build_win_training_matrix_for_scope('user', user_id=other_user.id)
+        self.assertEqual(n_other, 1)
+        _, _, n_global, _ = build_win_training_matrix_for_scope('global')
+        self.assertEqual(n_global, 2)
+
+    def test_user_scope_without_user_id_returns_empty(self):
+        from core.services.quote_training import build_win_training_matrix_for_scope
+
+        X, y, n, names = build_win_training_matrix_for_scope('user', user_id=None)
+        self.assertEqual(n, 0)
+        self.assertEqual(names, [])
 
 
 class MarketRateResolutionTests(TestCase):
@@ -379,8 +564,53 @@ class ModelStatsScopingTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertEqual(data['real_quotes_count'], 2)
-        if data.get('win_model'):
-            self.assertEqual(data['win_model']['outcomes_collected'], 2)
+        # win_model is now two-tier: {'user': {...}, 'global': {...}}.
+        # 'global' is genuinely platform-wide (2 + 5 across both companies);
+        # 'user' is 0 here since setUp's outcomes have no created_by matching
+        # this user (record_quote_outcome sets it, direct .create() doesn't).
+        win = data.get('win_model')
+        if win:
+            self.assertEqual(win['global']['outcomes_collected'], 7)
+            self.assertEqual(win['user']['outcomes_collected'], 0)
+
+
+class LegacyEndpointPredictProbaRegressionTests(IsolatedModelStorageMixin, TestCase):
+    """AIQuoteSuggestionView and QuoteWinProbabilityView both call
+    predict_proba(features: dict) internally now (the interface changed from
+    positional kwargs) -- these are unreferenced from the live quote-creation
+    UI, but must not 500 for anyone still hitting them directly."""
+
+    def setUp(self):
+        super().setUp()
+        self.company = Company.objects.create(company_name='Legacy Co')
+        self.customer = Customer.objects.create(
+            company=self.company, name='Legacy Ltd', email='legacy@x.test',
+            phone='', address='', city='', state='', zip_code='',
+        )
+        self.user = User.objects.create_user(username='legacy-user', password='x', company=self.company)
+        self.client_api = APIClient()
+        self.client_api.force_authenticate(user=self.user)
+
+    def test_suggest_endpoint_does_not_500(self):
+        resp = self.client_api.post('/api/v1/quotes/suggest/', {
+            'distance_km': 1400, 'fuel_cost': 5000, 'toll_cost': 1200,
+            'driver_cost': 800, 'actual_cost': 10000,
+        }, format='json')
+        self.assertEqual(resp.status_code, 200, resp.content)
+        data = resp.json()
+        self.assertTrue(data.get('success'))
+        self.assertIn('suggested_price', data)
+
+    def test_win_probability_endpoint_does_not_500(self):
+        resp = self.client_api.post('/api/v1/quotes/win-probability/', {
+            'price': 20000, 'distance': 1400, 'client_id': self.customer.id,
+            'days_until_departure': 5,
+        }, format='json')
+        self.assertEqual(resp.status_code, 200, resp.content)
+        data = resp.json()
+        self.assertTrue(data.get('success'))
+        self.assertIn('win_probability', data)
+        self.assertTrue(0.0 <= data['win_probability'] <= 1.0)
 
 
 class AnalyzeClientFeatureDerivationTests(TestCase):

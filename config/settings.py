@@ -560,4 +560,38 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'core.tasks.alert_stale_scheduled_tasks',
         'schedule': crontab(hour='9', minute='0'),
     },
+    # Per-user win-model safety net, after the global retrain above. The event-
+    # driven path (record_quote_outcome -> schedule_user_retrain, debounced)
+    # covers the normal case; this catches outcomes ever written outside that
+    # function, lost/failed per-user tasks, or a user crossing the sample
+    # threshold via a data backfill. See core.services.ml_training_queue.
+    'sweep-user-win-model-training': {
+        'task': 'core.tasks.sweep_user_win_model_training',
+        'schedule': crontab(hour='4', minute='0'),
+    },
 }
+
+# ---------------------------------------------------------------------------
+# Quote win-probability AI pricing (core.services.quote_ml / quote_training /
+# win_prediction) — two-tier per-user + global model. See PLAN doc for the
+# full architecture; these are the tunables that used to be read via
+# getattr(settings, 'WIN_MODEL_MIN_SAMPLES', 40) without ever actually being
+# defined here, so the .env value was silently ignored. Now genuinely wired.
+# ---------------------------------------------------------------------------
+WIN_MODEL_USER_MIN_SAMPLES = config('WIN_MODEL_USER_MIN_SAMPLES', default=40, cast=int)
+WIN_MODEL_GLOBAL_MIN_SAMPLES = config('WIN_MODEL_GLOBAL_MIN_SAMPLES', default=40, cast=int)
+# Below this many training rows, cross-validation replaces a single holdout
+# split (too few rows for a static 80/20 split to mean anything) and a
+# regression in evaluation metrics is logged but never blocks activation.
+WIN_MODEL_CV_THRESHOLD = config('WIN_MODEL_CV_THRESHOLD', default=150, cast=int)
+# How long a burst of outcomes for the same user coalesces into one retrain.
+USER_RETRAIN_DEBOUNCE_SECONDS = config('USER_RETRAIN_DEBOUNCE_SECONDS', default=300, cast=int)
+# How long a resolved WinProbabilityModel is cached in-process before the next
+# analyze call re-checks disk for a fresher trained artifact.
+WIN_MODEL_CACHE_TTL_SECONDS = config('WIN_MODEL_CACHE_TTL_SECONDS', default=60, cast=int)
+
+# Optimizer guardrails (overridable per-company via Company.ai_optimizer_*
+# fields — these are only the platform-wide defaults).
+AI_OPTIMIZER_MIN_MARGIN_PCT = config('AI_OPTIMIZER_MIN_MARGIN_PCT', default=5.0, cast=float)
+AI_OPTIMIZER_MIN_WIN_PROBABILITY_PCT = config('AI_OPTIMIZER_MIN_WIN_PROBABILITY_PCT', default=15.0, cast=float)
+AI_OPTIMIZER_MAX_MARKET_DEVIATION_PCT = config('AI_OPTIMIZER_MAX_MARKET_DEVIATION_PCT', default=35.0, cast=float)

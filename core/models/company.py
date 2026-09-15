@@ -79,6 +79,25 @@ class Company(models.Model):
         max_digits=5, decimal_places=2, default=10.00,
         help_text='Target margin % used in price-increase suggestions (default: 10%)'
     )
+
+    # AI price-optimizer guardrails — deliberately separate fields from the
+    # margin_* thresholds above even though they can share a default: those are
+    # display/warning thresholds (Revenue Guard flags an already-typed price),
+    # these are the hard search-space floor/ceiling the AI optimizer itself is
+    # allowed to recommend within. Coupling them would mean turning down
+    # warning noise silently also lowers the AI's price floor.
+    ai_optimizer_min_margin_pct = models.DecimalField(
+        max_digits=5, decimal_places=2, default=5.00,
+        help_text='Hard floor markup % over cost the AI optimizer will never recommend below (default: 5%)'
+    )
+    ai_optimizer_min_win_probability_pct = models.DecimalField(
+        max_digits=5, decimal_places=2, default=15.00,
+        help_text='Minimum acceptable win probability % for an AI-recommended price (default: 15%)'
+    )
+    ai_optimizer_max_market_deviation_pct = models.DecimalField(
+        max_digits=5, decimal_places=2, default=35.00,
+        help_text='Maximum % above market rate the AI optimizer will recommend pricing (default: 35%)'
+    )
     default_toll_rate_per_km = models.DecimalField(
         max_digits=6, decimal_places=3, default=0.500,
         help_text='Fallback toll cost in ZAR/km used when TomTom returns no toll data (default: R0.50/km)'

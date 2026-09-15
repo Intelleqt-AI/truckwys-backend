@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models
 from .quote import Quote
 
@@ -15,6 +16,15 @@ class QuoteOutcome(models.Model):
 
     quote = models.ForeignKey(Quote, on_delete=models.CASCADE, related_name='outcomes')
     company = models.ForeignKey("Company", on_delete=models.CASCADE, null=True, blank=True, related_name='quote_outcomes')
+    # The quoting user ("User A"), snapshotted from quote.created_by at record
+    # time — the per-user training key for the win-model. Nullable: a
+    # hard-deleted user or a legacy/public-flow quote with no created_by falls
+    # back to global-pool-only training, which is correct, not a bug.
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='quote_outcomes_created', db_index=True,
+        help_text="Quoting user at outcome time — the per-user ML training key",
+    )
     outcome = models.CharField(max_length=20, choices=OUTCOME_CHOICES, help_text="Quote outcome: accepted or rejected")
     rejection_reason = models.TextField(blank=True, null=True, help_text="Reason for rejection if applicable")
 
@@ -39,6 +49,14 @@ class QuoteOutcome(models.Model):
     quote_month = models.PositiveSmallIntegerField(null=True, blank=True, help_text="Month the quote was created (1-12)")
     quote_dow = models.PositiveSmallIntegerField(null=True, blank=True, help_text="Weekday the quote was created (0=Mon)")
     historical_acceptance_rate = models.DecimalField(max_digits=5, decimal_places=4, null=True, blank=True, help_text="Customer's acceptance rate before this outcome")
+
+    # Full v2 feature vector, versioned: {"feature_version": "v2", "features": {...}}.
+    # JSON rather than typed columns because this set is expected to evolve —
+    # the typed fields above are stable, load-bearing concepts other code
+    # already reads directly and are left alone. Empty for legacy rows;
+    # build_win_training_matrix_for_scope() falls back to reconstructing from
+    # the typed columns + live joins for those, same as it already does today.
+    feature_snapshot = models.JSONField(default=dict, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

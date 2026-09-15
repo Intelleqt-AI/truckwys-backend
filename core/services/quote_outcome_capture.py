@@ -150,10 +150,28 @@ def record_quote_outcome(quote, outcome, *, rejection_reason='', final_price=Non
 
         created = quote.created_at or timezone.now()
 
+        # Full v2 feature vector, frozen at outcome-record time — the single
+        # source of truth build_win_training_matrix_for_scope() prefers over
+        # live reconstruction. Computed with as_of=quote.created_at (not now)
+        # so it reflects exactly what was knowable when the quote was priced,
+        # matching the typed snapshot fields above. Never allowed to break
+        # outcome capture — a failure here just leaves feature_snapshot empty,
+        # falling back to live reconstruction at training time.
+        feature_snapshot = {}
+        try:
+            from core.services import quote_features
+            feature_snapshot = {
+                'feature_version': quote_features.FEATURE_VERSION,
+                'features': quote_features.compute_features_for_quote(quote, as_of=quote.created_at),
+            }
+        except Exception as exc:
+            logger.warning('outcome capture: feature snapshot failed: %s', exc)
+
         record, _ = QuoteOutcome.objects.update_or_create(
             quote=quote,
             defaults={
                 'company': quote.company,
+                'created_by': quote.created_by,
                 'outcome': outcome,
                 'rejection_reason': rejection_reason,
                 'final_price': final_price_val,
@@ -173,8 +191,17 @@ def record_quote_outcome(quote, outcome, *, rejection_reason='', final_price=Non
                 'quote_month': created.month,
                 'quote_dow': created.weekday(),
                 'historical_acceptance_rate': hist_rate,
+                'feature_snapshot': feature_snapshot,
             },
         )
+
+        # Kick off (debounced) per-user retraining now that a fresh outcome
+        # exists for this quoting user. Never allowed to break outcome
+        # capture — schedule_user_retrain already swallows its own errors.
+        if quote.created_by_id:
+            from core.services.ml_training_queue import schedule_user_retrain
+            schedule_user_retrain(quote.created_by_id)
+
         return record
     except Exception as exc:
         logger.exception('record_quote_outcome failed for quote %s: %s',

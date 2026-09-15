@@ -153,6 +153,11 @@ class FuelPriceCurrentView(APIView):
         return Response({'success': True, 'date': today.isoformat(), 'diesel_inland': float(diesel_inland)})
 
 
+# UNREACHABLE FROM LIVE UI — no reference in frontend/src as of the two-tier
+# AI pricing redesign (grepped repo-wide). Kept working (predict_proba calls
+# fixed for the features-dict interface, see win_prediction) rather than
+# deleted, since an external/internal caller could still curl it directly —
+# candidate for deletion in a future cleanup pass if that's confirmed unused.
 class AIQuoteSuggestionView(APIView):
     """POST /api/v1/quotes/suggest/ — AI-suggested margin and price."""
     permission_classes = [IsAuthenticated]
@@ -271,32 +276,24 @@ class AIQuoteSuggestionView(APIView):
             except Exception as exc:
                 logger.warning('suggest: OpenAI layer failed, using optimizer: %s', exc)
 
-            # 4) Win probabilities at the chosen price (and +/-5%). Heuristic-safe.
+            # 4) Win probabilities at the chosen price (and +/-5%). Resolves the
+            # same two-tier (user -> global -> heuristic) model as the live
+            # quote-creation flow — see core.services.win_prediction.
             win_probability = win_low = win_high = None
             try:
-                from core.services.quote_ml import WinProbabilityModel
-                try:
-                    win_model = WinProbabilityModel()
-                except Exception:
-                    class _HeuristicWin:
-                        model = None
-                    win_model = _HeuristicWin()
-                    win_model.predict_proba = WinProbabilityModel.predict_proba.__get__(win_model)
+                from core.services.win_prediction import resolve_prediction_context
 
-                # Same context features the model saw in training — without
-                # them a trained model would score every quote as a Tuesday in
-                # March on an average lane.
-                _now = timezone.now()
                 _pop = _route_popularity(origin or None, destination or None)
+                prediction_ctx = resolve_prediction_context(request.user, company)
 
                 def _pw(price):
                     ratio = (price / market_rate) if market_rate > 0 else 1.0
-                    return round(float(win_model.predict_proba(
-                        price_ratio=ratio, client_tier=client_tier,
-                        days_until_departure=days_until, historical_acceptance_rate=hist,
-                        month=_now.month, day_of_week=_now.weekday(),
-                        route_popularity=_pop,
-                    )), 2)
+                    features = {
+                        'price_ratio': ratio, 'client_tier': client_tier,
+                        'days_until_departure': days_until, 'historical_acceptance_rate': hist,
+                        'route_popularity': _pop,
+                    }
+                    return round(float(prediction_ctx.predict_proba(features)), 2)
                 win_probability = _pw(suggested_price)
                 win_low = _pw(suggested_price * 0.95)
                 win_high = _pw(suggested_price * 1.05)
@@ -472,7 +469,7 @@ class AIQuoteAnalyzeView(APIView):
                 'skip_narrative': bool(data.get('skip_narrative')),
             }
             from core.services.quote_analysis import analyze_quote
-            result = analyze_quote(payload, company=company)
+            result = analyze_quote(payload, company=company, user=request.user)
             if not result.get('success'):
                 return Response(result, status=status.HTTP_400_BAD_REQUEST)
             return Response(result)
@@ -1162,10 +1159,12 @@ class QuoteModelStatsView(APIView):
             metrics = metadata.get('metrics', {}) if isinstance(metadata, dict) else {}
 
             # Win-probability model status — this is the one that drives the
-            # profit sweet-spot curve, and it learns on the installed sklearn stack.
+            # profit sweet-spot curve. Two-tier: {'user': {...}, 'global': {...}}
+            # progress, each with its own outcomes_collected/outcomes_needed/
+            # qualifies — see core.services.win_prediction.model_progress.
             try:
-                from core.services.quote_training import win_model_status
-                win = win_model_status(company=company)
+                from core.services.win_prediction import model_progress
+                win = model_progress(request.user, company)
             except Exception:
                 win = None
 
@@ -1460,6 +1459,8 @@ class QuoteBenchmarkView(APIView):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+# UNREACHABLE FROM LIVE UI — see the note above AIQuoteSuggestionView; same
+# reasoning applies here.
 class QuoteWinProbabilityView(APIView):
     """POST /api/v1/quotes/win-probability/ — Predict win probability for a quote."""
     permission_classes = [IsAuthenticated]
@@ -1478,12 +1479,16 @@ class QuoteWinProbabilityView(APIView):
         }
         """
         try:
-            from core.services.quote_ml import WinProbabilityModel
+            from core.services.win_prediction import resolve_prediction_context
+            from core.services.margin_optimizer import _route_popularity
 
             price = float(request.data.get('price', 0))
             distance = float(request.data.get('distance', 0))
             client_id = request.data.get('client_id')
             days_until_departure = int(request.data.get('days_until_departure', 2))
+            origin = str(request.data.get('origin') or '').strip()
+            destination = str(request.data.get('destination') or '').strip()
+            vehicle_type = str(request.data.get('vehicle_type') or '').strip()
 
             if not price or not client_id:
                 return Response({
@@ -1491,13 +1496,26 @@ class QuoteWinProbabilityView(APIView):
                     'error': 'price and client_id are required'
                 }, status=status.HTTP_400_BAD_REQUEST)
 
-            # Get market rate for benchmark (simplified)
-            market_rate = 43800  # Default JHB-CPT interlink
+            from core.views import resolve_user_company
+            company = resolve_user_company(request.user)
+
+            # Real lane market rate (cross-platform -> own quotes -> SA
+            # estimate), falling back to the old hardcoded JHB-CPT interlink
+            # figure only when nothing real is resolvable.
+            market_rate = 43800.0
+            if origin and destination:
+                try:
+                    from core.services.lane_benchmark import resolve_market_rate
+                    rate, _src = resolve_market_rate(origin, destination, vehicle_type or None, company=company)
+                    if rate and rate > 0:
+                        market_rate = float(rate)
+                except Exception as exc:
+                    logger.warning('win-probability: market-rate resolve failed: %s', exc)
             price_ratio = price / market_rate if market_rate > 0 else 1.0
 
             # Get client historical acceptance rate
             try:
-                customer = Customer.objects.get(id=client_id, company=request.user.company)
+                customer = Customer.objects.get(id=client_id, company=company)
                 accepted_count = Quote.objects.filter(
                     customer=customer,
                     outcome='accepted'
@@ -1519,44 +1537,29 @@ class QuoteWinProbabilityView(APIView):
                 historical_acceptance_rate = 0.7
                 client_tier = 0
 
-            # Calculate route popularity
-            route_popularity = 0.5  # Default
+            route_popularity = _route_popularity(origin or None, destination or None)
 
-            # Predict win probability
-            win_model = WinProbabilityModel()
-            win_probability = win_model.predict_proba(
-                price_ratio=price_ratio,
-                client_tier=client_tier,
-                days_until_departure=days_until_departure,
-                historical_acceptance_rate=historical_acceptance_rate,
-                month=timezone.now().month,
-                day_of_week=timezone.now().weekday(),
-                route_popularity=route_popularity,
-            )
+            # Predict win probability — resolves the same two-tier
+            # (user -> global -> heuristic) model as the live quote-creation flow.
+            prediction_ctx = resolve_prediction_context(request.user, company)
+
+            def _features(p):
+                return {
+                    'price_ratio': (p / market_rate) if market_rate > 0 else 1.0,
+                    'client_tier': client_tier,
+                    'days_until_departure': days_until_departure,
+                    'historical_acceptance_rate': historical_acceptance_rate,
+                    'route_popularity': route_popularity,
+                }
+
+            win_probability = prediction_ctx.predict_proba(_features(price))
 
             # Calculate win probability at ±5%
             price_lower = price * 0.95
             price_higher = price * 1.05
 
-            win_probability_lower = win_model.predict_proba(
-                price_ratio=price_lower / market_rate,
-                client_tier=client_tier,
-                days_until_departure=days_until_departure,
-                historical_acceptance_rate=historical_acceptance_rate,
-                month=timezone.now().month,
-                day_of_week=timezone.now().weekday(),
-                route_popularity=route_popularity,
-            )
-
-            win_probability_higher = win_model.predict_proba(
-                price_ratio=price_higher / market_rate,
-                client_tier=client_tier,
-                days_until_departure=days_until_departure,
-                historical_acceptance_rate=historical_acceptance_rate,
-                month=timezone.now().month,
-                day_of_week=timezone.now().weekday(),
-                route_popularity=route_popularity,
-            )
+            win_probability_lower = prediction_ctx.predict_proba(_features(price_lower))
+            win_probability_higher = prediction_ctx.predict_proba(_features(price_higher))
 
             return Response({
                 'success': True,

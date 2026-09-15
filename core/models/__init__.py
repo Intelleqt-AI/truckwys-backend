@@ -37,6 +37,7 @@ from .fcm_device import FcmDevice
 from .push_subscription import PushSubscription
 from .pending_signup import PendingSignup
 from .location_search_history import LocationSearchHistory
+from .ml_model_version import MLModelVersion, MLUserRetrainQueue
 
 __all__ = [
     'User',
@@ -83,4 +84,6 @@ __all__ = [
     'LocationSearchHistory',
     'PendingSignup',
     'TaskRunLog',
+    'MLModelVersion',
+    'MLUserRetrainQueue',
 ]

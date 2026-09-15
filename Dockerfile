@@ -8,13 +8,14 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# Build deps for psycopg2 / Pillow / reportlab are covered by wheels; curl for healthcheck.
+# Build deps for psycopg2 / Pillow / reportlab are covered by wheels; curl for
+# healthcheck; libgomp1 is the OpenMP runtime lightgbm needs to import at all.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
+    && apt-get install -y --no-install-recommends curl libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt ./
-RUN pip install -r requirements.txt
+COPY requirements.txt requirements-ml.txt ./
+RUN pip install -r requirements.txt -r requirements-ml.txt
 
 COPY . .
 

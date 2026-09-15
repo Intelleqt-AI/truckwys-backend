@@ -382,56 +382,126 @@ def predict_optimal_margin(
 # Sprint 1: Win Probability Model
 # ============================================================================
 
+# Process-local cache of resolved (model, scope, sample_count) by
+# (scope, user_id_or_None), so a burst of /quotes/analyze/ calls under the
+# 700ms frontend debounce doesn't re-hit disk for every keystroke. NOT
+# Django's cache framework: this project's cache backend is Postgres
+# DatabaseCache, fine for small serializable values but not for holding a
+# live deserialized sklearn pipeline object in memory. TTL keeps a fresh
+# retrain visible within WIN_MODEL_CACHE_TTL_SECONDS; retrains themselves are
+# already debounced far longer than that, so this never becomes the bottleneck.
+_MODEL_CACHE: Dict[Tuple[str, Optional[int]], Tuple[Any, float]] = {}
+
+
 class WinProbabilityModel:
     """
-    Logistic regression classifier that predicts P(quote accepted | features).
+    Classifier that predicts P(quote accepted | features) — see
+    core.services.quote_features for the full v2 feature set. Two storage
+    scopes coexist:
+      - scope='user', user_id=N: trained only on that quoting user's own
+        QuoteOutcome rows.
+      - scope='global' (default): trained on every company's pooled rows,
+        the fallback tier when a user doesn't have enough of their own data.
 
-    Features:
-    - price_ratio: proposed_price / market_rate
-    - client_tier: 0=new, 1=regular, 2=vip
-    - days_until_departure: urgency (lower = more urgent = higher win prob)
-    - historical_acceptance_rate_for_client: past accepts / total quotes
-    - month: seasonality (1-12)
-    - day_of_week: 0=Mon, 6=Sun
-    - route_popularity: quotes on this lane in past 90 days
-
-    Trained on QuoteOutcome records (accepted=1, rejected=0).
+    Training lives in core.services.quote_training (build_win_training_matrix_
+    for_scope / retrain_win_model_for_scope); this class only loads/saves/
+    serves whatever artifact training produced.
     """
 
-    MODEL_DIR = Path(settings.MEDIA_ROOT) / 'ml_models'
-    MODEL_PATH = MODEL_DIR / 'win_probability_model.pkl'
-    METADATA_PATH = MODEL_DIR / 'win_probability_metadata.json'
-
-    def __init__(self):
+    def __init__(self, scope: str = 'global', user_id: Optional[int] = None):
         # Only needs sklearn + joblib (not the LightGBM margin stack).
         if not WIN_ML_AVAILABLE:
             raise ImportError("Win-probability ML libraries (sklearn/joblib) not available")
+
+        self.scope = scope
+        self.user_id = user_id if scope == 'user' else None
+        base = Path(settings.MEDIA_ROOT) / 'ml_models'
+        self.MODEL_DIR = (base / 'users' / str(self.user_id)) if scope == 'user' else (base / 'global')
+        self.MODEL_PATH = self.MODEL_DIR / 'win_probability_model.pkl'
+        self.METADATA_PATH = self.MODEL_DIR / 'win_probability_metadata.json'
 
         self.model = None
         self.metadata = {}
         self.MODEL_DIR.mkdir(parents=True, exist_ok=True)
         self._load_model()
 
-    def _load_model(self):
-        """Load saved model and metadata if available."""
-        if not self.MODEL_PATH.exists():
-            return
-
+    def _migrate_legacy_global_file(self) -> bool:
+        """One-time lazy migration: the pre-two-tier layout wrote a single
+        flat ml_models/win_probability_model.pkl. If that legacy file exists
+        and the new global/ location doesn't yet, adopt it (load + immediately
+        re-save into the new path via the existing atomic save) rather than
+        requiring a separate deploy-time migration step. No-ops for user scope
+        or once the new location exists. Returns True if it migrated something."""
+        if self.scope != 'global' or self.MODEL_PATH.exists():
+            return False
+        legacy_path = Path(settings.MEDIA_ROOT) / 'ml_models' / 'win_probability_model.pkl'
+        legacy_meta = Path(settings.MEDIA_ROOT) / 'ml_models' / 'win_probability_metadata.json'
+        if not legacy_path.exists():
+            return False
         try:
-            self.model = joblib.load(self.MODEL_PATH)
-            if self.METADATA_PATH.exists():
-                with open(self.METADATA_PATH, 'r') as f:
+            self.model = joblib.load(legacy_path)
+            if legacy_meta.exists():
+                with open(legacy_meta, 'r') as f:
                     self.metadata = json.load(f)
+            # Legacy artifacts predate feature_version/feature_names entirely —
+            # the schema-compatibility check in _load_model() will correctly
+            # refuse to serve them until the next real retrain, but we still
+            # physically relocate the file so it isn't silently orphaned.
+            self._save_model()
+            logger.info('Migrated legacy global win-model file to %s', self.MODEL_PATH)
+            return True
         except Exception as exc:
-            logger.warning('Failed to load WinProbabilityModel: %s', exc)
+            logger.warning('Legacy win-model migration failed: %s', exc)
+            self.model = None
+            self.metadata = {}
+            return False
+
+    def _schema_compatible(self) -> bool:
+        """A model is only servable if its recorded feature_names exactly
+        match what quote_features currently considers CORE or FULL for its
+        own training_sample_count — anything else (an old 7-feature pickle, a
+        mid-migration artifact) is treated as untrained rather than risking a
+        shape-mismatch crash (or worse, a silently misaligned vector) inside
+        predict_proba(). This is what makes future feature-list changes safe
+        by construction."""
+        names = self.metadata.get('feature_names')
+        if not names:
+            return False
+        from core.services import quote_features
+        n = int(self.metadata.get('training_sample_count') or 0)
+        return list(names) == list(quote_features.feature_tier_for(n))
+
+    def _load_model(self):
+        """Load saved model and metadata if available and schema-compatible."""
+        if not self.MODEL_PATH.exists():
+            if not self._migrate_legacy_global_file():
+                return
+        else:
+            try:
+                self.model = joblib.load(self.MODEL_PATH)
+                if self.METADATA_PATH.exists():
+                    with open(self.METADATA_PATH, 'r') as f:
+                        self.metadata = json.load(f)
+            except Exception as exc:
+                logger.warning('Failed to load WinProbabilityModel: %s', exc)
+                self.model = None
+                return
+
+        if self.model is not None and not self._schema_compatible():
+            logger.info(
+                'Discarding %s win-model (scope=%s, user=%s): feature schema '
+                'no longer matches quote_features — falls back to heuristic '
+                'until the next retrain.', self.MODEL_PATH, self.scope, self.user_id,
+            )
+            self.model = None
 
     def _save_model(self):
         """Save model and metadata to disk atomically (temp file + os.replace)
         so a concurrent worker never reads a half-written pickle.
 
-        Training itself lives in core.services.quote_training.retrain_win_model
-        — the single training path (fits a scaler pipeline, threshold from
-        WIN_MODEL_MIN_SAMPLES) which assigns model/metadata and calls this.
+        Training itself lives in core.services.quote_training
+        (retrain_win_model_for_scope) — the single training path, which
+        assigns model/metadata and calls this.
         """
         import os
         import tempfile
@@ -458,67 +528,63 @@ class WinProbabilityModel:
         except Exception as exc:
             logger.error('Failed to save WinProbabilityModel: %s', exc)
 
-    def predict_proba(
-        self,
-        price_ratio: float,
-        client_tier: int = 0,
-        days_until_departure: int = 2,
-        historical_acceptance_rate: float = 0.7,
-        month: int = 3,
-        day_of_week: int = 1,
-        route_popularity: float = 0.5,
-    ) -> float:
-        """
-        Predict P(accepted) for a quote.
-
-        Args:
-            price_ratio: proposed_price / market_rate (e.g., 0.95 = 5% below market)
-            client_tier: 0=new, 1=regular, 2=vip
-            days_until_departure: urgency in days
-            historical_acceptance_rate: client's past acceptance rate
-            month: 1-12
-            day_of_week: 0-6 (Mon-Sun)
-            route_popularity: normalized route popularity
-
-        Returns:
-            Probability [0.0, 1.0]
-        """
+    def predict_proba(self, features: dict) -> float:
+        """Predict P(accepted) from a core.services.quote_features feature
+        dict. Falls back to the heuristic sigmoid (core.services.win_prediction.
+        heuristic_win_proba) when untrained — kept here too, verbatim, so this
+        class stays independently usable; win_prediction is the one true home
+        for it and everything else should import from there."""
         if self.model is None:
-            # Smooth heuristic used until a model is trained on real QuoteOutcome
-            # data. A logistic (sigmoid) curve in price-vs-market: at market price
-            # (ratio = 1.0) win ~ 0.5, falling smoothly as you price above market
-            # and rising below it. Being smooth & monotonic (no hardcoded buckets)
-            # means the margin optimiser finds a genuine interior optimum instead
-            # of snapping to a bucket edge. Then nudge by the real signals.
-            STEEPNESS = 7.0  # how sharply win-prob reacts to price vs market
-            base_prob = 1.0 / (1.0 + math.exp(STEEPNESS * (float(price_ratio) - 1.0)))
+            from core.services.win_prediction import heuristic_win_proba
+            return heuristic_win_proba(features)
 
-            # Urgency: the closer to departure, the more a shipper will accept
-            # (capacity gets scarce). Bounded nudge.
-            urgency_adj = max(-0.05, min(0.10, (7 - int(days_until_departure)) * 0.01))
-
-            # Client tier: VIP relationships convert better, new clients worse.
-            tier_adj = {0: -0.05, 1: 0.0, 2: 0.07}.get(int(client_tier), 0.0)
-
-            # Anchor mildly toward the client's own historical acceptance rate.
-            hist_adj = (float(historical_acceptance_rate) - 0.5) * 0.10
-
-            prob = base_prob + urgency_adj + tier_adj + hist_adj
-            return max(0.02, min(0.98, prob))
-
-        # Use trained model
-        X = np.array([[
-            price_ratio,
-            client_tier,
-            days_until_departure,
-            historical_acceptance_rate,
-            month,
-            day_of_week,
-            route_popularity,
-        ]])
-
+        from core.services import quote_features
+        feature_names = self.metadata.get('feature_names') or quote_features.CORE_FEATURES
+        X = np.array([quote_features.vectorize(features, feature_names)])
         prob = float(self.model.predict_proba(X)[0, 1])
         return max(0.0, min(1.0, prob))
 
     def is_trained(self) -> bool:
         return self.model is not None
+
+    @staticmethod
+    def resolve_for_user(user_id: Optional[int]) -> Tuple[Optional['WinProbabilityModel'], Optional[str], int]:
+        """(model, scope, sample_count). Tries the user's own model first,
+        then the global model, then (None, None, 0) — the caller degrades to
+        "AI unavailable", never to the heuristic silently labeled as AI.
+        scope is 'user' | 'global' | None. Cached per-process (see
+        _MODEL_CACHE) for WIN_MODEL_CACHE_TTL_SECONDS."""
+        if not WIN_ML_AVAILABLE:
+            return None, None, 0
+        import time as _time
+        ttl = float(getattr(settings, 'WIN_MODEL_CACHE_TTL_SECONDS', 60))
+
+        def _cached(cache_key, min_samples):
+            hit = _MODEL_CACHE.get(cache_key)
+            if hit is not None and (_time.monotonic() - hit[1]) < ttl:
+                model = hit[0]
+            else:
+                scope, uid = cache_key
+                try:
+                    model = WinProbabilityModel(scope=scope, user_id=uid)
+                except Exception as exc:
+                    logger.warning('resolve_for_user: failed to construct %s model: %s', scope, exc)
+                    model = None
+                _MODEL_CACHE[cache_key] = (model, _time.monotonic())
+            if model is None or not model.is_trained():
+                return None, 0
+            n = int(model.metadata.get('training_sample_count') or 0)
+            if n < min_samples:
+                return None, n
+            return model, n
+
+        if user_id:
+            model, n = _cached(('user', user_id), int(getattr(settings, 'WIN_MODEL_USER_MIN_SAMPLES', 40)))
+            if model is not None:
+                return model, 'user', n
+
+        model, n = _cached(('global', None), int(getattr(settings, 'WIN_MODEL_GLOBAL_MIN_SAMPLES', 40)))
+        if model is not None:
+            return model, 'global', n
+
+        return None, None, 0

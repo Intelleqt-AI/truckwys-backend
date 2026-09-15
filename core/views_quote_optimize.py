@@ -21,6 +21,11 @@ from core.services.margin_optimizer import optimize_price
 logger = logging.getLogger(__name__)
 
 
+# UNREACHABLE FROM LIVE UI — no reference in frontend/src as of the two-tier
+# AI pricing redesign (grepped repo-wide). Left in place rather than deleted
+# (an external/internal caller could still curl it directly); it already
+# calls optimize_price() with no new kwargs, so it transparently gets the
+# heuristic fallback and is unaffected by the two-tier resolver work.
 class AIPriceOptimizeView(APIView):
     """POST /api/v1/quotes/optimize/ — expected-profit-maximising price + curve."""
     permission_classes = [IsAuthenticated]

@@ -213,21 +213,29 @@ def _fuel_analysis(fuel_cost, fuel_usage_litres, fuel_price_used, quote_total):
     return out
 
 
-def _market_analysis(origin, destination, vehicle_type, company, market_rate, quote_total):
+def _market_analysis(origin, destination, vehicle_type, company, market_rate, quote_total, user=None):
     """Resolve a REAL lane market rate and compare the quote to it.
 
     When there is no real benchmark for the lane (no cross-platform/own won-quote
     history and no coarse SA estimate), we return market_rate=None with
     source='none' — we do NOT fabricate a figure from the quote itself. Showing a
     made-up "market rate" (previously quote_total x 1.25) misled users into
-    thinking it was real market intelligence."""
+    thinking it was real market intelligence.
+
+    `user` (the quoting user, when known) excludes their OWN quotes from the
+    benchmark at every cascade tier, so a single prolific user's own pricing
+    can never become their own market comparison — see lane_benchmark's
+    exclude_created_by_user_id."""
     out = {'market_rate': round(market_rate, 2) if market_rate else None,
            'source': 'client' if market_rate else 'none',
            'your_vs_market_pct': None}
     try:
         if origin and destination:
             from core.services.lane_benchmark import resolve_market_rate
-            rate, src = resolve_market_rate(origin, destination, vehicle_type or None, company=company)
+            rate, src = resolve_market_rate(
+                origin, destination, vehicle_type or None, company=company,
+                exclude_created_by_user_id=getattr(user, 'id', None),
+            )
             if rate and rate > 0:
                 out['market_rate'] = round(float(rate), 2)
                 out['source'] = src
@@ -243,12 +251,25 @@ def _market_analysis(origin, destination, vehicle_type, company, market_rate, qu
 
 
 def _optimization(cost_basis, market_rate, client_tier, days,
-                  historical_acceptance_rate=0.5, origin=None, destination=None):
+                  historical_acceptance_rate=0.5, origin=None, destination=None,
+                  company=None, prediction_ctx=None, base_features=None):
     """Expected-profit optimization over the carrier's DIRECT COST (not the
-    quoted price), anchored on the market rate."""
+    quoted price), anchored on the market rate. Constraint floors/ceilings
+    come from the company's own settings (Company.ai_optimizer_*), falling
+    back to the platform-wide defaults in settings.py — same
+    per-company-else-platform-default pattern as margin_target_pct above."""
     try:
+        from django.conf import settings as dj_settings
         from core.services.margin_optimizer import optimize_price
-        return optimize_price(
+
+        min_margin_pct = _f(getattr(company, 'ai_optimizer_min_margin_pct', None),
+                            getattr(dj_settings, 'AI_OPTIMIZER_MIN_MARGIN_PCT', 5.0)) or 5.0
+        min_win_prob_pct = _f(getattr(company, 'ai_optimizer_min_win_probability_pct', None),
+                              getattr(dj_settings, 'AI_OPTIMIZER_MIN_WIN_PROBABILITY_PCT', 15.0))
+        max_deviation_pct = _f(getattr(company, 'ai_optimizer_max_market_deviation_pct', None),
+                               getattr(dj_settings, 'AI_OPTIMIZER_MAX_MARKET_DEVIATION_PCT', 35.0)) or 35.0
+
+        kwargs = dict(
             total_cost=cost_basis,
             market_rate=market_rate or (cost_basis * 1.25 if cost_basis else 0),
             client_tier=client_tier,
@@ -256,7 +277,15 @@ def _optimization(cost_basis, market_rate, client_tier, days,
             historical_acceptance_rate=historical_acceptance_rate,
             origin=origin,
             destination=destination,
+            min_margin=min_margin_pct / 100.0,
+            min_win_probability=min_win_prob_pct / 100.0,
+            max_market_deviation=max_deviation_pct / 100.0,
         )
+        if base_features is not None:
+            kwargs['base_features'] = base_features
+        if prediction_ctx is not None:
+            kwargs['predict_proba_fn'] = prediction_ctx.predict_proba
+        return optimize_price(**kwargs)
     except Exception as exc:
         logger.warning('price optimization failed: %s', exc)
         return {
@@ -323,10 +352,42 @@ def _llm_narrative(structured):
         return None
 
 
+def _build_ai_prediction(opt, real_market_rate, prediction_ctx):
+    """The 'ai_prediction' response block — the ONLY place a caller should
+    look to know whether a number came from a real trained model. Never lets
+    a heuristic-driven price_optimization masquerade as this: available is
+    True only when prediction_ctx itself resolved a real user/global model
+    (see win_prediction.resolve_prediction_context)."""
+    if prediction_ctx is None or not prediction_ctx.available:
+        return {'available': False, 'reason': 'insufficient_training_data'}
+
+    price = opt.get('optimal_price')
+    p_win = opt.get('win_probability_at_optimal')
+    if price is None or p_win is None:
+        # A model IS trained but the optimizer itself degraded internally
+        # (e.g. its except-branch fallback ran) — never show a half-real block.
+        return {'available': False, 'reason': 'optimizer_error'}
+
+    return {
+        'available': True,
+        'model_scope': prediction_ctx.scope,
+        'training_samples': prediction_ctx.sample_count,
+        'win_probability': p_win,
+        'recommended_price': price,
+        'expected_profit': opt.get('expected_profit'),
+        'margin_pct': opt.get('optimal_margin_pct'),
+        'market_rate': real_market_rate,
+        'price_vs_market_pct': (
+            round((price - real_market_rate) / real_market_rate * 100, 2)
+            if real_market_rate else None
+        ),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
-def analyze_quote(payload, company=None):
+def analyze_quote(payload, company=None, user=None):
     """Run the full analysis. Never raises.
 
     Expected payload keys (all optional-safe):
@@ -334,6 +395,13 @@ def analyze_quote(payload, company=None):
       weight, fuel_cost, toll_cost, driver_cost, fuel_usage_litres,
       fuel_price_used, market_rate, client_tier, days_until_departure,
       historical_acceptance_rate, customer_id
+
+    `user` (the authenticated quoting user, when known) drives the two-tier
+    AI resolution (their own model, else the global model, else no AI
+    prediction at all) and excludes their own quotes from the market
+    benchmark used for that prediction — see win_prediction and
+    quote_features. Omitting it degrades gracefully to global-model-or-
+    unavailable, same as an unauthenticated/public caller.
     """
     payload = payload or {}
     quote_total = _f(payload.get('quote_total'))
@@ -368,15 +436,49 @@ def analyze_quote(payload, company=None):
         except Exception as exc:
             logger.warning('analyze: customer lookup failed: %s', exc)
 
-    market = _market_analysis(origin, destination, vehicle_type, company, market_rate, quote_total)
+    market = _market_analysis(origin, destination, vehicle_type, company, market_rate, quote_total, user=user)
     # market_rate is now either a REAL benchmark or None (no fabricated anchor).
     # When it's None, _optimization anchors its search band on cost internally
     # (cost_basis * 1.25) — that's a private search bound, never shown as a
     # "market rate".
     real_market_rate = market.get('market_rate')
+
+    try:
+        from core.services.win_prediction import resolve_prediction_context
+        prediction_ctx = resolve_prediction_context(user, company)
+    except Exception as exc:
+        logger.warning('analyze_quote: prediction context resolution failed: %s', exc)
+        prediction_ctx = None
+
+    # Full v2 feature vector for the resolved model (if any) to score
+    # candidate prices against — same computation used at training time, so a
+    # trained model sees the feature distribution it was fitted on. Falling
+    # back to None (letting _optimization build a minimal legacy dict) if this
+    # fails for any reason; the heuristic/model still gets SOMETHING sane.
+    base_features = None
+    try:
+        from core.services import quote_features
+        customer_id_for_features = customer.id if customer is not None else payload.get('customer_id')
+        base_features = quote_features.compute_features(
+            company=company, customer_id=customer_id_for_features,
+            created_by_user_id=getattr(user, 'id', None),
+            origin=origin, destination=destination, vehicle_type=vehicle_type,
+            total_amount=quote_total, base_rate=cost_basis,
+            weight_kg=payload.get('weight'), distance_km=distance_km,
+            market_rate=real_market_rate,
+        )
+        # days_until_departure is already correctly derived upstream (from the
+        # request's pickup_date) — use that exact value rather than letting
+        # compute_features fall back to its own no-pickup-date default.
+        base_features['days_until_departure'] = days
+    except Exception as exc:
+        logger.warning('analyze_quote: base_features build failed: %s', exc)
+        base_features = None
+
     opt = _optimization(
         cost_basis, real_market_rate, client_tier, days,
         historical_acceptance_rate=hist_rate, origin=origin, destination=destination,
+        company=company, prediction_ctx=prediction_ctx, base_features=base_features,
     )
 
     # With NO market data the optimizer's "optimum" is an artefact of its own
@@ -416,6 +518,10 @@ def analyze_quote(payload, company=None):
         'price_optimization': opt,
         'market_analysis': market,
         'suggested_price': round(suggested_price, 2),
+        # The ONLY block that ever claims to be a trained-AI prediction —
+        # price_optimization above may be heuristic-driven and stays
+        # populated either way, so the manual quote flow never breaks.
+        'ai_prediction': _build_ai_prediction(opt, real_market_rate, prediction_ctx),
     }
 
     # skip_narrative: callers that never display the narrative (e.g. the Quote

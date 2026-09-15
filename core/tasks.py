@@ -509,6 +509,72 @@ def retrain_win_model():
     return result
 
 
+@shared_task(name='core.tasks.train_user_win_model')
+def train_user_win_model(user_id):
+    """Event-driven, debounced per-user win-model retrain — enqueued by
+    core.services.ml_training_queue.schedule_user_retrain() right after an
+    outcome is recorded for that user (called from record_quote_outcome, not
+    a signal). Not in TRACKED_TASKS/track_task_run: this fires many times a
+    day per active user, not once on a fixed schedule, so per-run staleness
+    tracking doesn't apply — sweep_user_win_model_training below is the
+    scheduled safety net that IS tracked.
+
+    Clears its own debounce flag at the START, not the end, so an outcome
+    landing mid-training re-opens a fresh debounce window instead of being
+    silently dropped while the flag was still held.
+    """
+    from core.services.ml_training_queue import clear_queued_flag, mark_retrain_finished
+    from core.services.quote_training import retrain_win_model_for_scope
+
+    clear_queued_flag(user_id)
+    try:
+        result = retrain_win_model_for_scope('user', user_id=user_id)
+        if result.get('trained'):
+            logger.info(
+                'User %s win model retrained on %s outcomes (algo=%s, auc=%s)',
+                user_id, result.get('samples'), result.get('algorithm'), result.get('auc'),
+            )
+        else:
+            logger.info('User %s win model not retrained: %s', user_id, result.get('reason'))
+        return result
+    finally:
+        mark_retrain_finished(user_id)
+
+
+@shared_task(name='core.tasks.sweep_user_win_model_training')
+@track_task_run('sweep_user_win_model_training')
+def sweep_user_win_model_training():
+    """Nightly safety net for the per-user win model (Beat: 04:00 SAST, after
+    the global retrain above). The event-driven path covers the normal case;
+    this catches outcomes ever written outside record_quote_outcome(),
+    lost/failed per-user tasks, or a user crossing the sample threshold via a
+    data backfill. Only (re-)enqueues a user whose qualifying-outcome count
+    grew meaningfully since their last MLModelVersion, or who qualifies but
+    has no model yet — not a blind nightly refit of every user.
+    """
+    from django.conf import settings
+    from django.db.models import Count
+    from core.models import MLModelVersion, QuoteOutcome
+    from core.services.ml_training_queue import schedule_user_retrain
+
+    min_samples = int(getattr(settings, 'WIN_MODEL_USER_MIN_SAMPLES', 40))
+    counts = (
+        QuoteOutcome.objects.filter(outcome__in=['accepted', 'rejected'], created_by__isnull=False)
+        .values('created_by_id').annotate(n=Count('id'))
+    )
+    scheduled = 0
+    for row in counts:
+        user_id, n = row['created_by_id'], row['n']
+        if n < min_samples:
+            continue
+        latest = MLModelVersion.objects.filter(scope='user', user_id=user_id).order_by('-created_at').first()
+        if latest is None or n >= (latest.training_sample_count or 0) + 5:
+            if schedule_user_retrain(user_id, delay_seconds=0):
+                scheduled += 1
+    logger.info('sweep_user_win_model_training: scheduled %s user retrain(s)', scheduled)
+    return {'scheduled': scheduled}
+
+
 @shared_task(name='core.tasks.reindex_copilot_rag')
 def reindex_copilot_rag():
     """Refresh the Copilot RAG invoice embeddings for every company off the chat

@@ -127,7 +127,8 @@ def _seasonality_for(values_with_months):
 
 
 def compute_lane_benchmark(origin, destination, vehicle_type=None,
-                           k_anonymity=5, days=180, exclude_quote_id=None):
+                           k_anonymity=5, days=180, exclude_quote_id=None,
+                           exclude_created_by_user_id=None, as_of=None):
     """
     Compute an anonymized, cross-platform benchmark for a single lane.
 
@@ -137,6 +138,14 @@ def compute_lane_benchmark(origin, destination, vehicle_type=None,
         vehicle_type: optional vehicle-type filter (substring, case-insensitive).
         k_anonymity: minimum number of won quotes required to expose stats.
         days: look-back window in days.
+        exclude_created_by_user_id: drop this quoting user's own rows from the
+            benchmark BEFORE re-checking k-anonymity/distinct-operators — so a
+            single prolific user's own pricing can never become their own
+            market benchmark (same treatment as exclude_quote_id below).
+        as_of: upper bound on `created_at` (defaults to now) — pass a
+            historical quote's own created_at when reconstructing training
+            features so no later quote can leak into "the market" as it stood
+            back then.
 
     Returns a dict. When the cell passes k-anonymity:
         {
@@ -173,13 +182,19 @@ def compute_lane_benchmark(origin, destination, vehicle_type=None,
         # ordering ever shifts; keeps this file fully self-contained.
         from core.models import Quote
 
-        since = timezone.now() - timedelta(days=days)
+        as_of = as_of or timezone.now()
+        since = as_of - timedelta(days=days)
 
+        # created_at__lte (not __lt): on a coarse system clock, rows created
+        # just before `as_of` is captured can share its exact timestamp --
+        # strict '<' would wrongly exclude a genuinely-prior row. Safe either
+        # way since the row this benchmark is FOR is excluded separately, by
+        # id (exclude_quote_id below), not by this cutoff.
         qs = Quote.objects.filter(
             _lane_q('origin', origin),
             _lane_q('destination', destination),
             status__in=WON_STATUSES,
-            created_at__gte=since,
+            created_at__gte=since, created_at__lte=as_of,
         )
         if vehicle_type:
             qs = qs.filter(vehicle_type__icontains=vehicle_type)
@@ -188,6 +203,11 @@ def compute_lane_benchmark(origin, destination, vehicle_type=None,
             # own price inside its benchmark (k-anonymity is re-checked below
             # on the excluded set, so thresholds stay honest).
             qs = qs.exclude(id=exclude_quote_id)
+        if exclude_created_by_user_id:
+            # Same treatment as exclude_quote_id, but for every quote this
+            # user has ever priced on this lane — not just the one being
+            # predicted for right now.
+            qs = qs.exclude(created_by_id=exclude_created_by_user_id)
 
         # Pull only what we need. Note: NOT filtered by company — cross-platform.
         rows = list(
@@ -275,7 +295,8 @@ def lookup_sa_estimate(origin, destination, vehicle_type=None):
 
 
 def resolve_market_rate(origin, destination, vehicle_type=None, company=None,
-                        exclude_quote_id=None):
+                        exclude_quote_id=None, exclude_created_by_user_id=None,
+                        as_of=None):
     """Resolve a REAL market/benchmark rate for a lane, with provenance.
 
     Cascade (most-trustworthy first): cross-platform anonymized benchmark ->
@@ -283,7 +304,11 @@ def resolve_market_rate(origin, destination, vehicle_type=None, company=None,
     COMPANY_FALLBACK_DAYS; skipped entirely when company is None so a raw
     cross-tenant average can never leak) -> coarse SA estimate -> None.
     Pass exclude_quote_id when benchmarking a specific quote so its own price
-    never sits inside its own benchmark.
+    never sits inside its own benchmark. Pass exclude_created_by_user_id so a
+    single quoting user's own pricing history never becomes their own market
+    benchmark, at every tier of the cascade (symmetric with exclude_quote_id).
+    Pass as_of when reconstructing a historical quote's market context so
+    later quotes/outcomes can't leak into what "the market" looked like then.
     Returns (rate: float|None, source: str). Never raises.
     `source` is one of: platform | platform_lane | company | estimate | none.
     """
@@ -293,13 +318,18 @@ def resolve_market_rate(origin, destination, vehicle_type=None, company=None,
         return None, 'none'
     o, d = canon_code(origin), canon_code(destination)
     vt = (vehicle_type or '').strip().lower() or None
+    as_of = as_of or timezone.now()
 
     # 1-2) Cross-platform anonymized benchmark (vehicle-specific, then lane-level).
     try:
-        b = compute_lane_benchmark(o, d, vt, exclude_quote_id=exclude_quote_id)
+        b = compute_lane_benchmark(
+            o, d, vt, exclude_quote_id=exclude_quote_id,
+            exclude_created_by_user_id=exclude_created_by_user_id, as_of=as_of)
         if b.get('available') and b.get('market_avg_rate'):
             return float(b['market_avg_rate']), 'platform'
-        b = compute_lane_benchmark(o, d, exclude_quote_id=exclude_quote_id)
+        b = compute_lane_benchmark(
+            o, d, exclude_quote_id=exclude_quote_id,
+            exclude_created_by_user_id=exclude_created_by_user_id, as_of=as_of)
         if b.get('available') and b.get('market_avg_rate'):
             return float(b['market_avg_rate']), 'platform_lane'
     except Exception as exc:  # never raise
@@ -310,16 +340,18 @@ def resolve_market_rate(origin, destination, vehicle_type=None, company=None,
         try:
             from core.models import Quote
             from django.db.models import Avg
-            since = timezone.now() - timedelta(days=COMPANY_FALLBACK_DAYS)
+            since = as_of - timedelta(days=COMPANY_FALLBACK_DAYS)
             qs = Quote.objects.filter(
                 _lane_q('origin', o), _lane_q('destination', d),
                 status__in=WON_STATUSES, company=company,
-                created_at__gte=since,
+                created_at__gte=since, created_at__lte=as_of,
             )
             if vt:
                 qs = qs.filter(vehicle_type__icontains=vt)
             if exclude_quote_id:
                 qs = qs.exclude(id=exclude_quote_id)
+            if exclude_created_by_user_id:
+                qs = qs.exclude(created_by_id=exclude_created_by_user_id)
             agg = qs.exclude(total_amount__isnull=True).aggregate(a=Avg('total_amount'), n=Count('id'))
             if (agg['n'] or 0) >= 3 and agg['a']:
                 return float(agg['a']), 'company'
