@@ -21,8 +21,8 @@ demo visitors. This module:
     since the last reset — an untouched demo (nobody visited) never resets,
     since there's nothing to reset.
 
-Follows the plain-function, get_or_create house style of
-core/services/company_setup.py's seed_default_vehicle_types().
+Follows the plain-function, get_or_create house style used across the
+codebase's other one-off data seeders.
 """
 from datetime import date, timedelta
 from decimal import Decimal
@@ -43,8 +43,8 @@ DEMO_USER_EMAIL = 'demo@truckwys.com'
 DEMO_USER_PASSWORD = 'TruckDemo2026!'
 
 
-# Same style/units as company_setup.DEFAULT_VEHICLE_TYPES — capacity in
-# TONNES, not kg (see that file's comment for why that distinction matters).
+# capacity is PAYLOAD in TONNES, not kg — the convention used everywhere
+# VehicleType.capacity is set (see core/models/vehicle.py).
 DEMO_VEHICLE_TYPES = [
     {'name': 'Semi-Trailer Truck', 'capacity': 28, 'max_distance': 5000, 'base_rate': 24, 'fuel_consumption_l_per_100km': 38, 'fuel_consumption_sensitivity_pct': 2.0},
     {'name': 'Tautliner',          'capacity': 22, 'max_distance': 4000, 'base_rate': 24, 'fuel_consumption_l_per_100km': 36, 'fuel_consumption_sensitivity_pct': 2.0},

@@ -121,7 +121,22 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    # Admin dashboard's per-user activity trail — see core/middleware.py for
+    # why this can still see the DRF-authenticated user despite sitting in
+    # Django's (not DRF's) middleware stack.
+    'core.middleware.UserActivityLoggingMiddleware',
 ]
+
+# UserActivityLog retention + noise control (core/middleware.py,
+# core/services/activity_retention.py). Paths here are skipped entirely —
+# high-frequency polling that would otherwise dominate the table without
+# telling an admin anything a single "user is online" fact doesn't already.
+ACTIVITY_LOG_RETENTION_DAYS = config('ACTIVITY_LOG_RETENTION_DAYS', default=30, cast=int)
+ACTIVITY_LOG_EXCLUDED_PREFIXES = (
+    '/api/v1/notifications/unread-count',
+    '/api/v1/vehicles/positions',
+    '/api/v1/admin/job-health',
+)
 
 ROOT_URLCONF = 'config.urls'
 
@@ -510,5 +525,10 @@ CELERY_BEAT_SCHEDULE = {
     'send-weekly-summaries': {
         'task': 'core.tasks.send_weekly_summaries',
         'schedule': crontab(day_of_week='mon', hour='7', minute='15'),
+    },
+    # Trim UserActivityLog past ACTIVITY_LOG_RETENTION_DAYS, off-peak.
+    'sweep-stale-activity-logs': {
+        'task': 'core.tasks.sweep_stale_activity_logs',
+        'schedule': crontab(hour='4', minute='0'),
     },
 }

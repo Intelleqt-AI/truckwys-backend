@@ -295,7 +295,6 @@ class CompleteSignupView(APIView):
         from core.models import PendingSignup, Company, Facility, BillingTransaction
         from core.services import paystack
         from core.services.paystack import MONTHLY_FEE
-        from core.services.company_setup import seed_default_vehicle_types
         from core.services.subscription_billing import compute_next_cycle
 
         reference = request.data.get('reference', '').strip()
@@ -356,7 +355,6 @@ class CompleteSignupView(APIView):
             user.save()
 
             Facility.objects.create(company=company, limit=1000000, outstanding=0, status='ACTIVE')
-            seed_default_vehicle_types(company)
 
             BillingTransaction.objects.create(
                 company=company, amount=MONTHLY_FEE, payment_id=reference,
@@ -1137,8 +1135,6 @@ def resolve_user_company(user):
         locked.save(update_fields=['company'])
         user.company = company
 
-    from core.services.company_setup import seed_default_vehicle_types
-    seed_default_vehicle_types(company)
     return company
 
 
@@ -2173,13 +2169,14 @@ class VehicleTypeViewSet(DemoFixedDataMixin, viewsets.ModelViewSet):
 
     def get_queryset(self):
         from django.db.models import Q, Count
+        from core.services.vehicle_types import visible_vehicle_types_queryset
         user = self.request.user
         if not user.is_authenticated:
             return VehicleType.objects.none()
         if user.is_superuser:
             qs = VehicleType.objects.all()
         else:
-            qs = VehicleType.objects.filter(Q(company=None) | Q(company=user.company))
+            qs = visible_vehicle_types_queryset(user.company)
         # Fallback annotation only — the serializer's own get_available_vehicle_count
         # does the real (company-scoped, link-or-name-matched) count per request and
         # ignores this value whenever request.user.company is set. This stays scoped
@@ -2199,6 +2196,49 @@ class VehicleTypeViewSet(DemoFixedDataMixin, viewsets.ModelViewSet):
             from rest_framework.exceptions import ValidationError as DRFValidationError
             raise DRFValidationError({'error': self.demo_blocked_message})
         serializer.save(company=self.request.user.company)
+
+    COPYABLE_FIELDS = [
+        'name', 'description', 'capacity', 'max_distance', 'base_rate',
+        'fuel_consumption_l_per_100km', 'fuel_consumption_sensitivity_pct', 'fuel_type', 'active',
+    ]
+
+    def update(self, request, *args, **kwargs):
+        """Editing a shared (company=None) default is copy-on-write for a
+        regular tenant user: instead of changing the row every company reads
+        (blocked outright for DELETE below, but editing has a real per-company
+        use case — see the "Reset" flow), it clones the shared row into one
+        this company owns and applies the edit to THAT — permanent for this
+        company and untouched by any later admin-dashboard change to the
+        shared default, since it's a different row from then on.
+        visible_vehicle_types_queryset then hides the shared original for
+        this company (a same-named owned row always wins), so the clone
+        transparently replaces it. Deleting the clone (the frontend's
+        "Reset") drops this company back to seeing the shared default again.
+        Superusers keep editing the shared row directly, same as the admin
+        dashboard's own vehicle-type endpoints."""
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+        if instance.company_id is None and not request.user.is_superuser:
+            if self._demo_blocked():
+                from rest_framework.exceptions import ValidationError as DRFValidationError
+                raise DRFValidationError({'error': self.demo_blocked_message})
+            instance = VehicleType.objects.create(company=request.user.company, **{
+                field: getattr(instance, field) for field in self.COPYABLE_FIELDS
+            })
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        return Response(serializer.data)
+
+    # A tenant user can override a shared default (via update() above) but
+    # never delete the row every OTHER company also reads — that stays a
+    # platform-wide action reserved for a superuser (or the admin dashboard's
+    # dedicated vehicle-type endpoints).
+    def perform_destroy(self, instance):
+        if instance.company_id is None and not self.request.user.is_superuser:
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied('Shared vehicle types are managed by TruckWys — contact support to request a change.')
+        super().perform_destroy(instance)
 
 
 class VehicleLogViewSet(CompanyFilterMixin, viewsets.ModelViewSet):

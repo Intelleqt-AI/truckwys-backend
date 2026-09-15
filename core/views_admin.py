@@ -15,7 +15,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from core.models import AuditLog, Company, User, Quote, Load, TaskRunLog
+from core.models import AuditLog, Company, User, Quote, Load, TaskRunLog, UserActivityLog, UserSession
 from core.services.demo_seed import IDLE_RESET_AFTER, reset_demo_company
 from core.views import IsSuperUser
 
@@ -552,6 +552,329 @@ class AdminUserRoleView(APIView):
         return Response({'id': target.id, 'role': target.role})
 
 
+class AdminUserActivityView(APIView):
+    """Raw per-request activity trail for one user (UserActivityLog, written
+    by core.middleware.UserActivityLoggingMiddleware on every authenticated
+    API call) — every read and write, not just the writes AuditLog covers.
+    Short-retention (ACTIVITY_LOG_RETENTION_DAYS) by design; see
+    core/models/user_activity_log.py."""
+    permission_classes = [IsSuperUser]
+
+    def get(self, request, user_id):
+        qs = UserActivityLog.objects.filter(user_id=user_id).order_by('-created_at')
+        page_qs, count, page, page_size, num_pages = _paginate(qs, request, default_size=30)
+        return Response({
+            'count': count, 'page': page, 'page_size': page_size, 'num_pages': num_pages,
+            'results': [{
+                'id': r.id, 'method': r.method, 'path': r.path,
+                'status_code': r.status_code, 'duration_ms': r.duration_ms,
+                'ip_address': r.ip_address, 'created_at': r.created_at,
+            } for r in page_qs],
+        })
+
+
+class AdminUserAuthHistoryView(APIView):
+    """Admin-scoped equivalent of LoginActivityView (core/views.py) — any
+    user's sign-in/out trail, not just the caller's own."""
+    permission_classes = [IsSuperUser]
+
+    def get(self, request, user_id):
+        qs = AuditLog.objects.filter(user_id=user_id, action__in=('LOGIN', 'LOGOUT')).order_by('-created_at')
+        page_qs, count, page, page_size, num_pages = _paginate(qs, request, default_size=30)
+        return Response({
+            'count': count, 'page': page, 'page_size': page_size, 'num_pages': num_pages,
+            'results': [{
+                'id': r.id, 'action': r.action,
+                'event': (r.details or {}).get('event') or ('login' if r.action == 'LOGIN' else 'logout'),
+                'device': (r.details or {}).get('device') or 'Unknown device',
+                'ip': r.ip_address or 'Unknown',
+                'created_at': r.created_at,
+            } for r in page_qs],
+        })
+
+
+class AdminUserSessionsView(APIView):
+    """Active per-device sessions for one user. The missing middle ground
+    between doing nothing and AdminUserActionView's 'lock'/'delete' (which
+    tear down every session at once) — see AdminUserSessionRevokeView for the
+    per-session kick."""
+    permission_classes = [IsSuperUser]
+
+    def get(self, request, user_id):
+        sessions = UserSession.objects.filter(user_id=user_id).order_by('-last_activity')
+        return Response({'results': [{
+            'id': str(s.id), 'device': s.device or 'Unknown device',
+            'user_agent': s.user_agent, 'ip_address': s.ip_address,
+            'created_at': s.created_at, 'last_activity': s.last_activity,
+        } for s in sessions]})
+
+
+class AdminUserSessionRevokeView(APIView):
+    """DELETE — force-logout one device without touching the rest of the
+    account (unlike 'lock', which blocks every session by deactivating the
+    user, or 'delete')."""
+    permission_classes = [IsSuperUser]
+
+    def delete(self, request, user_id, session_id):
+        try:
+            session = UserSession.objects.get(pk=session_id, user_id=user_id)
+        except UserSession.DoesNotExist:
+            return Response({'error': 'Session not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        device = session.device or 'Unknown device'
+        session.delete()
+        _log(request, 'OTHER', 'UserSession', session_id, admin_action='force_logout', target_user_id=user_id, device=device)
+        return Response({'revoked': True})
+
+
+def _serialize_vehicle_type(vt):
+    return {
+        'id': vt.id, 'name': vt.name, 'description': vt.description,
+        'capacity': vt.capacity, 'max_distance': vt.max_distance, 'base_rate': vt.base_rate,
+        'fuel_consumption_l_per_100km': vt.fuel_consumption_l_per_100km,
+        'fuel_consumption_sensitivity_pct': vt.fuel_consumption_sensitivity_pct,
+        'fuel_type': vt.fuel_type, 'active': vt.active,
+    }
+
+
+class AdminVehicleTypesView(APIView):
+    """The shared (company=None) vehicle type catalog — every company's New
+    Quote / Add Vehicle pickers show these plus whatever custom types that
+    company added itself. Managed here, centrally, specifically so a rate or
+    description fix (see core/migrations/0109_consolidate_vehicle_type_defaults.py
+    for the data-quality pass this was built for) applies to every company at
+    once instead of needing a one-off migration each time. A regular tenant
+    user can see these rows via their own Settings > Vehicle Types but can't
+    write to them — see VehicleTypeViewSet._forbid_shared_type_write in
+    core/views.py."""
+    permission_classes = [IsSuperUser]
+
+    def get(self, request):
+        from core.models import VehicleType
+        qs = VehicleType.objects.filter(company__isnull=True).order_by('capacity')
+        return Response({'results': [_serialize_vehicle_type(vt) for vt in qs]})
+
+    def post(self, request):
+        from core.models import VehicleType
+        name = (request.data.get('name') or '').strip()
+        if not name:
+            return Response({'error': 'name is required'}, status=status.HTTP_400_BAD_REQUEST)
+        if VehicleType.objects.filter(company__isnull=True, name=name).exists():
+            return Response({'error': f'A shared vehicle type named "{name}" already exists.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        vt = VehicleType.objects.create(
+            company=None, name=name,
+            description=(request.data.get('description') or '').strip(),
+            capacity=request.data.get('capacity') or 0,
+            max_distance=request.data.get('max_distance') or 0,
+            base_rate=request.data.get('base_rate') or 0,
+            fuel_consumption_l_per_100km=request.data.get('fuel_consumption_l_per_100km') or 36,
+            fuel_consumption_sensitivity_pct=request.data.get('fuel_consumption_sensitivity_pct') or 2,
+            fuel_type=request.data.get('fuel_type') or 'Diesel',
+            active=request.data.get('active', True),
+        )
+        _log(request, 'CREATE', 'VehicleType', vt.pk, admin_action='create_shared_vehicle_type', name=name)
+        return Response(_serialize_vehicle_type(vt), status=status.HTTP_201_CREATED)
+
+
+class AdminVehicleTypeDetailView(APIView):
+    """PATCH any field on a shared vehicle type; DELETE it (blocked while any
+    vehicle across the platform still uses it — deactivate instead)."""
+    permission_classes = [IsSuperUser]
+
+    EDITABLE_FIELDS = [
+        'name', 'description', 'capacity', 'max_distance', 'base_rate',
+        'fuel_consumption_l_per_100km', 'fuel_consumption_sensitivity_pct', 'fuel_type', 'active',
+    ]
+
+    def patch(self, request, type_id):
+        from core.models import VehicleType
+        try:
+            vt = VehicleType.objects.get(pk=type_id, company__isnull=True)
+        except VehicleType.DoesNotExist:
+            return Response({'error': 'Shared vehicle type not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        changes = {}
+        for field in self.EDITABLE_FIELDS:
+            if field not in request.data:
+                continue
+            old, new = getattr(vt, field), request.data[field]
+            if str(old) != str(new):
+                changes[field] = {'old': str(old), 'new': str(new)}
+            setattr(vt, field, new)
+        vt.save()
+        _log(request, 'UPDATE', 'VehicleType', vt.pk, admin_action='update_shared_vehicle_type', changes=changes)
+        return Response(_serialize_vehicle_type(vt))
+
+    def delete(self, request, type_id):
+        from core.models import VehicleType, Vehicle
+        try:
+            vt = VehicleType.objects.get(pk=type_id, company__isnull=True)
+        except VehicleType.DoesNotExist:
+            return Response({'error': 'Shared vehicle type not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        in_use = Vehicle.objects.filter(vehicle_type_id=vt.id).count()
+        if in_use:
+            return Response({
+                'error': f'{in_use} vehicle(s) across the platform are still using "{vt.name}" — deactivate it instead of deleting.',
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        name = vt.name
+        vt.delete()
+        _log(request, 'DELETE', 'VehicleType', type_id, admin_action='delete_shared_vehicle_type', name=name)
+        return Response({'deleted': True})
+
+
+def _serialize_border_fee(f):
+    return {
+        'id': f.id, 'from_country': f.from_country, 'to_country': f.to_country,
+        'fee_zar': f.fee_zar, 'notes': f.notes, 'is_active': f.is_active, 'updated_at': f.updated_at,
+    }
+
+
+class AdminBorderFeesView(APIView):
+    """Platform-wide border-crossing fees (BorderCrossingFee — one row per
+    from/to country pair, e.g. SA->ZW) that feed the "Border fees" line item
+    on every cross-tenant quote (core/services/cross_border.py). Previously
+    only editable via Django admin or a management command + code deploy —
+    see core/migrations/0110_fix_zw_border_fee.py for the data-quality pass
+    this page was built for (Zimbabwe's fee was priced well below the real
+    Zimborders bridge toll)."""
+    permission_classes = [IsSuperUser]
+
+    def get(self, request):
+        from core.models import BorderCrossingFee
+        qs = BorderCrossingFee.objects.all().order_by('from_country', 'to_country')
+        return Response({'results': [_serialize_border_fee(f) for f in qs]})
+
+    def post(self, request):
+        from core.models import BorderCrossingFee
+        from_country = (request.data.get('from_country') or '').strip().upper()
+        to_country = (request.data.get('to_country') or '').strip().upper()
+        if not from_country or not to_country:
+            return Response({'error': 'from_country and to_country are required'}, status=status.HTTP_400_BAD_REQUEST)
+        if BorderCrossingFee.objects.filter(from_country=from_country, to_country=to_country).exists():
+            return Response({'error': f'A fee for {from_country} -> {to_country} already exists.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        f = BorderCrossingFee.objects.create(
+            from_country=from_country, to_country=to_country,
+            fee_zar=request.data.get('fee_zar') or 0,
+            notes=(request.data.get('notes') or '').strip(),
+            is_active=request.data.get('is_active', True),
+        )
+        _log(request, 'CREATE', 'BorderCrossingFee', f.pk, admin_action='create_border_fee', pair=f'{from_country}-{to_country}')
+        return Response(_serialize_border_fee(f), status=status.HTTP_201_CREATED)
+
+
+class AdminBorderFeeDetailView(APIView):
+    permission_classes = [IsSuperUser]
+    EDITABLE_FIELDS = ['fee_zar', 'notes', 'is_active']
+
+    def patch(self, request, fee_id):
+        from core.models import BorderCrossingFee
+        try:
+            f = BorderCrossingFee.objects.get(pk=fee_id)
+        except BorderCrossingFee.DoesNotExist:
+            return Response({'error': 'Border fee not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        changes = {}
+        for field in self.EDITABLE_FIELDS:
+            if field not in request.data:
+                continue
+            old, new = getattr(f, field), request.data[field]
+            if str(old) != str(new):
+                changes[field] = {'old': str(old), 'new': str(new)}
+            setattr(f, field, new)
+        f.save()
+        _log(request, 'UPDATE', 'BorderCrossingFee', f.pk, admin_action='update_border_fee', changes=changes)
+        return Response(_serialize_border_fee(f))
+
+    def delete(self, request, fee_id):
+        from core.models import BorderCrossingFee
+        try:
+            f = BorderCrossingFee.objects.get(pk=fee_id)
+        except BorderCrossingFee.DoesNotExist:
+            return Response({'error': 'Border fee not found'}, status=status.HTTP_404_NOT_FOUND)
+        pair = f'{f.from_country}-{f.to_country}'
+        f.delete()
+        _log(request, 'DELETE', 'BorderCrossingFee', fee_id, admin_action='delete_border_fee', pair=pair)
+        return Response({'deleted': True})
+
+
+def _serialize_transit_rate(r):
+    return {
+        'id': r.id, 'country_code': r.country_code, 'country_name': r.country_name,
+        'weighbridge_fee_zar': r.weighbridge_fee_zar, 'toll_rate_per_km': r.toll_rate_per_km,
+        'sa_border_distance_km': r.sa_border_distance_km, 'is_active': r.is_active, 'updated_at': r.updated_at,
+    }
+
+
+class AdminCountryTransitRatesView(APIView):
+    """Platform-wide per-country transit parameters (CountryTransitRate) that
+    feed the "Weighbridge" and "Non-SA tolls" line items on cross-tenant
+    quotes (core/services/cross_border.py)."""
+    permission_classes = [IsSuperUser]
+
+    def get(self, request):
+        from core.models import CountryTransitRate
+        qs = CountryTransitRate.objects.all().order_by('country_code')
+        return Response({'results': [_serialize_transit_rate(r) for r in qs]})
+
+    def post(self, request):
+        from core.models import CountryTransitRate
+        country_code = (request.data.get('country_code') or '').strip().upper()
+        country_name = (request.data.get('country_name') or '').strip()
+        if not country_code or not country_name:
+            return Response({'error': 'country_code and country_name are required'}, status=status.HTTP_400_BAD_REQUEST)
+        if CountryTransitRate.objects.filter(country_code=country_code).exists():
+            return Response({'error': f'A transit rate for {country_code} already exists.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        r = CountryTransitRate.objects.create(
+            country_code=country_code, country_name=country_name,
+            weighbridge_fee_zar=request.data.get('weighbridge_fee_zar') or 0,
+            toll_rate_per_km=request.data.get('toll_rate_per_km') or 0,
+            sa_border_distance_km=request.data.get('sa_border_distance_km') or 0,
+            is_active=request.data.get('is_active', True),
+        )
+        _log(request, 'CREATE', 'CountryTransitRate', r.pk, admin_action='create_transit_rate', country=country_code)
+        return Response(_serialize_transit_rate(r), status=status.HTTP_201_CREATED)
+
+
+class AdminCountryTransitRateDetailView(APIView):
+    permission_classes = [IsSuperUser]
+    EDITABLE_FIELDS = ['country_name', 'weighbridge_fee_zar', 'toll_rate_per_km', 'sa_border_distance_km', 'is_active']
+
+    def patch(self, request, rate_id):
+        from core.models import CountryTransitRate
+        try:
+            r = CountryTransitRate.objects.get(pk=rate_id)
+        except CountryTransitRate.DoesNotExist:
+            return Response({'error': 'Transit rate not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        changes = {}
+        for field in self.EDITABLE_FIELDS:
+            if field not in request.data:
+                continue
+            old, new = getattr(r, field), request.data[field]
+            if str(old) != str(new):
+                changes[field] = {'old': str(old), 'new': str(new)}
+            setattr(r, field, new)
+        r.save()
+        _log(request, 'UPDATE', 'CountryTransitRate', r.pk, admin_action='update_transit_rate', changes=changes)
+        return Response(_serialize_transit_rate(r))
+
+    def delete(self, request, rate_id):
+        from core.models import CountryTransitRate
+        try:
+            r = CountryTransitRate.objects.get(pk=rate_id)
+        except CountryTransitRate.DoesNotExist:
+            return Response({'error': 'Transit rate not found'}, status=status.HTTP_404_NOT_FOUND)
+        country = r.country_code
+        r.delete()
+        _log(request, 'DELETE', 'CountryTransitRate', rate_id, admin_action='delete_transit_rate', country=country)
+        return Response({'deleted': True})
+
+
 class AdminSearchView(APIView):
     """GET ?q=... — find a quote/order by number across every tenant, with
     its company, for support tickets ("customer says quote #X isn't
@@ -587,7 +910,7 @@ class AdminJobHealthView(APIView):
     TRACKED_TASKS = [
         'reset_demo_company_task', 'refresh_fuel_price', 'run_monthly_subscription_billing',
         'check_grace_period_expirations', 'check_pending_cancellations',
-        'retry_delivery_fee_charges', 'retrain_win_model',
+        'retry_delivery_fee_charges', 'retrain_win_model', 'sweep_stale_activity_logs',
     ]
 
     def get(self, request):

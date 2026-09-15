@@ -21,6 +21,7 @@ from .audit_log import AuditLog
 from .webhook import Webhook
 from .integration_api_key import IntegrationAPIKey, APICallLog
 from .activity_event import ActivityEvent
+from .user_activity_log import UserActivityLog
 from .copilot_message import CopilotMessage, CopilotConversation, CopilotUserMemory
 from .copilot_proposal import CopilotProposal
 from .webhook_subscription import WebhookSubscription
@@ -69,6 +70,7 @@ __all__ = [
     'CopilotUserMemory',
     'CopilotProposal',
     'ActivityEvent',
+    'UserActivityLog',
     'WebhookSubscription',
     'BillingTransaction',
     'DeliveryFeeCharge',

@@ -683,6 +683,14 @@ def sweep_intelligence_recommendations():
     return run()
 
 
+@shared_task(name='core.tasks.sweep_stale_activity_logs')
+@track_task_run('sweep_stale_activity_logs')
+def sweep_stale_activity_logs():
+    """Daily trim of UserActivityLog past ACTIVITY_LOG_RETENTION_DAYS."""
+    from core.services.activity_retention import sweep_stale_activity_logs as run
+    return run()
+
+
 # ---------------------------------------------------------------------------
 # Demo company reset (Celery Beat — nightly, before the sweeps above)
 # ---------------------------------------------------------------------------
