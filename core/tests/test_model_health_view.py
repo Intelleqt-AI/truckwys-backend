@@ -83,7 +83,10 @@ class AdminModelHealthViewTests(TestCase):
         self.assertEqual(data['market_rate_missing'], 1)
         self.assertAlmostEqual(data['market_rate_coverage'], 0.6667, places=3)
         self.assertEqual(data['by_source']['none'], 1)
-        self.assertEqual(data['feature_version'], 'v3')
+        # The panel must report whatever the live feature set is, not a
+        # literal — this test is about coverage counting, not the version.
+        from core.services import quote_features
+        self.assertEqual(data['feature_version'], quote_features.FEATURE_VERSION)
 
     def test_empty_database_does_not_divide_by_zero(self):
         data = self._get()

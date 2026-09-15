@@ -605,6 +605,15 @@ WIN_MODEL_GLOBAL_MIN_SAMPLES = config('WIN_MODEL_GLOBAL_MIN_SAMPLES', default=40
 # split (too few rows for a static 80/20 split to mean anything) and a
 # regression in evaluation metrics is logged but never blocks activation.
 WIN_MODEL_CV_THRESHOLD = config('WIN_MODEL_CV_THRESHOLD', default=150, cast=int)
+# How much predicted win probability must FALL across a price sweep before a
+# freshly fitted model is allowed to go live. The whole product rests on
+# "price it higher, win it less often"; a model that does not express that is
+# useless for pricing no matter how good its AUC looks. The first two models
+# ever trained here both learned the relationship backwards (a positive
+# price_ratio coefficient) on an 85%-accepted dataset, and the optimizer
+# duly recommended a 62% price increase at a claimed 96% win rate. AUC was
+# 0.72 and 0.63 respectively, so no metric gate would ever have caught it.
+WIN_MODEL_MIN_PRICE_SENSITIVITY = config('WIN_MODEL_MIN_PRICE_SENSITIVITY', default=0.05, cast=float)
 # How long a burst of outcomes for the same user coalesces into one retrain.
 USER_RETRAIN_DEBOUNCE_SECONDS = config('USER_RETRAIN_DEBOUNCE_SECONDS', default=300, cast=int)
 # How long a resolved WinProbabilityModel is cached in-process before the next

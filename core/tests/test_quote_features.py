@@ -172,5 +172,11 @@ class PriceRatioAvailabilityTests(TestCase):
 
     def test_feature_version_bumped_so_old_snapshots_are_recomputed(self):
         # Snapshots written under the previous feature set must not be fed to
-        # a model expecting the new one.
-        self.assertEqual(quote_features.FEATURE_VERSION, 'v3')
+        # a model expecting the new one. Pinned deliberately: changing the
+        # feature list without bumping this is the failure mode, so the bump
+        # should be an explicit edit here too. v4 moved the four cyclical
+        # calendar features out of CORE.
+        self.assertEqual(quote_features.FEATURE_VERSION, 'v4')
+        for name in ('month_sin', 'month_cos', 'dow_sin', 'dow_cos'):
+            self.assertNotIn(name, quote_features.CORE_FEATURES)
+            self.assertIn(name, quote_features.FULL_FEATURES)

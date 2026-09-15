@@ -33,6 +33,11 @@ logger = logging.getLogger(__name__)
 MARKET_BAND_LOW = 0.75
 MARKET_BAND_HIGH = 1.35
 
+# Minimum fall in win probability from the bottom to the top of the price band
+# for a supplied win curve to be considered usable for pricing. Below this the
+# search has no interior optimum and would just return the band ceiling.
+MIN_CURVE_WIN_DROP = 0.02
+
 
 # Map the human-friendly client_tier strings used across the quoting API to the
 # integer codes the WinProbabilityModel expects (0=new, 1=regular, 2=vip).
@@ -225,9 +230,12 @@ def optimize_price(
         if max_margin < min_margin:
             min_margin, max_margin = max_margin, min_margin
 
+        from core.services.win_prediction import heuristic_win_proba
         if predict_proba_fn is None:
-            from core.services.win_prediction import heuristic_win_proba
             predict_proba_fn = heuristic_win_proba
+        # Set when a supplied model curve had to be discarded (see the
+        # degenerate-curve guard below) so the response can say so.
+        degenerate_model_curve = False
 
         if base_features is not None:
             features: Dict[str, Any] = dict(base_features)
@@ -265,44 +273,69 @@ def optimize_price(
         min_win_probability = max(0.0, min(1.0, float(min_win_probability or 0.0)))
 
         steps = 40
-        full_curve: List[Dict[str, float]] = []
-        unconstrained_best = None  # (expected_profit, point_dict, price, margin, p_win)
-        constrained_best = None
 
-        for i in range(steps + 1):
-            frac = i / steps
-            price = price_lo + frac * (price_hi - price_lo)
-            margin = (price - total_cost) / total_cost
-            price_ratio = price / market_rate
+        def _sweep(win_fn):
+            full_curve: List[Dict[str, float]] = []
+            unconstrained_best = None  # (expected_profit, point_dict, price, margin, p_win)
+            constrained_best = None
 
-            features['price_ratio'] = price_ratio
-            # quoted_margin_pct is margin-on-PRICE (not margin-on-cost like
-            # `margin` above) — matches quote_features.compute_features's own
-            # definition exactly, so a trained model sees the same quantity
-            # at serving time it saw at training time.
-            features['quoted_margin_pct'] = ((price - total_cost) / price * 100.0) if price > 0 else 0.0
-            try:
-                p_win = predict_proba_fn(features)
-            except Exception:
-                p_win = 0.0
-            p_win = max(0.0, min(1.0, float(p_win)))
+            for i in range(steps + 1):
+                frac = i / steps
+                price = price_lo + frac * (price_hi - price_lo)
+                margin = (price - total_cost) / total_cost
+                price_ratio = price / market_rate
 
-            expected_profit = (price - total_cost) * p_win
+                features['price_ratio'] = price_ratio
+                # quoted_margin_pct is margin-on-PRICE (not margin-on-cost like
+                # `margin` above) — matches quote_features.compute_features's own
+                # definition exactly, so a trained model sees the same quantity
+                # at serving time it saw at training time.
+                features['quoted_margin_pct'] = ((price - total_cost) / price * 100.0) if price > 0 else 0.0
+                try:
+                    p_win = win_fn(features)
+                except Exception:
+                    p_win = 0.0
+                p_win = max(0.0, min(1.0, float(p_win)))
 
-            point = {
-                'price': round(price, 2),
-                'margin_pct': round(margin * 100.0, 1),
-                'win_probability': round(p_win, 4),
-                'expected_profit': round(expected_profit, 2),
-            }
-            full_curve.append(point)
+                expected_profit = (price - total_cost) * p_win
 
-            candidate = (expected_profit, point, price, margin, p_win)
-            if unconstrained_best is None or expected_profit > unconstrained_best[0]:
-                unconstrained_best = candidate
-            if p_win >= min_win_probability:
-                if constrained_best is None or expected_profit > constrained_best[0]:
-                    constrained_best = candidate
+                point = {
+                    'price': round(price, 2),
+                    'margin_pct': round(margin * 100.0, 1),
+                    'win_probability': round(p_win, 4),
+                    'expected_profit': round(expected_profit, 2),
+                }
+                full_curve.append(point)
+
+                candidate = (expected_profit, point, price, margin, p_win)
+                if unconstrained_best is None or expected_profit > unconstrained_best[0]:
+                    unconstrained_best = candidate
+                if p_win >= min_win_probability:
+                    if constrained_best is None or expected_profit > constrained_best[0]:
+                        constrained_best = candidate
+
+            return full_curve, unconstrained_best, constrained_best
+
+        full_curve, unconstrained_best, constrained_best = _sweep(predict_proba_fn)
+
+        # Degenerate-curve guard. This search assumes demand slopes down: it
+        # maximises (price - cost) * P(win), so if P(win) doesn't fall as price
+        # rises there is no interior peak and the maximum is simply the top of
+        # the band. A model that has learned price backwards therefore doesn't
+        # produce a slightly-off number, it produces the highest price allowed
+        # — in production, 62% above the operator's own quote at a claimed 96%
+        # win rate. quote_training now refuses to activate such a model, but
+        # this is the layer that turns a win curve into money, so it declines
+        # to trust one it can't price against.
+        if len(full_curve) > 1:
+            curve_drop = full_curve[0]['win_probability'] - full_curve[-1]['win_probability']
+            if curve_drop < MIN_CURVE_WIN_DROP and predict_proba_fn is not heuristic_win_proba:
+                logger.warning(
+                    'optimizer: win curve only falls %.4f across the price band — '
+                    'discarding it and pricing on the heuristic instead', curve_drop,
+                )
+                full_curve, unconstrained_best, constrained_best = _sweep(heuristic_win_proba)
+                degenerate_model_curve = True
 
         if unconstrained_best is None:
             return _fallback(total_cost, min_margin, max_margin)
@@ -312,6 +345,12 @@ def optimize_price(
         _, best_point, best_price, best_margin, best_pwin = best
 
         constraint_notes = []
+        if degenerate_model_curve:
+            constraint_notes.append(
+                'The trained model gave the same win probability at every price, so it '
+                'cannot be used to find a profit optimum — this price comes from the '
+                'market-rate model instead.'
+            )
         if constraints_relaxed and min_win_probability > 0:
             constraint_notes.append(
                 f'No price in the market-anchored band reached the configured minimum win '

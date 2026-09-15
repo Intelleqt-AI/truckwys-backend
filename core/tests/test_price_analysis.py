@@ -724,3 +724,60 @@ class AnalyzeClientFeatureDerivationTests(TestCase):
         tier, rate = AIQuoteAnalyzeView._derive_client_features(company, customer.id)
         self.assertEqual(tier, 'regular')  # 3 accepted
         self.assertAlmostEqual(rate, 0.75)  # 3 of 4 decided
+
+
+class DegenerateWinCurveGuardTests(TestCase):
+    """The optimizer must not price against a win curve that doesn't fall.
+
+    optimize_price maximises (price - cost) * P(win). If P(win) is flat or
+    rising in price there is no interior peak, so the search returns the top
+    of the market band — which is how a model with a positive price_ratio
+    coefficient produced a recommendation 62% above the operator's own quote,
+    labelled 96% likely to win. The guard discards such a curve and prices on
+    the heuristic instead.
+    """
+
+    COST = 23000.0
+    MARKET = 34700.0
+
+    def _optimize(self, win_fn):
+        from core.services.margin_optimizer import optimize_price
+        return optimize_price(
+            total_cost=self.COST, market_rate=self.MARKET, predict_proba_fn=win_fn,
+        )
+
+    def test_flat_curve_falls_back_to_the_heuristic(self):
+        result = self._optimize(lambda features: 0.96)
+
+        self.assertLess(result['optimal_price'], self.MARKET * 1.35)
+        # The heuristic's curve genuinely declines, so a real optimum exists.
+        wins = [p['win_probability'] for p in result['curve']]
+        self.assertGreater(wins[0] - wins[-1], 0.02)
+        self.assertNotEqual(result['win_probability_at_optimal'], 0.96)
+
+    def test_inverted_curve_falls_back_too(self):
+        # Win probability RISING with price — the exact production failure.
+        result = self._optimize(lambda f: min(0.99, 0.5 + f.get('price_ratio', 1.0) * 0.3))
+
+        wins = [p['win_probability'] for p in result['curve']]
+        self.assertGreater(wins[0] - wins[-1], 0.02, 'curve should have been replaced')
+
+    def test_the_substitution_is_explained_not_silent(self):
+        result = self._optimize(lambda features: 0.96)
+        notes = ' '.join(result.get('constraints_applied', {}).get('notes', [])
+                         or result.get('constraint_notes', []) or [])
+        self.assertIn('same win probability at every price', notes)
+
+    def test_a_healthy_declining_curve_is_left_alone(self):
+        # Must not "guard" against a model that is working: the optimum here
+        # is the caller's curve, untouched.
+        def declining(features):
+            return max(0.02, min(0.98, 1.6 - features.get('price_ratio', 1.0)))
+
+        result = self._optimize(declining)
+        notes = ' '.join(result.get('constraints_applied', {}).get('notes', [])
+                         or result.get('constraint_notes', []) or [])
+        self.assertNotIn('same win probability', notes)
+        for point in result['curve']:
+            expected = max(0.02, min(0.98, 1.6 - point['price'] / self.MARKET))
+            self.assertAlmostEqual(point['win_probability'], round(expected, 4), places=3)

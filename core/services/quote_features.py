@@ -36,7 +36,10 @@ logger = logging.getLogger(__name__)
 # Bump whenever the feature set changes, so snapshots written under an older
 # schema are recomputed instead of being fed to a model expecting the new one.
 # v3 added price_ratio_available.
-FEATURE_VERSION = 'v3'
+# v4 moved the four cyclical calendar features out of CORE (see below), which
+# also retires every v3 artifact on schema mismatch — the intended way to
+# withdraw a model, since the file on disk is what predictions resolve against.
+FEATURE_VERSION = 'v4'
 
 # Vehicle-type bucketing is deliberately a small, fixed vocabulary rather than
 # one-hot-ing the raw free-text VehicleType.name (company-defined, unbounded
@@ -70,8 +73,6 @@ CORE_FEATURES = [
     'user_quote_volume_prior',
     'user_historical_win_rate',
     'days_until_departure',
-    'month_sin', 'month_cos',
-    'dow_sin', 'dow_cos',
     'route_popularity',
     'distance_km',
 ]
@@ -79,6 +80,14 @@ CORE_FEATURES = [
 # FULL: used once a scope has enough data (global model, eventually a heavy
 # per-user model) to support more dimensions without overfitting.
 FULL_FEATURES = CORE_FEATURES + [
+    # Seasonality only once there is enough data to separate it from noise.
+    # At the 40-sample floor these four were the opposite: in the first
+    # per-user model ever trained (53 rows) month_sin (+0.88) and dow_sin
+    # (-0.81) came out among the largest coefficients in the whole model,
+    # outweighing price. Four cyclical columns give a tiny dataset four
+    # convincing ways to memorise which weeks happened to close.
+    'month_sin', 'month_cos',
+    'dow_sin', 'dow_cos',
     'cost_to_market_ratio',
     'weight_kg',
     'sla_hours',

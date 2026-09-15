@@ -114,7 +114,16 @@ def _build_candidate(name: str):
 
     if name == 'logistic_regression':
         from sklearn.linear_model import LogisticRegression
-        return make_pipeline(StandardScaler(), LogisticRegression(max_iter=1000, random_state=42, C=1.0))
+        # class_weight='balanced': real quote data is heavily one-sided (the
+        # first global model trained on 73 won against 14 lost). Unweighted,
+        # the intercept alone reached +2.6 — a default answer of "93% likely
+        # to win" before any feature was consulted — and the minority class
+        # carried too little weight for price to matter. Balancing is what
+        # lets the lost quotes actually shape the boundary.
+        return make_pipeline(
+            StandardScaler(),
+            LogisticRegression(max_iter=1000, random_state=42, C=1.0, class_weight='balanced'),
+        )
     if name == 'gradient_boosting':
         from sklearn.ensemble import GradientBoostingClassifier
         return make_pipeline(StandardScaler(), GradientBoostingClassifier(random_state=42))
@@ -122,6 +131,55 @@ def _build_candidate(name: str):
         import lightgbm as lgb
         return lgb.LGBMClassifier(random_state=42, verbosity=-1)
     raise ValueError(f'unknown candidate algorithm: {name}')
+
+
+def _price_sensitivity(model, X, feature_names, *, multipliers=(0.9, 1.0, 1.1, 1.2), probe_rows=25):
+    """How much predicted win probability falls as price rises, averaged over
+    real training rows. Positive = behaves like a market (dearer loses more
+    often); <= 0 = the model has learned price backwards or not at all.
+
+    Each probe holds one actual row fixed and moves only price_ratio, which is
+    exactly what the quote builder does when an operator drags the price, so
+    this measures the one behaviour the product actually depends on.
+
+    The sweep is multiplicative around each row's OWN price_ratio rather than
+    over fixed absolute values. An earlier absolute 0.85->1.30 sweep measured
+    almost nothing on a company that habitually quotes at 40-75% of the
+    benchmark rate: every probe point landed outside the observed range, where
+    the model has already saturated, so a model that was in fact correctly
+    ordered on 100% of rows scored 0.013. Relative probing asks the question
+    the operator asks — "what if I moved this quote's price" — at whatever
+    price level that operator actually works.
+
+    Returns (sensitivity, fraction_of_rows_ordered_correctly).
+    """
+    if 'price_ratio' not in feature_names:
+        return 0.0, 0.0
+    idx = feature_names.index('price_ratio')
+    avail_idx = feature_names.index('price_ratio_available') if 'price_ratio_available' in feature_names else None
+
+    rows = X[:probe_rows]
+    drops, ordered = [], 0
+    for row in rows:
+        own = float(row[idx])
+        if own <= 0:
+            continue
+        probe = np.repeat(row.reshape(1, -1), len(multipliers), axis=0)
+        probe[:, idx] = [own * m for m in multipliers]
+        if avail_idx is not None:
+            # A sweep is only meaningful where the ratio is a real measurement.
+            probe[:, avail_idx] = 1.0
+        try:
+            p = model.predict_proba(probe)[:, 1]
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning('price sensitivity probe failed: %s', exc)
+            return 0.0, 0.0
+        drops.append(float(p[0] - p[-1]))
+        if all(p[i] >= p[i + 1] for i in range(len(p) - 1)):
+            ordered += 1
+    if not drops:
+        return 0.0, 0.0
+    return float(np.mean(drops)), ordered / len(drops)
 
 
 def _candidates_for_size(n: int):
@@ -331,6 +389,40 @@ def retrain_win_model_for_scope(scope: str, user_id=None, min_samples=None) -> d
         logger.info('win model retrain (scope=%s, user=%s) below CV threshold (%s<%s) — '
                    'metrics logged, not gated: %s', scope, user_id, n, _cv_threshold(), winner_metrics)
 
+    # Price-sensitivity gate. Deliberately BEFORE the disk write below: the
+    # artifact file is what predictions resolve against, so a model that
+    # reaches disk is live regardless of any DB bookkeeping. Failing here
+    # leaves the previous artifact (or no artifact, and therefore the
+    # heuristic) exactly as it was.
+    #
+    # This is the gate the AUC gate cannot be. A model can rank outcomes
+    # better than chance while being flat or inverted in price, and that is
+    # not a subtle defect: the margin optimizer searches for the price where
+    # expected profit peaks, so a win curve that does not fall with price has
+    # no interior peak and the search walks to the top of the allowed band.
+    # In production that produced a recommendation 62% above the operator's
+    # own quote, labelled 96% likely to win.
+    min_sensitivity = float(getattr(settings, 'WIN_MODEL_MIN_PRICE_SENSITIVITY', 0.05))
+    sensitivity, ordered_frac = _price_sensitivity(final_model, X, feature_names)
+    if sensitivity < min_sensitivity or ordered_frac < 0.5:
+        reason = (
+            f'price sensitivity gate: win probability falls only {sensitivity:+.4f} '
+            f'when price is raised 0.9x->1.2x (need >= {min_sensitivity}), '
+            f'monotonic on {ordered_frac:.0%} of probe rows (need >= 50%)'
+        )
+        _record_model_version(
+            scope, user_id, status='rejected', algorithm=winner_name, feature_names=feature_names,
+            sample_count=n, accepted_count=accepted_count, rejected_count=rejected_count,
+            evaluation_metrics={**winner_metrics, 'price_sensitivity': round(sensitivity, 4),
+                                'price_monotonic_fraction': round(ordered_frac, 4)},
+            hyperparameters={'candidates_considered': bench},
+            rejection_reason=reason,
+        )
+        logger.warning('win model retrain REJECTED on price sensitivity (scope=%s, user=%s): %s',
+                       scope, user_id, reason)
+        return {'trained': False, 'reason': reason, 'samples': n,
+                'price_sensitivity': round(sensitivity, 4)}
+
     # Atomic activation: write the artifact to disk FIRST (existing atomic
     # tempfile+os.replace mechanism, unchanged) — only after that succeeds
     # does the DB bookkeeping flip. A crash mid-sequence leaves the DB row
@@ -356,7 +448,11 @@ def retrain_win_model_for_scope(scope: str, user_id=None, min_samples=None) -> d
     _activate_model_version(
         scope=scope, user_id=user_id, algorithm=winner_name, feature_names=feature_names,
         sample_count=n, accepted_count=accepted_count, rejected_count=rejected_count,
-        evaluation_metrics=winner_metrics, hyperparameters={'candidates_considered': bench},
+        # Stored alongside AUC so the admin panel can show whether the live
+        # model actually prices, not just whether it ranks.
+        evaluation_metrics={**winner_metrics, 'price_sensitivity': round(sensitivity, 4),
+                            'price_monotonic_fraction': round(ordered_frac, 4)},
+        hyperparameters={'candidates_considered': bench},
     )
 
     logger.info('Win model retrained (scope=%s, user=%s) on %s outcomes (algo=%s, auc=%s)',
