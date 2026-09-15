@@ -33,7 +33,10 @@ from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
-FEATURE_VERSION = 'v2'
+# Bump whenever the feature set changes, so snapshots written under an older
+# schema are recomputed instead of being fed to a model expecting the new one.
+# v3 added price_ratio_available.
+FEATURE_VERSION = 'v3'
 
 # Vehicle-type bucketing is deliberately a small, fixed vocabulary rather than
 # one-hot-ing the raw free-text VehicleType.name (company-defined, unbounded
@@ -56,6 +59,11 @@ _VEHICLE_TYPE_BUCKET_FEATURES = [f'vehicle_type_is_{name}' for name in VEHICLE_T
 # wide feature set long before it overfits a narrow one.
 CORE_FEATURES = [
     'price_ratio',
+    # Whether price_ratio is a real measurement or the 1.0 filler. Paired with
+    # price_ratio on purpose and in CORE, not FULL: the filler dominated ~64%
+    # of rows in production, so a model that cannot tell the two apart is
+    # learning from a constant. Cheap — one binary column.
+    'price_ratio_available',
     'quoted_margin_pct',
     'client_tier',
     'historical_acceptance_rate',
@@ -262,8 +270,18 @@ def compute_features(
             logger.warning('compute_features: market rate resolve failed: %s', exc)
             market_rate = None
     market_rate = float(market_rate) if market_rate else None
-    price_ratio = (total_amount / market_rate) if market_rate and market_rate > 0 else 1.0
-    cost_to_market_ratio = (direct_cost / market_rate) if market_rate and market_rate > 0 else price_ratio
+    # A missing market rate used to become price_ratio = 1.0, i.e. "priced
+    # exactly at market". That is a claim, not a neutral value: it was true for
+    # ~64% of production rows, which flattened the variance out of the single
+    # most predictive CORE feature while looking perfectly valid on inspection.
+    # Now the absence is its own feature — price_ratio_available — so the model
+    # can learn "we had no market reference for this lane" instead of being
+    # told a fiction. price_ratio keeps 1.0 as its filler so the two features
+    # stay independent (vectorize() zero-fills anything absent), and
+    # price_ratio_available is what tells the model whether to trust it.
+    market_rate_available = bool(market_rate and market_rate > 0)
+    price_ratio = (total_amount / market_rate) if market_rate_available else 1.0
+    cost_to_market_ratio = (direct_cost / market_rate) if market_rate_available else price_ratio
 
     tier, hist_rate, cust_volume, rel_days = customer_signals(
         company, customer_id, as_of, exclude_quote_id=exclude_quote_id)
@@ -289,6 +307,7 @@ def compute_features(
 
     features = {
         'price_ratio': price_ratio,
+        'price_ratio_available': 1.0 if market_rate_available else 0.0,
         'quoted_margin_pct': quoted_margin_pct,
         'client_tier': tier,
         'historical_acceptance_rate': hist_rate,

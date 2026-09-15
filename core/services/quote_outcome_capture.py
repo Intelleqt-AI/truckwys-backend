@@ -117,7 +117,12 @@ def record_quote_outcome(quote, outcome, *, rejection_reason='', final_price=Non
         )
 
         market_rate = None
-        market_source = ''
+        # 'none', not '': an empty string is indistinguishable from a row
+        # written before this column existed, which made it impossible to
+        # measure how often the benchmark actually resolves. It resolves for
+        # roughly a third of production rows, and that only became visible
+        # once the failure was recorded explicitly.
+        market_source = 'none'
         try:
             from core.services.lane_benchmark import resolve_market_rate
             # exclude_quote_id: this quote's status is already ACCEPTED when we

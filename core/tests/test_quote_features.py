@@ -133,3 +133,44 @@ class LeakageSafetyTests(TestCase):
             self.company, 'JHB', 'CPT', as_of=early.created_at, exclude_quote_id=early.id,
         )
         self.assertAlmostEqual(rate, 0.5)
+
+
+class PriceRatioAvailabilityTests(TestCase):
+    """A missing market rate used to be reported as price_ratio = 1.0, which
+    claims "priced exactly at market" and was true for ~64% of production
+    rows — flattening the most predictive CORE feature into a constant while
+    still looking like a valid measurement. price_ratio_available is what
+    makes the difference visible to the model."""
+
+    def test_no_market_rate_marks_price_ratio_unavailable(self):
+        f = quote_features.compute_features(
+            company=None, total_amount=10000, base_rate=6000, distance_km=250,
+            origin='NOWHERE', destination='ELSEWHERE',
+        )
+        self.assertEqual(f['price_ratio_available'], 0.0)
+        self.assertEqual(f['price_ratio'], 1.0)  # filler, flagged as such
+
+    def test_explicit_market_rate_marks_price_ratio_available(self):
+        f = quote_features.compute_features(
+            company=None, total_amount=12000, base_rate=6000, distance_km=250,
+            market_rate=10000,
+        )
+        self.assertEqual(f['price_ratio_available'], 1.0)
+        self.assertAlmostEqual(f['price_ratio'], 1.2, places=4)
+
+    def test_availability_is_a_core_feature_and_vectorizes(self):
+        # In CORE, not FULL: every per-user model sits below the CV threshold,
+        # and those are exactly the models the constant was corrupting.
+        self.assertIn('price_ratio_available', quote_features.CORE_FEATURES)
+        vec = quote_features.vectorize(
+            {'price_ratio': 1.2, 'price_ratio_available': 1.0},
+            quote_features.CORE_FEATURES,
+        )
+        self.assertEqual(len(vec), len(quote_features.CORE_FEATURES))
+        idx = quote_features.CORE_FEATURES.index('price_ratio_available')
+        self.assertEqual(vec[idx], 1.0)
+
+    def test_feature_version_bumped_so_old_snapshots_are_recomputed(self):
+        # Snapshots written under the previous feature set must not be fed to
+        # a model expecting the new one.
+        self.assertEqual(quote_features.FEATURE_VERSION, 'v3')
