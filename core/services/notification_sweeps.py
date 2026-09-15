@@ -146,9 +146,20 @@ def sweep_vehicle_documents():
 
 def sweep_expired_quotes():
     """Mark SENT quotes past valid_until as EXPIRED. The status transition
-    fires the quote.expired notify via the Quote post_save signal."""
+    fires the quote.expired notify via the Quote post_save signal.
+
+    Expiring also records a 'rejected' ML outcome: a quote the customer never
+    answered is a lost deal, and it is the only negative label this product
+    generates in volume — without it the win model has a single outcome class
+    and refuses to train at all. Only quotes with no outcome row yet are
+    labelled, so a quote that was accepted and then drifted past valid_until
+    keeps its 'accepted' label (allow_flip stays False for the same reason).
+    """
     from core.models import Quote
+    from core.services.quote_outcome_capture import record_quote_outcome
+
     expired = 0
+    labelled = 0
     candidates = Quote.objects.filter(status='SENT', valid_until__lt=date.today())
     for quote in candidates.iterator():
         try:
@@ -157,7 +168,21 @@ def sweep_expired_quotes():
             expired += 1
         except Exception as exc:
             logger.warning('quote expiry sweep: quote %s failed: %s', quote.pk, exc)
-    return {'expired': expired}
+            continue
+
+        # Never let a training-label failure undo the expiry above.
+        try:
+            record = record_quote_outcome(
+                quote, 'rejected',
+                rejection_reason='Expired without response',
+                allow_flip=False,
+            )
+            if record is not None and record.outcome == 'rejected':
+                labelled += 1
+        except Exception as exc:
+            logger.warning('quote expiry sweep: outcome capture for %s failed: %s', quote.pk, exc)
+
+    return {'expired': expired, 'labelled_rejected': labelled}
 
 
 def send_weekly_summaries():
