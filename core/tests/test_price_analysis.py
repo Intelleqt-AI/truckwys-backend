@@ -159,7 +159,12 @@ class AiPredictionContractTests(IsolatedModelStorageMixin, TestCase):
         from core.services.quote_analysis import analyze_quote
         from core.services.win_prediction import PredictionContext
 
-        fake_ctx = PredictionContext(True, 'user', 72, lambda features: 0.6)
+        # A flat 0.6 here would legitimately trip margin_optimizer's
+        # degenerate-curve guard (a real, unrelated fix — a model with no
+        # price response is exactly what that guard exists to catch) and
+        # this test would then be asserting the wrong thing about a
+        # heuristic-derived result. Price-sensitive, so the curve is real.
+        fake_ctx = PredictionContext(True, 'user', 72, lambda features: max(0.05, min(0.95, 1.3 - features.get('price_ratio', 1.0))))
         with mock.patch('core.services.win_prediction.resolve_prediction_context', return_value=fake_ctx):
             result = analyze_quote({'quote_total': 25000, 'direct_cost': 12000, 'market_rate': 25000})
 
@@ -781,3 +786,60 @@ class DegenerateWinCurveGuardTests(TestCase):
         for point in result['curve']:
             expected = max(0.02, min(0.98, 1.6 - point['price'] / self.MARKET))
             self.assertAlmostEqual(point['win_probability'], round(expected, 4), places=3)
+
+    def test_fallback_is_flagged_structurally_not_just_in_text(self):
+        # Discovered the hard way: margin_optimizer knew a curve was degenerate
+        # but only said so in a human-readable note. _build_ai_prediction had
+        # no structured way to tell, so a heuristic-derived number was labelled
+        # "Personal AI"/"Platform AI" — exactly the masquerade its own
+        # docstring says must never happen. This is the field that fixes that.
+        result = self._optimize(lambda features: 0.96)
+        self.assertTrue(result.get('used_heuristic_fallback'))
+
+    def test_healthy_curve_is_not_flagged(self):
+        def declining(features):
+            return max(0.02, min(0.98, 1.6 - features.get('price_ratio', 1.0)))
+        result = self._optimize(declining)
+        self.assertFalse(result.get('used_heuristic_fallback'))
+
+
+class AiPredictionHidesHeuristicFallbackTests(TestCase):
+    """The exact bug from a real quote: two nearly-identical price points on
+    the same trained model, one where the curve was usable and one where it
+    was flat enough that margin_optimizer substituted the heuristic. Without
+    this check the second one still reported model_scope/"available": True,
+    so the UI badge read "Personal AI" for a heuristic-derived number — the
+    two numbers side by side looked like the model itself had gone haywire,
+    when the model was fine and the label was just wrong.
+    """
+
+    def test_heuristic_fallback_is_never_reported_as_a_trained_prediction(self):
+        from core.services.quote_analysis import _build_ai_prediction
+        from core.services.win_prediction import PredictionContext
+
+        ctx = PredictionContext(available=True, scope='user', sample_count=40,
+                                predict_proba=lambda f: 0.5)
+        opt = {
+            'optimal_price': 39000.0, 'win_probability_at_optimal': 0.03,
+            'used_heuristic_fallback': True,
+        }
+        result = _build_ai_prediction(opt, real_market_rate=52000.0, prediction_ctx=ctx)
+
+        self.assertFalse(result['available'])
+        self.assertEqual(result['reason'], 'model_curve_unusable')
+        self.assertNotIn('model_scope', result)
+
+    def test_a_real_trained_prediction_is_unaffected(self):
+        from core.services.quote_analysis import _build_ai_prediction
+        from core.services.win_prediction import PredictionContext
+
+        ctx = PredictionContext(available=True, scope='user', sample_count=40,
+                                predict_proba=lambda f: 0.5)
+        opt = {
+            'optimal_price': 46020.0, 'win_probability_at_optimal': 0.73,
+            'used_heuristic_fallback': False,
+        }
+        result = _build_ai_prediction(opt, real_market_rate=52000.0, prediction_ctx=ctx)
+
+        self.assertTrue(result['available'])
+        self.assertEqual(result['model_scope'], 'user')

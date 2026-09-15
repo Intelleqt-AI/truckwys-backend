@@ -368,6 +368,14 @@ def _build_ai_prediction(opt, real_market_rate, prediction_ctx):
         # (e.g. its except-branch fallback ran) — never show a half-real block.
         return {'available': False, 'reason': 'optimizer_error'}
 
+    if opt.get("used_heuristic_fallback"):
+        # The trained model's own curve was too flat/degenerate for the
+        # optimizer to trust (margin_optimizer's guard), so it substituted
+        # the heuristic. The price/margin/win numbers above are real, just
+        # not model-derived -- showing model_scope here would be exactly
+        # the masquerade this function exists to prevent.
+        return {"available": False, "reason": "model_curve_unusable"}
+
     return {
         'available': True,
         'model_scope': prediction_ctx.scope,

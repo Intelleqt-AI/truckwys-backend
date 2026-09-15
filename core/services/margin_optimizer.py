@@ -384,6 +384,14 @@ def optimize_price(
             },
             'constraints_relaxed': constraints_relaxed,
             'constraint_notes': constraint_notes,
+            # True whenever the trained model's own curve was too flat to
+            # optimise against and the heuristic was substituted instead --
+            # the ONLY reliable signal that this result is heuristic-derived
+            # even though a trained model exists and produced a prediction.
+            # Without this, _build_ai_prediction had no way to tell the two
+            # apart and labelled a heuristic number "Personal AI"/"Platform
+            # AI", exactly what its own docstring says must never happen.
+            'used_heuristic_fallback': degenerate_model_curve,
         }
 
     except Exception as exc:
