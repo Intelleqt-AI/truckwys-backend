@@ -126,7 +126,27 @@ class Quote(models.Model):
     def save(self, *args, **kwargs):
         if not self.token:
             self.token = secrets.token_urlsafe(32)
+        self._normalise_lane_codes()
         super().save(*args, **kwargs)
+
+    def _normalise_lane_codes(self):
+        """Make origin/destination canonical city codes, deriving them from the
+        addresses when the supplied value isn't one.
+
+        These drive every market-rate tier in core.services.lane_benchmark, and
+        they used to be computed in the browser — by two different functions
+        that disagreed, one of which turned "21 Smith Street" into the lane code
+        `21`. Deciding it here means one implementation, and a junk value from
+        any client gets repaired instead of fragmenting the lane statistics.
+        A value that already canonicalizes is only rewritten to its canonical
+        spelling (DUR -> DBN), never replaced.
+        """
+        try:
+            from core.services.lane_benchmark import derive_lane_code
+        except Exception:  # pragma: no cover - import guard only
+            return
+        self.origin = derive_lane_code(self.origin, self.pickup_location)
+        self.destination = derive_lane_code(self.destination, self.delivery_location)
 
     def __str__(self):
         return f"Quote {self.quote_number} - {self.customer.name}"

@@ -1342,10 +1342,22 @@ class QuoteBenchmarkView(APIView):
         """
         try:
             from core.services.lane_benchmark import (
-                compute_lane_benchmark, canon_code, lookup_sa_estimate, _lane_q,
+                compute_lane_benchmark, derive_lane_code, lookup_sa_estimate, _lane_q,
             )
-            origin = canon_code(request.query_params.get('origin', ''))
-            destination = canon_code(request.query_params.get('destination', ''))
+            # derive_lane_code, not bare canon_code: the browser sends whatever
+            # its address parsing produced, which has included street numbers
+            # ("21", "128"). Those canonicalize to themselves and then match no
+            # benchmark tier, so the preview came back empty with no hint why.
+            # Falling back to the full address here means the same repair the
+            # Quote model does on save, for every client.
+            origin = derive_lane_code(
+                request.query_params.get('origin', ''),
+                request.query_params.get('pickup_location', ''),
+            )
+            destination = derive_lane_code(
+                request.query_params.get('destination', ''),
+                request.query_params.get('delivery_location', ''),
+            )
             vehicle_type = request.query_params.get('vehicle_type', '').lower()
 
             if not origin or not destination or not vehicle_type:

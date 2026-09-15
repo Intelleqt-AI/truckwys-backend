@@ -52,6 +52,53 @@ def canon_code(code):
     return _CITY_ALIASES.get(c, c)
 
 
+CANONICAL_CITIES = frozenset(_CITY_ALIASES.values()) | {'JHB', 'CPT', 'DBN', 'PE', 'PTA', 'BFN'}
+
+
+def is_known_lane_code(code):
+    """True if this value canonicalizes to a city this module can price."""
+    return canon_code(code) in CANONICAL_CITIES
+
+
+def derive_lane_code(*candidates):
+    """Best canonical city code from any of `candidates` (a lane code, a full
+    address, ...), or '' when none of them names a city we recognise.
+
+    Two frontend pages derived these codes independently and both got it wrong:
+    the fallback took the first three characters of the address, so "21 Smith
+    Street" became the lane code `21` and "128 Main Rd" became `128` — ten such
+    rows in production, and a numeric code can never match any benchmark tier.
+    One of them also matched city names as bare substrings, so a street
+    containing "PE" resolved to Port Elizabeth.
+
+    Returning '' for an unrecognised place is deliberate: a wrong code is worse
+    than no code, because it silently fragments the lane statistics every tier
+    is computed from, while an empty one makes resolve_market_rate bail at once.
+    """
+    import re
+
+    for raw in candidates:
+        text = (raw or '').strip()
+        if not text:
+            continue
+
+        # An explicit code (or a known alias like DUR) wins as-is.
+        if is_known_lane_code(text):
+            return canon_code(text)
+
+        upper = text.upper()
+        # Longest alias first so "CAPE TOWN" is not shadowed by a shorter key,
+        # and \b so a street name containing "PE" is not Port Elizabeth.
+        for alias in sorted(_CITY_ALIASES, key=len, reverse=True):
+            if re.search(rf'\b{re.escape(alias)}\b', upper):
+                return _CITY_ALIASES[alias]
+        for city in sorted(CANONICAL_CITIES, key=len, reverse=True):
+            if re.search(rf'\b{re.escape(city)}\b', upper):
+                return city
+
+    return ''
+
+
 def _code_variants(code):
     """Every stored spelling that should match this lane code."""
     c = canon_code(code)
@@ -279,18 +326,40 @@ SA_MARKET_ESTIMATES = {
     ('JHB', 'DBN', 'truck'): {'avg': 15000, 'low': 12000, 'high': 18000},
 }
 
+# The table above is one-directional, but a return leg is the same haul: every
+# CPT->JHB quote in production fell through all four tiers purely because only
+# JHB->CPT was listed. Mirroring here rather than by hand keeps the two
+# directions from drifting apart, and lookup_sa_estimate() consults it after
+# the explicit table so a real directional rate can still be added above and
+# will win.
+SA_MARKET_ESTIMATES_REVERSED = {
+    (d, o, vt): rates for (o, d, vt), rates in SA_MARKET_ESTIMATES.items()
+}
+
 # How far back the own-company fallback looks. Without a window, years-old
 # won quotes (pre fuel-price/inflation moves) would anchor today's "market".
 COMPANY_FALLBACK_DAYS = 365
 
 
 def lookup_sa_estimate(origin, destination, vehicle_type=None):
-    """The hardcoded estimate entry for a lane, or None. Codes are canonicalized."""
+    """The hardcoded estimate entry for a lane, or None. Codes are canonicalized.
+
+    Vehicle type degrades exact -> truck -> interlink, and the directional
+    table is tried before its mirror, so an explicitly-listed return rate
+    always beats the assumption that the return leg costs the same.
+    """
     o, d = canon_code(origin), canon_code(destination)
+    if not o or not d or o == d:
+        # Same-origin-and-destination quotes exist in the data (free-text
+        # fields, and 'PE' matched a street name); there is no lane rate for a
+        # journey to itself.
+        return None
     vt = (vehicle_type or '').strip().lower() or None
-    for key in ((o, d, vt), (o, d, 'truck'), (o, d, 'interlink')):
-        if key in SA_MARKET_ESTIMATES:
-            return SA_MARKET_ESTIMATES[key]
+    keys = ((o, d, vt), (o, d, 'truck'), (o, d, 'interlink'))
+    for table in (SA_MARKET_ESTIMATES, SA_MARKET_ESTIMATES_REVERSED):
+        for key in keys:
+            if key in table:
+                return table[key]
     return None
 
 
@@ -341,20 +410,28 @@ def resolve_market_rate(origin, destination, vehicle_type=None, company=None,
             from core.models import Quote
             from django.db.models import Avg
             since = as_of - timedelta(days=COMPANY_FALLBACK_DAYS)
-            qs = Quote.objects.filter(
+            base = Quote.objects.filter(
                 _lane_q('origin', o), _lane_q('destination', d),
                 status__in=WON_STATUSES, company=company,
                 created_at__gte=since, created_at__lte=as_of,
             )
-            if vt:
-                qs = qs.filter(vehicle_type__icontains=vt)
             if exclude_quote_id:
-                qs = qs.exclude(id=exclude_quote_id)
+                base = base.exclude(id=exclude_quote_id)
             if exclude_created_by_user_id:
-                qs = qs.exclude(created_by_id=exclude_created_by_user_id)
-            agg = qs.exclude(total_amount__isnull=True).aggregate(a=Avg('total_amount'), n=Count('id'))
-            if (agg['n'] or 0) >= 3 and agg['a']:
-                return float(agg['a']), 'company'
+                base = base.exclude(created_by_id=exclude_created_by_user_id)
+            base = base.exclude(total_amount__isnull=True)
+
+            # Vehicle-specific first, then lane-level — the same degradation
+            # tiers 1 and 2 already use. Without the second attempt this tier
+            # was unreachable in practice: CPT->JHB had 6 won quotes but split
+            # 3/2/1 across vehicle types, and excluding the quote being priced
+            # took the best group down to 2, under the >= 3 floor. Every such
+            # lane then fell through to a coarse estimate or to nothing.
+            attempts = [base.filter(vehicle_type__icontains=vt), base] if vt else [base]
+            for qs in attempts:
+                agg = qs.aggregate(a=Avg('total_amount'), n=Count('id'))
+                if (agg['n'] or 0) >= 3 and agg['a']:
+                    return float(agg['a']), 'company'
         except Exception as exc:  # never raise
             logger.warning('resolve_market_rate: company lookup failed: %s', exc)
 
