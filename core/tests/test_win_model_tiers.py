@@ -157,3 +157,53 @@ class UserIsolationAndFallbackTests(_RequiresSklearnMixin, IsolatedModelStorageM
         # predict_proba must still be callable (heuristic) even when unavailable.
         p = ctx.predict_proba({'price_ratio': 1.0})
         self.assertTrue(0.0 <= p <= 1.0)
+
+
+class ModelVersionFieldWidthTests(_RequiresSklearnMixin, IsolatedModelStorageMixin, TestCase):
+    """Every bookkeeping field must fit the column it is stored in.
+
+    This is asserted in Python rather than left to the database on purpose.
+    model_version was built with timezone.now().isoformat(), 41 characters
+    against a varchar(40): SQLite ignores the declared width, so the whole
+    local suite passed while every activation on Postgres raised
+    StringDataRightTruncation — after the artifact had already been written to
+    disk, leaving production serving a trained model with no version row and
+    nothing to compare the next retrain's AUC against. full_clean() applies
+    Django's own max_length validation, which is backend-independent.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.company = Company.objects.create(company_name='Width Co')
+        self.customer = Customer.objects.create(
+            company=self.company, name='Width Ltd', email='width@x.test',
+            phone='', address='', city='', state='', zip_code='',
+        )
+        self.user = User.objects.create_user(
+            username='width-user', password='x', company=self.company)
+
+    def test_activated_global_version_validates_against_its_own_columns(self):
+        make_outcomes(self.company, self.customer, self.user, 40, prefix='W')
+        result = quote_training.retrain_win_model_for_scope('global')
+        self.assertTrue(result.get('trained'), result)
+
+        row = MLModelVersion.objects.get(scope='global', status='active')
+        row.full_clean(exclude=['user'])
+        self.assertLessEqual(
+            len(row.model_version),
+            MLModelVersion._meta.get_field('model_version').max_length,
+        )
+
+    def test_activated_user_version_validates_too(self):
+        # The user scope interpolates a real id where global has a dash, so it
+        # is the longer of the two and must be checked separately.
+        make_outcomes(self.company, self.customer, self.user, 40, prefix='WU')
+        result = quote_training.retrain_win_model_for_scope('user', user_id=self.user.id)
+        self.assertTrue(result.get('trained'), result)
+
+        row = MLModelVersion.objects.get(scope='user', status='active')
+        row.full_clean()
+        self.assertLessEqual(
+            len(row.model_version),
+            MLModelVersion._meta.get_field('model_version').max_length,
+        )

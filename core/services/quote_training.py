@@ -194,7 +194,15 @@ def _record_model_version(scope, user_id, *, status, algorithm='', feature_names
     return MLModelVersion.objects.create(
         scope=scope, user_id=(user_id if scope == 'user' else None), status=status,
         algorithm=algorithm, feature_version=quote_features.FEATURE_VERSION,
-        feature_names=feature_names or [], model_version=f'{scope}:{user_id or "-"}:{timezone.now().isoformat()}',
+        # Compact stamp, not isoformat(): the field is varchar(40) and
+        # "global:-:2026-09-15T13:06:47.716726+00:00" is 41 characters, so
+        # every activation died on Postgres with StringDataRightTruncation
+        # AFTER the artifact was already on disk — a trained, serving model
+        # with no bookkeeping row. SQLite doesn't enforce varchar length, so
+        # local runs and the test suite never saw it. This also matches the
+        # field's own documented shape ("user:123:v7, global:v42").
+        feature_names=feature_names or [],
+        model_version=f'{scope}:{user_id or "-"}:{timezone.now():%Y%m%dT%H%M%S}',
         training_sample_count=sample_count, accepted_count=accepted_count, rejected_count=rejected_count,
         evaluation_metrics=evaluation_metrics or {}, hyperparameters=hyperparameters or {},
         rejection_reason=rejection_reason, trained_at=timezone.now(),
