@@ -235,6 +235,12 @@ class VehicleTypeSerializer(serializers.ModelSerializer):
     # Number of AVAILABLE vehicles of this type — used to hide types the
     # company can't actually fulfil when creating a quote.
     available_vehicle_count = serializers.SerializerMethodField()
+    # True for a company-owned row that shadows a shared (company=None)
+    # default of the same name — the result of a tenant user editing a shared
+    # type (VehicleTypeViewSet.update's copy-on-write, core/views.py). The
+    # frontend uses this to offer "Reset to shared default" instead of
+    # "Delete" for these specifically.
+    overrides_shared_default = serializers.SerializerMethodField()
 
     class Meta:
         model = VehicleType
@@ -281,6 +287,18 @@ class VehicleTypeSerializer(serializers.ModelSerializer):
             self._available_vehicles_cache = available_vehicle_rows(company)
 
         return count_available(self._available_vehicles_cache, obj.id, obj.name)
+
+    def get_overrides_shared_default(self, obj):
+        if obj.company_id is None:
+            return False
+        # Cached per-request (not per-object) — same reasoning as
+        # _available_vehicles_cache above: DRF reuses one serializer instance
+        # across a whole list response.
+        if not hasattr(self, '_shared_default_names_cache'):
+            self._shared_default_names_cache = set(
+                VehicleType.objects.filter(company__isnull=True).values_list('name', flat=True)
+            )
+        return obj.name in self._shared_default_names_cache
 
 
 # VehicleLog Serializer

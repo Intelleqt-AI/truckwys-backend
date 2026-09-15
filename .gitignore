@@ -55,3 +55,8 @@ firebase-*.json
 serviceAccountKey.json
 google-services.json
 GoogleService-Info.plist
+
+# Stale/alternate virtualenvs — `venv/` alone doesn't match venv_py311_old etc.
+venv*/
+# Celery beat runtime state, rewritten on every run
+celerybeat-schedule*

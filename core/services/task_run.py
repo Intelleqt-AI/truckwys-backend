@@ -35,6 +35,7 @@ TRACKED_TASKS = {
     'retry_delivery_fee_charges': timedelta(hours=36),
     'retrain_win_model': timedelta(hours=36),
     'sweep_user_win_model_training': timedelta(hours=36),
+    'sweep_stale_activity_logs': timedelta(hours=36),
 }
 
 

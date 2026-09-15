@@ -6,10 +6,17 @@ Seeds BorderCrossingFee and CountryTransitRate tables with SADC values.
 Fee model (2026 rework, anchored to client-reported real corridor costs):
   Per-corridor crossing fee = SA-side CBRTA permit + destination-country entry costs
   (road access, carbon tax, third-party insurance, gate pass) folded into one number.
-  SACU members (BW, NA, LS, SZ) are far cheaper than non-SACU (ZW, MZ) — Zimbabwe
-  alone adds ~USD 150 (≈R 2 600) in carbon/insurance/gate/road-access at Beitbridge.
-  Values are ESTIMATES to be validated against real invoices; DB rows are the
-  runtime source of truth and override the hardcoded fallbacks in cross_border.py.
+  SACU members (BW, NA, LS, SZ) are far cheaper than non-SACU (ZW, MZ).
+  ZW corrected 2026-09 against primary sources (Zimborders' own tariff page and
+  April 2026 update, ZINARA's published tariff): the bridge toll alone for a
+  Goods Vehicle is $221 ≈ R3,546 @ R16.04/USD, plus SA-side customs/clearing-
+  agent costs of $100-150 ≈ R1,604-R2,406 the old R2,600 estimate didn't cover
+  at all — now R5,550 (toll + clearing-agent midpoint). See
+  core/migrations/0110_fix_zw_border_fee.py for the one-off backfill of an
+  already-seeded database; this command is the seed for a fresh one.
+  Other corridors remain ESTIMATES to be validated against real invoices;
+  DB rows are the runtime source of truth and override the hardcoded
+  fallbacks in cross_border.py.
 
 Usage:
     python manage.py seed_cross_border_data
@@ -24,12 +31,12 @@ from django.core.management.base import BaseCommand
 # core/services/cross_border.py.
 # ---------------------------------------------------------------------------
 _SACU_FEE = Decimal('350.00')    # SACU corridors — no full foreign permit regime
-_ZW_FEE   = Decimal('2600.00')   # Beitbridge: carbon tax + insurance + gate + road access
+_ZW_FEE   = Decimal('5550.00')   # Beitbridge: bridge toll ($221) + SA-side clearing agent
 _MZ_FEE   = Decimal('2200.00')   # Lebombo: permit + entry costs
 
 _BORDER_FEES = [
     # SA exits — non-SACU (expensive corridors)
-    {'from_country': 'SA', 'to_country': 'ZW', 'fee_zar': _ZW_FEE, 'notes': 'Beitbridge — CBRTA + ZW carbon tax/insurance/gate/road access (estimate — validate)'},
+    {'from_country': 'SA', 'to_country': 'ZW', 'fee_zar': _ZW_FEE, 'notes': "Beitbridge — Zimborders bridge toll ($221 Goods Vehicle rate) + SA-side customs/clearing agent"},
     {'from_country': 'SA', 'to_country': 'MZ', 'fee_zar': _MZ_FEE, 'notes': 'Lebombo / Komatipoort — CBRTA + MZ entry costs (estimate — validate)'},
     # SA exits — SACU (reduced)
     {'from_country': 'SA', 'to_country': 'BW', 'fee_zar': _SACU_FEE, 'notes': 'Kopfontein / Ramatlabama — SACU corridor'},
@@ -156,6 +163,6 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(
             f'BorderCrossingFee: {fee_created} created, {fee_updated} skipped.\n'
             f'CountryTransitRate: {rate_created} created, {rate_updated} skipped.\n'
-            f'Corridor fees: SACU R350, ZW R2600, MZ R2200 (estimates — validate vs invoices).\n'
+            f'Corridor fees: SACU R350, ZW R5550, MZ R2200 (estimates — validate vs invoices).\n'
             f'Re-run with --force to overwrite existing records.'
         ))

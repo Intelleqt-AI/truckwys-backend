@@ -56,11 +56,27 @@ def count_available(rows: List[Dict[str, Any]], vt_id: int, vt_name: str) -> int
     )
 
 
+def visible_vehicle_types_queryset(company):
+    """Shared (company=None) defaults, EXCEPT any of them a company has
+    overridden — see VehicleTypeViewSet.update (core/views.py) for how an
+    override gets created (a copy-on-write clone the first time a tenant user
+    edits a shared type) and its "Reset" action (a plain delete of that clone)
+    for how a company reverts to seeing the shared default again. A company's
+    own row always wins over a same-named shared one so an override actually
+    replaces what that company sees, rather than showing both."""
+    from core.models import VehicleType
+    if not company:
+        return VehicleType.objects.filter(company__isnull=True)
+    own_names = set(VehicleType.objects.filter(company=company).values_list('name', flat=True))
+    return VehicleType.objects.filter(
+        Q(company=company) | (Q(company__isnull=True) & ~Q(name__in=own_names))
+    )
+
+
 def available_vehicle_types(company) -> List[Dict[str, Any]]:
     """Exactly the options the New Quote vehicle-type dropdown offers this
-    company: tenant-visible (global company=None defaults + the company's
-    own) AND backed by >=1 AVAILABLE vehicle, deduplicated by name, capacity
-    normalised to tonnes.
+    company: tenant-visible (per visible_vehicle_types_queryset) AND backed by
+    >=1 AVAILABLE vehicle, capacity normalised to tonnes.
 
     -> [{'id', 'name', 'capacity_t'}]; capacity_t is None when unknowable.
 
@@ -68,17 +84,16 @@ def available_vehicle_types(company) -> List[Dict[str, Any]]:
     fulfil nothing right now", never as a signal to fall back to some other,
     more generic list.
     """
-    from core.models import VehicleType
     if company is None:
         return []
     rows = available_vehicle_rows(company)
     out: List[Dict[str, Any]] = []
     seen = set()
-    for vt in (
-        VehicleType.objects.filter(Q(company=None) | Q(company=company))
-        .values('id', 'name', 'capacity').order_by('name')
-    ):
+    for vt in visible_vehicle_types_queryset(company).values('id', 'name', 'capacity').order_by('name'):
         key = (vt['name'] or '').strip().lower()
+        # Guards only against a company accidentally naming two of its OWN
+        # custom types identically (no DB constraint stops that) — the
+        # shared-vs-override precedence is already resolved by the queryset.
         if not key or key in seen:
             continue
         if count_available(rows, vt['id'], vt['name']) <= 0:

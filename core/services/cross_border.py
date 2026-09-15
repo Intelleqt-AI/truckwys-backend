@@ -46,13 +46,20 @@ _CBRTA_SA_BORDER_FEE = _CBRTA_APPLICATION_FEE + _CBRTA_PERMIT_14DAY_CLASS1  # 1 
 # Per-corridor crossing fee = SA-side CBRTA permit + destination-country entry costs
 # (road-access, carbon tax, third-party insurance, gate pass) folded into one number.
 # KEY DISTINCTION: SACU members (NA, BW, LS, SZ) have far cheaper crossings than
-# non-SACU (ZW, MZ, ...) — Zimbabwe alone adds carbon+insurance+gate+road-access
-# (~USD 150 ≈ R2 600). These are ESTIMATES anchored to client-reported real costs
-# (NA≈R697, BW≈R700, ZW≈R3 850) — validate against actual invoices; DB rows override.
+# non-SACU (ZW, MZ, ...). ZW specifically corrected (2026-09) against primary
+# sources (Zimborders' own tariff page/April 2026 update, ZINARA's published
+# tariff): the Zimborders bridge toll alone for a Goods Vehicle is $221 ≈
+# R3,546 @ R16.04/USD, plus SA-side customs/clearing-agent costs of
+# $100-150 ≈ R1,604-R2,406 that the old R2,600 figure didn't cover at all —
+# corrected to R5,550 (toll + clearing-agent midpoint). See
+# core/migrations/0110_fix_zw_border_fee.py. Other corridors are still 2024
+# estimates anchored to client-reported real costs (NA≈R697, BW≈R700) —
+# validate against actual invoices; DB rows override these fallbacks.
 _SACU_CROSSING_FEE = 350   # SACU corridor — reduced (no full foreign permit regime)
+_ZW_CROSSING_FEE = 5550    # Beitbridge bridge toll + SA-side clearing agent (see above)
 _FALLBACK_BORDER_FEES: dict[str, int] = {
     # Non-SACU SA exits — CBRTA permit + destination entry (carbon/insurance/gate/road)
-    'SA-ZW': 2600,  # Beitbridge (Zimbabwe is the most expensive corridor)
+    'SA-ZW': _ZW_CROSSING_FEE,  # Beitbridge (Zimbabwe is the most expensive corridor)
     'SA-MZ': 2200,  # Lebombo / Komatipoort
     # SACU SA exits — reduced
     'SA-BW': _SACU_CROSSING_FEE,  # Kopfontein / Ramatlabama
@@ -60,7 +67,7 @@ _FALLBACK_BORDER_FEES: dict[str, int] = {
     'SA-LS': _SACU_CROSSING_FEE,  # Maseru Bridge / Caledonspoort
     'SA-SZ': _SACU_CROSSING_FEE,  # Oshoek / Ngwenya
     # SA re-entries — same cost class on return
-    'ZW-SA': 2600, 'MZ-SA': 2200,
+    'ZW-SA': _ZW_CROSSING_FEE, 'MZ-SA': 2200,
     'BW-SA': _SACU_CROSSING_FEE, 'NA-SA': _SACU_CROSSING_FEE,
     'LS-SA': _SACU_CROSSING_FEE, 'SZ-SA': _SACU_CROSSING_FEE,
     # Multi-hop crossings — industry estimates (non-SA, not in SA gazette)
