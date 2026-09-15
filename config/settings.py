@@ -469,7 +469,8 @@ CELERY_BEAT_SCHEDULE = {
         'schedule': crontab(hour='6', minute='0'),
     },
     # Retrain the quote win-probability model nightly at 03:00 SAST.
-    # Idempotent — no-ops until WIN_MODEL_MIN_SAMPLES outcomes exist.
+    # Idempotent — no-ops until WIN_MODEL_GLOBAL_MIN_SAMPLES outcomes exist
+    # AND both accepted and rejected labels are present.
     'retrain-win-model': {
         'task': 'core.tasks.retrain_win_model',
         'schedule': crontab(hour='3', minute='0'),

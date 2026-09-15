@@ -944,6 +944,88 @@ class AdminIntegrationsHealthView(APIView):
         })
 
 
+class AdminModelHealthView(APIView):
+    """Is the win-probability model actually any good, and if not, why not.
+
+    "Does the nightly task run" (AdminJobHealthView) says nothing about model
+    quality: retrain_win_model reports success when it correctly declines to
+    train. Production sat at 73 outcome rows for weeks with no model at all,
+    because every row was labelled 'accepted' and a classifier needs both
+    classes — a state nothing surfaced. This reports the three things that
+    actually gate training (sample count, class balance, feature coverage)
+    alongside the metrics of whatever is currently live.
+    """
+    permission_classes = [IsSuperUser]
+
+    def get(self, request):
+        from django.conf import settings
+        from core.models import MLModelVersion, QuoteOutcome
+        from core.services import quote_features
+
+        trainable = QuoteOutcome.objects.filter(outcome__in=['accepted', 'rejected'])
+        by_label = {
+            row['outcome']: row['n']
+            for row in trainable.values('outcome').annotate(n=Count('id'))
+        }
+        accepted = by_label.get('accepted', 0)
+        rejected = by_label.get('rejected', 0)
+        total = accepted + rejected
+        global_floor = int(getattr(settings, 'WIN_MODEL_GLOBAL_MIN_SAMPLES', 40))
+
+        blockers = []
+        if total < global_floor:
+            blockers.append(f'only {total} of {global_floor} outcomes needed')
+        if accepted == 0 or rejected == 0:
+            blockers.append('only one outcome class present — a classifier cannot train')
+
+        # How much of the most predictive CORE feature is a real measurement
+        # rather than the 1.0 filler. A model trained where this is near zero
+        # is effectively blind to price competitiveness.
+        with_rate = trainable.exclude(market_rate_at_outcome__isnull=True).count()
+        by_source = {
+            (row['market_rate_source'] or 'none'): row['n']
+            for row in trainable.values('market_rate_source').annotate(n=Count('id'))
+        }
+
+        active = list(
+            MLModelVersion.objects.filter(status='active')
+            .order_by('scope', '-created_at')
+            .values(
+                'id', 'scope', 'user_id', 'algorithm', 'feature_version',
+                'training_sample_count', 'accepted_count', 'rejected_count',
+                'evaluation_metrics', 'trained_at', 'activated_at',
+            )
+        )
+        recent_failures = list(
+            MLModelVersion.objects.filter(status='failed')
+            .order_by('-created_at')[:5]
+            .values('id', 'scope', 'user_id', 'rejection_reason', 'created_at')
+        )
+
+        return Response({
+            'training_data': {
+                'accepted': accepted,
+                'rejected': rejected,
+                'total': total,
+                'global_min_samples': global_floor,
+                'user_min_samples': int(getattr(settings, 'WIN_MODEL_USER_MIN_SAMPLES', 40)),
+                'class_balance': round(min(accepted, rejected) / total, 4) if total else 0,
+            },
+            'feature_coverage': {
+                'feature_version': quote_features.FEATURE_VERSION,
+                'market_rate_resolved': with_rate,
+                'market_rate_missing': total - with_rate,
+                'market_rate_coverage': round(with_rate / total, 4) if total else 0,
+                'by_source': by_source,
+            },
+            # Empty with blockers listed is the honest answer, not an error.
+            'blockers': blockers,
+            'can_train': not blockers,
+            'active_models': active,
+            'recent_failures': recent_failures,
+        })
+
+
 class AdminAuditLogView(APIView):
     """Recent admin-dashboard actions (every write view above logs here via
     _log()) — proxied as "superuser-authored AuditLog entries" since AuditLog

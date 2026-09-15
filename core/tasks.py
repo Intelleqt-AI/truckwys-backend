@@ -496,7 +496,8 @@ def refresh_fuel_price(self):
 def retrain_win_model():
     """Nightly retrain of the quote win-probability model from captured
     QuoteOutcome data. Idempotent: no-ops with a clear reason until enough
-    outcomes exist (WIN_MODEL_MIN_SAMPLES)."""
+    outcomes exist (WIN_MODEL_GLOBAL_MIN_SAMPLES) and both outcome classes are
+    present — an all-accepted dataset cannot train a classifier."""
     from core.services.quote_training import retrain_win_model as _retrain
     result = _retrain()
     if result.get('trained'):

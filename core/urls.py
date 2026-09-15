@@ -13,7 +13,8 @@ from .views_admin import (
     AdminVehicleTypesView, AdminVehicleTypeDetailView,
     AdminBorderFeesView, AdminBorderFeeDetailView,
     AdminCountryTransitRatesView, AdminCountryTransitRateDetailView,
-    AdminSearchView, AdminJobHealthView, AdminIntegrationsHealthView, AdminAuditLogView,
+    AdminSearchView, AdminJobHealthView, AdminIntegrationsHealthView,
+    AdminModelHealthView, AdminAuditLogView,
 )
 from .views import (
     UserViewSet, CustomerViewSet, DriverViewSet,
@@ -164,6 +165,7 @@ urlpatterns = [
     path('admin/search/', AdminSearchView.as_view(), name='admin-search'),
     path('admin/job-health/', AdminJobHealthView.as_view(), name='admin-job-health'),
     path('admin/integrations-health/', AdminIntegrationsHealthView.as_view(), name='admin-integrations-health'),
+    path('admin/model-health/', AdminModelHealthView.as_view(), name='admin-model-health'),
     path('admin/audit-log/', AdminAuditLogView.as_view(), name='admin-audit-log'),
     path('billing/confirm/', ConfirmPaymentView.as_view(), name='billing-confirm'),
     path('auth/me/', UserProfileView.as_view(), name='user-profile'),
