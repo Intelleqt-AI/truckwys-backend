@@ -262,6 +262,22 @@ def compute_lane_benchmark(origin, destination, vehicle_type=None,
               .values_list('total_amount', 'company_id', 'created_at')
         )
 
+        # Sanity cap against fat-fingered rate entries. Confirmed in production:
+        # a handful of quotes had base_rate keyed in at ~1000x the intended R/km
+        # (a Rigid Truck at R8,000/km instead of ~R15/km), turning a single
+        # lane's benchmark into R850,000+ for every OTHER company quoting it —
+        # a plain average has no defence against this, and real market variance
+        # never spans three orders of magnitude on the same lane. A quote more
+        # than 10x away from the sample's own preliminary median can only be a
+        # data-entry error, so it's dropped BEFORE any statistic is computed —
+        # not just before the median — so it can't inflate market_avg_rate/p25/
+        # p75 either, and never counts toward k-anonymity.
+        if rows:
+            prelim_median = _percentile(sorted(float(a) for a, _, _ in rows), 0.5)
+            if prelim_median > 0:
+                lo, hi = prelim_median / 10, prelim_median * 10
+                rows = [r for r in rows if lo <= float(r[0]) <= hi]
+
         sample_size = len(rows)
         distinct_operators = len({company_id for _, company_id, _ in rows})
 
@@ -390,17 +406,24 @@ def resolve_market_rate(origin, destination, vehicle_type=None, company=None,
     as_of = as_of or timezone.now()
 
     # 1-2) Cross-platform anonymized benchmark (vehicle-specific, then lane-level).
+    # Median, not market_avg_rate: compute_lane_benchmark's sanity cap keeps an
+    # order-of-magnitude data-entry error out of the sample entirely, but at
+    # k_anonymity's floor of a handful of rows the mean is still one legitimate
+    # premium-priced quote away from being dragged noticeably off-centre, while
+    # the median is unmoved by it. This is the value that actually prices
+    # quotes (via the optimizer's cost floor); market_avg_rate is left as-is
+    # for the benchmark display endpoint, which already shows p25/p75 alongside it.
     try:
         b = compute_lane_benchmark(
             o, d, vt, exclude_quote_id=exclude_quote_id,
             exclude_created_by_user_id=exclude_created_by_user_id, as_of=as_of)
-        if b.get('available') and b.get('market_avg_rate'):
-            return float(b['market_avg_rate']), 'platform'
+        if b.get('available') and b.get('market_median_rate'):
+            return float(b['market_median_rate']), 'platform'
         b = compute_lane_benchmark(
             o, d, exclude_quote_id=exclude_quote_id,
             exclude_created_by_user_id=exclude_created_by_user_id, as_of=as_of)
-        if b.get('available') and b.get('market_avg_rate'):
-            return float(b['market_avg_rate']), 'platform_lane'
+        if b.get('available') and b.get('market_median_rate'):
+            return float(b['market_median_rate']), 'platform_lane'
     except Exception as exc:  # never raise
         logger.warning('resolve_market_rate: platform lookup failed: %s', exc)
 
