@@ -175,6 +175,13 @@ class DriverSerializer(serializers.ModelSerializer):
 class VehicleSerializer(serializers.ModelSerializer):
     driver_name = serializers.SerializerMethodField()
     vehicle_type_name = serializers.CharField(source='vehicle_type.name', read_only=True)
+    # The linked VehicleType's own payload capacity (tonnes) — distinct from
+    # this Vehicle's own `capacity` field below, which is set independently
+    # per-vehicle and can drift from its type. The Vehicles directory shows
+    # this one right after the type name specifically because it's the
+    # authoritative "what does this type of truck carry" figure (see the
+    # payload/GVM labeling fix across VehicleType — core/services/vehicle_types.py).
+    vehicle_type_capacity = serializers.DecimalField(source='vehicle_type.capacity', max_digits=10, decimal_places=2, read_only=True)
     revenue_generated = serializers.SerializerMethodField()
     total_trips = serializers.SerializerMethodField()
     utilisation_rate = serializers.SerializerMethodField()
@@ -191,13 +198,13 @@ class VehicleSerializer(serializers.ModelSerializer):
             'registration_expiry', 'ai_health_score', 'fuel_efficiency_score',
             'uptime_score', 'maintenance_score', 'uptime_percentage', 'cost_per_km',
             'margin_per_trip', 'fuel_consumption_per_km', 'created_at', 'updated_at',
-            'driver_name', 'vehicle_type_name', 'revenue_generated', 'total_trips',
+            'driver_name', 'vehicle_type_name', 'vehicle_type_capacity', 'revenue_generated', 'total_trips',
             'utilisation_rate', 'cartrack_registration', 'latitude', 'longitude',
             'heading', 'speed_kmh', 'ignition_on', 'last_location_at',
             'temp1', 'temp2', 'temp3', 'temp4', 'cartrack_current_driver_ref',
             'door_open', 'last_door_event_at', 'ctrlfleet_vehicle_code',
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at', 'driver_name', 'vehicle_type_name',
+        read_only_fields = ['id', 'created_at', 'updated_at', 'driver_name', 'vehicle_type_name', 'vehicle_type_capacity',
                            'revenue_generated', 'total_trips', 'utilisation_rate',
                            'latitude', 'longitude', 'heading', 'speed_kmh', 'ignition_on',
                            'last_location_at', 'temp1', 'temp2', 'temp3', 'temp4',
@@ -235,6 +242,12 @@ class VehicleTypeSerializer(serializers.ModelSerializer):
     # Number of AVAILABLE vehicles of this type — used to hide types the
     # company can't actually fulfil when creating a quote.
     available_vehicle_count = serializers.SerializerMethodField()
+    # Number of vehicles of this type the company OWNS, whatever their status
+    # today. available_vehicle_count answers "can we run this right now";
+    # this answers "does this fleet run this type at all", which is what a
+    # quote for a load weeks out needs — a truck in transit today is still a
+    # truck the fleet owns.
+    owned_vehicle_count = serializers.SerializerMethodField()
     # True for a company-owned row that shadows a shared (company=None)
     # default of the same name — the result of a tenant user editing a shared
     # type (VehicleTypeViewSet.update's copy-on-write, core/views.py). The
@@ -252,6 +265,24 @@ class VehicleTypeSerializer(serializers.ModelSerializer):
             'max_distance': {'required': False, 'default': 0},
             'base_rate': {'required': False, 'default': 0},
         }
+
+    def get_owned_vehicle_count(self, obj):
+        request = self.context.get('request')
+        company = getattr(getattr(request, 'user', None), 'company', None)
+        if company is None:
+            # No company context (superuser browsing, tests) — the link-only
+            # count is the best available answer without leaking other
+            # companies' vehicles through a shared (company=None) type.
+            try:
+                return obj.vehicles.count()
+            except Exception:
+                return 0
+        # Cached per request, not per object: DRF reuses one serializer
+        # instance across every row in a list response.
+        from core.services.vehicle_types import owned_vehicle_rows, count_available
+        if not hasattr(self, '_owned_vehicles_cache'):
+            self._owned_vehicles_cache = owned_vehicle_rows(company)
+        return count_available(self._owned_vehicles_cache, obj.id, obj.name)
 
     def get_available_vehicle_count(self, obj):
         # A vehicle counts toward this type if EITHER its vehicle_type link

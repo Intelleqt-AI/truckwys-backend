@@ -43,6 +43,21 @@ def available_vehicle_rows(company) -> List[Dict[str, Any]]:
     )
 
 
+def owned_vehicle_rows(company) -> List[Dict[str, Any]]:
+    """Same shape as available_vehicle_rows, but every vehicle the company
+    OWNS regardless of status.
+
+    "Is a truck of this type free today" and "does this fleet run this type of
+    truck at all" are different questions. Quoting a load that runs next month
+    needs the second one: a truck in transit or in for a service is still a
+    truck the fleet owns and will send.
+    """
+    from core.models import Vehicle
+    return list(
+        Vehicle.objects.filter(company=company).values('vehicle_type_id', 'type')
+    )
+
+
 def count_available(rows: List[Dict[str, Any]], vt_id: int, vt_name: str) -> int:
     """A vehicle counts toward a type if EITHER its vehicle_type link points
     at it OR its own free-text `type` matches the type's name
