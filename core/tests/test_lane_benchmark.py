@@ -205,3 +205,97 @@ class LaneCodeDerivationTests(TestCase):
         q.refresh_from_db()
         self.assertEqual(q.origin, 'JHB')
         self.assertEqual(q.destination, 'CPT')
+
+
+class PlatformBenchmarkOutlierTests(TestCase):
+    """compute_lane_benchmark's cross-platform tier — the sanity cap and the
+    median-over-mean switch in resolve_market_rate.
+
+    Provoked by a real incident: a handful of quotes had base_rate keyed in
+    at ~1000x the intended R/km (a Rigid Truck at R8,000/km instead of
+    ~R15/km). A plain average of total_amount turned CPT<->DBN's benchmark
+    into R857,223 for every OTHER company quoting that lane -- nothing in
+    compute_lane_benchmark had ever needed to defend against a single
+    fat-fingered entry three orders of magnitude off the rest of the sample.
+    """
+
+    def setUp(self):
+        self.company_a = Company.objects.create(company_name='Platform Co A')
+        self.company_b = Company.objects.create(company_name='Platform Co B')
+        self.user_a = User.objects.create_user(
+            username='pa', email='pa@test.com', password='x', company=self.company_a)
+        self.user_b = User.objects.create_user(
+            username='pb', email='pb@test.com', password='x', company=self.company_b)
+        self.cust_a = Customer.objects.create(
+            company=self.company_a, name='A', email='a@platform.test')
+        self.cust_b = Customer.objects.create(
+            company=self.company_b, name='B', email='b@platform.test')
+        self._n = 0
+
+    def _won(self, company, customer, user, amount, origin='CPT', destination='DBN'):
+        self._n += 1
+        return make_quote(
+            company, customer, number=f'PB-{self._n:04d}', total=amount,
+            origin=origin, destination=destination, status='ACCEPTED',
+            outcome='accepted', created_by=user,
+        )
+
+    def test_extreme_outlier_is_excluded_from_every_statistic(self):
+        from core.services.lane_benchmark import compute_lane_benchmark
+
+        for amt in (30000, 31000, 32000):
+            self._won(self.company_a, self.cust_a, self.user_a, amt)
+        for amt in (33000, 34000):
+            self._won(self.company_b, self.cust_b, self.user_b, amt)
+        # The data-entry-error shape: three orders of magnitude off the rest.
+        self._won(self.company_b, self.cust_b, self.user_b, 30_000_000)
+
+        result = compute_lane_benchmark('CPT', 'DBN')
+        self.assertTrue(result['available'])
+        self.assertEqual(result['sample_size'], 5)  # the outlier never counted
+        self.assertLess(result['market_avg_rate'], 40000)
+        self.assertLess(result['market_median_rate'], 40000)
+
+    def test_normal_price_variance_is_kept(self):
+        from core.services.lane_benchmark import compute_lane_benchmark
+
+        amounts = [25000, 30000, 35000, 40000, 45000]  # 1.8x spread, well under 10x
+        for i, amt in enumerate(amounts):
+            company, cust, user = (
+                (self.company_a, self.cust_a, self.user_a) if i % 2 == 0
+                else (self.company_b, self.cust_b, self.user_b)
+            )
+            self._won(company, cust, user, amt)
+
+        result = compute_lane_benchmark('CPT', 'DBN')
+        self.assertTrue(result['available'])
+        self.assertEqual(result['sample_size'], 5)
+        self.assertAlmostEqual(result['market_avg_rate'], sum(amounts) / 5, places=2)
+
+    def test_outlier_exclusion_can_legitimately_drop_below_k_anonymity(self):
+        from core.services.lane_benchmark import compute_lane_benchmark
+
+        for amt in (30000, 31000):
+            self._won(self.company_a, self.cust_a, self.user_a, amt)
+        for amt in (50_000_000, 60_000_000, 70_000_000):
+            self._won(self.company_b, self.cust_b, self.user_b, amt)
+
+        result = compute_lane_benchmark('CPT', 'DBN')
+        # 2 real rows survive the cap -- below k_anonymity=5. Honest
+        # unavailability, not a benchmark built from three bad rows.
+        self.assertFalse(result['available'])
+
+    def test_resolve_market_rate_uses_the_median_not_the_mean(self):
+        for amt in (20000, 21000, 22000, 23000):
+            self._won(self.company_a, self.cust_a, self.user_a, amt)
+        # A legitimately pricier quote, well inside the sanity cap (< 10x),
+        # that would still drag a mean noticeably off-centre.
+        self._won(self.company_b, self.cust_b, self.user_b, 60000)
+
+        rate, source = resolve_market_rate('CPT', 'DBN')
+        self.assertEqual(source, 'platform')
+        amounts = sorted([20000, 21000, 22000, 23000, 60000])
+        mean = sum(amounts) / len(amounts)
+        median = amounts[2]
+        self.assertNotAlmostEqual(rate, mean, delta=1)
+        self.assertAlmostEqual(rate, median, places=2)
