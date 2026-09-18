@@ -176,12 +176,36 @@ def record_charge_failure(company) -> bool:
     the dunning notice ONLY in that case, not on every subsequent retry
     within the same window (spec §4's retry window is a single fixed 3-7 day
     countdown from the FIRST failure, not extended/reset by each retry).
+
+    The transition is a single conditional UPDATE rather than a read, a check
+    and a save. A sweep that fails several invoices for one company runs those
+    charges back to back (and the retry sweep loops over them), so every call
+    read 'active' before any of them had written 'grace_period' — each one
+    believed it owned the transition and each one sent a dunning notice. One
+    fleet got eight. `UPDATE ... WHERE subscription_status = 'active'` can only
+    match for one caller; everyone else gets 0 rows and stays quiet.
     """
-    if company.subscription_status != 'active':
-        return False  # already grace_period/suspended/cancelled — no new transition
+    from core.models import Company
+
+    expires_at = timezone.now() + timezone.timedelta(days=_grace_days())
+    claimed = Company.objects.filter(
+        pk=company.pk, subscription_status='active'
+    ).update(
+        subscription_status='grace_period',
+        grace_period_expires_at=expires_at,
+        updated_at=timezone.now(),
+    )
+    if not claimed:
+        # Already grace_period/suspended/cancelled, or another charge in this
+        # same sweep claimed the transition first. Refresh so the caller's
+        # in-memory copy matches the row (it reads grace_period_expires_at for
+        # the dunning copy) and report "not me".
+        company.refresh_from_db(fields=['subscription_status', 'grace_period_expires_at'])
+        return False
+    # Keep the passed-in instance consistent with what we just wrote — callers
+    # read company.grace_period_expires_at straight after this returns.
     company.subscription_status = 'grace_period'
-    company.grace_period_expires_at = timezone.now() + timezone.timedelta(days=_grace_days())
-    company.save(update_fields=['subscription_status', 'grace_period_expires_at', 'updated_at'])
+    company.grace_period_expires_at = expires_at
     return True
 
 
