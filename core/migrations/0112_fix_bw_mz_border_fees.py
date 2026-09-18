@@ -134,7 +134,12 @@ def revert_bw_mz_fees(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('core', '0111_merge_20260915_1648'),
+        # Not 0111 directly: this migration writes notes values up to 318
+        # characters (the longest, SA->MZ) into a column that was 200 chars
+        # wide until 0121_widen_border_crossing_fee_notes ran first. See that
+        # migration's docstring for why the widening had to be inserted here
+        # in the dependency graph rather than renumbering 0112-0120.
+        ('core', '0121_widen_border_crossing_fee_notes'),
     ]
 
     operations = [

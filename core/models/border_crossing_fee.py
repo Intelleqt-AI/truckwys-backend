@@ -31,7 +31,13 @@ class BorderCrossingFee(models.Model):
                   'Blank means no upper limit.',
     )
     notes = models.CharField(
-        max_length=200,
+        # Widened from 200 (see migration 0121_widen_border_crossing_fee_notes):
+        # real corridor entries cite the actual regulation (a Statutory
+        # Instrument, a Decreto, a published RFA/SORCA rate) rather than a
+        # one-line guess, and the longest of those on record is 318 chars.
+        # 500 leaves headroom for the next country's citation without being
+        # unbounded.
+        max_length=500,
         blank=True,
         help_text='e.g. includes COMESA transit docs',
     )
