@@ -3320,8 +3320,7 @@ class RouteCalculatorView(APIView):
     from core.services.toll_calculator import VEHICLE_TO_TOLL_TYPE_LOOKUP as VEHICLE_TO_TOLL_TYPE
 
     def post(self, request):
-        from core.services.cross_border import (detect_countries, calculate_cross_border_costs,
-                                                get_cross_border_warnings, country_distances_km)
+        from core.services.cross_border import detect_countries, calculate_cross_border_costs, get_cross_border_warnings
         from core.services.fuel_price import fetch_fuel_prices
         from core.services.toll_calculator import calculate_tolls, calculate_tolls_by_geometry, resolve_toll_truck_type
 
@@ -3501,43 +3500,14 @@ class RouteCalculatorView(APIView):
 
         # Cross-border costs
         additional_costs = {}
-        cross_border_breakdown = []
         warnings = []
         if cross_border:
-            # The SA permit's share of a crossing depends on how often this
-            # fleet crosses, so the company's own figure drives it; weight
-            # picks the C-BRTA freight class.
-            company = getattr(request.user, 'company', None)
-            crossings_per_year = getattr(company, 'cross_border_crossings_per_year', None)
-            # Real kilometres per country, off the route's own COUNTRY sections
-            # — replaces the per-country constant that assumed one origin city.
-            measured_km = country_distances_km(geometry, (routes_raw[0].get('sections') or []) if routes_raw else [])
-            # Both the border fee band and the permit class are written about
-            # the vehicle, so give them its rated capacity when we know it.
-            capacity_kg = 0
-            if company and vehicle_type:
-                try:
-                    from core.models import VehicleType
-                    from core.services.vehicle_types import visible_vehicle_types_queryset, capacity_tonnes
-                    vt = visible_vehicle_types_queryset(company).filter(name__iexact=vehicle_type).first()
-                    t = capacity_tonnes(vt.capacity) if vt else None
-                    capacity_kg = (t or 0) * 1000
-                except Exception:
-                    capacity_kg = 0
-            cb_costs = calculate_cross_border_costs(
-                countries, distance_km, vehicle_type,
-                weight_kg=weight_kg, crossings_per_year=crossings_per_year,
-                country_km=measured_km, vehicle_capacity_kg=capacity_kg,
-            )
-            # Numbers only: this dict is summed with sum(.values()) below and
-            # again further down, so anything non-numeric in here breaks the
-            # whole route calculation. The itemisation goes out as its own key.
+            cb_costs = calculate_cross_border_costs(countries, distance_km, vehicle_type)
             additional_costs = {
                 'border_fees':      cb_costs['border_fees'],
                 'weighbridge_fees': cb_costs['weighbridge_fees'],
                 'non_sa_tolls':     cb_costs['non_sa_tolls'],
             }
-            cross_border_breakdown = cb_costs['breakdown']
             warnings  = get_cross_border_warnings(countries)
 
         response_data = {
@@ -3569,9 +3539,6 @@ class RouteCalculatorView(APIView):
             response_data['cross_border'] = True
             response_data['countries'] = countries
             response_data['additional_costs'] = additional_costs
-            # Named line items so the quote can show what each rand is for, the
-            # same way the toll line lists its plazas.
-            response_data['cross_border_breakdown'] = cross_border_breakdown
             if warnings:
                 response_data['warnings'] = warnings
 
