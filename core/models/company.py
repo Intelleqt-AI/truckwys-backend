@@ -65,16 +65,6 @@ class Company(models.Model):
         default=True,
         help_text='Whether cross-border routes are enabled for this company'
     )
-    # A C-BRTA permit is bought per vehicle per country for a period (a 12-month
-    # Class 2 permit is R8,761), not per load — so its cost per crossing depends
-    # entirely on how often this fleet actually crosses. At 24 crossings a year
-    # that is ~R365 a crossing; at 200 it is ~R44. Charging a fixed figure is
-    # wrong for everyone except the fleet it was calibrated on.
-    cross_border_crossings_per_year = models.PositiveIntegerField(
-        default=24,
-        help_text='How many border crossings this fleet makes a year (each leg counts '
-                  'separately). Used to spread the annual C-BRTA permit across crossings.'
-    )
 
     # Revenue Guard thresholds — configurable per company
     margin_at_risk_pct = models.DecimalField(
