@@ -14,7 +14,19 @@ class CountryTransitRate(models.Model):
     toll_rate_per_km = models.DecimalField(
         max_digits=6,
         decimal_places=3,
-        help_text='Average toll cost per km in ZAR',
+        help_text='Average toll cost per km in ZAR. Ignored when toll_flat_zar is set.',
+    )
+    # Some corridors are not per-km at all: Mozambique's two TRAC plazas charge
+    # one fixed amount however far you drive past them. Modelling that as a
+    # per-km rate only gives the right answer at the exact distance it was
+    # derived from, and over-charges every longer route.
+    toll_flat_zar = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0,
+        help_text='Fixed one-way toll for the whole country, in ZAR. When above zero '
+                  'this is used instead of toll_rate_per_km — for corridors whose tolls '
+                  'are gate-based, not distance-based.',
     )
     sa_border_distance_km = models.DecimalField(
         max_digits=7,
