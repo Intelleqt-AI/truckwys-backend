@@ -121,15 +121,18 @@ def to_decimal(raw) -> Decimal | None:
 
 
 def to_payment_terms(raw) -> str | None:
-    """'30 days', 'net 60' -> the stored choice. None when unrecognised, so the
-    caller can flag the row rather than silently assume 30 days."""
+    """'30 days', 'net 60', '45' -> the stored term. None when there is no
+    number to read, so the caller can flag the row rather than silently assume
+    30 days and have the customer chased early."""
     if not raw:
         return None
-    text = str(raw).lower()
-    digits = re.search(r'(\d+)', text)
+    digits = re.search(r'(\d+)', str(raw))
     if not digits:
         return None
-    return {'30': 'NET30', '60': 'NET60', '90': 'NET90'}.get(digits.group(1))
+    days = int(digits.group(1))
+    if not 0 < days <= 365:
+        return None
+    return f'NET{days}'
 
 
 FUEL_TYPES = {'diesel': 'Diesel', 'petrol': 'Petrol', 'electric': 'Electric',

@@ -5,11 +5,13 @@ from datetime import date
 
 
 class Customer(models.Model):
-    PAYMENT_TERMS_CHOICES = [
-        ('NET30', 'Net 30 Days'),
-        ('NET60', 'Net 60 Days'),
-        ('NET90', 'Net 90 Days'),
-    ]
+    # Days a customer is given to pay. 14 and 45 were already in use across the
+    # seeders and in real customer lists before they were choices here, so a
+    # 45-day customer could not be imported and, worse, was invoiced at 30 —
+    # chased a fortnight early. Anything NET<n> is understood when an invoice
+    # is dated, so this list is what the UI offers, not a hard limit.
+    PAYMENT_TERMS_DAYS = [7, 14, 30, 45, 60, 90]
+    PAYMENT_TERMS_CHOICES = [(f'NET{d}', f'Net {d} Days') for d in PAYMENT_TERMS_DAYS]
 
     CREDIT_SCORE_SOURCE_CHOICES = [
         ('MANUAL', 'Manual Entry'),

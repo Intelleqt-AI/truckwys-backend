@@ -45,12 +45,18 @@ class ParsingTests(TestCase):
         self.assertEqual(bi.to_decimal("1,234.56"), Decimal("1234.56"))
         self.assertIsNone(bi.to_decimal("not a number"))
 
-    def test_payment_terms_are_not_guessed_when_unreadable(self):
+    def test_payment_terms_keep_the_days_the_customer_actually_has(self):
         self.assertEqual(bi.to_payment_terms("30 days"), "NET30")
         self.assertEqual(bi.to_payment_terms("Net 60"), "NET60")
-        # 45 days matches no stored choice, so it must stay unknown and be
-        # flagged rather than quietly becoming NET30.
-        self.assertIsNone(bi.to_payment_terms("45 days"))
+        # 45 and 14 day terms are common and were previously rejected, which
+        # blocked the whole customer over one column.
+        self.assertEqual(bi.to_payment_terms("45 days"), "NET45")
+        self.assertEqual(bi.to_payment_terms("14"), "NET14")
+
+    def test_terms_with_no_number_are_still_flagged(self):
+        # Better to ask than to assume 30 days and chase someone early.
+        self.assertIsNone(bi.to_payment_terms("on delivery"))
+        self.assertIsNone(bi.to_payment_terms("9999 days"))
 
     def test_headers_are_matched_by_synonym(self):
         for header, expected in [("Reg No", "plate"), ("Registration", "plate"),
@@ -141,3 +147,26 @@ class ImportApiTests(TestCase):
         r = self.client.post("/api/v1/import/customers/validate/", {"text": "   "}, format="json")
         self.assertEqual(r.status_code, 400)
         self.assertIn("paste", r.data["error"].lower())
+
+
+class DueDateFromTermsTests(TestCase):
+    """The due date is read out of NET<n>, not looked up in a fixed table.
+
+    The table only held 30, 60 and 90 and fell back to 30 for anything else,
+    while the seeders were already creating NET14 and NET45 customers — so a
+    45-day customer was invoiced at 30 days and chased a fortnight early.
+    """
+
+    def _due_in_days(self, terms):
+        from datetime import date
+        from core.services.invoice_generator import InvoiceGenerator
+        gen = InvoiceGenerator.__new__(InvoiceGenerator)   # no DB needed for the maths
+        return (gen._calculate_due_date(terms) - date.today()).days
+
+    def test_the_stated_days_are_the_days_given(self):
+        for days in (7, 14, 30, 45, 60, 90):
+            self.assertEqual(self._due_in_days(f"NET{days}"), days)
+
+    def test_anything_unreadable_falls_back_to_thirty(self):
+        for terms in ("", None, "on delivery", "NET0", "NET99999"):
+            self.assertEqual(self._due_in_days(terms), 30)
