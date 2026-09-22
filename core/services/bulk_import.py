@@ -189,11 +189,21 @@ def validate_customers(rows: list[list[str]], mapping: dict[int, str], company) 
         terms = to_payment_terms(terms_raw)
         if terms:
             data['payment_terms_default'] = terms
+        elif terms_raw:
+            # Unreadable, but payment terms are optional — the customer is not
+            # worth rejecting over one column. Keep what the spreadsheet said in
+            # the free-text field so nothing is lost, leave the stored term at
+            # its default, and say so.
+            data['payment_terms'] = terms_raw
         limit = to_decimal(_cell(row, mapping, 'credit_limit'))
         if limit is not None:
             data['credit_limit'] = limit
 
+        # Only a field the record cannot exist without blocks a row. Everything
+        # else is a note: the row imports, and the gap is stated so it can be
+        # filled in later rather than costing the customer their whole entry.
         problems: list[str] = []
+        notes: list[str] = []
         if not data['name']:
             problems.append('No customer name')
         if not data['email']:
@@ -204,14 +214,16 @@ def validate_customers(rows: list[list[str]], mapping: dict[int, str], company) 
             problems.append('Already one of your customers')
         elif data['email'] in seen_in_paste:
             problems.append('Appears twice in this list')
+
         if not data['phone']:
-            problems.append('No phone number')
+            notes.append('No phone number')
         if terms_raw and not terms:
-            problems.append(f"Couldn't read payment terms '{terms_raw}' — 30, 60 or 90 days")
+            notes.append(f"Couldn't read '{terms_raw}' — importing on your default terms")
 
         if data['email'] and not problems:
             seen_in_paste.add(data['email'])
-        out.append({'row': i + 1, 'data': data, 'problems': problems, 'ready': not problems})
+        out.append({'row': i + 1, 'data': data, 'problems': problems,
+                    'notes': notes, 'ready': not problems})
 
     return {
         'rows': out,
@@ -273,7 +285,11 @@ def validate_vehicles(rows: list[list[str]], mapping: dict[int, str], company) -
             # a typo would otherwise quietly become a new vehicle type.
             notes.append(f"'{type_raw}' is a new vehicle type — it will be created")
         if data.get('capacity') is None:
-            problems.append('No capacity — needed to price a load')
+            problems.append('No capacity — a load cannot be priced without it')
+        if not data.get('make'):
+            notes.append('No make')
+        if not data.get('model'):
+            notes.append('No model')
 
         if key and not problems:
             seen.add(key)

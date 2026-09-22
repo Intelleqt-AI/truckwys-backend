@@ -170,3 +170,58 @@ class DueDateFromTermsTests(TestCase):
     def test_anything_unreadable_falls_back_to_thirty(self):
         for terms in ("", None, "on delivery", "NET0", "NET99999"):
             self.assertEqual(self._due_in_days(terms), 30)
+
+
+class OnlyRequiredFieldsBlockTests(TestCase):
+    """A row is rejected only for something the record cannot exist without.
+
+    Blocking a customer because one optional column was unreadable threw away
+    the whole entry over a detail that could be filled in later.
+    """
+
+    def setUp(self):
+        self.company = Company.objects.create(company_name="Minimal Fleet")
+        User = get_user_model()
+        self.user = User.objects.create_user(
+            username="min", email="min@test.com", password="x",
+            company=self.company, role="ADMIN")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def _commit(self, paste):
+        return self.client.post("/api/v1/import/customers/commit/",
+                                {"text": paste}, format="json")
+
+    def test_a_name_and_an_email_are_enough(self):
+        r = self._commit("Customer Name\tEmail\nBare Minimum\tbare@min.co.za")
+        self.assertEqual(r.data["imported"], 1)
+        c = Customer.objects.get(email="bare@min.co.za")
+        self.assertEqual(c.phone, "")
+        self.assertEqual(c.address, "")
+
+    def test_unreadable_terms_no_longer_reject_the_customer(self):
+        r = self._commit("Customer Name\tEmail\tPayment Terms\n"
+                         "Odd Terms Co\todd@terms.co.za\ton delivery")
+        self.assertEqual(r.data["imported"], 1)
+        c = Customer.objects.get(email="odd@terms.co.za")
+        # Default terms apply, and what the spreadsheet said is kept rather
+        # than thrown away.
+        self.assertEqual(c.payment_terms_default, "NET30")
+        self.assertEqual(c.payment_terms, "on delivery")
+
+    def test_the_gap_is_still_reported_as_a_note(self):
+        r = self.client.post("/api/v1/import/customers/validate/",
+                             {"text": "Customer Name\tEmail\tPayment Terms\n"
+                                      "Odd Terms Co\todd@terms.co.za\ton delivery"},
+                             format="json")
+        row = r.data["rows"][0]
+        self.assertTrue(row["ready"])
+        self.assertEqual(row["problems"], [])
+        self.assertTrue(any("on delivery" in n for n in row["notes"]))
+
+    def test_identity_still_blocks(self):
+        # Without an email there is no way to tell this customer from another,
+        # or to spot the same one twice.
+        r = self._commit("Customer Name\tPhone\nNo Email Co\t082 111")
+        self.assertEqual(r.data["imported"], 0)
+        self.assertEqual(r.data["skipped"], 1)

@@ -31,8 +31,8 @@ class Customer(models.Model):
     # bulk import one tenant's rows would fail against rows they cannot even
     # see, with no way to diagnose it.
     email = models.EmailField()
-    phone = models.CharField(max_length=20)
-    address = models.TextField()
+    phone = models.CharField(max_length=20, blank=True)
+    address = models.TextField(blank=True)
     city = models.CharField(max_length=100, blank=True)
     state = models.CharField(max_length=50, blank=True)
     zip_code = models.CharField(max_length=20, blank=True)
