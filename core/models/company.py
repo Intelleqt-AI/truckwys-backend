@@ -31,6 +31,20 @@ class Company(models.Model):
     # via the "Fetch Now" nudge, and rounding to 2dp before storage would
     # introduce a small but real, compounding error into fuel-cost
     # calculations that fall back to this field.
+    # South Africa gazettes two diesel prices: fuel lands at the coastal ports
+    # and the DMRE adds a transport differential to move it inland, so Gauteng
+    # runs ~R0.87/L above Cape Town or Durban. Both figures are already scraped
+    # into FuelPrice; this says which of them applies to this fleet. It decides
+    # what "Fetch live prices" writes into fuel_price_per_litre below — it does
+    # not override a price a fleet has typed in, since plenty run on a
+    # negotiated fuel-card rate that tracks neither.
+    FUEL_ZONE_CHOICES = [('INLAND', 'Inland'), ('COASTAL', 'Coastal')]
+    fuel_zone = models.CharField(
+        max_length=10, choices=FUEL_ZONE_CHOICES, default='INLAND',
+        help_text='Which gazetted diesel price applies to this fleet. COASTAL for '
+                  'Cape Town, Durban, Gqeberha and East London; INLAND for Gauteng '
+                  'and the interior.'
+    )
     fuel_price_per_litre = models.DecimalField(
         max_digits=8, decimal_places=4, default=23.50,
         help_text='Default Diesel price per litre in ZAR (default: R23.50)'

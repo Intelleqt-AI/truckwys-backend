@@ -94,6 +94,22 @@ _HEADERS = {
 _PRICE_RE = re.compile(r'\b(1[5-9]\.\d{2,4}|2\d\.\d{2,4}|3[0-5]\.\d{2,4})\b')
 
 
+def _last_known_zone_gap(default: Decimal = Decimal('0.87')) -> Decimal:
+    """Inland-minus-coastal from the newest stored pair, else `default`."""
+    try:
+        from core.models.fuel_price import FuelPrice
+        row = (FuelPrice.objects
+               .filter(diesel_inland__isnull=False, diesel_coastal__isnull=False)
+               .order_by('-date').first())
+        if row:
+            gap = Decimal(row.diesel_inland) - Decimal(row.diesel_coastal)
+            if Decimal('0.20') <= gap <= Decimal('2.00'):
+                return gap
+    except Exception:
+        pass
+    return default
+
+
 def _extract_prices_from_soup(soup) -> Optional[dict]:
     """
     Walk all table rows and labelled elements looking for SA fuel price labels
@@ -122,8 +138,16 @@ def _extract_prices_from_soup(soup) -> Optional[dict]:
     if 'diesel_inland' not in prices:
         return None
 
-    # Fill missing values from typical inland/coastal differential (~R0.62)
-    prices.setdefault('diesel_coastal', prices['diesel_inland'] - Decimal('0.62'))
+    # Fill a missing coastal figure from the inland one. The differential is the
+    # DMRE's transport recovery for moving fuel from the ports inland and it
+    # drifts — it has run between roughly R0.79 and R0.90 over the last two
+    # years, and was R0.87 on the Sept 2026 schedule. The R0.62 that used to sit
+    # here was years stale, so a scrape that lost only the coastal row quietly
+    # under-stated it by ~25c/L. Prefer the gap in the most recent stored pair,
+    # which is real data, and fall back to a current-ish constant only when
+    # there is no history to read.
+    if 'diesel_coastal' not in prices:
+        prices['diesel_coastal'] = prices['diesel_inland'] - _last_known_zone_gap()
     prices.setdefault('petrol_95', prices['diesel_inland'] + Decimal('1.30'))
     prices.setdefault('petrol_93', prices['diesel_inland'] + Decimal('0.55'))
     return prices
