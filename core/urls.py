@@ -32,6 +32,10 @@ from .views import (
     VapidPublicKeyView, PushSubscriptionView,
     AuthHandoffMintView, AuthHandoffExchangeView,
 )
+from .views_import import (
+    CustomerImportValidateView, CustomerImportCommitView,
+    VehicleImportValidateView, VehicleImportCommitView,
+)
 from .views_ai_quote import (
     AIChatQuoteView, AIQuoteAnalyzeView, AIQuoteSuggestionView, AIVoiceQuoteView,
     FuelPriceCurrentView, FuelPriceSurchargeCheckView,
@@ -210,6 +214,12 @@ urlpatterns = [
     
     # Company Settings endpoints
     path('company/profile/', CompanyProfileView.as_view(), name='company-profile'),
+    # Bulk import — validate first so the UI can show what will and will not
+    # land before anything is written.
+    path('import/customers/validate/', CustomerImportValidateView.as_view(), name='import-customers-validate'),
+    path('import/customers/commit/', CustomerImportCommitView.as_view(), name='import-customers-commit'),
+    path('import/vehicles/validate/', VehicleImportValidateView.as_view(), name='import-vehicles-validate'),
+    path('import/vehicles/commit/', VehicleImportCommitView.as_view(), name='import-vehicles-commit'),
     path('company/logo/', CompanyLogoUploadView.as_view(), name='company-logo-upload'),
 
     # Finance Dashboard endpoints (NEW - Phase 2)

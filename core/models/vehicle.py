@@ -36,15 +36,35 @@ class VehicleType(models.Model):
 
 class Vehicle(models.Model):
     company = models.ForeignKey("Company", on_delete=models.CASCADE, null=True, blank=True, related_name="fleet_vehicles")
-    vin = models.CharField(max_length=100, unique=True)
+    # Optional: operators track trucks by registration, not VIN, and nobody
+    # pastes a VIN out of a spreadsheet. Kept unique where present (many NULLs
+    # are allowed under a unique index) so a real VIN still cannot be entered
+    # twice; the plate carries identity — see Meta.constraints.
+    vin = models.CharField(max_length=100, unique=True, null=True, blank=True)
     make = models.CharField(max_length=100)
     model = models.CharField(max_length=100)
     driver = models.ForeignKey('core.Driver', on_delete=models.SET_NULL, null=True, blank=True, related_name='vehicles')
     vehicle_type = models.ForeignKey(VehicleType, on_delete=models.SET_NULL, null=True, blank=True, related_name='vehicles')
-    year = models.IntegerField()
+    year = models.IntegerField(null=True, blank=True)
     plate = models.CharField(max_length=50)
     type = models.CharField(max_length=50)
     capacity = models.DecimalField(max_digits=10, decimal_places=2)
+    gvm = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True,
+        help_text='Gross vehicle mass in tonnes — the truck plus its maximum load.'
+    )
+    # Per-vehicle overrides of the type's figures. Two trucks of one type can
+    # burn differently and be rated differently, and a pasted fleet list gives
+    # these per truck. Blank means "use the vehicle type's value" — the same
+    # fallback the quote builder already applies for base rate and fuel.
+    fuel_consumption_l_per_100km = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="Overrides this vehicle type's consumption for this truck."
+    )
+    base_rate = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True,
+        help_text="Overrides this vehicle type's rate per km for this truck."
+    )
     status = models.CharField(max_length=50, default='AVAILABLE')
     fuel_type = models.CharField(max_length=50)
     mileage = models.DecimalField(max_digits=10, decimal_places=2, default=0)
@@ -127,6 +147,15 @@ class Vehicle(models.Model):
     class Meta:
         db_table = 'vehicles'
         ordering = ['-created_at']
+        constraints = [
+            # Registration is what a fleet actually identifies a truck by, so
+            # this is the real duplicate guard — and what a re-run of a bulk
+            # import matches on.
+            models.UniqueConstraint(
+                fields=['company', 'plate'],
+                name='uniq_vehicle_plate_per_company',
+            ),
+        ]
     
     def __str__(self):
         return f"{self.make} {self.model} - {self.plate}"

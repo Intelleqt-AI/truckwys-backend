@@ -19,13 +19,21 @@ class Customer(models.Model):
 
     name = models.CharField(max_length=200, db_index=True)
     company_name = models.CharField(max_length=200, blank=True)
+    # The human you actually phone at that customer. Every fleet's spreadsheet
+    # has this column; without it a pasted list had to either lose the contact
+    # or put their name where the customer's belongs.
+    contact_person = models.CharField(max_length=200, blank=True)
     company = models.ForeignKey("Company", on_delete=models.CASCADE, null=True, blank=True, related_name="customers")
-    email = models.EmailField(unique=True)
+    # Scoped to the company, not global. A globally unique email meant two
+    # different fleets could not both deal with the same customer — and on a
+    # bulk import one tenant's rows would fail against rows they cannot even
+    # see, with no way to diagnose it.
+    email = models.EmailField()
     phone = models.CharField(max_length=20)
     address = models.TextField()
-    city = models.CharField(max_length=100)
-    state = models.CharField(max_length=50)
-    zip_code = models.CharField(max_length=20)
+    city = models.CharField(max_length=100, blank=True)
+    state = models.CharField(max_length=50, blank=True)
+    zip_code = models.CharField(max_length=20, blank=True)
     billing_address = models.TextField(blank=True)
 
     # NEW: Structured payment terms
@@ -102,6 +110,12 @@ class Customer(models.Model):
     class Meta:
         db_table = 'customers'
         ordering = ['name']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['company', 'email'],
+                name='uniq_customer_email_per_company',
+            ),
+        ]
         indexes = [
             models.Index(fields=['name']),
             models.Index(fields=['is_active']),
