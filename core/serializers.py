@@ -571,6 +571,7 @@ class CompanySerializer(serializers.ModelSerializer):
             'default_base_rate_per_km', 'default_sla_hours',
             'default_quote_validity_days', 'allow_cross_border',
             'cross_border_crossings_per_year',
+            'fuel_zone',
             'fuel_price_per_litre', 'fuel_price_petrol', 'fuel_price_electric', 'fuel_price_hybrid',
             'margin_at_risk_pct', 'margin_caution_pct', 'margin_target_pct',
             'ai_optimizer_min_margin_pct', 'ai_optimizer_min_win_probability_pct',
