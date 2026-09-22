@@ -36,6 +36,7 @@ from .views_import import (
     CustomerImportValidateView, CustomerImportCommitView,
     VehicleImportValidateView, VehicleImportCommitView,
 )
+from .views_bulk_delete import CustomerBulkDeleteView, VehicleBulkDeleteView
 from .views_ai_quote import (
     AIChatQuoteView, AIQuoteAnalyzeView, AIQuoteSuggestionView, AIVoiceQuoteView,
     FuelPriceCurrentView, FuelPriceSurchargeCheckView,
@@ -220,6 +221,10 @@ urlpatterns = [
     path('import/customers/commit/', CustomerImportCommitView.as_view(), name='import-customers-commit'),
     path('import/vehicles/validate/', VehicleImportValidateView.as_view(), name='import-vehicles-validate'),
     path('import/vehicles/commit/', VehicleImportCommitView.as_view(), name='import-vehicles-commit'),
+    # Bulk delete — partial success, because quotes and invoices PROTECT the
+    # rows a fleet most wants to tidy up.
+    path('customers/bulk-delete/', CustomerBulkDeleteView.as_view(), name='customers-bulk-delete'),
+    path('vehicles/bulk-delete/', VehicleBulkDeleteView.as_view(), name='vehicles-bulk-delete'),
     path('company/logo/', CompanyLogoUploadView.as_view(), name='company-logo-upload'),
 
     # Finance Dashboard endpoints (NEW - Phase 2)
