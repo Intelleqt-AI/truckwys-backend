@@ -352,7 +352,7 @@ class MigrationRuleTests(TestCase):
     def test_rule(self):
         import importlib
         from django.apps import apps
-        mig = importlib.import_module('core.migrations.0127_vehicletype_sanral_toll_class')
+        mig = importlib.import_module('core.migrations.0129_vehicletype_sanral_toll_class')
         co = Company.objects.create(company_name='Mig Co')
         same = VehicleType.objects.create(company=co, name='Rigid Truck', capacity=Decimal('8'),
                                           max_distance=1, base_rate=1)

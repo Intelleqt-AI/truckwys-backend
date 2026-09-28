@@ -53,7 +53,7 @@ def set_known_classes(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('core', '0126_customer_contact_optional'),
+        ('core', '0128_fuelprice_provenance'),
     ]
 
     operations = [

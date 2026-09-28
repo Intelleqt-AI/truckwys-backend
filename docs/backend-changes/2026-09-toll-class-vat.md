@@ -64,7 +64,7 @@ Reproduced as follows: the seeded **"Rigid Truck"** is described as a "Standard 
 - `toll_class_source`: `vehicle_type`, `name_inferred` or `default`
 - `toll_class_detail`: a human-readable explanation
 
-**Migration `0127_vehicletype_sanral_toll_class`.**
+**Migration `0129_vehicletype_sanral_toll_class`.**
 
 - **Additive.** `AddField` with a nullable column (metadata-only on Postgres), followed by a `RunPython` data step.
 - **What it does to existing rows.** It sets the class only on rows that meet all three conditions:
@@ -87,7 +87,7 @@ Reproduced as follows: the seeded **"Rigid Truck"** is described as a "Standard 
   | Tanker | 25 t payload (beyond any rigid) | 4 |
   | Refrigerated Truck (Reefer), Flatbed Truck, Tautliner | axles not stated (could be an 8×4 rigid or a semi) | left NULL; fallback gives 4, unchanged |
 
-- **Reversible.** `migrate core 0126` drops the column; the data step's reverse is a no-op. Forward, backward and forward again were verified on a fresh SQLite DB.
+- **Reversible.** `migrate core 0128` drops the column; the data step's reverse is a no-op. Forward, backward and forward again were verified on a fresh SQLite DB.
 
 **Tests:**
 
@@ -236,7 +236,7 @@ Full suite, run locally on SQLite with `REDIS_URL=redis://127.0.0.1:6379/15`. To
 ## Rollback
 
 - **Code only.** Revert the PR. Keep migration 0127 applied: the column is nullable and the old code ignores it.
-- **Full rollback.** Run `python manage.py migrate core 0126` to drop the column, then revert.
+- **Full rollback.** Run `python manage.py migrate core 0128` to drop the column, then revert.
 - **Saved data.** No quote, load or invoice data is rewritten by this change, so nothing needs restoring.
 
 ## Deferred (not changed)

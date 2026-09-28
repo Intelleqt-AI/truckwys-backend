@@ -12,7 +12,7 @@ Source review: `03-FUEL.md` (findings F2, F3, F4/F5, F7, F10, F12, F13) and `02-
 | File | Change |
 |---|---|
 | `core/services/fuel_price.py` | FIASA parser now picks the column by effective date and stores the 50ppm grade. Adds the never-downgrade write rule, MANUAL protection and the historical-date rule. |
-| `core/models/fuel_price.py` + `core/migrations/0127_fuelprice_provenance.py` | 5 new **nullable** columns. Corrected help text. |
+| `core/models/fuel_price.py` + `core/migrations/0128_fuelprice_provenance.py` | 5 new **nullable** columns. Corrected help text. |
 | `core/tasks.py` (`refresh_fuel_price`) | Retry fan-out fixed. A failed refresh that kept the good row still retries. |
 | `core/views_ai_quote.py` (`FuelPriceCurrentView`) | GET gains additive provenance fields. POST (staff override) stamps `fetched_at`/`effective_from` and clears stale provenance. |
 | `core/management/commands/fetch_fuel_price_daily.py`, `config/settings.py` | Legacy regex daily scraper is disabled unless `FUEL_PRICE_DAILY_SCRAPER_ENABLED=True`. |
@@ -196,10 +196,10 @@ SELECT date, diesel_inland, source FROM fuel_prices WHERE EXTRACT(day FROM date)
 
 ## Production impact
 
-**Schema migration `0127_fuelprice_provenance`:**
+**Schema migration `0128_fuelprice_provenance`:**
 - 5 `ADD COLUMN … NULL` statements, with no default and no backfill. On Postgres these are metadata-only and instant.
 - The other operations are help-text-only `AlterField`s, which are no-ops in SQL.
-- Fully reversible: `manage.py migrate core 0126` drops the 5 columns. Forward → back → forward was verified on a scratch SQLite database (`migrate` → `migrate core 0126` → `migrate core`); the SQL is plain nullable `ADD COLUMN` on Postgres too.
+- Fully reversible: `manage.py migrate core 0127` drops the 5 columns. Forward → back → forward was verified on a scratch SQLite database (`migrate` → `migrate core 0127` → `migrate core`); the SQL is plain nullable `ADD COLUMN` on Postgres too.
 
 **No data migration.** Existing rows keep their values. `diesel_grade`, `effective_from` and the 500ppm columns stay NULL on legacy rows.
 
@@ -225,7 +225,7 @@ This is the intended correction: the field is documented as 50ppm, and 50ppm is 
 ## Rollback
 
 1. Revert the merge commit and redeploy. Code rollback alone is safe: the old code ignores the new nullable columns.
-2. Optional, to drop the columns: `python manage.py migrate core 0126` **before** deploying the reverted code.
+2. Optional, to drop the columns: `python manage.py migrate core 0127` **before** deploying the reverted code.
 3. If the 500ppm figure must be restored for the current month after rollback, run `python manage.py fetch_fuel_prices --force` with the old code. It rewrites the current-month row from FIASA's 500ppm row, as before.
 
 ## What the frontend must do next (not done here)
