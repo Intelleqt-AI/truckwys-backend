@@ -53,8 +53,15 @@ class CompanyFilterMixin:
         user = self.request.user
         if not user.is_authenticated:
             return qs.none()
-        if user.is_superuser:
-            return qs  # Superusers see all
+        if user.is_superuser and getattr(user, 'company_id', None) is None:
+            # A platform superuser with no company has no tenant to scope to
+            # and keeps the platform-wide view (unchanged).
+            return qs
+        # Tenant isolation (2026-09): a superuser who BELONGS to a company is
+        # scoped to it like any other member on these ordinary app endpoints —
+        # they used to see every tenant's rows (and company-less rows) mixed
+        # into their own Invoices/Quotes/... pages. Platform-wide access lives
+        # on the /api/v1/admin/* views (IsSuperUser), which don't use this mixin.
         if hasattr(qs.model, 'company_id'):
             return qs.filter(company=user.company)
         return qs
@@ -2036,11 +2043,16 @@ class UserViewSet(viewsets.ModelViewSet):
         """Filter users by company for multi-tenancy."""
         qs = super().get_queryset()
         user = self.request.user
-        if user.is_superuser:
-            return qs  # Superusers see all
-        if hasattr(user, 'company') and user.company:
-            return qs.filter(company=user.company)
-        return qs
+        company_id = getattr(user, 'company_id', None)
+        if user.is_superuser and company_id is None:
+            return qs  # platform superuser with no company: unchanged
+        # Tenant isolation (2026-09): a superuser in a company sees their own
+        # team here (the admin dashboard has /api/v1/admin/users/ for all
+        # users), and a company-less account sees only itself — this used to
+        # return every user on the platform to both.
+        if company_id is not None:
+            return qs.filter(company_id=company_id)
+        return qs.filter(pk=user.pk)
 
     def perform_create(self, serializer):
         """Bind newly-created users to the creating admin's company (multi-tenancy)."""

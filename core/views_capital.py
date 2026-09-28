@@ -1,9 +1,11 @@
-# TENANCY AUDIT: 2026-03-15 — All querysets properly filter by company
-# - FacilityViewSet: Filters by user.company ✓
-# - RiskScoreViewSet: Filters by user.company ✓
-# - AdvanceRequestViewSet: Filters by facility__company ✓
-# - CapitalDashboardViewSet: Scoped to user.company ✓
-# - CapitalEligibleInvoicesView: Uses authenticated user context ✓
+# TENANCY (2026-09 tenant-isolation fix, docs/backend-changes/2026-09-tenant-isolation.md):
+# the 2026-03-15 "all querysets properly filter by company ✓" note that used to
+# sit here was wrong — company-less users saw every tenant, and risk-score
+# calculate / advance create looked invoices up across tenants. Rules now:
+# - non-staff users are scoped to request.user.company; no company => nothing
+# - is_staff users (TruckWys capital desk) keep deliberate cross-tenant access
+#   by id; their LIST views are scoped to their own company when they have one
+#   (see _capital_scope)
 
 """Capital module views for facilities, risk scoring, and advance requests."""
 
@@ -40,6 +42,41 @@ from core.serializers_capital import (
 from core.services.risk_engine import RiskEngine
 
 
+def _capital_scope(view, qs, company_lookup):
+    """Tenant scoping for the capital viewsets (2026-09).
+
+    * unauthenticated / company-less non-staff -> nothing (was .all(): fail open)
+    * non-staff with a company                 -> their company only
+    * staff with a company, LIST               -> their company only — the app
+      pages (Capital renders facilities[0], Overview, RiskScoreView) used to mix
+      other tenants' rows in for a staff member of a tenant
+    * staff, detail/actions by id, or staff with no company -> cross-tenant
+      (deliberate: the capital desk approves/disburses any advance by id)
+    """
+    user = view.request.user
+    if not getattr(user, 'is_authenticated', False):
+        return qs.none()
+    company = getattr(user, 'company', None)
+    if getattr(user, 'is_staff', False):
+        if company is not None and getattr(view, 'action', None) == 'list':
+            return qs.filter(**{company_lookup: company})
+        return qs
+    return qs.filter(**{company_lookup: company}) if company else qs.none()
+
+
+def _invoice_scope(user):
+    """Invoices this user may act on for capital purposes.
+
+    Staff (TruckWys capital desk) keep deliberate cross-tenant access; everyone
+    else is limited to their own company's invoices, and a company-less account
+    gets none (fail closed).
+    """
+    if getattr(user, 'is_staff', False):
+        return Invoice.objects.all()
+    company = getattr(user, 'company', None)
+    return Invoice.objects.filter(company=company) if company else Invoice.objects.none()
+
+
 def _inv_no(advance):
     """Invoice number for an advance, defensively."""
     inv = getattr(advance, 'invoice', None)
@@ -73,12 +110,7 @@ class FacilityViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         """Filter facilities by user's company."""
-        user = self.request.user
-        if user.is_staff:
-            return Facility.objects.all()
-        if not user.is_authenticated: return Facility.objects.all()
-        company = getattr(user, "company", None)
-        return Facility.objects.filter(company=company) if company else Facility.objects.all()
+        return _capital_scope(self, Facility.objects.all(), 'company')
 
     def perform_create(self, serializer):
         """Only staff can create facilities."""
@@ -102,12 +134,7 @@ class RiskScoreViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         """Filter risk scores by user's company."""
-        user = self.request.user
-        if user.is_staff:
-            return RiskScore.objects.all()
-        if not user.is_authenticated: return RiskScore.objects.all()
-        company = getattr(user, "company", None)
-        return RiskScore.objects.filter(company=company) if company else RiskScore.objects.all()
+        return _capital_scope(self, RiskScore.objects.all(), 'company')
 
     @action(detail=False, methods=['post'], url_path='calculate')
     def calculate(self, request):
@@ -117,13 +144,15 @@ class RiskScoreViewSet(viewsets.ReadOnlyModelViewSet):
         Body: { "invoice_id": 1 }
         Returns: full score breakdown + fee calculation
         """
-        serializer = RiskScoreRequestSerializer(data=request.data)
+        serializer = RiskScoreRequestSerializer(
+            data=request.data, context={'invoices': _invoice_scope(request.user)})
         serializer.is_valid(raise_exception=True)
 
         invoice_id = serializer.validated_data['invoice_id']
 
         try:
-            invoice = Invoice.objects.get(id=invoice_id)
+            # Tenant isolation: non-staff can only score their own invoices.
+            invoice = _invoice_scope(request.user).get(id=invoice_id)
         except Invoice.DoesNotExist:
             return Response(
                 {'error': f'Invoice with ID {invoice_id} not found'},
@@ -200,15 +229,7 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         """Filter advance requests by user's company."""
-        user = self.request.user
-        if not user.is_authenticated:
-            return AdvanceRequest.objects.all()
-        if user.is_staff:
-            return AdvanceRequest.objects.all()
-        company = getattr(user, 'company', None)
-        if company:
-            return AdvanceRequest.objects.filter(facility__company=company)
-        return AdvanceRequest.objects.all()
+        return _capital_scope(self, AdvanceRequest.objects.all(), 'facility__company')
 
     def create(self, request, *args, **kwargs):
         """
@@ -221,20 +242,28 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
         # already has an active advance returns that advance (200) instead of a
         # 400 — so callers can safely retry. Runs before the serializer, which
         # would otherwise reject the duplicate outright.
+        # Tenant isolation: both the pre-check and the invoice lookup only see
+        # the caller's own invoices (staff: all) — the pre-check used to hand
+        # back ANY tenant's advance for a guessed invoice_id.
+        invoices = _invoice_scope(request.user)
         raw_invoice_id = request.data.get('invoice_id')
         if raw_invoice_id:
-            existing = AdvanceRequest.objects.filter(
-                invoice_id=raw_invoice_id,
-                status__in=['REQUESTED', 'SCORING', 'APPROVED', 'DISBURSED'],
-            ).order_by('-requested_at').first()
+            try:
+                existing = AdvanceRequest.objects.filter(
+                    invoice__in=invoices,
+                    invoice_id=raw_invoice_id,
+                    status__in=['REQUESTED', 'SCORING', 'APPROVED', 'DISBURSED'],
+                ).order_by('-requested_at').first()
+            except (ValueError, TypeError):
+                existing = None
             if existing:
                 return Response(AdvanceRequestSerializer(existing).data, status=status.HTTP_200_OK)
 
-        serializer = AdvanceRequestCreateSerializer(data=request.data)
+        serializer = AdvanceRequestCreateSerializer(data=request.data, context={'invoices': invoices})
         serializer.is_valid(raise_exception=True)
 
         invoice_id = serializer.validated_data['invoice_id']
-        invoice = Invoice.objects.filter(id=invoice_id).first()
+        invoice = invoices.filter(id=invoice_id).first()
         if not invoice:
             return Response({'error': 'Invoice not found'}, status=status.HTTP_404_NOT_FOUND)
 
