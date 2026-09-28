@@ -33,6 +33,54 @@ from core.services.invoice_generator import InvoiceGenerator
 from core.services.pdf_generator import InvoicePDFGenerator
 from core.services.email_service import InvoiceEmailService
 from core.services.aging_service import AgingAnalysisService
+import django_filters
+
+
+# List filters for the three finance collections. Before 2026-09 these
+# viewsets declared no filters, so ?status=, ?invoice= etc. were silently
+# ignored and every row came back (docs/backend-changes/2026-09-api-data-correctness.md).
+# Invalid values (unknown status, non-numeric id, bad date) are a 400.
+# Foreign keys are plain NumberFilters on the *_id column, not ModelChoiceFilters:
+# the queryset is already company-scoped, and a ModelChoiceFilter would answer
+# 400 for a missing id but 200 for another tenant's id (an existence oracle).
+
+class InvoiceFilterSet(django_filters.FilterSet):
+    status = django_filters.ChoiceFilter(choices=Invoice.STATUS_CHOICES)
+    customer = django_filters.NumberFilter(field_name='customer_id')
+    load = django_filters.NumberFilter(field_name='load_id')
+    issue_date__gte = django_filters.DateFilter(field_name='issue_date', lookup_expr='gte')
+    issue_date__lte = django_filters.DateFilter(field_name='issue_date', lookup_expr='lte')
+    due_date__gte = django_filters.DateFilter(field_name='due_date', lookup_expr='gte')
+    due_date__lte = django_filters.DateFilter(field_name='due_date', lookup_expr='lte')
+
+    class Meta:
+        model = Invoice
+        fields = []
+
+
+class PaymentFilterSet(django_filters.FilterSet):
+    invoice = django_filters.NumberFilter(field_name='invoice_id')
+    customer = django_filters.NumberFilter(field_name='customer_id')
+    payment_method = django_filters.ChoiceFilter(choices=Payment.PAYMENT_METHOD_CHOICES)
+    payment_date__gte = django_filters.DateFilter(field_name='payment_date', lookup_expr='gte')
+    payment_date__lte = django_filters.DateFilter(field_name='payment_date', lookup_expr='lte')
+
+    class Meta:
+        model = Payment
+        fields = []
+
+
+class ExpenseFilterSet(django_filters.FilterSet):
+    status = django_filters.ChoiceFilter(choices=Expense.STATUS_CHOICES)
+    category = django_filters.ChoiceFilter(choices=Expense.CATEGORY_CHOICES)
+    vehicle = django_filters.NumberFilter(field_name='vehicle_id')
+    driver = django_filters.NumberFilter(field_name='driver_id')
+    expense_date__gte = django_filters.DateFilter(field_name='expense_date', lookup_expr='gte')
+    expense_date__lte = django_filters.DateFilter(field_name='expense_date', lookup_expr='lte')
+
+    class Meta:
+        model = Expense
+        fields = []
 
 
 class InvoiceFinanceViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
@@ -42,6 +90,7 @@ class InvoiceFinanceViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.Model
     queryset = Invoice.objects.all()
     serializer_class = InvoiceSerializer
     permission_classes = [IsAuthenticated]
+    filterset_class = InvoiceFilterSet
     billing_blocked_message = 'Update your payment method to continue quoting.'
 
     def create(self, request, *args, **kwargs):
@@ -457,6 +506,7 @@ class PaymentFinanceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     queryset = Payment.objects.all()
     serializer_class = PaymentSerializer
     permission_classes = [IsAuthenticated]
+    filterset_class = PaymentFilterSet
 
     def create(self, request, *args, **kwargs):
         """
@@ -485,6 +535,7 @@ class ExpenseFinanceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     queryset = Expense.objects.all()
     serializer_class = ExpenseSerializer
     permission_classes = [IsAuthenticated]
+    filterset_class = ExpenseFilterSet
 
     @action(detail=True, methods=['post'])
     def approve(self, request, pk=None):
