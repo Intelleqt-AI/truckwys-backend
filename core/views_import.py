@@ -24,7 +24,9 @@ MAX_ROWS = 2000
 
 class _ImportBase(APIView):
     permission_classes = [IsAuthenticated]
-    schema: dict = {}
+    # Not `schema`: that name is DRF's APIView.schema (the OpenAPI AutoSchema),
+    # and shadowing it made /api/schema/ 500 (docs/backend-changes/2026-09-api-data-correctness.md).
+    import_columns: dict = {}
     validator = None
 
     def _company(self, request):
@@ -39,14 +41,14 @@ class _ImportBase(APIView):
         if len(grid) > MAX_ROWS + 1:
             return None, [], {}, f'That is more than {MAX_ROWS} rows — import it in batches.'
 
-        header = grid[0] if looks_like_header(grid[0], self.schema) else None
+        header = grid[0] if looks_like_header(grid[0], self.import_columns) else None
         rows = grid[1:] if header else grid
         if header:
-            mapping = map_columns(header, self.schema)
+            mapping = map_columns(header, self.import_columns)
         else:
             # No header: fall back to the order the columns are documented in,
             # which is the order our own template and the docs use.
-            mapping = {i: field for i, field in enumerate(self.schema) if i < len(grid[0])}
+            mapping = {i: field for i, field in enumerate(self.import_columns) if i < len(grid[0])}
         # An explicit mapping from the UI always wins — the user has looked at
         # our guess and corrected it.
         override = request.data.get('mapping')
@@ -77,17 +79,17 @@ class ImportValidateView(_ImportBase):
 
 
 class CustomerImportValidateView(ImportValidateView):
-    schema = CUSTOMER_COLUMNS
+    import_columns = CUSTOMER_COLUMNS
     validator = staticmethod(validate_customers)
 
 
 class VehicleImportValidateView(ImportValidateView):
-    schema = VEHICLE_COLUMNS
+    import_columns = VEHICLE_COLUMNS
     validator = staticmethod(validate_vehicles)
 
 
 class CustomerImportCommitView(_ImportBase):
-    schema = CUSTOMER_COLUMNS
+    import_columns = CUSTOMER_COLUMNS
     validator = staticmethod(validate_customers)
 
     def post(self, request):
@@ -115,7 +117,7 @@ class CustomerImportCommitView(_ImportBase):
 
 
 class VehicleImportCommitView(_ImportBase):
-    schema = VEHICLE_COLUMNS
+    import_columns = VEHICLE_COLUMNS
     validator = staticmethod(validate_vehicles)
 
     def post(self, request):
