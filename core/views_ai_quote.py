@@ -64,6 +64,32 @@ class FuelPriceCurrentView(APIView):
     once-per-hour live-retry gate and re-check the live sources immediately."""
     permission_classes = [IsAuthenticated]
 
+    @staticmethod
+    def _provenance(request, fuel_price, is_fallback):
+        """Fields added 2026-09 (all additive; existing keys unchanged): the
+        price for the caller's company fuel zone plus where it came from."""
+        company = getattr(request.user, 'company', None)
+        zone = getattr(company, 'fuel_zone', None) or 'INLAND'
+
+        def num(v):
+            return float(v) if v is not None else None
+
+        effective_from = getattr(fuel_price, 'effective_from', None)
+        failed_at = getattr(fuel_price, 'fetch_failed_at', None)
+        zone_price = None
+        if not is_fallback:
+            zone_price = num(fuel_price.diesel_coastal if zone == 'COASTAL' else fuel_price.diesel_inland)
+        return {
+            'zone': zone,
+            'zone_price': zone_price,
+            'diesel_grade': getattr(fuel_price, 'diesel_grade', None),
+            'price_basis': 'WHOLESALE_LIST',
+            'effective_from': timezone.localtime(effective_from).isoformat() if effective_from else None,
+            'diesel_500ppm_inland': None if is_fallback else num(getattr(fuel_price, 'diesel_500ppm_inland', None)),
+            'diesel_500ppm_coastal': None if is_fallback else num(getattr(fuel_price, 'diesel_500ppm_coastal', None)),
+            'last_failed_check_at': timezone.localtime(failed_at).isoformat() if failed_at else None,
+        }
+
     def get(self, request):
         try:
             force = request.query_params.get('force', '').lower() == 'true'
@@ -72,7 +98,12 @@ class FuelPriceCurrentView(APIView):
             # Stale if: source is a fallback (live scrape failed), or data is >35 days old
             days_old = (timezone.now().date() - fuel_price.date).days
             is_fallback = fuel_price.source in ('FALLBACK', 'FALLBACK_LATEST')
-            is_stale = is_fallback or days_old > 35
+            # A refresh that failed after this price was stored leaves the
+            # last good price in place (never overwritten by a fallback) —
+            # still usable, but flagged.
+            refresh_failed_at = getattr(fuel_price, 'fetch_failed_at', None)
+            is_stale = is_fallback or days_old > 35 or refresh_failed_at is not None
+            provenance = self._provenance(request, fuel_price, is_fallback)
 
             if is_fallback:
                 # Don't hand over a substituted number dressed up as current —
@@ -101,9 +132,18 @@ class FuelPriceCurrentView(APIView):
                     'diesel_coastal': None,
                     'petrol_95': None,
                     'petrol_93': None,
+                    **provenance,
                 })
 
-            stale_warning = f"Last update {days_old} days ago; consider manual refresh" if is_stale else None
+            if refresh_failed_at is not None:
+                stale_warning = (
+                    f"The latest price check failed ({timezone.localtime(refresh_failed_at):%Y-%m-%d %H:%M} SAST); "
+                    f"showing the last confirmed {fuel_price.source} price."
+                )
+            elif is_stale:
+                stale_warning = f"Last update {days_old} days ago; consider manual refresh"
+            else:
+                stale_warning = None
 
             return Response({
                 'success': True,
@@ -120,6 +160,7 @@ class FuelPriceCurrentView(APIView):
                 'diesel_coastal': float(fuel_price.diesel_coastal),
                 'petrol_95': float(fuel_price.petrol_95) if fuel_price.petrol_95 else 0,
                 'petrol_93': float(fuel_price.petrol_93) if fuel_price.petrol_93 else 0,
+                **provenance,
             })
         except Exception as e:
             return Response({
@@ -142,12 +183,24 @@ class FuelPriceCurrentView(APIView):
         from core.models.fuel_price import FuelPrice
 
         today = date.today().replace(day=1)
+        now = timezone.now()
+        # A staff override is the price in force from now until a person
+        # replaces it: automated refreshes never overwrite a MANUAL row (see
+        # fetch_fuel_prices). Every provenance field is reset so nothing from
+        # the scraped row it replaces (grade, 500ppm figures, failure flag)
+        # is left behind looking as if it described the typed price.
         FuelPrice.objects.update_or_create(
             date=today,
             defaults={
                 'diesel_inland': Decimal(str(diesel_inland)),
                 'diesel_coastal': Decimal(str(diesel_coastal or diesel_inland)),
                 'source': 'MANUAL',
+                'fetched_at': now,
+                'effective_from': now,
+                'fetch_failed_at': None,
+                'diesel_grade': None,
+                'diesel_500ppm_inland': None,
+                'diesel_500ppm_coastal': None,
             }
         )
         return Response({'success': True, 'date': today.isoformat(), 'diesel_inland': float(diesel_inland)})

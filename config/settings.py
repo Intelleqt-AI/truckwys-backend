@@ -406,6 +406,13 @@ CACHES = {
 # Update this periodically to match the current pump price.
 FUEL_PRICE_ZAR = 22.50
 
+# Legacy regex daily fuel scraper (`manage.py fetch_fuel_price_daily`,
+# core/services/fuel_price_live.py). Off by default: it writes rows dated
+# today that compete with the monthly FIASA rows. The supported refresh is the
+# `refresh_fuel_price` beat task / `manage.py fetch_fuel_prices`.
+# See docs/backend-changes/2026-09-fuel-pipeline.md (F13).
+FUEL_PRICE_DAILY_SCRAPER_ENABLED = config('FUEL_PRICE_DAILY_SCRAPER_ENABLED', default=False, cast=bool)
+
 # ---------------------------------------------------------------------------
 # Celery
 # ---------------------------------------------------------------------------

@@ -1,10 +1,14 @@
 """Tests for T1.1 — Fuel Price service and model."""
 
 import logging
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
+from pathlib import Path
 from unittest.mock import MagicMock, patch
+from zoneinfo import ZoneInfo
 
+import requests
+from django.core.cache import cache
 from django.test import TestCase
 
 from core.models import FuelPrice
@@ -32,9 +36,33 @@ class ToDecimalTests(TestCase):
 
 
 class FetchFuelPricesTests(TestCase):
-    """Tests for fetch_fuel_prices() — uses fallback data, no live HTTP calls."""
+    """Tests for fetch_fuel_prices() — hermetic: HTTP is patched at the
+    requests.get boundary (serving the recorded FIASA page, or failing like a
+    timeout) and the clock is frozen at 2026-09-28 10:00 SAST. These used to
+    patch only the AA/SAPIA/DMRE scrapers, so FIASA was fetched from the real
+    internet and its *current* price was stored under whatever target_date the
+    test asked for (review finding F3) — the three failures on main."""
+
+    NOW = datetime(2026, 9, 28, 10, 0, tzinfo=ZoneInfo('Africa/Johannesburg'))
+    FIASA_HTML = (Path(__file__).parent / 'fixtures' / 'fiasa_2026-09-28.html').read_text(encoding='utf-8')
+
+    def setUp(self):
+        cache.clear()
+        resp = MagicMock(text=self.FIASA_HTML)
+        self.http = patch('core.services.fuel_price.requests.get', return_value=resp)
+        self.http_mock = self.http.start()
+        self.addCleanup(self.http.stop)
+        clock = patch('django.utils.timezone.now', return_value=self.NOW)
+        clock.start()
+        self.addCleanup(clock.stop)
+
+    def _go_offline(self):
+        self.http_mock.return_value = None
+        self.http_mock.side_effect = requests.ConnectionError('offline (test)')
 
     def test_creates_new_record_from_fallback(self):
+        # FIASA is up but its page only carries 2026: March 2024 must come
+        # from the fallback table, not be stamped with today's price.
         target = date(2024, 3, 1)
         fp = fetch_fuel_prices(target_date=target)
 
@@ -64,7 +92,7 @@ class FetchFuelPricesTests(TestCase):
         today = date.today()
         current_month = today.replace(day=1)
 
-        # Patch to avoid live HTTP and ensure fallback is available
+        self._go_offline()
         with patch('core.services.fuel_price._fetch_from_aa_sa', return_value=None), \
              patch('core.services.fuel_price._fetch_from_sapia', return_value=None), \
              patch('core.services.fuel_price._fetch_from_dmre', return_value=None):
@@ -75,6 +103,7 @@ class FetchFuelPricesTests(TestCase):
     def test_falls_back_to_latest_when_key_missing(self):
         # Use a future date not in _FALLBACK_PRICES
         target = date(2099, 1, 1)
+        self._go_offline()
         with patch('core.services.fuel_price._fetch_from_aa_sa', return_value=None), \
              patch('core.services.fuel_price._fetch_from_sapia', return_value=None), \
              patch('core.services.fuel_price._fetch_from_dmre', return_value=None):
@@ -86,7 +115,12 @@ class FetchFuelPricesTests(TestCase):
         self.assertEqual(fp.source, 'FALLBACK_LATEST')
 
     def test_live_source_data_is_used_when_available(self):
-        target = date(2024, 9, 1)
+        # The secondary live scrapers only ever see *today's* price, so they
+        # are consulted for the current month only (was: 2024-09-01, which
+        # stored today's price under a past month — F3). FIASA is offline
+        # here so the chain reaches SAPIA.
+        target = date(2026, 9, 1)
+        self._go_offline()
         mock_data = {
             'diesel_inland': Decimal('20.00'),
             'diesel_coastal': Decimal('19.50'),
@@ -99,6 +133,14 @@ class FetchFuelPricesTests(TestCase):
 
         self.assertEqual(fp.diesel_inland, Decimal('20.00'))
         self.assertEqual(fp.source, 'SAPIA')
+
+    def test_fiasa_is_used_for_the_current_month(self):
+        fp = fetch_fuel_prices(target_date=date(2026, 9, 1))
+
+        self.assertEqual(fp.source, 'FIASA')
+        self.assertEqual(fp.diesel_inland, Decimal('29.5551'))   # Diesel 0.005% Gauteng
+        self.assertEqual(fp.diesel_coastal, Decimal('28.6831'))  # Diesel 0.005% Coastal
+        self.assertEqual(fp.diesel_grade, '50ppm')
 
 
 class PriceAlertTests(TestCase):
