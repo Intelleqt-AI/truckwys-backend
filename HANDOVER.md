@@ -167,7 +167,7 @@ these unlock real functionality. Set in the backend `.env` (see `.env.example`).
 **Cron jobs to schedule** (none run on a timer yet — there is no Celery beat):
 ```
 # daily ~07:00 SAST
-python manage.py fetch_fuel_price_daily     # current diesel price (keeps quoting/fuel-guard accurate)
+python manage.py fetch_fuel_prices --force  # current diesel price; only needed if Celery beat is NOT running (beat runs refresh_fuel_price daily 06:00). fetch_fuel_price_daily is legacy and disabled — see docs/backend-changes/2026-09-fuel-pipeline.md
 python manage.py run_dunning                # send due payment reminders (throttled, escalating)
 # daily or weekly
 python manage.py retrain_win_model          # retrain win-prob model from new QuoteOutcome data
