@@ -1289,7 +1289,10 @@ class FleetOverviewView(APIView):
             margin=Sum('total_amount')
         ).aggregate(avg_margin=Avg('margin'))
         
-        avg_margin_per_vehicle = float(vehicle_margins['avg_margin']) if vehicle_margins['avg_margin'] else 7266.67
+        # No loads -> no figure. This used to fall back to invented constants
+        # (7266.67 / 6500.00 / 12.0 / 2.3), shown to users as real KPIs.
+        # See docs/backend-changes/2026-09-api-data-correctness.md.
+        avg_margin_per_vehicle = float(vehicle_margins['avg_margin']) if vehicle_margins['avg_margin'] else None
         
         # Last month comparison
         last_month_loads = Load.objects.filter(
@@ -1303,8 +1306,11 @@ class FleetOverviewView(APIView):
             margin=Sum('total_amount')
         ).aggregate(avg_margin=Avg('margin'))
         
-        last_month_avg = float(last_month_vehicle_margins['avg_margin']) if last_month_vehicle_margins['avg_margin'] else 6500.00
-        margin_improvement = ((avg_margin_per_vehicle - last_month_avg) / last_month_avg * 100) if last_month_avg > 0 else 12.0
+        last_month_avg = float(last_month_vehicle_margins['avg_margin']) if last_month_vehicle_margins['avg_margin'] else None
+        margin_improvement = (
+            round((avg_margin_per_vehicle - last_month_avg) / last_month_avg * 100, 1)
+            if avg_margin_per_vehicle is not None and last_month_avg else None
+        )
         
         # Fleet Cost per KM
         total_expenses = Expense.objects.filter(
@@ -1322,9 +1328,10 @@ class FleetOverviewView(APIView):
             company=request.user.company
         ).aggregate(total=Sum('distance'))['total']
         
-        total_distance = float(total_distance) if total_distance else 1.0
-        
-        cost_per_km = total_expenses / total_distance if total_distance > 0 else 22.0
+        # No delivered distance -> no cost per km (was: divide by a fake 1 km).
+        total_distance = float(total_distance) if total_distance else 0.0
+
+        cost_per_km = total_expenses / total_distance if total_distance > 0 else None
         target_cost_per_km = 20.0
         
         # AI Health Score — real aggregates from Vehicle model fields
@@ -1338,8 +1345,6 @@ class FleetOverviewView(APIView):
         uptime_score = 0  # Not stored per-vehicle; kept for response shape compatibility
         maintenance_score = round(float(vehicle_agg['avg_maint'] or 0))
         
-        # Banner message data
-        margin_change = 2.3
         # Vehicles flagged by km-based service (within 10% of interval or overdue)
         # plus those with expiring registration/insurance.
         company_vehicles = Vehicle.objects.filter(company=request.user.company)
@@ -1365,7 +1370,7 @@ class FleetOverviewView(APIView):
                 }
             },
             'banner': {
-                'message': f"Fleet margin up {margin_change}% this month driven by improved route pairing and fewer idling hours. {flagged_vehicles} vehicles flagged for maintenance risk.",
+                'message': self._banner_message(margin_improvement, flagged_vehicles),
                 'type': 'info'
             },
             'kpi_cards': [
@@ -1384,25 +1389,30 @@ class FleetOverviewView(APIView):
                 {
                     'id': 'avg_margin_per_vehicle',
                     'title': 'Avg Margin per Vehicle (MTD)',
-                    'value': f"R {avg_margin_per_vehicle:,.2f}",
+                    'value': f"R {avg_margin_per_vehicle:,.2f}" if avg_margin_per_vehicle is not None else None,
                     'raw_value': avg_margin_per_vehicle,
+                    'data_status': 'ok' if avg_margin_per_vehicle is not None else 'insufficient_data',
                     'trend': {
-                        'value': round(margin_improvement, 1),
-                        'label': f"+{round(margin_improvement, 1)}% improvement",
-                        'direction': 'up',
-                        'type': 'positive'
-                    },
+                        'value': margin_improvement,
+                        'label': f"{margin_improvement:+.1f}% vs last month",
+                        'direction': 'up' if margin_improvement >= 0 else 'down',
+                        'type': 'positive' if margin_improvement >= 0 else 'negative'
+                    } if margin_improvement is not None else None,
                     'icon': 'trending-up'
                 },
                 {
                     'id': 'fleet_cost_per_km',
                     'title': 'Fleet Cost per KM',
-                    'value': f"R {cost_per_km:.1f}",
+                    'value': f"R {cost_per_km:.1f}" if cost_per_km is not None else None,
                     'raw_value': cost_per_km,
+                    'data_status': 'ok' if cost_per_km is not None else 'insufficient_data',
                     'comparison': {
                         'label': f"vs Target R {target_cost_per_km:.1f}",
                         'target': target_cost_per_km,
-                        'status': 'warning' if cost_per_km > target_cost_per_km else 'success'
+                        'status': (
+                            None if cost_per_km is None
+                            else 'warning' if cost_per_km > target_cost_per_km else 'success'
+                        )
                     },
                     'icon': 'alert-circle'
                 },
@@ -1421,6 +1431,21 @@ class FleetOverviewView(APIView):
                 }
             ]
         })
+
+
+    @staticmethod
+    def _banner_message(margin_improvement, flagged_vehicles):
+        """Only real facts: the month-on-month change when both months have
+        loads, and the maintenance flag count. (Previously a fixed 'up 2.3%
+        ... improved route pairing and fewer idling hours'.)"""
+        parts = []
+        if margin_improvement is not None:
+            word = 'up' if margin_improvement >= 0 else 'down'
+            parts.append(f"Avg margin per vehicle {word} {abs(margin_improvement):.1f}% vs last month.")
+        parts.append(
+            f"{flagged_vehicles} vehicle{'s' if flagged_vehicles != 1 else ''} flagged for maintenance risk."
+        )
+        return ' '.join(parts)
 
 
 class VehicleInsightsView(APIView):
@@ -4094,7 +4119,9 @@ class DashboardSignalsView(APIView):
                 'type': 'WARNING',
                 'category': 'Fleet Performance',
                 'title': f'{idle_vehicles.count()} Vehicles Idle',
-                'body': f'{names} available with no assigned load. Estimated revenue loss: R {idle_vehicles.count() * 8000:,}/day.',
+                # No "estimated revenue loss" figure: it was a flat R 8,000 per
+                # truck per day with no basis in the company's data.
+                'body': f'{names} available with no assigned load.',
                 'action': 'ASSIGN',
                 'action_url': '/fleet',
                 'severity': 'medium',
@@ -4109,7 +4136,9 @@ class DashboardSignalsView(APIView):
                 'type': 'OPPORTUNITY',
                 'category': 'Cash Alerts',
                 'title': f'Fast Pay — {eligible.count()} Invoices Ready',
-                'body': f'R {float(total):,.0f} in eligible invoices. Advance at 2–3% fee. Cash in 4 hours.',
+                # Fee and payout time are not promised here: the fee is priced
+                # per invoice by the risk engine and payout time is not measured.
+                'body': f'R {float(total):,.0f} in eligible invoices.',
                 'action': 'FAST PAY',
                 'action_url': '/capital',
                 'severity': 'low',
@@ -4124,7 +4153,9 @@ class DashboardSignalsView(APIView):
                     'type': 'OPPORTUNITY',
                     'category': 'Cash Alerts',
                     'title': f'Fast Pay — {sent.count()} Invoices Sent',
-                    'body': f'R {float(total):,.0f} awaiting payment. Eligible for fast pay at 2.5% fee.',
+                    # These invoices are NOT flagged early_pay_eligible, so no
+                    # eligibility or fee claim is made.
+                    'body': f'R {float(total):,.0f} awaiting payment.',
                     'action': 'FAST PAY',
                     'action_url': '/capital',
                     'severity': 'low',
