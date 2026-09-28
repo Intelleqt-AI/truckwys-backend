@@ -239,11 +239,17 @@ REST_FRAMEWORK = {
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
     'DEFAULT_THROTTLE_CLASSES': [
         'rest_framework.throttling.AnonRateThrottle',
-        'rest_framework.throttling.UserRateThrottle',
+        # Reads and writes are counted separately (core/throttling.py). The old
+        # single 'user' 60/min bucket was hit by normal navigation.
+        'core.throttling.UserReadRateThrottle',
+        'core.throttling.UserWriteRateThrottle',
     ],
     'DEFAULT_THROTTLE_RATES': {
         'anon': '20/minute',
+        # Kept for any view that names UserRateThrottle explicitly (none today).
         'user': '60/minute',
+        'user_read': config('USER_READ_THROTTLE_RATE', default='600/minute'),
+        'user_write': config('USER_WRITE_THROTTLE_RATE', default='120/minute'),
         'login': '5/minute',  # Stricter rate for login/signup
         'otp_verify': '10/minute',  # 2FA code verification (per-challenge cap of 5 also applies)
         'otp_resend': '3/minute',   # 2FA code resend (plus a per-challenge 60s cooldown)
