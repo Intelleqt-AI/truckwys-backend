@@ -2276,6 +2276,7 @@ class VehicleTypeViewSet(DemoFixedDataMixin, viewsets.ModelViewSet):
     COPYABLE_FIELDS = [
         'name', 'description', 'capacity', 'max_distance', 'base_rate',
         'fuel_consumption_l_per_100km', 'fuel_consumption_sensitivity_pct', 'fuel_type', 'active',
+        'sanral_toll_class',
     ]
 
     def update(self, request, *args, **kwargs):
@@ -3355,7 +3356,9 @@ class RouteCalculatorView(APIView):
         from core.services.cross_border import (detect_countries, calculate_cross_border_costs,
                                                 get_cross_border_warnings, country_distances_km)
         from core.services.fuel_price import fetch_fuel_prices
-        from core.services.toll_calculator import calculate_tolls, calculate_tolls_by_geometry, resolve_toll_truck_type
+        from decimal import Decimal
+        from core.services.toll_calculator import (VAT_RATE, calculate_tolls, calculate_tolls_by_geometry,
+                                                   resolve_toll_class)
 
         data = request.data
         origin = data.get('origin', '')
@@ -3499,37 +3502,75 @@ class RouteCalculatorView(APIView):
                 }, status=status.HTTP_403_FORBIDDEN)
 
         # Toll cost — matched PER ROUTE via point-to-polyline plaza matching.
-        # resolve_toll_truck_type handles exact names, DB VehicleType names
-        # ("Medium Truck (4–8 tonnes)"), and free-form UI values by keyword.
-        toll_truck_type = resolve_toll_truck_type(vehicle_type)
+        # SANRAL class: the VehicleType's explicit sanral_toll_class when set,
+        # else a guess from the name (resolve_toll_class reports which).
+        toll_class = resolve_toll_class(vehicle_type, getattr(request.user, 'company', None))
+        toll_truck_type = toll_class.truck_type
+
+        _TOLL_UNAVAILABLE_MESSAGES = {
+            'routing_unavailable': ('Live routing was unavailable, so the road route (and the toll '
+                                    'plazas on it) is unknown. Tolls are NOT included; add them manually.'),
+            'toll_calculation_failed': 'The toll calculation failed. Tolls are NOT included; add them manually.',
+            'no_toll_data': 'No toll plaza data is loaded. Tolls are NOT included; add them manually.',
+            'no_geometry': 'The route has no geometry to match toll plazas against. Tolls are NOT included.',
+            'no_known_toll_corridor': ('The route could not be matched to a known toll road. Tolls are '
+                                       'NOT included; add them manually if the route uses toll roads.'),
+        }
 
         def _toll_for_route(geom):
-            """(toll_zar, breakdown, routes_used) for one route polyline.
+            """Toll result for one route polyline, as a dict.
 
-            Geometry present → authoritative point-to-polyline geofence: only SA plazas
-            the route actually passes are charged. For cross-border only SA plazas exist
-            in the DB, so this also windows SA-side tolls to the driven SA portion.
-            No geometry (estimated route) → keyword best-effort. There is deliberately NO
-            'geofence-found-0 → keyword' fallback: 0 matched plazas means the route
-            genuinely has none (e.g. Pretoria↔Johannesburg = R0)."""
-            if geom:
-                try:
+            Amounts: 'excl' is VAT-exclusive (what enters the quote), 'incl'
+            the published VAT-inclusive tariff total.
+
+            TomTom geometry → authoritative point-to-polyline geofence: only SA
+            plazas the route actually passes are charged. For cross-border only
+            SA plazas exist in the DB, so this also windows SA-side tolls to the
+            driven SA portion. 0 matched plazas on a real route is a genuine R0
+            (e.g. Pretoria↔Johannesburg) and is NOT flagged.
+
+            Straight-line fallback geometry (TomTom down) is NOT geofenced: a
+            chord between the endpoints says nothing about which plazas the
+            road passes, so the result is flagged unavailable instead of a
+            silent R0 (or a random partial match).
+            No geometry at all → keyword corridor best-effort, flagged estimated."""
+            out = {'excl': Decimal('0.00'), 'incl': Decimal('0.00'), 'breakdown': [], 'routes': [],
+                   'estimated': source != 'tomtom' or not geom, 'unavailable_reason': None}
+            if source != 'tomtom':
+                out['unavailable_reason'] = 'routing_unavailable'
+                return out
+            try:
+                if geom:
                     res = calculate_tolls_by_geometry(geom, toll_truck_type)
-                except Exception:
-                    return 0.0, [], []
-            else:
-                try:
+                else:
                     res = calculate_tolls(f"{origin} {origin_label}",
                                           f"{destination} {dest_label}", toll_truck_type)
-                except Exception:
-                    return 0.0, [], []
-            bd = [{'plaza': it.plaza_name, 'route': it.route,
-                   'location_km': float(it.location_km), 'tariff': float(it.tariff)}
-                  for it in res.breakdown]
-            return float(res.total_zar), bd, list(res.routes_used)
+                    if not res.routes_used:
+                        res.unavailable_reason = res.unavailable_reason or 'no_known_toll_corridor'
+            except Exception:
+                _exc_logger.exception('Toll calculation failed for %s → %s (%s)', origin, destination, toll_truck_type)
+                out['unavailable_reason'] = 'toll_calculation_failed'
+                return out
+            out['unavailable_reason'] = res.unavailable_reason
+            out['excl'] = res.total_excl_vat
+            out['incl'] = res.total_zar
+            out['routes'] = list(res.routes_used)
+            # 'tariff' is VAT-exclusive so the breakdown sums to toll_cost_zar;
+            # the published (VAT-inclusive) tariff is kept as tariff_incl_vat.
+            out['breakdown'] = [{'plaza': it.plaza_name, 'route': it.route,
+                                 'location_km': float(it.location_km),
+                                 'tariff': float(it.tariff_excl_vat),
+                                 'tariff_excl_vat': float(it.tariff_excl_vat),
+                                 'tariff_incl_vat': float(it.tariff)}
+                                for it in res.breakdown]
+            return out
 
         geometry = routes_raw[0].get('geometry', []) if routes_raw else []
-        toll_zar, toll_breakdown, toll_routes_used = _toll_for_route(geometry)
+        toll_result = _toll_for_route(geometry)
+        toll_zar = float(toll_result['excl'])
+        toll_breakdown = toll_result['breakdown']
+        toll_routes_used = toll_result['routes']
+        toll_unavailable_reason = toll_result['unavailable_reason']
 
         # Cross-border costs
         additional_costs = {}
@@ -3580,8 +3621,21 @@ class RouteCalculatorView(APIView):
             'fuel_usage_litres': fuel_litres,
             'fuel_cost_zar': fuel_zar,
             'fuel_rate_l_per_100km': round(fuel_rate * 100, 1),
+            # VAT-EXCLUSIVE since 2026-09 (docs/backend-changes/2026-09-toll-class-vat.md):
+            # this is the carrier's toll cost for a quote priced excl. VAT.
             'toll_cost_zar': round(toll_zar, 2),
-            'toll_source': 'geofence' if geometry else 'estimated',
+            'toll_cost_includes_vat': False,
+            'toll_cost_incl_vat_zar': float(toll_result['incl']),
+            'toll_vat_zar': float(toll_result['incl'] - toll_result['excl']),
+            'toll_vat_rate': float(VAT_RATE),
+            'toll_source': 'estimated' if toll_result['estimated'] else 'geofence',
+            'toll_sanral_class': toll_class.sanral_class,
+            'toll_class_source': toll_class.source,
+            'toll_class_detail': toll_class.detail,
+            'tolls_estimated': toll_result['estimated'],
+            'tolls_unavailable': toll_unavailable_reason is not None,
+            'tolls_unavailable_reason': toll_unavailable_reason,
+            'toll_warning': _TOLL_UNAVAILABLE_MESSAGES.get(toll_unavailable_reason) if toll_unavailable_reason else None,
             'toll_routes': toll_routes_used,
             'toll_breakdown': toll_breakdown,
             'total_cost_zar': round(fuel_zar + toll_zar + sum(additional_costs.values()), 2),
@@ -3617,11 +3671,8 @@ class RouteCalculatorView(APIView):
             r_fuel = round(r_litres * diesel_price, 2)
             analysis = self._analyze_route(rt)
             terrain = self._infer_terrain(rt['geometry'], origin, destination)
-            if i == 0:
-                rt_toll_zar, rt_breakdown = round(toll_zar, 2), toll_breakdown
-            else:
-                _tz, rt_breakdown, _ru = _toll_for_route(rt.get('geometry', []))
-                rt_toll_zar = round(_tz, 2)
+            rt_toll = toll_result if i == 0 else _toll_for_route(rt.get('geometry', []))
+            rt_toll_zar, rt_breakdown = round(float(rt_toll['excl']), 2), rt_toll['breakdown']
             routes_out.append({
                 'index': i,
                 'is_best': i == 0,
@@ -3636,7 +3687,10 @@ class RouteCalculatorView(APIView):
                 'arrival_time': rt['arrival_time'],
                 'fuel_usage_litres': r_litres,
                 'fuel_cost_zar': r_fuel,
-                'toll_cost_zar': rt_toll_zar,
+                'toll_cost_zar': rt_toll_zar,   # VAT-exclusive
+                'toll_cost_incl_vat_zar': float(rt_toll['incl']),
+                'tolls_unavailable': rt_toll['unavailable_reason'] is not None,
+                'tolls_unavailable_reason': rt_toll['unavailable_reason'],
                 'toll_breakdown': rt_breakdown,
                 'total_cost_zar': round(r_fuel + rt_toll_zar + extra_costs, 2),
                 # Rich route metadata from section analysis

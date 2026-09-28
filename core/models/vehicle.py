@@ -22,6 +22,20 @@ class VehicleType(models.Model):
         ('Diesel', 'Diesel'), ('Petrol', 'Petrol'), ('Electric', 'Electric'), ('Hybrid', 'Hybrid'),
     ]
     fuel_type = models.CharField(max_length=20, choices=FUEL_TYPE_CHOICES, default='Diesel')
+    # SANRAL toll class of this vehicle as it travels (whole combination, all
+    # axles). Blank = not known: the toll calculator then guesses from the
+    # name (core.services.toll_calculator.resolve_toll_class).
+    SANRAL_TOLL_CLASS_CHOICES = [
+        (1, 'Class 1 — light vehicle'),
+        (2, 'Class 2 — heavy vehicle, 2 axles'),
+        (3, 'Class 3 — heavy vehicle, 3 or 4 axles'),
+        (4, 'Class 4 — heavy vehicle, more than 4 axles'),
+    ]
+    sanral_toll_class = models.PositiveSmallIntegerField(
+        choices=SANRAL_TOLL_CLASS_CHOICES, null=True, blank=True,
+        help_text='SANRAL toll class, counting every axle on the truck and its trailers. '
+                  'Blank means the class is guessed from the vehicle type name.'
+    )
     active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

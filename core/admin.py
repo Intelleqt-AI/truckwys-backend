@@ -34,8 +34,8 @@ class VehicleAdmin(admin.ModelAdmin):
 
 @admin.register(VehicleType)
 class VehicleTypeAdmin(admin.ModelAdmin):
-    list_display = ['name', 'capacity', 'max_distance', 'base_rate', 'active']
-    list_filter = ['active']
+    list_display = ['name', 'capacity', 'max_distance', 'base_rate', 'sanral_toll_class', 'active']
+    list_filter = ['active', 'sanral_toll_class']
     search_fields = ['name', 'description']
 
 @admin.register(VehicleLog)

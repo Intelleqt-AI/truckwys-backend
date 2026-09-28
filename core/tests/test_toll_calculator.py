@@ -14,6 +14,18 @@ from core.services.toll_calculator import (
 )
 
 
+class _IsolatedPlazaTestCase(TestCase):
+    """Migration 0070 seeds the real 2026 plazas (including N3 "Tugela" and
+    "Mariannhill"), which clashed with these fixtures on the (name, route)
+    unique constraint. These tests exercise the calculator against their own
+    fictional tariffs, so start each test with an empty plaza table (rolled
+    back after the test like any other TestCase change)."""
+
+    def setUp(self):
+        TollPlaza.objects.all().delete()
+        super().setUp()
+
+
 def _make_plaza(name, route, location_km, c2, c3, c4, c5, direction='Test Route'):
     return TollPlaza.objects.create(
         name=name,
@@ -28,8 +40,9 @@ def _make_plaza(name, route, location_km, c2, c3, c4, c5, direction='Test Route'
     )
 
 
-class TollPlazaModelTests(TestCase):
+class TollPlazaModelTests(_IsolatedPlazaTestCase):
     def setUp(self):
+        super().setUp()
         self.plaza = _make_plaza('Van Reenen', 'N3', 226, 27, 57, 85, 113)
 
     def test_str_representation(self):
@@ -100,8 +113,9 @@ class DetectRoutesTests(TestCase):
         self.assertIn('N3', routes)
 
 
-class CalculateTollsTests(TestCase):
+class CalculateTollsTests(_IsolatedPlazaTestCase):
     def setUp(self):
+        super().setUp()
         # Seed representative N3 plazas
         _make_plaza('Van Reenen', 'N3', 226, 27, 57, 85, 113, 'Johannesburg → Durban')
         _make_plaza('Mooi River',  'N3', 330, 26, 54, 81, 108, 'Johannesburg → Durban')
