@@ -878,6 +878,34 @@ class InvoiceEmailService:
         view_token = getattr(self.invoice, 'view_token', '') or ''
         portal_link = f"{frontend_url}/invoice/view/{self.invoice.id}/{view_token}" if view_token else frontend_url
 
+        # How to pay — the company's bank details when set, otherwise the
+        # original "contact us for banking details" wording (unchanged).
+        from html import escape as html_escape
+        from core.services.payment_details import (
+            company_bank_details, bank_details_html, reference_text,
+        )
+        bank = company_bank_details(company)
+        if bank:
+            banking_block = f"""<div class="banking-details">
+            <h3>How to pay</h3>
+            <p>{bank_details_html(bank)}</p>
+            <p><strong>Reference:</strong> {self.invoice.invoice_number}</p>
+        </div>
+
+        <p style="font-size: 14px; color: #64748b;">
+            <strong>Important:</strong> {html_escape(reference_text(bank, self.invoice.invoice_number))}
+        </p>"""
+        else:
+            banking_block = f"""<div class="banking-details">
+            <h3>Banking Details for Payment</h3>
+            <p>Please contact <strong>{company.company_name if company else 'us'}</strong> for banking details.</p>
+            <p><strong>Reference:</strong> {self.invoice.invoice_number}</p>
+        </div>
+
+        <p style="font-size: 14px; color: #64748b;">
+            <strong>Important:</strong> Please use the invoice number <strong>{self.invoice.invoice_number}</strong> as your payment reference to ensure proper allocation.
+        </p>"""
+
         # Calculate days until due
         days_until_due = self.invoice.days_until_due
 
@@ -1036,15 +1064,7 @@ class InvoiceEmailService:
             <a href="{portal_link}" class="button">View Invoice Online</a>
         </div>
 
-        <div class="banking-details">
-            <h3>Banking Details for Payment</h3>
-            <p>Please contact <strong>{company.company_name if company else 'us'}</strong> for banking details.</p>
-            <p><strong>Reference:</strong> {self.invoice.invoice_number}</p>
-        </div>
-
-        <p style="font-size: 14px; color: #64748b;">
-            <strong>Important:</strong> Please use the invoice number <strong>{self.invoice.invoice_number}</strong> as your payment reference to ensure proper allocation.
-        </p>
+        {banking_block}
 
         <p>If you have any questions regarding this invoice, please don't hesitate to contact us.</p>
 

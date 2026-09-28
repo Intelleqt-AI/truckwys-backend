@@ -1,3 +1,4 @@
+import re
 from rest_framework import serializers
 from django.db.models import Avg  # ADD THIS IMPORT
 from .models import (
@@ -559,6 +560,12 @@ class NotificationSerializer(serializers.ModelSerializer):
 
 
 # Company Serializer
+BANK_FIELDS = (
+    'bank_name', 'bank_account_holder', 'bank_account_number',
+    'bank_branch_code', 'bank_account_type', 'payment_reference_hint',
+)
+
+
 class CompanySerializer(serializers.ModelSerializer):
     logo_url = serializers.SerializerMethodField()
     
@@ -578,8 +585,63 @@ class CompanySerializer(serializers.ModelSerializer):
             'ai_optimizer_max_market_deviation_pct',
             'default_toll_rate_per_km',
             'onboarding_completed_at',
-        ]
-    
+        ] + list(BANK_FIELDS)
+
+    def get_fields(self):
+        # Banking details follow the company-edit permission: only a company
+        # ADMIN (the role CompanyProfileView itself requires) may change them.
+        # Defence in depth — if this serializer is ever reached by anyone else
+        # the bank fields come back read-only instead of silently writable.
+        fields = super().get_fields()
+        request = self.context.get('request')
+        user = getattr(request, 'user', None)
+        can_edit = bool(user and getattr(user, 'is_authenticated', False) and (
+            getattr(user, 'role', None) == 'ADMIN' or getattr(user, 'is_superuser', False)
+        ))
+        if not can_edit:
+            for name in BANK_FIELDS:
+                if name in fields:
+                    fields[name].read_only = True
+        return fields
+
+    # Light validation: spaces/hyphens people paste from banking apps are
+    # stripped, then the value must be digits of a sane length. Blank/null
+    # clears the field. Existing rows are never re-validated.
+    @staticmethod
+    def _digits(value, label, min_len, max_len):
+        if value in (None, ''):
+            return None
+        cleaned = re.sub(r'[\s-]', '', str(value))
+        if not cleaned:
+            return None
+        if not cleaned.isdigit():
+            raise serializers.ValidationError(f'{label} may contain digits only.')
+        if not (min_len <= len(cleaned) <= max_len):
+            raise serializers.ValidationError(f'{label} must be {min_len}–{max_len} digits.')
+        return cleaned
+
+    def validate_bank_account_number(self, value):
+        return self._digits(value, 'Account number', 6, 20)
+
+    def validate_bank_branch_code(self, value):
+        return self._digits(value, 'Branch code', 4, 10)
+
+    def _blank_to_none(self, value):
+        value = (value or '').strip()
+        return value or None
+
+    def validate_bank_name(self, value):
+        return self._blank_to_none(value)
+
+    def validate_bank_account_holder(self, value):
+        return self._blank_to_none(value)
+
+    def validate_payment_reference_hint(self, value):
+        return self._blank_to_none(value)
+
+    def validate_bank_account_type(self, value):
+        return value or None
+
     def get_logo_url(self, obj):
         if obj.logo:
             return obj.logo.url
