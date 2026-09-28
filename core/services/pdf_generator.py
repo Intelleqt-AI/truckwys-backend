@@ -380,19 +380,38 @@ class InvoicePDFGenerator:
             elements.append(Paragraph(self.invoice.notes, self.styles['Normal']))
             elements.append(Spacer(1, 5*mm))
 
-        # Banking details — kept off the document; the customer contacts the
-        # company directly so bank details aren't exposed on the PDF.
+        # How to pay — the company's own bank details when it has set them
+        # (Settings > Company > Banking details); otherwise the old wording
+        # asking the customer to contact the company. Values are escaped:
+        # Paragraph parses its text as markup.
+        from xml.sax.saxutils import escape as _esc
+        from core.services.payment_details import (
+            company_bank_details, bank_detail_rows, reference_text,
+        )
         company = getattr(self.invoice, 'company', None)
         company_name = company.company_name if company else 'the company'
-        elements.append(Paragraph("<b>BANKING DETAILS:</b>", self.styles['SectionHeader']))
-        elements.append(Paragraph(
-            f"Please contact {company_name} for banking details.",
-            self.styles['Normal']
-        ))
+        bank = company_bank_details(company)
+        if bank:
+            elements.append(Paragraph("<b>HOW TO PAY:</b>", self.styles['SectionHeader']))
+            elements.append(Paragraph(
+                "<br/>".join(f"{_esc(label)}: <b>{_esc(value)}</b>"
+                             for label, value in bank_detail_rows(bank)),
+                self.styles['Normal']
+            ))
+            elements.append(Spacer(1, 3*mm))
+            footer_text = (f"Reference: <b>{_esc(self.invoice.invoice_number or '')}</b> — "
+                           f"{_esc(reference_text(bank, self.invoice.invoice_number))} "
+                           "Thank you for your business!")
+        else:
+            elements.append(Paragraph("<b>BANKING DETAILS:</b>", self.styles['SectionHeader']))
+            elements.append(Paragraph(
+                f"Please contact {_esc(company_name)} for banking details.",
+                self.styles['Normal']
+            ))
+            footer_text = "Please use the invoice number as payment reference. Thank you for your business!"
         elements.append(Spacer(1, 5*mm))
 
         # Footer text
-        footer_text = "Please use the invoice number as payment reference. Thank you for your business!"
         elements.append(Paragraph(footer_text, self.styles['Normal']))
 
         # Platform attribution

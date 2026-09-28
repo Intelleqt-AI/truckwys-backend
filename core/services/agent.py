@@ -241,8 +241,13 @@ def build_agent_context(company, user=None) -> dict:
         logger.warning('driver data for agent failed: %s', exc)
 
     # Company banking details (stored in contact JSONField under "banking" key)
+    # — superseded by the Company.bank_* fields when those are set.
     contact_json = getattr(company, 'contact', {}) or {}
     banking = contact_json.get('banking', {})
+    from core.services.payment_details import company_bank_details
+    _bank = company_bank_details(company)
+    if _bank:
+        banking = {k: v for k, v in _bank.items() if v and k != 'account_type'}
 
     ctx = {
         "company_name": getattr(company, "company_name", "Your company"),

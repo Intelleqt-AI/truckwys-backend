@@ -1205,7 +1205,7 @@ class CompanyProfileView(APIView):
 
     def get(self, request):
         company = self.get_object()
-        serializer = CompanySerializer(company)
+        serializer = CompanySerializer(company, context={'request': request})
         return Response(serializer.data)
     
     def patch(self, request):
@@ -1225,7 +1225,7 @@ class CompanyProfileView(APIView):
             current_contact.update(data['contact'])
             data['contact'] = current_contact
             
-        serializer = CompanySerializer(company, data=data, partial=True)
+        serializer = CompanySerializer(company, data=data, partial=True, context={'request': request})
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data)
@@ -3113,7 +3113,7 @@ class PublicInvoiceView(APIView):
             except Exception:
                 company_logo_url = None
 
-        return Response({
+        payload = {
             'invoice_number': invoice.invoice_number,
             'issue_date': str(invoice.issue_date),
             'due_date': str(invoice.due_date),
@@ -3133,7 +3133,14 @@ class PublicInvoiceView(APIView):
             'company_phone': contact.get('phone', ''),
             'company_email': contact.get('email', ''),
             'company_address': contact.get('address', ''),
-        })
+        }
+        # "How to pay" block — only when the company has set its bank details;
+        # the key is omitted otherwise so the page keeps its old wording.
+        from core.services.payment_details import public_payment_details
+        payment_details = public_payment_details(company)
+        if payment_details:
+            payload['payment_details'] = payment_details
+        return Response(payload)
 
 
 class InvoiceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
