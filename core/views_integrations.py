@@ -38,6 +38,9 @@ from django.utils import timezone
 
 
 from django.core import signing
+import logging
+
+logger = logging.getLogger(__name__)
 
 _XERO_STATE_SALT = 'xero-oauth-state'
 
@@ -687,8 +690,15 @@ class DashboardInsightsView(APIView):
         intelligence_service = IntelligenceService(company)
         try:
             recommendations = intelligence_service.generate_recommendations()
-        except Exception as e:
-            recommendations = []
+        except Exception:
+            # Was: 200 with an empty list, indistinguishable from "nothing to
+            # flag" (audit #44). Now an explicit error the UI can show as one.
+            logger.exception('DashboardInsightsView: generate_recommendations failed')
+            return Response(
+                {'error': 'Recommendations are unavailable right now. Please try again.',
+                 'data_status': 'error'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
         # Optionally create notifications
         create_notifications = request.query_params.get('create_notifications', 'false').lower() == 'true'
@@ -769,9 +779,16 @@ class CashFlowForecastView(APIView):
         try:
             forecast = cashflow_service.forecast_cashflow(days=days)
             summary = cashflow_service.get_summary_stats(forecast)
-        except Exception as e:
-            forecast = []
-            summary = {'total_inflow': 0, 'total_outflow': 0, 'net': 0}
+        except Exception:
+            # Was: 200 with a zero summary whose keys differed from the success
+            # shape, so a UI read R 0 either way (audit #45). Now an explicit
+            # error with no figures in it.
+            logger.exception('CashFlowForecastView: forecast failed')
+            return Response(
+                {'error': 'The cash flow forecast is unavailable right now. Please try again.',
+                 'data_status': 'error', 'period_days': days},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
         response_data = {
             'forecast': forecast,
