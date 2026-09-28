@@ -220,6 +220,19 @@ A round trip doubles each figure.
 3. **Show the SANRAL class used** (`toll_sanral_class`), with a hint when `toll_class_source` is not `vehicle_type`: "Class guessed from the name — set the axle class on this vehicle type". Add a "SANRAL toll class" select (1–4, blank) to the vehicle-type form and the admin vehicle-type editor. The field is `sanral_toll_class`.
 4. **Update the TypeScript `toll_source` union** in NewQuote.tsx. It already includes `'estimated'`.
 
+## Test results
+
+Full suite, run locally on SQLite with `REDIS_URL=redis://127.0.0.1:6379/15`. TomTom and the fuel feed are mocked in the new tests.
+
+| | Tests | Failures | Errors |
+|---|---|---|---|
+| `main @ 45039ee` (baseline) | 704 | 11 | 20 |
+| This branch | 726 (+22 new) | 11 | 7 |
+
+- **New failures:** none. The failing test IDs on this branch are a strict subset of the baseline set.
+- **Fixed:** the 13 `test_toll_calculator` errors.
+- **Still failing, not touched by this PR:** fuel-price source patching, notification/web-push gating, a copilot title test, and `test_ai_quote_vehicle_types`.
+
 ## Rollback
 
 - **Code only.** Revert the PR. Keep migration 0127 applied: the column is nullable and the old code ignores it.
