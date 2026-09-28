@@ -30,6 +30,10 @@ class IntelligenceService:
         Args:
             company: Company instance
         """
+        # Tenant isolation (2026-09): every query in this service is scoped
+        # to self.company. Before this, all rules read every tenant's data.
+        if company is None:
+            raise ValueError('IntelligenceService requires a company')
         self.company = company
 
     def generate_recommendations(self) -> List[Dict[str, Any]]:
@@ -61,11 +65,11 @@ class IntelligenceService:
         alerts = []
 
         # Get all active customers with invoices
-        customers = Customer.objects.filter(is_active=True)
+        customers = Customer.objects.filter(company=self.company, is_active=True)
 
         for customer in customers:
             # Calculate average margin from invoices
-            invoices = Invoice.objects.filter(customer=customer)
+            invoices = Invoice.objects.filter(company=self.company, customer=customer)
 
             if not invoices.exists():
                 continue
@@ -106,6 +110,7 @@ class IntelligenceService:
         """
         # Get invoices with linked trips
         invoices = Invoice.objects.filter(
+            company=self.company,
             customer=customer,
             trip__isnull=False
         ).select_related('trip')
@@ -153,7 +158,7 @@ class IntelligenceService:
         """
         alerts = []
 
-        customers = Customer.objects.filter(is_active=True)
+        customers = Customer.objects.filter(company=self.company, is_active=True)
 
         for customer in customers:
             dso = self._calculate_customer_dso(customer)
@@ -186,6 +191,7 @@ class IntelligenceService:
         """
         # Get paid invoices
         paid_invoices = Invoice.objects.filter(
+            company=self.company,
             customer=customer,
             status='PAID',
             paid_at__isnull=False
@@ -221,6 +227,7 @@ class IntelligenceService:
         thirty_days_ago = timezone.now().date() - timedelta(days=30)
 
         overdue_invoices = Invoice.objects.filter(
+            company=self.company,
             due_date__lt=thirty_days_ago,
             status__in=['SENT', 'VIEWED', 'OVERDUE', 'PARTIALLY_PAID']
         ).select_related('customer')
@@ -255,6 +262,7 @@ class IntelligenceService:
         # Simple cash flow projection
         # Outstanding receivables (expected in)
         outstanding_invoices = Invoice.objects.filter(
+            company=self.company,
             status__in=['SENT', 'VIEWED', 'OVERDUE', 'PARTIALLY_PAID']
         ).aggregate(total=Sum('balance'))
 
@@ -293,6 +301,7 @@ class IntelligenceService:
 
         # Group trips by route (origin -> destination)
         trips = Trip.objects.filter(
+            load__company=self.company,
             status='COMPLETED',
             load__isnull=False
         ).select_related('load', 'vehicle')
@@ -346,7 +355,7 @@ class IntelligenceService:
 
         for trip in trips:
             # Get invoice for revenue
-            invoice = trip.invoices.first()
+            invoice = trip.invoices.filter(company=self.company).first()
             if invoice:
                 total_revenue += invoice.subtotal
 
@@ -380,7 +389,7 @@ class IntelligenceService:
             return alerts
 
         # Check each vehicle
-        vehicles = Vehicle.objects.filter(status='ACTIVE')
+        vehicles = Vehicle.objects.filter(company=self.company, status='ACTIVE')
 
         for vehicle in vehicles:
             vehicle_efficiency = self._calculate_vehicle_efficiency(vehicle)
@@ -417,6 +426,7 @@ class IntelligenceService:
             Average fuel efficiency
         """
         trips = Trip.objects.filter(
+            load__company=self.company,
             status='COMPLETED',
             actual_fuel_litres__gt=0,
             distance_km__gt=0
@@ -448,6 +458,7 @@ class IntelligenceService:
             Fuel efficiency
         """
         trips = Trip.objects.filter(
+            load__company=self.company,
             vehicle=vehicle,
             status='COMPLETED',
             actual_fuel_litres__gt=0,

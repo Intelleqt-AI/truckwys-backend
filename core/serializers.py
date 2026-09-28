@@ -1,10 +1,86 @@
 from rest_framework import serializers
-from django.db.models import Avg  # ADD THIS IMPORT
+from django.db.models import Avg, Q  # ADD THIS IMPORT
 from .models import (
     User, Customer, Driver, Vehicle, VehicleLog, VehicleType, Load,
     Quote, Invoice, Payment, Expense, Settlement, Notification, Company, ActivityEvent
 )
 from .serializers_billing import DeliveryFeeChargeSerializer
+
+class CompanyScopedRelationsMixin:
+    """Tenant isolation for writable relation fields (2026-09).
+
+    `fields='__all__'` gives every FK a PrimaryKeyRelatedField over the model's
+    whole table, so a caller could attach another tenant's customer / load /
+    trip / vehicle / driver / quote / invoice by id (and the response then
+    echoed that tenant's data back). This narrows each listed field's queryset
+    to the record's own company:
+
+      * update  -> the instance's company (falls back to the caller's company
+                   for a legacy row with no company);
+      * create  -> context['company'] if the caller passed one (internal
+                   services), else request.user.company.
+
+    A foreign id then fails validation exactly like a missing one ("Invalid pk
+    ... object does not exist"). An authenticated non-superuser with no company
+    gets an empty queryset (fail closed). A superuser with no company, and
+    internal callers that pass neither request nor company, keep the previous
+    unscoped behaviour.
+
+    Legacy-data safety: the value a relation ALREADY holds on the instance
+    being updated stays valid (so re-saving an unchanged record whose related
+    row predates company backfills never starts failing), as do ids a trusted
+    server-side caller lists in context['allow_relation_ids'].
+    """
+
+    # field name -> ORM lookup from the related model to its Company
+    company_scoped_relations = {}
+
+    _UNSCOPED = object()
+
+    def _relation_company(self):
+        instance = self.instance
+        if instance is not None and not hasattr(instance, '__iter__'):
+            company_id = getattr(instance, 'company_id', None)
+            if company_id is not None:
+                return company_id
+        if 'company' in self.context:
+            company = self.context['company']
+            return getattr(company, 'pk', company)
+        request = self.context.get('request')
+        user = getattr(request, 'user', None)
+        if user is None or not getattr(user, 'is_authenticated', False):
+            return self._UNSCOPED
+        company_id = getattr(user, 'company_id', None)
+        if company_id is None and getattr(user, 'is_superuser', False):
+            return self._UNSCOPED
+        return company_id
+
+    def get_fields(self):
+        fields = super().get_fields()
+        company_id = self._relation_company()
+        if company_id is self._UNSCOPED:
+            return fields
+        instance = self.instance if (
+            self.instance is not None and not hasattr(self.instance, '__iter__')
+        ) else None
+        trusted = self.context.get('allow_relation_ids') or {}
+        for name, lookup in self.company_scoped_relations.items():
+            field = fields.get(name)
+            if field is None or field.read_only:
+                continue
+            queryset = getattr(field, 'queryset', None)
+            if queryset is None:
+                continue
+            allowed = Q(**{lookup: company_id}) if company_id is not None else Q(pk__in=[])
+            keep = [pk for pk in (
+                getattr(instance, f'{name}_id', None) if instance is not None else None,
+                trusted.get(name),
+            ) if pk is not None]
+            if keep:
+                allowed |= Q(pk__in=keep)
+            field.queryset = queryset.filter(allowed)
+        return fields
+
 
 # User Serializer
 class UserSerializer(serializers.ModelSerializer):
@@ -344,7 +420,11 @@ class VehicleLogSerializer(serializers.ModelSerializer):
 
 
 # Load Serializer
-class LoadSerializer(serializers.ModelSerializer):
+class LoadSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
+    company_scoped_relations = {
+        'customer': 'company_id', 'driver': 'company_id',
+        'vehicle': 'company_id', 'quote': 'company_id',
+    }
     customer_name = serializers.CharField(source='customer.name', read_only=True)
     driver_name = serializers.SerializerMethodField()
     vehicle_info = serializers.SerializerMethodField()
@@ -389,7 +469,10 @@ class LoadSerializer(serializers.ModelSerializer):
 
 
 # Quote Serializer
-class QuoteSerializer(serializers.ModelSerializer):
+class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
+    company_scoped_relations = {
+        'customer': 'company_id', 'vehicle': 'company_id', 'driver': 'company_id',
+    }
     customer_name = serializers.CharField(source='customer.name', read_only=True)
     customer_email = serializers.CharField(source='customer.email', read_only=True)
     customer_phone = serializers.CharField(source='customer.phone', read_only=True)
@@ -403,7 +486,9 @@ class QuoteSerializer(serializers.ModelSerializer):
     class Meta:
         model = Quote
         fields = '__all__'
-        read_only_fields = ['id', 'created_at', 'updated_at', 'created_by']
+        # 'company' read-only (2026-09): a PATCH could move a quote into
+        # another tenant. Create paths set it server-side via save(company=).
+        read_only_fields = ['id', 'company', 'created_at', 'updated_at', 'created_by']
 
     def validate(self, attrs):
         # Safety net behind the frontend's own capacity check (QuoteBuilder's
@@ -454,7 +539,10 @@ class QuoteSerializer(serializers.ModelSerializer):
 
 
 # Invoice Serializer
-class InvoiceSerializer(serializers.ModelSerializer):
+class InvoiceSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
+    company_scoped_relations = {
+        'customer': 'company_id', 'load': 'company_id', 'trip': 'load__company_id',
+    }
     customer_name = serializers.CharField(source='customer.name', read_only=True)
     # Lets a client offer "share this invoice on WhatsApp" without a second
     # round-trip to the customer endpoint just for the number.
@@ -496,14 +584,18 @@ class InvoiceSerializer(serializers.ModelSerializer):
 
 
 # Payment Serializer
-class PaymentSerializer(serializers.ModelSerializer):
+class PaymentSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
+    company_scoped_relations = {'invoice': 'company_id', 'customer': 'company_id'}
     customer_name = serializers.CharField(source='customer.name', read_only=True)
     invoice_number = serializers.CharField(source='invoice.invoice_number', read_only=True)
     
     class Meta:
         model = Payment
         fields = '__all__'
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        # 'company' read-only (2026-09): it was writable on PATCH. Create
+        # paths (services.payments.record_payment, CompanyFilterMixin) set it
+        # server-side via save(company=).
+        read_only_fields = ['id', 'company', 'created_at', 'updated_at']
 
 
 # Expense Serializer
