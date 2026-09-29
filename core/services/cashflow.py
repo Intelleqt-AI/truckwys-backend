@@ -28,7 +28,12 @@ class CashFlowForecastService:
     # Invoices past due but not yet marked OVERDUE get a shorter lag.
     PAST_DUE_LAG_DAYS = 7
 
-    def __init__(self):
+    def __init__(self, company):
+        # Tenant isolation (2026-09): every query below is scoped to this
+        # company. It is required — there is no "all tenants" mode.
+        if company is None:
+            raise ValueError('CashFlowForecastService requires a company')
+        self.company = company
         self._avg_days_cache: Optional[Dict[int, float]] = None
 
     # ------------------------------------------------------------------
@@ -78,6 +83,7 @@ class CashFlowForecastService:
         avg_days = self._get_all_avg_days_to_pay()
 
         outstanding = Invoice.objects.filter(
+            company=self.company,
             status__in=['SENT', 'VIEWED', 'OVERDUE', 'PARTIALLY_PAID'],
             balance__gt=0,
         ).select_related('customer')
@@ -124,6 +130,7 @@ class CashFlowForecastService:
             return self._avg_days_cache
 
         paid = Invoice.objects.filter(
+            company=self.company,
             status='PAID',
             paid_at__isnull=False,
             issue_date__isnull=False,
@@ -166,6 +173,7 @@ class CashFlowForecastService:
         totals: Dict[date, Decimal] = defaultdict(Decimal)
 
         future_expenses = Expense.objects.filter(
+            company=self.company,
             expense_date__gte=start_date,
             expense_date__lte=end_date,
             status__in=['PENDING', 'APPROVED'],
@@ -209,6 +217,7 @@ class CashFlowForecastService:
         three_months_ago = timezone.now().date() - timedelta(days=90)
 
         result = Expense.objects.filter(
+            company=self.company,
             expense_date__gte=three_months_ago,
             expense_date__lt=timezone.now().date(),
             status__in=['APPROVED'],

@@ -21,6 +21,31 @@ class Company(models.Model):
     address = models.JSONField(default=dict)
     contact = models.JSONField(default=dict)
 
+    # Banking details printed in the "How to pay" block of this company's own
+    # invoices (PDF, invoice emails, public invoice page) — only once bank_name
+    # and bank_account_number are both set; otherwise invoices keep the
+    # "contact us for banking details" wording. All nullable: purely additive,
+    # existing companies are untouched. Digit checks live in CompanySerializer
+    # so no existing row can ever fail validation.
+    # See docs/backend-changes/2026-09-company-bank-details.md.
+    BANK_ACCOUNT_TYPE_CHOICES = [
+        ('CHEQUE', 'Cheque / current'),
+        ('SAVINGS', 'Savings'),
+        ('TRANSMISSION', 'Transmission'),
+    ]
+    bank_name = models.CharField(max_length=100, null=True, blank=True)
+    bank_account_holder = models.CharField(max_length=200, null=True, blank=True)
+    bank_account_number = models.CharField(max_length=20, null=True, blank=True)
+    bank_branch_code = models.CharField(max_length=10, null=True, blank=True)
+    bank_account_type = models.CharField(
+        max_length=20, choices=BANK_ACCOUNT_TYPE_CHOICES, null=True, blank=True,
+    )
+    payment_reference_hint = models.CharField(
+        max_length=200, null=True, blank=True,
+        help_text='Optional wording shown to customers about the payment reference to use; '
+                  'defaults to "use the invoice number as your payment reference".',
+    )
+
     # Default fuel prices, one per fuel type — used as the fallback price for
     # a VehicleType of that fuel type that doesn't have its own fuel_price
     # set. Diesel already has a live national-price feed elsewhere in the
