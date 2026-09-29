@@ -113,6 +113,58 @@ class UserSerializer(serializers.ModelSerializer):
         return user
 
 
+
+class SelfProfileSerializer(UserSerializer):
+    """Serializer for a user editing THEMSELVES via /auth/me/.
+
+    UserSerializer is also the admin user-management serializer, where role,
+    status, is_active and username are legitimately writable (UserViewSet is
+    IsAdmin-only). /auth/me/ is open to every authenticated user, so those
+    authorisation fields must be read-only here — otherwise any DRIVER /
+    DISPATCHER / VIEWER could PATCH {"role": "ADMIN"} and take over the company.
+
+    Sending a protected field with its CURRENT value is accepted (clients that
+    round-trip the GET payload keep working); sending a different value is a
+    400 with a per-field error rather than a silent ignore.
+    """
+    PROTECTED_FIELDS = ('role', 'status', 'is_active', 'username')
+
+    role = serializers.CharField(read_only=True)
+
+    class Meta(UserSerializer.Meta):
+        read_only_fields = UserSerializer.Meta.read_only_fields + [
+            'status', 'is_active', 'username',
+        ]
+
+    @staticmethod
+    def _normalise(field, value):
+        if field == 'is_active':
+            try:
+                return serializers.BooleanField().to_internal_value(value)
+            except serializers.ValidationError:
+                return value
+        if field in ('role', 'status') and isinstance(value, str):
+            return value.strip().upper()
+        return value
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        data = getattr(self, 'initial_data', None) or {}
+        errors = {}
+        for field in self.PROTECTED_FIELDS:
+            if field not in data:
+                continue
+            sent = self._normalise(field, data.get(field))
+            current = self._normalise(field, getattr(self.instance, field))
+            if sent != current:
+                errors[field] = [
+                    f'You cannot change your own {field.replace("_", " ")} here; '
+                    'ask a company admin.'
+                ]
+        if errors:
+            raise serializers.ValidationError(errors)
+        return attrs
+
 # Customer Serializer
 class CustomerSerializer(serializers.ModelSerializer):
     class Meta:

@@ -146,7 +146,7 @@ from .models import (
 from .utils.request_meta import parse_device, client_ip, mask_email
 from .utils.auth_events import log_auth_event
 from .serializers import (
-    UserSerializer, CustomerSerializer, DriverSerializer,
+    UserSerializer, SelfProfileSerializer, CustomerSerializer, DriverSerializer,
     VehicleSerializer, VehicleTypeSerializer, VehicleLogSerializer, LoadSerializer,
     QuoteSerializer, InvoiceSerializer, PaymentSerializer,
     ExpenseSerializer, SettlementSerializer, NotificationSerializer,
@@ -809,7 +809,10 @@ class UserProfileView(APIView):
     def patch(self, request):
         if _demo_settings_locked(request.user):
             return Response({'error': DEMO_SETTINGS_LOCKED_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
-        serializer = UserSerializer(request.user, data=request.data, partial=True, context={'request': request})
+        # SelfProfileSerializer, NOT UserSerializer: role/status/is_active/
+        # username are admin-only fields (UserViewSet) and must not be
+        # self-editable, or any user could PATCH {"role": "ADMIN"}.
+        serializer = SelfProfileSerializer(request.user, data=request.data, partial=True, context={'request': request})
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data)
