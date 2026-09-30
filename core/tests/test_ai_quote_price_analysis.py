@@ -18,7 +18,7 @@ from decimal import Decimal
 from unittest import mock
 
 from django.contrib.auth import get_user_model
-from django.core.cache import cache
+from django.core.cache import cache, caches
 from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -229,9 +229,15 @@ class CondensedContextTests(SimpleTestCase):
         self.assertIn('1 March 2025', _topic_prompt('tolls', build_condensed_context(ANALYSIS_PAYLOAD, date(2026, 2, 10))))
 
 
+def _clear_caches(test):
+    cache.clear()
+    caches['ai_sources'].clear()
+    test.addCleanup(caches['ai_sources'].clear)
+
+
 class AnalyzeQuotePriceTests(TestCase):
     def setUp(self):
-        cache.clear()
+        _clear_caches(self)
         self.company, self.customer, self.user = _make_company_customer_user()
         self.quote = _make_quote(self.company, self.customer)
         for patcher in (_no_win_model(), *_own_data()):
@@ -745,7 +751,7 @@ class UsdCostMathTests(SimpleTestCase):
 
 class AIQuotePriceAnalysisViewTests(TestCase):
     def setUp(self):
-        cache.clear()
+        _clear_caches(self)
         self.company, self.customer, self.user = _make_company_customer_user()
         self.quote = _make_quote(self.company, self.customer)
         self.client_api = APIClient()

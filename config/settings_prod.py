@@ -49,7 +49,13 @@ CACHES = {
         },
         'KEY_PREFIX': 'truckwys',
         'TIMEOUT': 300,  # 5 minutes
-    }
+    },
+    # AI price analysis source pages: see config/settings.py.
+    'ai_sources': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'ai-source-pages',
+        'OPTIONS': {'MAX_ENTRIES': 64},
+    },
 }
 
 # Session backend - use Redis

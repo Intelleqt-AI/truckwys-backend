@@ -27,7 +27,7 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 from django.conf import settings
-from django.core.cache import cache
+from django.core.cache import caches
 from requests.adapters import HTTPAdapter
 from urllib3.util import parse_url
 
@@ -45,6 +45,13 @@ MAX_TEXT_CHARS = 400_000
 MAX_PDF_PAGES = 60
 MAX_WORKERS = 6
 USER_AGENT = 'Mozilla/5.0 (compatible; TruckWysPriceCheck/1.0)'
+# Only the standard web ports: a cited URL like http://1.2.3.4:22/ is not a
+# tariff page, and other ports widen what a fetch can reach.
+ALLOWED_PORTS = {'http': 80, 'https': 443}
+# Fetched page text lives in its own cache (settings.CACHES['ai_sources']),
+# never the shared default cache: pages are large, and filling the shared DB
+# cache culls unrelated keys (login/2FA, invites, cooldowns).
+SOURCE_CACHE_ALIAS = 'ai_sources'
 
 # Human-readable reasons, shown in the UI next to an unverified item.
 REASON_UNREADABLE = 'source page could not be read'
@@ -75,7 +82,10 @@ def _target(url: str):
     host = (u3.host or '').strip('[]').lower()
     if not host or host != (std.hostname or '').lower():
         return None
-    return std.scheme, host, u3.port or (443 if std.scheme == 'https' else 80)
+    port = u3.port or ALLOWED_PORTS[std.scheme]
+    if port != ALLOWED_PORTS[std.scheme]:
+        return None
+    return std.scheme, host, port
 
 
 def _public_ip(host: str, port: int):
@@ -219,6 +229,22 @@ def _cache_key(url: str) -> str:
     return 'ai_src_text:' + hashlib.sha256(url.encode('utf-8')).hexdigest()
 
 
+class _NoCache:
+    def get(self, key, default=None):
+        return default
+
+    def set(self, *args, **kwargs):
+        pass
+
+
+def _source_cache():
+    """The dedicated source-page cache, or no caching at all if it isn't
+    configured. Never falls back to the shared default cache."""
+    if SOURCE_CACHE_ALIAS in settings.CACHES:
+        return caches[SOURCE_CACHE_ALIAS]
+    return _NoCache()
+
+
 class SourceFetchBatch:
     """Start fetching a set of URLs in the background, collect later.
 
@@ -231,7 +257,7 @@ class SourceFetchBatch:
         self._pool = None
         pending = []
         for url in dict.fromkeys(u for u in urls if u):
-            cached = cache.get(_cache_key(url))
+            cached = _source_cache().get(_cache_key(url))
             if cached is not None:
                 self._results[url] = cached
             else:
@@ -255,7 +281,8 @@ class SourceFetchBatch:
             except Exception as exc:  # pragma: no cover - _fetch_uncached never raises
                 outcome = {'text': None, 'error': f'fetch failed: {exc}'}
             self._results[url] = outcome
-            cache.set(_cache_key(url), outcome, CACHE_SECONDS if outcome['text'] else FAILURE_CACHE_SECONDS)
+            _source_cache().set(_cache_key(url), outcome,
+                                CACHE_SECONDS if outcome['text'] else FAILURE_CACHE_SECONDS)
         self._futures = {}
         if self._pool is not None:
             self._pool.shutdown(wait=False, cancel_futures=True)

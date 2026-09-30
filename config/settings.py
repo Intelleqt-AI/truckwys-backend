@@ -452,7 +452,15 @@ CACHES = {
     'default': {
         'BACKEND': 'django.core.cache.backends.db.DatabaseCache',
         'LOCATION': 'tw_cache_table',
-    }
+    },
+    # Source pages fetched by the AI price analysis (up to 400k chars each).
+    # Kept OUT of the shared DB cache: filling that culls its lowest keys,
+    # which include login/2FA and invite entries. Per-process memory, small.
+    'ai_sources': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'ai-source-pages',
+        'OPTIONS': {'MAX_ENTRIES': 64},
+    },
 }
 
 # ZAR diesel price used for cost/margin calculations.
