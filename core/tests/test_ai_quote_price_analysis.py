@@ -1,29 +1,30 @@
-"""Tests for the OpenAI-based quote price-analysis feature
-(core.services.quote_ai_pricing, AIQuotePriceAnalysisView, AdminAIUsageView).
+"""Tests for the quote price check (core.services.quote_ai_pricing,
+AIQuotePriceAnalysisView, AdminAIUsageView).
 
-Mock points: core.services.quote_ai_pricing._client (the OpenAI client),
-core.services.source_verification._fetch_uncached (the source-page fetch),
-and quote_ai_pricing.official_fuel_price / lane_benchmark (fuel and base
-rate come from the app's own data, not the web). The two research calls
-(tolls, driver) run in parallel, so the fake client routes by request
-content. Fixture dates are relative to today, so "current" figures stay
-current whenever the suite runs."""
+Since the 2026-10 cost redesign the per-quote check reads only stored,
+verified figures: the SANRAL tariffs on TollPlaza, the approved driver
+allowance (VerifiedRate), the official FuelPrice row and the lane benchmark.
+It makes no web or OpenAI call and needs no API key; NoOutboundCalls proves
+that for every check run here. The refresh job that keeps the figures
+current is tested in test_verified_rates.py.
 
-import json
-import threading
-import types
+Mock points: quote_ai_pricing.official_fuel_price / lane_benchmark (fuel and
+base rate come from the app's own data). Fixture dates are relative to today,
+so "current" figures stay current whenever the suite runs."""
+
+import socket
 import unittest
 from datetime import date, datetime, timedelta, timezone as dt_timezone
 from decimal import Decimal
 from unittest import mock
 
 from django.contrib.auth import get_user_model
-from django.core.cache import cache, caches
+from django.core.cache import cache
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from core.models import AIQuotePriceAnalysis, Company, Customer, Quote
+from core.models import AIQuotePriceAnalysis, Company, Customer, Quote, TollPlaza, VerifiedRate
 from core.services.quote_ai_pricing import _toll_schedule_start
 
 User = get_user_model()
@@ -34,118 +35,83 @@ Y = PERIOD.year
 
 TOLL_URL = 'https://sanral.test/tolls'
 DRIVER_URL = 'https://nbcrfli.test/rates'
-
-PAGES = {
-    TOLL_URL: f'New toll tariffs from 1 March {Y}. Grasmere Class 4 R 950.00. Huguenot Class 4 R 900.00.',
-    DRIVER_URL: f'Main agreement, from 1 March {Y}: night-out allowance R243.63 per day.',
-}
+VERIFIED_ON = PERIOD + timedelta(days=1) if PERIOD + timedelta(days=1) <= TODAY else PERIOD
 
 # What the app's own FIASA record and resolve_market_rate would return.
 OFFICIAL_FUEL = {'price_per_litre': 29.11, 'other_zone_price': 28.24, 'zone': 'inland',
-                 'effective_date': (TODAY - timedelta(days=5)).isoformat(), 'error': None}
+                 'effective_date': (TODAY - timedelta(days=5)).isoformat(), 'source': 'FIASA',
+                 'verified_at': (TODAY - timedelta(days=4)).isoformat(), 'error': None}
 # 13,391 fuel + 1,608.70 tolls (excl. VAT) + 243.63 driver (1 night) + 21.50 x 1,400 base:
 # 21.50 is the implied rate.
 BENCHMARK = {'rate': 13391 + 1608.70 + 243.63 + 21.5 * 1400, 'source': 'platform'}
 
 
-def _usage(input_tokens=1000, cached_tokens=0, output_tokens=200, reasoning_tokens=0):
-    return types.SimpleNamespace(
-        input_tokens=input_tokens,
-        input_tokens_details=types.SimpleNamespace(cached_tokens=cached_tokens),
-        output_tokens=output_tokens,
-        output_tokens_details=types.SimpleNamespace(reasoning_tokens=reasoning_tokens),
-        total_tokens=input_tokens + output_tokens,
-    )
+def _stored_plaza(name, incl_vat, *, route='N1', verified_at=VERIFIED_ON, effective_from=PERIOD, found=True,
+                  source_url=TOLL_URL, source_name='SANRAL tariffs'):
+    from core.services.toll_calculator import tariff_excl_vat
+    return {'plaza': name, 'route': route, 'plaza_id': 1, 'found': found, 'ambiguous': False,
+            'tariff_incl_vat': incl_vat if found else None,
+            'tariff_excl_vat': float(tariff_excl_vat(incl_vat)) if found else None,
+            'effective_from': effective_from, 'verified_at': verified_at,
+            'source_url': source_url, 'source_name': source_name}
 
 
-def _citation(url, title=None):
-    return types.SimpleNamespace(type='url_citation', url=url, title=title or url)
+# The stored SANRAL Class 4 tariffs (incl. VAT, as published) for the route.
+STORED_TOLLS = {'sanral_class': 4, 'class_label': 'Class 4 (5+ axle heavy vehicle / combination)',
+                'plazas': [_stored_plaza('Grasmere', 950.0), _stored_plaza('Huguenot', 900.0)]}
+# The approved allowance in force (a test figure, not a real NBCRFLI rate).
+ALLOWANCE = {'id': 1, 'rate_per_night': 243.63, 'allowance_type': 'nbcrfli', 'label': 'NBCRFLI driver allowance',
+             'effective_from': PERIOD, 'verified_at': VERIFIED_ON, 'source_url': DRIVER_URL,
+             'source_name': 'NBCRFLI rates'}
 
 
-def _research_response(text, citations, usage=None):
-    content = types.SimpleNamespace(type='output_text', text=text, annotations=citations)
-    output = [types.SimpleNamespace(type='web_search_call'), types.SimpleNamespace(type='message', content=[content])]
-    return types.SimpleNamespace(output_text=text, output=output, usage=usage or _usage())
+class NoOutboundCalls:
+    """Fails the test if anything opens a socket to a non-loopback host,
+    resolves a name, fetches a source page or constructs an OpenAI client."""
 
+    def __init__(self, test):
+        self.test = test
+        real_connect = socket.socket.connect
+        self.attempts = []
 
-def _structuring_response(extracted, usage=None, raw_text=None):
-    text = json.dumps(extracted) if raw_text is None else raw_text
-    return types.SimpleNamespace(output_text=text, output=[], usage=usage or _usage())
+        def connect(sock, addr):
+            host = addr[0] if isinstance(addr, tuple) else addr
+            if sock.family in (socket.AF_INET, socket.AF_INET6) and host not in ('127.0.0.1', '::1', 'localhost'):
+                self.attempts.append(('connect', addr))
+                raise OSError('outbound network used by the price check')
+            return real_connect(sock, addr)
 
+        real_gai = socket.getaddrinfo
 
-def _topic_of(kwargs):
-    prompt = kwargs['input'][1]['content']
-    for phrase, topic in (('SANRAL toll tariffs', 'tolls'), ('subsistence', 'driver_allowance')):
-        if phrase in prompt:
-            return topic
-    raise AssertionError(f'unknown topic prompt: {prompt}')
+        def gai(host, *a, **k):
+            if host not in ('127.0.0.1', '::1', 'localhost', None):
+                self.attempts.append(('dns', host))
+                raise socket.gaierror('outbound DNS used by the price check')
+            return real_gai(host, *a, **k)
 
+        self.patchers = [mock.patch.object(socket.socket, 'connect', connect),
+                         mock.patch.object(socket, 'getaddrinfo', gai)]
+        self.openai = mock.patch('openai.OpenAI')
+        self.fetch = mock.patch('core.services.source_verification._fetch_uncached')
+        self.batch = mock.patch('core.services.source_verification.SourceFetchBatch')
 
-DEFAULT_RESEARCH = {
-    'tolls': ('Grasmere R950, Huguenot R900', [_citation(TOLL_URL, 'SANRAL tariffs')]),
-    'driver_allowance': ('R243.63 per day', [_citation(DRIVER_URL, 'NBCRFLI rates')]),
-}
+    def __enter__(self):
+        for p in self.patchers:
+            p.start()
+        self.openai_mock = self.openai.start()
+        self.fetch_mock = self.fetch.start()
+        self.batch_mock = self.batch.start()
+        return self
 
-
-def _default_extracted(ids):
-    """Figures as the structuring model would extract them, cited by the ids
-    the analysis assigned to each URL. A URL the research never cited has no
-    id, so (like the strict enum) it can't be referenced."""
-    def cite(url):
-        return [ids[url]] if url in ids else []
-    return {
-        'tolls': {'plazas': [
-            {'plaza': 'Grasmere', 'tariff_zar': 950.0, 'effective_date': PERIOD.isoformat(), 'sources': cite(TOLL_URL)},
-            {'plaza': 'Huguenot', 'tariff_zar': 900.0, 'effective_date': PERIOD.isoformat(), 'sources': cite(TOLL_URL)},
-        ]},
-        'driver_allowance': {'rate_per_day_zar': 243.63, 'allowance_type': 'nbcrfli',
-                             'effective_date': PERIOD.isoformat(), 'sources': cite(DRIVER_URL)},
-    }
-
-
-class FakeOpenAI:
-    """Routes responses.create by content: research calls carry `tools`."""
-
-    def __init__(self, research=None, extracted_fn=_default_extracted, fail_topics=(), structuring_error=None,
-                 structuring_raw_text=None):
-        self.research = dict(DEFAULT_RESEARCH, **(research or {}))
-        self.extracted_fn = extracted_fn
-        self.fail_topics = set(fail_topics)
-        self.structuring_error = structuring_error
-        self.structuring_raw_text = structuring_raw_text
-        self.calls = []
-        self._lock = threading.Lock()
-        self.responses = types.SimpleNamespace(create=self._create)
-
-    def _create(self, **kwargs):
-        with self._lock:
-            self.calls.append(kwargs)
-        if 'tools' in kwargs:
-            topic = _topic_of(kwargs)
-            if topic in self.fail_topics:
-                raise RuntimeError(f'{topic} search failed')
-            text, citations = self.research[topic]
-            return _research_response(text, citations)
-        if self.structuring_error:
-            raise self.structuring_error
-        sources = json.loads(kwargs['input'][1]['content'])['available_sources']
-        ids = {s['url']: s['id'] for s in sources}
-        return _structuring_response(self.extracted_fn(ids), raw_text=self.structuring_raw_text)
-
-    @property
-    def research_calls(self):
-        return [c for c in self.calls if 'tools' in c]
-
-    @property
-    def structuring_calls(self):
-        return [c for c in self.calls if 'tools' not in c]
-
-
-def _fake_fetch(pages):
-    def fetch(url):
-        text = pages.get(url)
-        return {'text': text, 'error': None} if text else {'text': None, 'error': 'http 403'}
-    return fetch
+    def __exit__(self, *exc):
+        for p in (*self.patchers, self.openai, self.fetch, self.batch):
+            p.stop()
+        if exc[0] is None:
+            self.test.assertEqual(self.attempts, [], 'the price check made an outbound call')
+            self.test.assertFalse(self.openai_mock.called, 'the price check constructed an OpenAI client')
+            self.test.assertFalse(self.fetch_mock.called or self.batch_mock.called,
+                                  'the price check fetched a source page')
+        return False
 
 
 def _no_win_model():
@@ -157,9 +123,30 @@ def _no_win_model():
 
 
 def _own_data(fuel=OFFICIAL_FUEL, benchmark=BENCHMARK):
-    """Patch the app-data lookups (fuel record + lane benchmark) used by the pipeline."""
+    """Patch the app-data lookups (fuel record + lane benchmark) used by the check."""
     return (mock.patch('core.services.quote_ai_pricing.official_fuel_price', return_value=dict(fuel)),
             mock.patch('core.services.quote_ai_pricing.lane_benchmark', return_value=dict(benchmark)))
+
+
+def _seed_route_tariffs(verified_at=VERIFIED_ON, effective_from=PERIOD):
+    """Grasmere and Huguenot (N1) with Class 4 (tariff_class_5) = R950 / R900 incl. VAT."""
+    out = []
+    for name, km, class4 in (('Grasmere', '1290.0', '950.00'), ('Huguenot', '105.0', '900.00')):
+        # The real 2026 plazas are already in the test DB (migration 0070);
+        # pin them to known test figures.
+        out.append(TollPlaza.objects.update_or_create(name=name, route='N1', defaults=dict(
+            direction='Cape Town → Johannesburg', location_km=Decimal(km), is_active=True,
+            tariff_class_2=Decimal('50.00'), tariff_class_3=Decimal('150.00'), tariff_class_4=Decimal('236.00'),
+            tariff_class_5=Decimal(class4), tariff_year=effective_from.year, tariff_effective_from=effective_from,
+            tariff_source_url=TOLL_URL, tariff_source_name='SANRAL tariffs', tariff_verified_at=verified_at))[0])
+    return out
+
+
+def _approve_allowance(value='243.63', effective_from=PERIOD, key='nbcrfli', verified_at=VERIFIED_ON):
+    return VerifiedRate.objects.create(
+        kind='driver_allowance', key=key, label='NBCRFLI driver allowance', value=Decimal(value),
+        published_value=Decimal(value), unit='per_night', effective_from=effective_from, source_url=DRIVER_URL,
+        source_name='NBCRFLI rates', verified_at=verified_at, status='approved', approved_at=timezone.now())
 
 
 def _make_company_customer_user(suffix=''):
@@ -187,7 +174,7 @@ def _make_quote(company, customer, number='AI-Q1'):
 
 # Operator's own figures: 12000 + 1800 + 0 + 21.5 x 1400 = 43,900.
 # Market: fuel 460 L x 29.11 = 13,390.60 -> R13,391 (whole rand, as
-# QuoteBuilder rounds); tolls: published 950 + 900 incl. VAT = 826.09 + 782.61
+# QuoteBuilder rounds); tolls: stored 950 + 900 incl. VAT = 826.09 + 782.61
 # = 1,608.70 excl. VAT (quotes price tolls excl. VAT, like main's route calc);
 # driver 16 h driving -> 2 driving days = 1 night away x 243.63; base 21.50 =
 # the benchmark's implied rate.
@@ -213,7 +200,7 @@ class CondensedContextTests(SimpleTestCase):
         for banned in ('geometry', 'sections', 'margin_pct', 'quote_total', 'direct_cost'):
             self.assertNotIn(banned, flattened)
 
-    def test_sends_exact_toll_class_and_one_way_tolls(self):
+    def test_records_exact_toll_class_and_one_way_tolls(self):
         from core.services.quote_ai_pricing import build_condensed_context
 
         context = build_condensed_context(dict(ANALYSIS_PAYLOAD, legs=2, toll_cost=3600, distance_km=2800))
@@ -222,87 +209,43 @@ class CondensedContextTests(SimpleTestCase):
         self.assertEqual(context['tolls']['plazas_one_way'], ['Grasmere', 'Huguenot'])
         self.assertEqual(context['lane']['legs'], 2)
 
-    def test_prompts_ask_for_the_period_in_force_today(self):
-        from core.services.quote_ai_pricing import _topic_prompt, build_condensed_context
-        ctx = build_condensed_context(ANALYSIS_PAYLOAD, date(2026, 9, 24))
-        self.assertIn('1 March 2026', _topic_prompt('tolls', ctx))
-        driver = _topic_prompt('driver_allowance', ctx)
-        self.assertIn('1 March 2026 to 28 February 2027', driver)
-        self.assertIn('"2027" year of assessment', driver)
-        self.assertIn('1 March 2025', _topic_prompt('tolls', build_condensed_context(ANALYSIS_PAYLOAD, date(2026, 2, 10))))
-
-
-# A dummy key: the OpenAI client itself is always mocked, and the network
-# is never used. Without a key the feature reports itself unavailable.
-TEST_KEY = override_settings(OPENAI_API_KEY='sk-test-not-a-real-key')
-
 
 def _clear_caches(test):
     cache.clear()
-    caches['ai_sources'].clear()
-    test.addCleanup(caches['ai_sources'].clear)
 
 
-@TEST_KEY
 class AnalyzeQuotePriceTests(TestCase):
+    """The whole check against real rows: TollPlaza tariffs, an approved
+    allowance, and (patched) fuel + benchmark. No key, no network."""
+
     def setUp(self):
         _clear_caches(self)
         self.company, self.customer, self.user = _make_company_customer_user()
         self.quote = _make_quote(self.company, self.customer)
+        _seed_route_tariffs()
+        _approve_allowance()
         for patcher in (_no_win_model(), *_own_data()):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def _run(self, fake=None, pages=PAGES, payload=ANALYSIS_PAYLOAD):
+    def _run(self, payload=ANALYSIS_PAYLOAD):
         from core.services.quote_ai_pricing import analyze_quote_price
-        fake = fake or FakeOpenAI()
-        with mock.patch('core.services.quote_ai_pricing._client', return_value=fake), \
-                mock.patch('core.services.source_verification._fetch_uncached', side_effect=_fake_fetch(pages)):
-            result = analyze_quote_price(payload=payload, user=self.user, company=self.company, quote=self.quote)
-        return result, fake
+        with NoOutboundCalls(self):
+            return analyze_quote_price(payload=dict(payload), user=self.user, company=self.company, quote=self.quote)
 
-    def test_only_tolls_and_driver_are_searched(self):
-        from core.services.quote_ai_pricing import (AI_QUOTE_ANALYSIS_MAX_WEB_SEARCH_CALLS,
-                                                    AI_QUOTE_ANALYSIS_RESEARCH_TIMEOUT_SECONDS)
-        _, fake = self._run()
-        self.assertEqual({_topic_of(c) for c in fake.research_calls}, {'tolls', 'driver_allowance'})
-        self.assertEqual(len(fake.research_calls), 2)
-        for call in fake.research_calls:
-            self.assertEqual(call['tool_choice'], 'required')
-            self.assertEqual(call['max_tool_calls'], AI_QUOTE_ANALYSIS_MAX_WEB_SEARCH_CALLS)
-            self.assertEqual(call['model'], 'gpt-4o-mini')
-            self.assertNotIn('reasoning', call)
-            self.assertLessEqual(call['timeout'], AI_QUOTE_ANALYSIS_RESEARCH_TIMEOUT_SECONDS)
-        self.assertEqual(len(fake.structuring_calls), 1)
-        structuring = fake.structuring_calls[0]
-        self.assertNotIn('reasoning', structuring)
-        self.assertEqual(structuring['temperature'], 0)
-        self.assertLessEqual(structuring['timeout'], 15)
-
-    def test_structuring_schema_is_extraction_only_with_this_runs_ids(self):
-        _, fake = self._run()
-        schema = fake.structuring_calls[0]['text']['format']['schema']
-        self.assertEqual(sorted(schema['properties']), ['driver_allowance', 'tolls'])
-        driver = schema['properties']['driver_allowance']
-        self.assertEqual(driver['properties']['sources']['items']['enum'], ['S1', 'S2'])
-        self.assertIn('effective_date', driver['required'])
-        flattened = json.dumps(schema)
-        for banned in ('verdict', 'suggested_price', 'price_reasoning'):
-            self.assertNotIn(banned, flattened)
-
-    def test_happy_path_prices_only_verified_market_figures(self):
-        result, _ = self._run()
+    @override_settings(OPENAI_API_KEY='')
+    def test_happy_path_from_stored_figures_with_no_key_and_no_outbound_call(self):
+        with mock.patch.dict('os.environ', {'OPENAI_API_KEY': ''}):
+            result = self._run()
         self.assertTrue(result['success'])
         items = result['cost_breakdown']
         self.assertEqual(items['fuel']['verdict'], 'needs_adjustment')
         self.assertEqual(items['fuel']['ai_value_zar'], 13391.0)
-        self.assertEqual(items['fuel']['sources'][0]['url'],
-                         'https://fuelsindustry.org.za/consumer-information/fuel-prices-current-past/')
         self.assertEqual(items['tolls']['verdict'], 'needs_adjustment')
         self.assertEqual(items['tolls']['ai_value_zar'], 1608.70)
         self.assertEqual(items['driver_allowance']['ai_value_zar'], 243.63)
-        self.assertEqual(items['driver_allowance']['detail']['days'], 2)
-        self.assertEqual(items['driver_allowance']['detail']['nights'], 1)
+        self.assertEqual((items['driver_allowance']['detail']['days'], items['driver_allowance']['detail']['nights']),
+                         (2, 1))
         self.assertEqual({t: items[t]['verification_kind'] for t in items},
                          {'fuel': 'official', 'tolls': 'source', 'driver_allowance': 'source',
                           'base_rate': 'benchmark'})
@@ -320,117 +263,99 @@ class AnalyzeQuotePriceTests(TestCase):
         self.assertAlmostEqual(result['return_leg']['total_zar'], 13391 + 1608.70 + 487.26, places=2)
 
         row = AIQuotePriceAnalysis.objects.get(id=result['usage_log_id'])
-        self.assertEqual(row.status, 'success')
+        self.assertEqual((row.status, row.trigger_type, row.model), ('success', 'check', 'stored-rates'))
+        self.assertEqual((row.total_cost_usd, row.web_search_cost_usd, row.research_web_search_calls),
+                         (Decimal('0'), Decimal('0'), 0))
         self.assertAlmostEqual(float(row.suggested_price_zar), EXPECTED_MARKET_PRICE, places=2)
-        self.assertEqual(row.research_web_search_calls, 2)
-        self.assertAlmostEqual(float(row.web_search_cost_usd), 0.02, places=6)  # block already in usage
+        self.assertEqual(row.raw_result['requested_trigger'], 'auto')
 
-    def test_figure_missing_from_its_source_page_is_not_used(self):
-        from core.services.source_verification import REASON_NOT_FOUND
-        pages = dict(PAGES, **{DRIVER_URL: f'From 1 March {Y}: night-out allowance R300.00 per day.'})
-        driver = self._run(pages=pages)[0]['cost_breakdown']['driver_allowance']
-        self.assertEqual((driver['verdict'], driver['verification_note']), ('could_not_verify', REASON_NOT_FOUND))
-        self.assertEqual(driver['ai_value_zar'], 0.0)
-        self.assertFalse(driver['toggleable'])
+    def test_items_carry_verified_at_source_url_and_source_name(self):
+        items = self._run()['cost_breakdown']
+        self.assertEqual((items['tolls']['verified_at'], items['tolls']['source_url'], items['tolls']['source_name']),
+                         (VERIFIED_ON.isoformat(), TOLL_URL, 'SANRAL tariffs'))
+        self.assertEqual((items['driver_allowance']['verified_at'], items['driver_allowance']['source_url'],
+                          items['driver_allowance']['source_name']),
+                         (VERIFIED_ON.isoformat(), DRIVER_URL, 'NBCRFLI rates'))
+        self.assertEqual(items['fuel']['source_url'],
+                         'https://fuelsindustry.org.za/consumer-information/fuel-prices-current-past/')
+        self.assertEqual(items['fuel']['verified_at'], OFFICIAL_FUEL['verified_at'])
+        self.assertEqual(items['base_rate']['source_name'], 'platform benchmark for this lane')
+        self.assertIsNone(items['base_rate']['verified_at'])
+        plaza = items['tolls']['detail']['plazas'][0]
+        self.assertEqual((plaza['verified_at'], plaza['effective_from'], plaza['source_url']),
+                         (VERIFIED_ON.isoformat(), PERIOD.isoformat(), TOLL_URL))
 
-    def test_unreadable_source_page_is_not_verified(self):
-        from core.services.source_verification import REASON_UNREADABLE
-        result, _ = self._run(pages={TOLL_URL: PAGES[TOLL_URL]})
-        driver = result['cost_breakdown']['driver_allowance']
-        self.assertEqual((driver['verdict'], driver['verification_note']), ('could_not_verify', REASON_UNREADABLE))
-        self.assertEqual(result['verification_status'], 'partially_verified')
+    def test_toll_class_comes_from_the_vehicle_type(self):
+        from core.models import VehicleType
+        # This fleet's Flatbed is a 2-axle: SANRAL Class 2 = column tariff_class_3 = R150 at both plazas.
+        VehicleType.objects.create(company=self.company, name='Flatbed', capacity=8, max_distance=1000,
+                                   base_rate=10, sanral_toll_class=2)
+        route = {'toll_breakdown': [{'plaza': 'Grasmere', 'tariff': 130.43}, {'plaza': 'Huguenot', 'tariff': 130.43}]}
+        tolls = self._run(dict(ANALYSIS_PAYLOAD, toll_cost=260.86, route=route))['cost_breakdown']['tolls']
+        self.assertEqual(tolls['detail']['sanral_class'], 2)
+        self.assertEqual([p['published_tariff_incl_vat_zar'] for p in tolls['detail']['plazas']], [150.0, 150.0])
+        self.assertEqual((tolls['verdict'], tolls['detail']['market_one_way_zar']), ('accurate', 260.86))
 
-    def test_one_search_failing_leaves_the_rest_working(self):
-        result, _ = self._run(fake=FakeOpenAI(fail_topics={'driver_allowance'}))
-        self.assertTrue(result['success'])
-        self.assertEqual(result['cost_breakdown']['driver_allowance']['verdict'], 'could_not_verify')
-        self.assertEqual(result['cost_breakdown']['tolls']['verdict'], 'needs_adjustment')
+    def test_route_code_pins_the_plaza_and_unknown_or_inactive_plazas_are_not_verified(self):
+        TollPlaza.objects.filter(name='Huguenot').update(is_active=False)
+        route = {'toll_breakdown': [{'plaza': 'grasmere', 'tariff': 826.09, 'route': 'N1'},
+                                    {'plaza': 'Huguenot', 'tariff': 782.61}]}
+        tolls = self._run(dict(ANALYSIS_PAYLOAD, route=route))['cost_breakdown']['tolls']
+        self.assertEqual([p['verified'] for p in tolls['detail']['plazas']], [True, False])
+        self.assertEqual(tolls['detail']['plazas'][1]['note'], 'not in the SANRAL tariff table')
+        self.assertEqual(tolls['verdict'], 'could_not_verify')
+        # Wrong route code: no such plaza.
+        wrong = {'toll_breakdown': [{'plaza': 'Grasmere', 'tariff': 826.09, 'route': 'N3'}]}
+        self.assertFalse(self._run(dict(ANALYSIS_PAYLOAD, route=wrong))['cost_breakdown']['tolls']
+                         ['detail']['plazas'][0]['verified'])
 
-    def test_every_search_failing_still_checks_fuel_and_base_rate(self):
-        result, fake = self._run(fake=FakeOpenAI(fail_topics={'tolls', 'driver_allowance'}))
-        self.assertTrue(result['success'])
-        self.assertEqual(len(fake.structuring_calls), 0)
-        items = result['cost_breakdown']
-        self.assertEqual(items['fuel']['verdict'], 'needs_adjustment')
-        self.assertEqual(items['tolls']['verdict'], 'could_not_verify')
-        row = AIQuotePriceAnalysis.objects.get(id=result['usage_log_id'])
-        self.assertIn('tolls search failed', row.error_message)
+    def test_no_approved_allowance_is_unverified_with_a_note(self):
+        VerifiedRate.objects.all().delete()
+        driver = self._run()['cost_breakdown']['driver_allowance']
+        self.assertEqual((driver['verdict'], driver['verification_kind'], driver['verification_note']),
+                         ('could_not_verify', 'unverified', 'no approved allowance on record'))
+        self.assertIn('admin', driver['reason'])
 
-    def test_structuring_failure_keeps_fuel_and_base_and_records_the_cost(self):
-        result, _ = self._run(fake=FakeOpenAI(structuring_error=RuntimeError('boom')))
-        self.assertTrue(result['success'])
-        self.assertEqual(result['cost_breakdown']['tolls']['verdict'], 'could_not_verify')
-        self.assertEqual(result['cost_breakdown']['fuel']['verdict'], 'needs_adjustment')
-        row = AIQuotePriceAnalysis.objects.get(id=result['usage_log_id'])
-        self.assertIn('structuring: boom', row.error_message)
-        self.assertEqual(row.research_input_tokens, 2000)
-        self.assertGreater(row.total_cost_usd, 0)
+    def test_pending_or_future_allowances_are_not_used_and_the_newest_approved_wins(self):
+        VerifiedRate.objects.all().delete()
+        VerifiedRate.objects.create(kind='driver_allowance', key='nbcrfli', value=Decimal('999.00'), unit='per_night',
+                                    effective_from=PERIOD, status='pending')
+        self.assertEqual(self._run()['cost_breakdown']['driver_allowance']['verdict'], 'could_not_verify')
+        _approve_allowance('200.00')
+        _approve_allowance('250.00', effective_from=PERIOD)  # approved later, same date: the later approval wins
+        _approve_allowance('300.00', effective_from=TODAY + timedelta(days=10))  # not in force yet
+        self.assertEqual(self._run()['cost_breakdown']['driver_allowance']['detail']['rate_per_night_zar'], 250.0)
 
-    def test_structuring_refusal_still_records_its_own_tokens(self):
-        result, _ = self._run(fake=FakeOpenAI(structuring_raw_text=''))
-        row = AIQuotePriceAnalysis.objects.get(id=result['usage_log_id'])
-        self.assertEqual((row.structuring_input_tokens, row.structuring_output_tokens), (1000, 200))
-
-    def test_pricing_crash_writes_a_failed_row_with_the_spend(self):
+    def test_pricing_crash_writes_a_failed_row_at_zero_cost(self):
         with mock.patch('core.services.quote_ai_pricing.compute_pricing', side_effect=OverflowError('boom')):
-            result, _ = self._run()
+            result = self._run()
         self.assertFalse(result['success'])
         self.assertEqual(result['code'], 'failed')
-        self.assertNotIn('\u2014', result['message'])
+        self.assertNotIn('—', result['message'])
         row = AIQuotePriceAnalysis.objects.get(id=result['usage_log_id'])
-        self.assertEqual((row.status, row.failed_at_call), ('failed', 'pricing'))
-        self.assertEqual(row.structuring_input_tokens, 1000)
-        self.assertGreater(row.total_cost_usd, 0)
+        self.assertEqual((row.status, row.failed_at_call, row.trigger_type, row.total_cost_usd),
+                         ('failed', 'pricing', 'check', Decimal('0')))
 
-    def test_zero_citations_skips_structuring(self):
-        no_cites = {t: ('NOT FOUND', []) for t in ('tolls', 'driver_allowance')}
-        result, fake = self._run(fake=FakeOpenAI(research=no_cites))
-        self.assertEqual(len(fake.structuring_calls), 0)
-        self.assertTrue(result['success'])
-        self.assertEqual(result['verification_status'], 'partially_verified')  # fuel + base still checked
-        self.assertEqual(sorted(result['toggleable_items']), ['fuel'])
-
-
-class UnavailableTests(TestCase):
-    """B3: no key / kill switch / a client that can't start never 500s and
-    never spends."""
-
-    def setUp(self):
-        _clear_caches(self)
-        self.company, self.customer, self.user = _make_company_customer_user()
-
-    def _run(self):
-        from core.services.quote_ai_pricing import analyze_quote_price
-        with mock.patch.dict('os.environ', {'OPENAI_API_KEY': ''}):
-            return analyze_quote_price(payload=dict(ANALYSIS_PAYLOAD), user=self.user, company=self.company)
-
-    @override_settings(OPENAI_API_KEY='')
-    def test_missing_key_is_unavailable_without_calling_openai(self):
-        with mock.patch('core.services.quote_ai_pricing._client') as client:
-            result = self._run()
-        self.assertFalse(client.called)
-        self.assertEqual((result['success'], result['code'], result['reason']), (False, 'unavailable', 'no_api_key'))
-        self.assertNotIn('\u2014', result['message'])
+    @override_settings(AI_PRICE_ANALYSIS_ENABLED=False)
+    def test_kill_switch(self):
+        with NoOutboundCalls(self):
+            from core.services.quote_ai_pricing import analyze_quote_price
+            result = analyze_quote_price(payload=dict(ANALYSIS_PAYLOAD), user=self.user, company=self.company)
+        self.assertEqual((result['code'], result['reason']), ('unavailable', 'disabled'))
         self.assertEqual(AIQuotePriceAnalysis.objects.count(), 0)
 
-    @override_settings(OPENAI_API_KEY='')
-    def test_missing_key_with_the_real_client_does_not_raise(self):
-        # openai 2.x raises OpenAIError on an empty key; that must never escape.
-        result = self._run()
-        self.assertEqual(result['code'], 'unavailable')
 
-    @override_settings(OPENAI_API_KEY='sk-test-not-a-real-key')
-    def test_client_that_cannot_start_is_unavailable(self):
-        with mock.patch('core.services.quote_ai_pricing._client', side_effect=RuntimeError('bad config')):
-            result = self._run()
-        self.assertEqual((result['code'], result['reason']), ('unavailable', 'client_error'))
-
-    @override_settings(OPENAI_API_KEY='sk-test-not-a-real-key', AI_PRICE_ANALYSIS_ENABLED=False)
-    def test_kill_switch(self):
-        with mock.patch('core.services.quote_ai_pricing._client') as client:
-            result = self._run()
-        self.assertFalse(client.called)
-        self.assertEqual((result['code'], result['reason']), ('unavailable', 'disabled'))
+class StoredTollTariffTests(TestCase):
+    def test_lookup_by_name_class_and_route(self):
+        from core.services.verified_rates import stored_toll_tariffs
+        _seed_route_tariffs()
+        rows = stored_toll_tariffs([{'plaza': 'GRASMERE'}, {'plaza': 'Huguenot', 'route': 'N1'},
+                                    {'plaza': 'Nowhere'}], 4)
+        self.assertEqual([r['found'] for r in rows], [True, True, False])
+        self.assertEqual((rows[0]['tariff_incl_vat'], rows[0]['tariff_excl_vat']), (950.0, 826.09))
+        self.assertEqual(rows[0]['verified_at'], VERIFIED_ON)
+        self.assertEqual(stored_toll_tariffs([{'plaza': 'Grasmere'}], 1)[0]['tariff_incl_vat'], 50.0)
+        self.assertFalse(stored_toll_tariffs([{'plaza': 'Grasmere'}], None)[0]['found'])
 
 
 class SpendCapTests(TestCase):
@@ -438,11 +363,18 @@ class SpendCapTests(TestCase):
         self.company, self.customer, self.user = _make_company_customer_user()
         self.other, _, _ = _make_company_customer_user(suffix='-b')
 
-    def _rows(self, company, n, cost='0.020000', status='success'):
+    def _rows(self, company, n, cost='0', status='success'):
         for _ in range(n):
-            AIQuotePriceAnalysis.objects.create(company=company, status=status, total_cost_usd=Decimal(cost))
+            AIQuotePriceAnalysis.objects.create(company=company, status=status, trigger_type='check',
+                                                total_cost_usd=Decimal(cost))
 
-    @override_settings(AI_PRICE_ANALYSIS_COMPANY_DAILY_RUNS=3, AI_PRICE_ANALYSIS_GLOBAL_DAILY_BUDGET_USD=0)
+    def test_defaults_are_cheap_check_friendly(self):
+        from django.conf import settings
+        self.assertEqual(settings.AI_PRICE_ANALYSIS_COMPANY_DAILY_RUNS, 200)
+        self.assertEqual(settings.AI_PRICE_ANALYSIS_GLOBAL_DAILY_BUDGET_USD, 5)
+        self.assertEqual(settings.AI_QUOTE_ANALYSIS_COOLDOWN_SECONDS, 3)
+
+    @override_settings(AI_PRICE_ANALYSIS_COMPANY_DAILY_RUNS=3)
     def test_company_daily_run_cap_counts_failed_runs_and_is_per_company(self):
         from core.services.quote_ai_pricing import check_spend_caps
         self._rows(self.company, 2)
@@ -462,37 +394,25 @@ class SpendCapTests(TestCase):
         self.assertIsNone(check_spend_caps(self.company))
 
     @override_settings(AI_PRICE_ANALYSIS_COMPANY_DAILY_RUNS=0, AI_PRICE_ANALYSIS_GLOBAL_DAILY_BUDGET_USD=1.0)
-    def test_global_daily_budget_across_companies(self):
+    def test_platform_usd_budget_never_blocks_a_free_check(self):
         from core.services.quote_ai_pricing import check_spend_caps
-        self._rows(self.other, 1, cost='0.990000')
+        from core.services.verified_rate_refresh import budget_exhausted
+        # The refresh job spent the whole day's budget ...
+        AIQuotePriceAnalysis.objects.create(status='success', trigger_type='refresh', total_cost_usd=Decimal('1.5'))
+        self.assertTrue(budget_exhausted())
+        # ... which stops the job, not the (free) per-quote check.
         self.assertIsNone(check_spend_caps(self.company))
-        self._rows(self.other, 1, cost='0.010000')
-        capped = check_spend_caps(self.company)
-        self.assertEqual((capped['code'], capped['limit']), ('budget', 'global_daily_budget'))
-        self.assertNotIn('\u2014', capped['message'])
 
 
 class ComputePricingTests(SimpleTestCase):
-    SOURCES = {'S1': {'id': 'S1', 'title': 'SANRAL', 'url': TOLL_URL},
-               'S2': {'id': 'S2', 'title': 'NBCRFLI', 'url': DRIVER_URL}}
-    PAGE_RESULTS = {url: {'text': text, 'error': None} for url, text in PAGES.items()}
-    IDS = {TOLL_URL: 'S1', DRIVER_URL: 'S2'}
-
-    def _price(self, extracted=None, pages=None, fuel=None, benchmark=None, **payload_overrides):
+    def _price(self, tolls=None, allowance=..., fuel=None, benchmark=None, **payload_overrides):
         from core.services.quote_ai_pricing import compute_pricing
-        extracted = extracted if extracted is not None else _default_extracted(self.IDS)
-        return compute_pricing(extracted, dict(ANALYSIS_PAYLOAD, **payload_overrides), self.SOURCES,
-                               pages if pages is not None else self.PAGE_RESULTS, TODAY,
-                               official_fuel=dict(fuel or OFFICIAL_FUEL), benchmark=dict(benchmark or BENCHMARK))
+        return compute_pricing(dict(ANALYSIS_PAYLOAD, **payload_overrides), TODAY,
+                               official_fuel=dict(fuel or OFFICIAL_FUEL), benchmark=dict(benchmark or BENCHMARK),
+                               tolls=tolls or STORED_TOLLS, allowance=ALLOWANCE if allowance is ... else allowance)
 
-    def _extracted(self, **overrides):
-        data = _default_extracted(self.IDS)
-        for key, value in overrides.items():
-            data[key] = dict(data[key], **value) if isinstance(value, dict) else value
-        return data
-
-    def _page(self, url, text):
-        return dict(self.PAGE_RESULTS, **{url: {'text': text, 'error': None}})
+    def _tolls(self, *plazas):
+        return dict(STORED_TOLLS, plazas=list(plazas))
 
     # ---- fuel (official FIASA price) ----
     def test_fuel_within_one_percent_is_at_market(self):
@@ -505,6 +425,11 @@ class ComputePricingTests(SimpleTestCase):
         p = self._price(fuel={'price_per_litre': None, 'error': 'only diesel has an official monthly price (Petrol)'})
         self.assertEqual(p['cost_breakdown']['fuel']['verdict'], 'could_not_verify')
         self.assertIn('only diesel', p['cost_breakdown']['fuel']['reason'])
+
+    def test_manual_fuel_price_names_truckwys_as_its_source(self):
+        fuel = self._price(fuel=dict(OFFICIAL_FUEL, source='MANUAL'))['cost_breakdown']['fuel']
+        self.assertEqual((fuel['source_name'], fuel['source_url'], fuel['verification_kind']),
+                         ('Official price entered by TruckWys', None, 'official'))
 
     # ---- combinations / rounding ----
     def test_every_combination_price_is_the_sum_of_its_chosen_lines(self):
@@ -522,81 +447,17 @@ class ComputePricingTests(SimpleTestCase):
         self.assertEqual(p['cost_breakdown']['base_rate']['current_value_zar'], 30070.0)
         self.assertEqual(p['cost_breakdown']['fuel']['ai_value_zar'], 13383.0)
 
-    # ---- tolls ----
-    def test_tolls_with_one_unconfirmed_plaza_are_not_verified(self):
-        pages = self._page(TOLL_URL, f'Tariffs from 1 March {Y}. Grasmere Class 4 R 950.00')
-        tolls = self._price(pages=pages)['cost_breakdown']['tolls']
-        self.assertEqual(tolls['verdict'], 'could_not_verify')
-        self.assertEqual({r['plaza']: r['verified'] for r in tolls['detail']['plazas']},
-                         {'Grasmere': True, 'Huguenot': False})
-
-    def test_last_years_schedule_or_a_bare_year_is_not_used(self):
-        for eff, note in (((PERIOD - timedelta(days=365)).replace(day=1).isoformat(), 'out of date'),
-                          (str(Y), 'no exact effective date')):
-            extracted = self._extracted()
-            for plaza in extracted['tolls']['plazas']:
-                plaza['effective_date'] = eff
-            tolls = self._price(extracted)['cost_breakdown']['tolls']
-            self.assertEqual(tolls['verdict'], 'could_not_verify')
-            self.assertTrue(all(r['note'].startswith(note) for r in tolls['detail']['plazas']), eff)
-
-    def test_toll_page_must_carry_the_current_schedule_date(self):
-        from core.services.source_verification import REASON_DATE_NOT_FOUND
-        # Last year's schedule page: it ends in this year and has a "(c) {Y}" footer.
-        pages = self._page(TOLL_URL, f'Tariffs 1 March {Y - 1} - 28 February {Y}. Grasmere R 950.00. '
-                                     f'Huguenot R 900.00. (c) {Y} SANRAL')
-        tolls = self._price(pages=pages)['cost_breakdown']['tolls']
-        self.assertTrue(all(r['note'] == REASON_DATE_NOT_FOUND for r in tolls['detail']['plazas']))
-
-    def test_round_trip_tolls_are_one_way_market_times_legs(self):
-        p = self._price(legs=2, toll_cost=3600, distance_km=2800)
-        self.assertEqual(p['cost_breakdown']['tolls']['ai_value_zar'], 3217.4)
-
-    def test_extra_plazas_are_listed_but_not_priced(self):
-        extracted = self._extracted()
-        extracted['tolls']['plazas'].append({'plaza': 'Verkeerdevlei', 'tariff_zar': 400.0,
-                                             'effective_date': PERIOD.isoformat(), 'sources': ['S1']})
-        tolls = self._price(extracted=extracted)['cost_breakdown']['tolls']
-        self.assertEqual(tolls['detail']['other_plazas_mentioned'], ['Verkeerdevlei'])
-        self.assertEqual(tolls['ai_value_zar'], 1608.7)
-
-    def test_a_ramp_plaza_never_stands_in_for_the_mainline_plaza(self):
-        extracted = self._extracted()
-        extracted['tolls']['plazas'].insert(0, {'plaza': 'Grasmere Ramp', 'tariff_zar': 58.0,
-                                                'effective_date': PERIOD.isoformat(), 'sources': ['S1']})
-        pages = self._page(TOLL_URL, f'From 1 March {Y}. Grasmere Ramp R58.00. Grasmere R 950.00. Huguenot R 900.00.')
-        tolls = self._price(extracted, pages)['cost_breakdown']['tolls']
-        grasmere = next(r for r in tolls['detail']['plazas'] if r['plaza'] == 'Grasmere')
-        self.assertEqual(grasmere['market_tariff_zar'], 826.09)  # R950.00 incl. VAT
-        self.assertEqual(grasmere['published_tariff_incl_vat_zar'], 950.0)
-        self.assertIn('Grasmere Ramp', tolls['detail']['other_plazas_mentioned'])
-
-    def test_plaza_names_match_on_whole_words(self):
-        from core.services.quote_ai_pricing import _plaza_candidates
-        found = [{'plaza': 'Kroonvaal'}, {'plaza': 'Tugela East Ramp'}, {'plaza': 'Mooi River Toll Plaza'},
-                 {'plaza': 'N3 Tugela Mainline'}]
-        self.assertEqual(_plaza_candidates('Vaal', found), [])
-        self.assertEqual(_plaza_candidates('Tugela', found), [3])
-        self.assertEqual(_plaza_candidates('Mooi', found), [2])
-
-    def test_two_different_tariffs_for_one_name_are_not_guessed(self):
-        extracted = self._extracted()
-        extracted['tolls']['plazas'].append({'plaza': 'Grasmere Toll Plaza', 'tariff_zar': 990.0,
-                                             'effective_date': PERIOD.isoformat(), 'sources': ['S1']})
-        grasmere = next(r for r in self._price(extracted)['cost_breakdown']['tolls']['detail']['plazas']
-                        if r['plaza'] == 'Grasmere')
-        self.assertEqual((grasmere['verified'], grasmere['note']),
-                         (False, 'more than one published plaza matches this name'))
-
+    # ---- tolls (stored SANRAL tariffs) ----
     def test_correct_excl_vat_toll_is_at_market(self):
         # Main's route calc prices tolls excl. VAT: R950 / 1.15 = 826.09 and
-        # R900 / 1.15 = 782.61. The published figures are matched on the page
-        # as printed (incl. VAT), then compared excl. VAT.
+        # R900 / 1.15 = 782.61. The stored tariffs are VAT inclusive, as
+        # published, and are compared excl. VAT.
         route = {'toll_breakdown': [{'plaza': 'Grasmere', 'tariff': 826.09}, {'plaza': 'Huguenot', 'tariff': 782.61}]}
         tolls = self._price(toll_cost=1608.70, route=route)['cost_breakdown']['tolls']
         self.assertEqual((tolls['verdict'], tolls['ai_value_zar'], tolls['verification_kind']),
                          ('accurate', 1608.70, 'source'))
         self.assertEqual(tolls['detail']['market_one_way_zar'], 1608.70)
+        self.assertEqual(tolls['detail']['vat_basis'], 'excl_vat')
         self.assertEqual([r['matches_yours'] for r in tolls['detail']['plazas']], [True, True])
         self.assertEqual([r['published_tariff_incl_vat_zar'] for r in tolls['detail']['plazas']], [950.0, 900.0])
 
@@ -606,15 +467,55 @@ class ComputePricingTests(SimpleTestCase):
         self.assertIn('excl. VAT', tolls['reason'])
 
     def test_implied_base_rate_uses_excl_vat_tolls(self):
-        # BENCHMARK's implied 21.50/km only comes out if the tolls in the
-        # market pass-through are excl. VAT.
         base = self._price()['cost_breakdown']['base_rate']
         self.assertEqual(base['detail']['implied_rate_per_km'], 21.5)
 
+    def test_round_trip_tolls_are_one_way_market_times_legs(self):
+        p = self._price(legs=2, toll_cost=3600, distance_km=2800)
+        self.assertEqual(p['cost_breakdown']['tolls']['ai_value_zar'], 3217.4)
+
+    def test_a_plaza_never_verified_on_its_source_is_not_used(self):
+        tolls = self._price(self._tolls(_stored_plaza('Grasmere', 950.0),
+                                        _stored_plaza('Huguenot', 900.0, verified_at=None)))['cost_breakdown']['tolls']
+        self.assertEqual(tolls['verdict'], 'could_not_verify')
+        self.assertEqual({r['plaza']: r['verified'] for r in tolls['detail']['plazas']},
+                         {'Grasmere': True, 'Huguenot': False})
+        self.assertEqual(tolls['detail']['plazas'][1]['note'], 'tariff not yet verified on its source')
+
+    def test_last_years_schedule_is_not_used(self):
+        old = PERIOD.replace(year=PERIOD.year - 1)
+        tolls = self._price(self._tolls(_stored_plaza('Grasmere', 950.0, effective_from=old),
+                                        _stored_plaza('Huguenot', 900.0, effective_from=old)))['cost_breakdown']['tolls']
+        self.assertEqual(tolls['verdict'], 'could_not_verify')
+        self.assertTrue(all(r['note'].startswith('stored tariff is from an earlier schedule')
+                            for r in tolls['detail']['plazas']))
+
+    def test_plaza_missing_from_the_table_is_not_verified(self):
+        tolls = self._price(self._tolls(_stored_plaza('Grasmere', 950.0),
+                                        _stored_plaza('Huguenot', 0, found=False)))['cost_breakdown']['tolls']
+        self.assertEqual(tolls['detail']['plazas'][1]['note'], 'not in the SANRAL tariff table')
+        self.assertIn('Huguenot not verified', tolls['reason'])
+
+    def test_route_without_plazas_is_not_verified(self):
+        tolls = self._price(route={'toll_breakdown': []}, toll_cost=0)['cost_breakdown']['tolls']
+        self.assertEqual((tolls['verdict'], tolls['verification_note']), ('could_not_verify', 'no plazas on route'))
+
+    def test_toll_provenance_is_the_oldest_verification(self):
+        older = VERIFIED_ON - timedelta(days=30)
+        tolls = self._price(self._tolls(_stored_plaza('Grasmere', 950.0),
+                                        _stored_plaza('Huguenot', 900.0, verified_at=older, source_url='https://b.test/',
+                                                      source_name='B')))['cost_breakdown']['tolls']
+        self.assertEqual((tolls['verified_at'], tolls['source_url'], tolls['source_name']),
+                         (older.isoformat(), 'https://b.test/', 'B'))
+        self.assertEqual(len(tolls['sources']), 2)
+
     def test_unverified_items_say_so(self):
-        p = self._price(pages={}, fuel={'price_per_litre': None}, benchmark={'rate': None, 'source': 'none'})
+        empty = dict(STORED_TOLLS, plazas=[_stored_plaza('Grasmere', 0, found=False),
+                                           _stored_plaza('Huguenot', 0, found=False)])
+        p = self._price(empty, None, fuel={'price_per_litre': None}, benchmark={'rate': None, 'source': 'none'})
         self.assertEqual({t: i['verification_kind'] for t, i in p['cost_breakdown'].items()},
                          {t: 'unverified' for t in ('fuel', 'tolls', 'driver_allowance', 'base_rate')})
+        self.assertEqual(p['verification_status'], 'unverified')
 
     def test_latest_but_not_current_fuel_price_is_labelled_as_such(self):
         stale = dict(OFFICIAL_FUEL, current=False, effective_date=(TODAY - timedelta(days=40)).isoformat())
@@ -640,6 +541,7 @@ class ComputePricingTests(SimpleTestCase):
             d = self._price(duration_minutes=minutes)['cost_breakdown']['driver_allowance']
             self.assertEqual((d['detail']['days'], d['detail']['nights']), (days, nights), minutes)
             self.assertEqual(d['detail']['market_total_zar'], round(243.63 * nights, 2), minutes)
+            self.assertEqual(d['detail']['allowance_basis'], 'per_night_away')
 
     def test_driver_days_from_driving_time_and_yours_at_or_above_market_is_kept(self):
         d = self._price(duration_minutes=1500)['cost_breakdown']['driver_allowance']  # 25 h -> 3 days, 2 nights
@@ -651,33 +553,17 @@ class ComputePricingTests(SimpleTestCase):
         self.assertEqual(self._price(duration_minutes=None)['cost_breakdown']['driver_allowance']['verdict'],
                          'could_not_verify')
 
-    def test_substitute_allowance_is_not_used(self):
-        other = self._price(self._extracted(driver_allowance={'allowance_type': 'other'}))
-        self.assertEqual(other['cost_breakdown']['driver_allowance']['verification_note'],
-                         'not a recognised driver allowance')
+    def test_allowance_from_before_the_current_period_is_not_used(self):
+        old = dict(ALLOWANCE, effective_from=PERIOD.replace(year=PERIOD.year - 1))
+        d = self._price(allowance=old)['cost_breakdown']['driver_allowance']
+        self.assertEqual((d['verdict'], d['verification_note']), ('could_not_verify', 'out of date'))
 
-    def test_sars_rate_must_sit_in_the_current_tax_year_row(self):
-        # SARS labels each row by the year the tax year ENDS.
-        page = self._page(DRIVER_URL, f'Year of assessment | meals & incidentals | incidentals\n'
-                                      f'{Y + 1} R595 R184\n{Y} R570 R176')
-        current = self._price(self._extracted(driver_allowance={'allowance_type': 'sars_subsistence',
-                                                                'rate_per_day_zar': 595.0}), page)
-        d = current['cost_breakdown']['driver_allowance']
+    def test_sars_fallback_is_labelled(self):
+        sars = dict(ALLOWANCE, allowance_type='sars_subsistence',
+                    label='SARS daily subsistence allowance (meals & incidentals)', rate_per_night=595.0)
+        d = self._price(allowance=sars)['cost_breakdown']['driver_allowance']
         self.assertEqual(d['verdict'], 'needs_adjustment')
         self.assertIn('SARS daily subsistence allowance', d['reason'])
-        # Last year's R570 mislabelled with this year's start date is still caught.
-        stale = self._price(self._extracted(driver_allowance={'allowance_type': 'sars_subsistence',
-                                                              'rate_per_day_zar': 570.0}), page)
-        self.assertEqual(stale['cost_breakdown']['driver_allowance']['verdict'], 'could_not_verify')
-
-    def test_sars_tax_year_label_is_not_a_date(self):
-        d = self._price(self._extracted(driver_allowance={'allowance_type': 'sars_subsistence',
-                                                          'effective_date': str(Y)}))
-        self.assertEqual(d['cost_breakdown']['driver_allowance']['verification_note'], 'no exact effective date')
-
-    def test_future_period_is_not_in_force(self):
-        d = self._price(self._extracted(driver_allowance={'effective_date': (TODAY + timedelta(days=3)).isoformat()}))
-        self.assertEqual(d['cost_breakdown']['driver_allowance']['verification_note'], 'not in force yet')
 
     # ---- base rate (lane benchmark) ----
     def test_base_rate_inside_the_benchmark_band_is_at_market(self):
@@ -712,8 +598,7 @@ class ComputePricingTests(SimpleTestCase):
 
     def test_status_is_derived_from_verified_count(self):
         self.assertEqual(self._price()['verification_status'], 'verified')
-        self.assertEqual(self._price(pages={}, fuel={'price_per_litre': None},
-                                     benchmark={'rate': None, 'source': 'none'})['verification_status'], 'unverified')
+        self.assertEqual(self._price(allowance=None)['verification_status'], 'partially_verified')
 
 
 def _sast(y, m, d):
@@ -791,11 +676,22 @@ class OfficialFuelPriceTests(TestCase):
         self.assertIsNone(self._lookup(date(2026, 9, 24), fuel_type='Petrol')['price_per_litre'])
 
 
+class FuelVerifiedAtTests(TestCase):
+    def test_fiasa_row_is_verified_when_it_was_scraped(self):
+        from core.models.fuel_price import FuelPrice
+        from core.services.quote_ai_pricing import official_fuel_price
+        FuelPrice.objects.create(date=date(2026, 9, 1), diesel_inland=Decimal('29.1111'),
+                                 diesel_coastal=Decimal('28.2391'), petrol_95=Decimal('26.92'),
+                                 petrol_93=Decimal('26.10'), source='FIASA', diesel_grade='50ppm',
+                                 effective_from=_sast(2026, 9, 2),
+                                 fetched_at=datetime(2026, 9, 20, 12, tzinfo=dt_timezone.utc))
+        self.assertEqual(official_fuel_price('Diesel', 'INLAND', date(2026, 9, 24))['verified_at'], '2026-09-20')
+
+
 def _pricing_for_win_tests():
     from core.services.quote_ai_pricing import compute_pricing
-    return compute_pricing(_default_extracted(ComputePricingTests.IDS), ANALYSIS_PAYLOAD,
-                           ComputePricingTests.SOURCES, ComputePricingTests.PAGE_RESULTS, TODAY,
-                           official_fuel=dict(OFFICIAL_FUEL), benchmark=dict(BENCHMARK))
+    return compute_pricing(ANALYSIS_PAYLOAD, TODAY, official_fuel=dict(OFFICIAL_FUEL), benchmark=dict(BENCHMARK),
+                           tolls=STORED_TOLLS, allowance=ALLOWANCE)
 
 
 def _fitted_model(margin_mean, margin_sd, n=200):
@@ -908,38 +804,6 @@ class WinProbabilityTests(TestCase):
         self.assertGreater(len(probs), 1)
 
 
-class UsdCostMathTests(SimpleTestCase):
-    def test_gpt_4o_mini_search_fee_and_the_already_counted_block(self):
-        from core.services import quote_ai_pricing as m
-        pricing = m.OPENAI_PRICING['gpt-4o-mini']
-        result = m._usd_cost(_usage(input_tokens=0, output_tokens=0), model='gpt-4o-mini', web_search_calls=4)
-        self.assertAlmostEqual(result['search_cost_usd'], 0.04, places=6)
-        with mock.patch.object(m, 'SEARCH_BLOCK_INCLUDED_IN_USAGE', False):
-            separate = m._usd_cost(_usage(input_tokens=0, output_tokens=0), model='gpt-4o-mini', web_search_calls=4)
-        self.assertAlmostEqual(separate['search_cost_usd'], 0.04 + 4 * 8000 / 1e6 * pricing['input_per_1m'], places=6)
-
-    def test_token_pricing_and_cached_discount(self):
-        from core.services.quote_ai_pricing import _usd_cost, OPENAI_PRICING
-        pricing = OPENAI_PRICING['gpt-4o-mini']
-        result = _usd_cost(_usage(input_tokens=1_000_000, cached_tokens=0, output_tokens=1_000_000), model='gpt-4o-mini')
-        self.assertAlmostEqual(result['input_cost_usd'], pricing['input_per_1m'], places=4)
-        self.assertAlmostEqual(result['output_cost_usd'], pricing['output_per_1m'], places=4)
-        cached = _usd_cost(_usage(input_tokens=1_000_000, cached_tokens=1_000_000, output_tokens=0), model='gpt-4o-mini')
-        self.assertAlmostEqual(cached['input_cost_usd'], pricing['cached_input_per_1m'], places=4)
-
-    def test_unknown_model_is_costed_at_the_dearest_known_rate_not_zero(self):
-        from core.services.quote_ai_pricing import _usd_cost, OPENAI_PRICING
-        with self.assertLogs('core.services.quote_ai_pricing', level='WARNING'):
-            cost = _usd_cost(_usage(input_tokens=1_000_000, output_tokens=0), model='gpt-unknown')
-        self.assertEqual(cost['input_cost_usd'], max(p['input_per_1m'] for p in OPENAI_PRICING.values()))
-
-    def test_model_field_default_matches_the_settings_default(self):
-        from core.services.quote_ai_pricing import OPENAI_PRICING
-        field = AIQuotePriceAnalysis._meta.get_field('model')
-        self.assertEqual(field.default, 'gpt-4o-mini')
-        self.assertIn(field.default, OPENAI_PRICING)
-
-
 class TollClassTests(TestCase):
     def test_vehicle_type_sanral_class_wins_over_the_name(self):
         from core.models import VehicleType
@@ -952,28 +816,23 @@ class TollClassTests(TestCase):
         self.assertEqual(_toll_class('Flatbed', company)[0], 2)
         self.assertEqual(build_condensed_context(ANALYSIS_PAYLOAD, company=company)['tolls']['sanral_class'], 2)
 
-    def test_reasoning_kwargs_only_for_reasoning_models(self):
-        from core.services.quote_ai_pricing import _reasoning_kwargs
-        self.assertEqual(_reasoning_kwargs('gpt-4o-mini'), {})
-        self.assertIn('reasoning', _reasoning_kwargs('gpt-5.6-luna'))
 
-
-@TEST_KEY
 class AIQuotePriceAnalysisViewTests(TestCase):
     def setUp(self):
         _clear_caches(self)
         self.company, self.customer, self.user = _make_company_customer_user()
         self.quote = _make_quote(self.company, self.customer)
+        _seed_route_tariffs()
+        _approve_allowance()
         self.client_api = APIClient()
         self.client_api.force_authenticate(user=self.user)
         for patcher in (_no_win_model(), *_own_data()):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def _post(self, fake, quote_id, **overrides):
+    def _post(self, quote_id, **overrides):
         payload = dict(ANALYSIS_PAYLOAD, quote_id=quote_id, trigger_type='auto', **overrides)
-        with mock.patch('core.services.quote_ai_pricing._client', return_value=fake), \
-                mock.patch('core.services.source_verification._fetch_uncached', side_effect=_fake_fetch(PAGES)):
+        with NoOutboundCalls(self):
             return self.client_api.post('/api/v1/quotes/ai-price-analysis/', payload, format='json')
 
     def _captured_payload(self, **overrides):
@@ -985,124 +844,110 @@ class AIQuotePriceAnalysisViewTests(TestCase):
             seen.update(kwargs['payload'])
             return real(**kwargs)
         with mock.patch.object(quote_ai_pricing, 'analyze_quote_price', side_effect=capture):
-            resp = self._post(FakeOpenAI(), overrides.pop('quote_id', self.quote.id), **overrides)
+            resp = self._post(overrides.pop('quote_id', self.quote.id), **overrides)
         return resp, seen
 
+    @override_settings(OPENAI_API_KEY='')
+    def test_works_without_an_openai_key_and_makes_no_outbound_call(self):
+        with mock.patch.dict('os.environ', {'OPENAI_API_KEY': ''}):
+            resp = self._post(self.quote.id)
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body['success'])
+        self.assertEqual(body['verification_status'], 'verified')
+        row = AIQuotePriceAnalysis.objects.get(id=body['usage_log_id'])
+        self.assertEqual((row.trigger_type, row.total_cost_usd, row.company_id), ('check', Decimal('0'), self.company.id))
+
     def test_cooldown_blocks_rapid_repeat_call_for_same_quote(self):
-        fake = FakeOpenAI()
-        resp1 = self._post(fake, self.quote.id)
-        self.assertEqual(resp1.status_code, 200)
-        self.assertTrue(resp1.json()['success'])
-        resp2 = self._post(fake, self.quote.id)
+        self.assertEqual(self._post(self.quote.id).status_code, 200)
+        resp2 = self._post(self.quote.id)
         self.assertEqual(resp2.status_code, 429)
         self.assertEqual(resp2.json()['error'], 'cooldown')
-        self.assertEqual(len(fake.calls), 3)  # 2 research + 1 structuring, from the first request only
+        self.assertEqual(AIQuotePriceAnalysis.objects.count(), 1)
 
     def test_cooldown_is_per_quote_not_global(self):
         other = _make_quote(self.company, self.customer, number='AI-Q2')
-        self.assertEqual(self._post(FakeOpenAI(), self.quote.id).status_code, 200)
-        self.assertEqual(self._post(FakeOpenAI(), other.id).status_code, 200)
+        self.assertEqual(self._post(self.quote.id).status_code, 200)
+        self.assertEqual(self._post(other.id).status_code, 200)
 
-    def test_view_forwards_trip_fuel_and_customer_keys(self):
+    def test_view_forwards_trip_fuel_customer_and_route_keys(self):
+        route = dict(ANALYSIS_PAYLOAD['route'],
+                     toll_breakdown=[{'plaza': 'Grasmere', 'tariff': 826.09, 'route': 'N1'}])
         resp, seen = self._captured_payload(legs=2, trip_type='ROUND_TRIP', toll_cost=3600, distance_km=2800,
-                                            cross_border_cost=750, customer_id=self.customer.id)
+                                            cross_border_cost=750, customer_id=self.customer.id, route=route)
         data = resp.json()
         self.assertEqual(data['legs'], 2)
         self.assertEqual(data['cross_border_zar'], 750.0)
         self.assertEqual(seen['customer_id'], self.customer.id)
         self.assertEqual(seen['fuel_zone'], 'INLAND')
+        self.assertEqual(seen['route']['toll_breakdown'], [{'plaza': 'Grasmere', 'tariff': 826.09, 'route': 'N1'}])
 
     def test_another_companys_customer_is_dropped(self):
         _, foreign_customer, _ = _make_company_customer_user(suffix='-b')
         _, seen = self._captured_payload(customer_id=foreign_customer.id)
         self.assertIsNone(seen['customer_id'])
 
-    def test_absurd_input_never_crashes_after_paying(self):
+    def test_absurd_input_never_crashes(self):
         resp, seen = self._captured_payload(distance_km=1e200, base_rate_per_km=1e200, route=['not', 'a', 'dict'])
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(resp.json()['success'])
         self.assertIsNone(seen['distance_km'])
         self.assertEqual(seen['route'], {})
 
-    # ---- B3 / H4 / response shape ----
-    def _no_key(self):
-        return mock.patch.dict('os.environ', {'OPENAI_API_KEY': ''})
-
-    def test_missing_key_is_a_clean_503_that_keeps_the_cooldown_free(self):
-        fake = FakeOpenAI()
-        with override_settings(OPENAI_API_KEY=''), self._no_key():
-            resp = self._post(fake, self.quote.id)
-        self.assertEqual(resp.status_code, 503)
-        body = resp.json()
-        self.assertEqual((body['success'], body['code'], body['retry_after_seconds']), (False, 'unavailable', None))
-        self.assertNotIn('\u2014', body['message'])
-        self.assertEqual(fake.calls, [])
-        self.assertEqual(AIQuotePriceAnalysis.objects.count(), 0)
-        # Once the key is back, the same quote runs straight away (no cooldown burned).
-        self.assertEqual(self._post(FakeOpenAI(), self.quote.id).status_code, 200)
-
-    def test_missing_key_with_the_real_openai_client_is_not_a_500(self):
-        with override_settings(OPENAI_API_KEY=''), self._no_key(), \
-                mock.patch('core.services.quote_ai_pricing.unavailable_reason', return_value=None):
-            # Even if the up-front check were bypassed, openai 2.x's
-            # "Missing credentials" must not escape as a 500.
-            resp = self.client_api.post('/api/v1/quotes/ai-price-analysis/',
-                                        dict(ANALYSIS_PAYLOAD, quote_id=self.quote.id), format='json')
-        self.assertEqual(resp.status_code, 503)
-        self.assertEqual(resp.json()['code'], 'unavailable')
-
     @override_settings(AI_PRICE_ANALYSIS_ENABLED=False)
-    def test_kill_switch_returns_unavailable_without_spending(self):
-        fake = FakeOpenAI()
-        resp = self._post(fake, self.quote.id)
-        self.assertEqual((resp.status_code, resp.json()['code'], resp.json()['reason']), (503, 'unavailable', 'disabled'))
-        self.assertEqual(fake.calls, [])
+    def test_kill_switch_returns_unavailable_and_keeps_the_cooldown_free(self):
+        resp = self._post(self.quote.id)
+        body = resp.json()
+        self.assertEqual((resp.status_code, body['code'], body['reason'], body['retry_after_seconds']),
+                         (503, 'unavailable', 'disabled', None))
+        self.assertNotIn('—', body['message'])
+        self.assertEqual(AIQuotePriceAnalysis.objects.count(), 0)
+        with override_settings(AI_PRICE_ANALYSIS_ENABLED=True):
+            self.assertEqual(self._post(self.quote.id).status_code, 200)
 
     @override_settings(AI_PRICE_ANALYSIS_COMPANY_DAILY_RUNS=1)
-    def test_company_run_cap_blocks_before_any_paid_call(self):
-        self.assertEqual(self._post(FakeOpenAI(), self.quote.id).status_code, 200)
+    def test_company_run_cap(self):
+        self.assertEqual(self._post(self.quote.id).status_code, 200)
         other = _make_quote(self.company, self.customer, number='AI-Q2')
-        fake = FakeOpenAI()
-        resp = self._post(fake, other.id)
+        resp = self._post(other.id)
         self.assertEqual(resp.status_code, 429)
         body = resp.json()
         self.assertEqual((body['code'], body['limit']), ('budget', 'company_daily_runs'))
         self.assertGreater(body['retry_after_seconds'], 0)
         self.assertEqual(resp['Retry-After'], str(body['retry_after_seconds']))
-        self.assertEqual(fake.calls, [])
+        self.assertEqual(AIQuotePriceAnalysis.objects.count(), 1)
 
     @override_settings(AI_PRICE_ANALYSIS_GLOBAL_DAILY_BUDGET_USD=0.01)
-    def test_global_budget_blocks_before_any_paid_call(self):
-        other_company, _, _ = _make_company_customer_user(suffix='-b')
-        AIQuotePriceAnalysis.objects.create(company=other_company, status='success', total_cost_usd=Decimal('0.02'))
-        fake = FakeOpenAI()
-        resp = self._post(fake, self.quote.id)
-        self.assertEqual((resp.status_code, resp.json()['code'], resp.json()['limit']),
-                         (429, 'budget', 'global_daily_budget'))
-        self.assertEqual(fake.calls, [])
+    def test_spent_platform_budget_does_not_block_a_free_check(self):
+        AIQuotePriceAnalysis.objects.create(status='success', trigger_type='refresh', total_cost_usd=Decimal('0.02'))
+        self.assertEqual(self._post(self.quote.id).status_code, 200)
 
     def test_cooldown_and_throttle_have_stable_codes(self):
-        self._post(FakeOpenAI(), self.quote.id)
-        body = self._post(FakeOpenAI(), self.quote.id).json()
-        self.assertEqual((body['code'], body['error'], body['retry_after_seconds']), ('cooldown', 'cooldown', 20))
-        self.assertNotIn('\u2014', body['message'])
+        self._post(self.quote.id)
+        body = self._post(self.quote.id).json()
+        self.assertEqual((body['code'], body['error'], body['retry_after_seconds']), ('cooldown', 'cooldown', 3))
+        self.assertNotIn('—', body['message'])
         from rest_framework.throttling import ScopedRateThrottle
         with mock.patch.object(ScopedRateThrottle, 'allow_request', return_value=False), \
                 mock.patch.object(ScopedRateThrottle, 'wait', return_value=11.2):
-            resp = self._post(FakeOpenAI(), self.quote.id)
+            resp = self._post(self.quote.id)
         self.assertEqual(resp.status_code, 429)
         self.assertEqual((resp.json()['code'], resp.json()['retry_after_seconds']), ('throttled', 12))
 
-    def test_success_response_carries_verification_kind_per_item(self):
-        data = self._post(FakeOpenAI(), self.quote.id).json()
+    def test_success_response_shape_per_item(self):
+        data = self._post(self.quote.id).json()
         for item in data['cost_breakdown'].values():
             self.assertIn(item['verification_kind'], ('official', 'benchmark', 'source', 'unverified'))
-            self.assertIn('verification', item)  # the old field stays for compatibility
+            for key in ('verification', 'verified_at', 'source_url', 'source_name', 'verdict', 'toggleable',
+                        'current_value_zar', 'ai_value_zar', 'detail', 'sources'):
+                self.assertIn(key, item)
+        for key in ('combinations', 'default_choice_key', 'win_model', 'return_leg', 'references'):
+            self.assertIn(key, data)
 
     def test_another_companys_quote_id_is_ignored(self):
         other_company, other_customer, _ = _make_company_customer_user(suffix='-b')
         foreign = _make_quote(other_company, other_customer, number='AI-FOREIGN')
-        resp = self._post(FakeOpenAI(), foreign.id)
+        resp = self._post(foreign.id)
         self.assertEqual(resp.status_code, 200)
         row = AIQuotePriceAnalysis.objects.get(id=resp.json()['usage_log_id'])
         self.assertIsNone(row.quote_id)
@@ -1121,27 +966,31 @@ class AdminAIUsageViewTests(TestCase):
         self.quote = _make_quote(self.company, self.customer)
         self.superuser = User.objects.create_user(username='super-1', password='x', is_superuser=True, is_staff=True)
 
-    def _make_row(self, *, status='success', cost='0.050000'):
+    def _make_row(self, *, status='success', cost='0.050000', trigger='manual'):
         return AIQuotePriceAnalysis.objects.create(
-            quote=self.quote, company=self.company, triggered_by=self.user,
+            quote=self.quote, company=self.company, triggered_by=self.user, trigger_type=trigger,
             status=status, total_cost_usd=Decimal(cost),
             research_input_tokens=1000, research_output_tokens=200,
             structuring_input_tokens=500, structuring_output_tokens=100,
         )
 
-    def test_totals_and_by_user_breakdown(self):
+    def test_totals_by_user_and_by_trigger(self):
         self._make_row(cost='0.05')
         self._make_row(cost='0.03')
         self._make_row(status='failed', cost='0.01')
+        AIQuotePriceAnalysis.objects.create(company=self.company, triggered_by=self.user, trigger_type='check',
+                                            status='success', total_cost_usd=Decimal('0'))
         client = APIClient()
         client.force_authenticate(user=self.superuser)
         data = client.get('/api/v1/admin/ai-usage/').json()
-        self.assertEqual(data['all_time']['calls'], 3)
-        self.assertEqual(data['all_time']['success_calls'], 2)
+        self.assertEqual(data['all_time']['calls'], 4)
+        self.assertEqual(data['all_time']['success_calls'], 3)
         self.assertEqual(data['all_time']['failed_calls'], 1)
         self.assertAlmostEqual(data['all_time']['total_cost_usd'], 0.09, places=4)
         self.assertEqual(data['all_time']['total_tokens'], 3 * (1000 + 200 + 500 + 100))
-        self.assertEqual(data['by_user'][0]['calls'], 3)
+        self.assertEqual(data['by_user'][0]['calls'], 4)
+        self.assertEqual(data['by_trigger']['check'], {'calls': 1, 'total_cost_usd': 0.0})
+        self.assertEqual(data['by_trigger']['manual']['calls'], 3)
 
     def test_non_superuser_forbidden(self):
         client = APIClient()

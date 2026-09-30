@@ -262,9 +262,9 @@ REST_FRAMEWORK = {
         # Copilot chat is far more expensive than a normal API call (LLM + RAG +
         # snapshot). A tighter per-user cap prevents runaway OpenAI spend.
         'copilot': config('COPILOT_THROTTLE_RATE', default='15/minute'),
-        # AI quote price-analysis panel (web_search + reasoning, real $ cost
-        # per call) — a coarse per-user cap; the fine-grained per-quote
-        # cooldown lives in AI_QUOTE_ANALYSIS_COOLDOWN_SECONDS below.
+        # AI quote price-check panel (stored figures, no $ cost since the
+        # 2026-10 redesign): a coarse per-user cap; the per-quote cooldown
+        # lives in AI_QUOTE_ANALYSIS_COOLDOWN_SECONDS below.
         'ai_quote_analysis': config('AI_QUOTE_ANALYSIS_THROTTLE_RATE', default='10/minute'),
     }
 }
@@ -340,19 +340,27 @@ EMBEDDING_MODEL = config('EMBEDDING_MODEL', default='text-embedding-3-small')
 OPENAI_CHAT_MODEL = config('OPENAI_CHAT_MODEL', default='gpt-4o')
 COPILOT_LLM_PROVIDER = config('COPILOT_LLM_PROVIDER', default='auto')
 
-# AI quote-price-analysis (QuoteBuilder's "AI price review" panel) — separate
-# from COPILOT_LLM_PROVIDER/OPENAI_CHAT_MODEL above; reuses OPENAI_API_KEY
-# only. See core.services.quote_ai_pricing.
-# Kill switch: False makes the endpoint answer 503 {'code': 'unavailable'}
-# without spending anything. It is also unavailable when OPENAI_API_KEY is
-# empty.
+# AI quote-price-analysis (QuoteBuilder's "AI price review" panel). Since the
+# 2026-10 cost redesign the per-quote check (core.services.quote_ai_pricing)
+# makes no OpenAI or web calls: it compares the quote with stored, verified
+# figures and needs no API key. Only the monthly refresh_verified_rates job
+# (core.services.verified_rate_refresh) uses OPENAI_API_KEY; without a key it
+# skips.
+# Kill switch for both: False makes the check answer 503 {'code':
+# 'unavailable'} and the refresh job skip.
 AI_PRICE_ANALYSIS_ENABLED = config('AI_PRICE_ANALYSIS_ENABLED', default=True, cast=bool)
-# Spend caps, checked before any paid call (429 {'code': 'budget'} with
-# retry_after_seconds until local midnight). 0 switches a cap off.
-#   runs per company per local day (failed runs count: they were paid for)
-AI_PRICE_ANALYSIS_COMPANY_DAILY_RUNS = config('AI_PRICE_ANALYSIS_COMPANY_DAILY_RUNS', default=50, cast=int)
-#   recorded OpenAI spend across ALL companies per local day, in USD
-AI_PRICE_ANALYSIS_GLOBAL_DAILY_BUDGET_USD = config('AI_PRICE_ANALYSIS_GLOBAL_DAILY_BUDGET_USD', default=20, cast=float)
+# Checks per company per local day (429 {'code': 'budget'} with
+# retry_after_seconds until local midnight). A check costs nothing now, so the
+# cap is generous. 0 switches it off.
+AI_PRICE_ANALYSIS_COMPANY_DAILY_RUNS = config('AI_PRICE_ANALYSIS_COMPANY_DAILY_RUNS', default=200, cast=int)
+# Recorded OpenAI spend across the platform per local day, in USD. Checks
+# record $0, so this caps the refresh job (checked before every lookup).
+AI_PRICE_ANALYSIS_GLOBAL_DAILY_BUDGET_USD = config('AI_PRICE_ANALYSIS_GLOBAL_DAILY_BUDGET_USD', default=5, cast=float)
+# Refresh job: web_search calls allowed per lookup (one lookup per SANRAL
+# class, one for the driver allowance) and the SANRAL classes looked up.
+VERIFIED_RATES_MAX_WEB_SEARCH_CALLS = config('VERIFIED_RATES_MAX_WEB_SEARCH_CALLS', default=2, cast=int)
+VERIFIED_RATES_TOLL_CLASSES = tuple(
+    int(c) for c in config('VERIFIED_RATES_TOLL_CLASSES', default='1,2,3,4').split(',') if c.strip())
 AI_QUOTE_ANALYSIS_MODEL = config('AI_QUOTE_ANALYSIS_MODEL', default='gpt-4o-mini')
 # The structuring call never touches the web and only extracts figures from
 # the research findings into JSON.
@@ -365,22 +373,14 @@ AI_QUOTE_ANALYSIS_REASONING_EFFORT = config('AI_QUOTE_ANALYSIS_REASONING_EFFORT'
 # buys better grounding (current figures) at the same price. On other models
 # it's a direct lever on input-token cost.
 AI_QUOTE_ANALYSIS_SEARCH_CONTEXT_SIZE = config('AI_QUOTE_ANALYSIS_SEARCH_CONTEXT_SIZE', default='medium')
-# Client default timeout; each call also gets its own, from the run budget.
+# Per OpenAI call timeout in the refresh job.
 AI_QUOTE_ANALYSIS_TIMEOUT_SECONDS = config('AI_QUOTE_ANALYSIS_TIMEOUT_SECONDS', default=60, cast=int)
-# The whole run (2 parallel searches, extraction, source-page checks) must
-# finish inside this: below nginx's default 60s proxy_read_timeout on the
-# host (its config isn't in this repo) and the frontend's 70s wait. A live
-# run with 4 searches took 13.7s.
-AI_QUOTE_ANALYSIS_DEADLINE_SECONDS = config('AI_QUOTE_ANALYSIS_DEADLINE_SECONDS', default=55, cast=float)
-AI_QUOTE_ANALYSIS_RESEARCH_TIMEOUT_SECONDS = config('AI_QUOTE_ANALYSIS_RESEARCH_TIMEOUT_SECONDS', default=30, cast=float)
-# Per-quote (or per-user, when the quote has no id yet) cooldown between AI
-# price-analysis calls — a cost-abuse guard, separate from the coarser
-# per-user 'ai_quote_analysis' throttle scope above.
-AI_QUOTE_ANALYSIS_COOLDOWN_SECONDS = config('AI_QUOTE_ANALYSIS_COOLDOWN_SECONDS', default=20, cast=int)
+# Per-quote (or per-user, when the quote has no id yet) cooldown between
+# checks: a double-click guard now that a check is free and instant,
+# separate from the per-user 'ai_quote_analysis' throttle scope above.
+AI_QUOTE_ANALYSIS_COOLDOWN_SECONDS = config('AI_QUOTE_ANALYSIS_COOLDOWN_SECONDS', default=3, cast=int)
+# Cited sources kept per refresh lookup.
 AI_QUOTE_ANALYSIS_MAX_REFERENCES = config('AI_QUOTE_ANALYSIS_MAX_REFERENCES', default=8, cast=int)
-# Hard cap on web_search calls PER TOPIC research call (API-enforced via
-# max_tool_calls). There are two topic calls (tolls, driver allowance).
-AI_QUOTE_ANALYSIS_MAX_WEB_SEARCH_CALLS = config('AI_QUOTE_ANALYSIS_MAX_WEB_SEARCH_CALLS', default=1, cast=int)
 # Driver-allowance days are estimated from the route's driving time at this
 # many driving hours per day (owner decision) — shown on screen, not hidden.
 DRIVER_DRIVING_HOURS_PER_DAY = config('DRIVER_DRIVING_HOURS_PER_DAY', default=9, cast=float)
@@ -667,6 +667,15 @@ CELERY_BEAT_SCHEDULE = {
     'sweep-stale-activity-logs': {
         'task': 'core.tasks.sweep_stale_activity_logs',
         'schedule': crontab(hour='4', minute='0'),
+    },
+    # Look up the current SANRAL toll tariffs and driver allowance on the web
+    # (OpenAI web search) and write PENDING proposals for any that changed,
+    # for a superuser to approve. Monthly, 05:30 SAST on the 2nd: the
+    # figures change about once a year (1 March), so this is plenty. A few
+    # US cents a run, capped by AI_PRICE_ANALYSIS_GLOBAL_DAILY_BUDGET_USD.
+    'refresh-verified-rates': {
+        'task': 'core.tasks.refresh_verified_rates',
+        'schedule': crontab(day_of_month='2', hour='5', minute='30'),
     },
 }
 

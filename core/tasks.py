@@ -523,6 +523,27 @@ def retrain_win_model():
     return result
 
 
+# ---------------------------------------------------------------------------
+# Verified rates for the AI quote price check (Celery Beat — monthly)
+# ---------------------------------------------------------------------------
+
+@shared_task(name='core.tasks.refresh_verified_rates')
+@track_task_run('refresh_verified_rates')
+def refresh_verified_rates(kinds=None, sanral_classes=None, triggered_by_id=None):
+    """Look up the current SANRAL toll tariffs and driver allowance (OpenAI
+    web search + source-page check) and write PENDING proposals for figures
+    that changed. Never applies anything: a superuser approves proposals
+    (/api/v1/admin/verified-rates/). Skips cleanly when switched off, without
+    an OpenAI key, or over the platform daily budget."""
+    from core.models import User
+    from core.services.verified_rate_refresh import KINDS, run_refresh
+
+    user = User.objects.filter(id=triggered_by_id).first() if triggered_by_id else None
+    summary = run_refresh(kinds=tuple(kinds or KINDS), sanral_classes=sanral_classes, triggered_by=user)
+    logger.info('refresh_verified_rates: %s', {k: v for k, v in summary.items() if k != 'unverified'})
+    return summary
+
+
 @shared_task(name='core.tasks.train_user_win_model')
 def train_user_win_model(user_id):
     """Event-driven, debounced per-user win-model retrain — enqueued by

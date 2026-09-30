@@ -1123,11 +1123,20 @@ class AdminAIUsageView(APIView):
                     'triggered_by__username')
         )
 
+        # 'check' = per-quote checks against stored figures (cost 0);
+        # 'refresh' = the monthly verified-rate job's web lookups; 'auto' /
+        # 'manual' = the old per-quote web-search runs (history).
+        by_trigger = {
+            row['trigger_type']: {'calls': row['calls'], 'total_cost_usd': float(row['cost'] or 0)}
+            for row in qs.values('trigger_type').annotate(calls=Count('id'), cost=Sum('total_cost_usd'))
+        }
+
         return Response({
             'all_time': _totals(qs),
             'this_month': _totals(qs.filter(created_at__gte=month_start)),
             'by_month': by_month,
             'by_user': by_user,
+            'by_trigger': by_trigger,
             'recent_failures': recent_failures,
         })
 

@@ -544,17 +544,18 @@ class AIQuoteAnalyzeView(APIView):
 
 
 class AIQuotePriceAnalysisView(APIView):
-    """POST /api/v1/quotes/ai-price-analysis/ — OpenAI web-search-grounded
-    verification of fuel/toll/driver-allowance/base-rate + a suggested price.
+    """POST /api/v1/quotes/ai-price-analysis/ — checks a quote's fuel, tolls,
+    driver allowance and base rate against stored, verified figures and
+    suggests a price (core.services.quote_ai_pricing). No OpenAI or web call
+    is made on this path and no API key is needed: the stored toll tariffs
+    and allowance are kept current by the monthly refresh_verified_rates job.
 
     Called by QuoteBuilder's AI panel for both the automatic first run and
-    the manual "Re-check" button (trigger_type is accepted purely for
-    admin-usage labelling — the "runs once automatically" behaviour is a
-    frontend concern, gated on unsaved draft form state this endpoint never
-    sees). What IS enforced here, in this order and before any paid call:
-    the kill switch / API key check (503 'unavailable'), the company daily
-    run cap and platform daily $ budget (429 'budget'), a per-quote cooldown
-    (429 'cooldown') and a per-user rate cap (429 'throttled').
+    the manual "Re-check" button (trigger_type is kept on the usage row's
+    raw_result for labelling). Enforced here, in this order: the kill switch
+    (503 'unavailable'), the company daily run cap (429 'budget'), a short
+    per-quote cooldown (429 'cooldown') and a per-user rate cap (429
+    'throttled').
 
     Every error body is {'success': False, 'code', 'message',
     'retry_after_seconds'} (see quote_ai_pricing.error_response).
@@ -584,17 +585,15 @@ class AIQuotePriceAnalysisView(APIView):
         data = request.data
         company = resolve_user_company(request.user)
 
-        # 1. Switched off or not configured: say so, spend nothing, and
-        #    leave the cooldown untouched so it works as soon as it's fixed.
+        # 1. Switched off: say so, and leave the cooldown untouched so it
+        #    works as soon as it's switched back on.
         reason = quote_ai_pricing.unavailable_reason()
         if reason is not None:
-            if reason == 'no_api_key':
-                logger.error('AI price analysis: OPENAI_API_KEY is not set; the feature is unavailable')
             return Response(quote_ai_pricing.error_response(
                 quote_ai_pricing.ERROR_UNAVAILABLE, quote_ai_pricing.NOT_CONFIGURED_MESSAGE, None, reason=reason),
                 status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
-        # 2. Spend caps (company runs per day, platform $ per day).
+        # 2. Company runs per day.
         capped = quote_ai_pricing.check_spend_caps(company)
         if capped is not None:
             response = Response(capped, status=status.HTTP_429_TOO_MANY_REQUESTS)
@@ -608,8 +607,8 @@ class AIQuotePriceAnalysisView(APIView):
 
         cooldown_key = f'ai_quote_analysis_cooldown:quote:{quote.id}' if quote \
             else f'ai_quote_analysis_cooldown:user:{request.user.id}'
-        cooldown_seconds = getattr(settings, 'AI_QUOTE_ANALYSIS_COOLDOWN_SECONDS', 20)
-        # 3. Set BEFORE calling OpenAI (not after success) so two near-simultaneous
+        cooldown_seconds = getattr(settings, 'AI_QUOTE_ANALYSIS_COOLDOWN_SECONDS', 3)
+        # 3. Set BEFORE running (not after success) so two near-simultaneous
         # requests (a double-click) both see the cooldown immediately.
         if not cache.add(cooldown_key, True, timeout=cooldown_seconds):
             response = Response(quote_ai_pricing.error_response(
@@ -630,8 +629,8 @@ class AIQuotePriceAnalysisView(APIView):
             'trip_type': self._text(data.get('trip_type')),
             'legs': 2 if str(data.get('legs')) == '2' else 1,
             'pickup_date': self._text(data.get('pickup_date'), 10),
-            # Only used for win probability (never sent to OpenAI), and only
-            # if the customer belongs to the requesting company.
+            # Only used for win probability, and only if the customer belongs
+            # to the requesting company.
             'customer_id': self._own_customer_id(data.get('customer_id'), company),
             'route': self._route(data.get('route')),
             **{key: self._number(data.get(key), cap) for key, cap in self.NUMBER_CAPS.items()},
@@ -640,14 +639,13 @@ class AIQuotePriceAnalysisView(APIView):
             payload=payload, user=request.user, company=company, quote=quote,
         )
         if result.get('code') == quote_ai_pricing.ERROR_UNAVAILABLE:
-            # Nothing was spent: free the cooldown so a retry isn't blocked.
+            # Nothing ran: free the cooldown so a retry isn't blocked.
             cache.delete(cooldown_key)
             return Response(result, status=status.HTTP_503_SERVICE_UNAVAILABLE)
         return Response(result)
 
     # Generous real-world ceilings. Anything outside is treated as missing:
-    # the item comes back "not verified" instead of overflowing the maths
-    # after the paid OpenAI calls.
+    # the item comes back "not verified" instead of overflowing the maths.
     NUMBER_CAPS = {
         'distance_km': 40_000, 'one_way_distance_km': 20_000, 'duration_minutes': 30_000,
         'weight': 200_000, 'fuel_cost': 5_000_000, 'toll_cost': 1_000_000, 'driver_cost': 1_000_000,
@@ -688,7 +686,11 @@ class AIQuotePriceAnalysisView(APIView):
         plazas = []
         for p in (route.get('toll_breakdown') or [])[:60] if isinstance(route.get('toll_breakdown'), list) else []:
             if isinstance(p, dict) and isinstance(p.get('plaza'), str):
-                plazas.append({'plaza': p['plaza'].strip()[:80], 'tariff': cls._number(p.get('tariff'), 5_000)})
+                # 'route' (N1, N3, ...) from the route calculation pins the
+                # plaza to one row of the SANRAL tariff table.
+                route_code = p.get('route')
+                plazas.append({'plaza': p['plaza'].strip()[:80], 'tariff': cls._number(p.get('tariff'), 5_000),
+                               'route': route_code.strip()[:10] if isinstance(route_code, str) else None})
         codes = route.get('country_codes')
         return {
             'road_type': cls._text(route.get('road_type')),
