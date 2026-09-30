@@ -37,7 +37,8 @@ class AIQuotePriceAnalysis(models.Model):
     )
     trigger_type = models.CharField(max_length=10, choices=TRIGGER_CHOICES, default='auto')
 
-    model = models.CharField(max_length=50, default='gpt-5.6-sol')
+    # Matches settings.AI_QUOTE_ANALYSIS_MODEL's default; every run sets it.
+    model = models.CharField(max_length=50, default='gpt-4o-mini')
     reasoning_effort = models.CharField(max_length=10, blank=True)
 
     status = models.CharField(max_length=10, choices=STATUS_CHOICES)
@@ -64,7 +65,9 @@ class AIQuotePriceAnalysis(models.Model):
     verification_status = models.CharField(max_length=20, blank=True)
     confidence = models.CharField(max_length=10, blank=True)
 
-    # request_context = the condensed payload actually sent to OpenAI.
+    # request_context = the condensed context the prompts are built from
+    # (only the plaza list, toll class and date reach OpenAI; never origin,
+    # destination or customer data).
     # raw_result = {'research_text', 'citations', 'structured'} — everything
     # both calls produced, for debugging/audit.
     request_context = models.JSONField(default=dict, blank=True)

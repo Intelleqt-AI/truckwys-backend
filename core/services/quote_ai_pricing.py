@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 AI_QUOTE_ANALYSIS_MODEL = getattr(settings, 'AI_QUOTE_ANALYSIS_MODEL', 'gpt-4o-mini')
 AI_QUOTE_ANALYSIS_STRUCTURING_MODEL = getattr(settings, 'AI_QUOTE_ANALYSIS_STRUCTURING_MODEL', 'gpt-4o-mini')
 AI_QUOTE_ANALYSIS_REASONING_EFFORT = getattr(settings, 'AI_QUOTE_ANALYSIS_REASONING_EFFORT', 'low')
-AI_QUOTE_ANALYSIS_SEARCH_CONTEXT_SIZE = getattr(settings, 'AI_QUOTE_ANALYSIS_SEARCH_CONTEXT_SIZE', 'low')
+AI_QUOTE_ANALYSIS_SEARCH_CONTEXT_SIZE = getattr(settings, 'AI_QUOTE_ANALYSIS_SEARCH_CONTEXT_SIZE', 'medium')
 AI_QUOTE_ANALYSIS_TIMEOUT_SECONDS = float(getattr(settings, 'AI_QUOTE_ANALYSIS_TIMEOUT_SECONDS', 60))
 # One budget for the whole run — kept below nginx's default 60 s proxy
 # timeout and the frontend's 70 s wait, so the user never sees
@@ -94,7 +94,7 @@ TOPICS = ('fuel', 'tolls', 'driver_allowance', 'base_rate')
 RESEARCH_TOPICS = ('tolls', 'driver_allowance')
 ITEM_LABELS = {'fuel': 'Fuel', 'tolls': 'Tolls', 'driver_allowance': 'Driver allowance', 'base_rate': 'Base rate'}
 FIASA_URL = 'https://fuelsindustry.org.za/consumer-information/fuel-prices-current-past/'
-FIASA_TITLE = 'Fuels Industry Association of SA — current fuel prices'
+FIASA_TITLE = 'Fuels Industry Association of SA: current fuel prices'
 # resolve_market_rate sources that are real quotes (the SA estimate isn't).
 BENCHMARK_SOURCES = {
     'platform': 'platform benchmark for this lane',
@@ -125,6 +125,8 @@ DATE_NEAR_CHARS = 300
 WIN_FEATURE_Z_LIMIT = 2.0
 
 UNAVAILABLE_MESSAGE = 'AI price verification is temporarily unavailable — please try again shortly.'
+
+
 _MONTHS = ('January', 'February', 'March', 'April', 'May', 'June', 'July', 'August',
            'September', 'October', 'November', 'December')
 
@@ -177,13 +179,17 @@ def _legs(payload: dict) -> int:
     return legs if legs >= 1 else 1
 
 
-def _toll_class(vehicle_type):
+def _toll_class(vehicle_type, company=None):
     """The exact SANRAL class our own toll calculator uses for this vehicle,
-    so the model never has to guess an axle class."""
+    so the model never has to guess an axle class. With a company, this is
+    main's resolve_toll_class (VehicleType.sanral_toll_class first, the same
+    class the route calc priced); without one, the name-based guess."""
     try:
-        from core.services.toll_calculator import TRUCK_TYPE_TO_CLASS, resolve_toll_truck_type
-        truck_type = resolve_toll_truck_type(vehicle_type or '')
-        sanral_class = TRUCK_TYPE_TO_CLASS[truck_type] - 1  # dict holds the column index = class + 1
+        from core.services.toll_calculator import resolve_toll_class, resolve_toll_class_from_name
+        if company is not None:
+            sanral_class = resolve_toll_class(vehicle_type or '', company).sanral_class
+        else:
+            sanral_class = resolve_toll_class_from_name(vehicle_type or '').sanral_class
     except Exception as exc:
         logger.warning('AI price analysis: toll class lookup failed: %s', exc)
         return None, None
@@ -206,7 +212,7 @@ def _toll_schedule_start(today: date) -> date:
     return march1 if today >= march1 else date(today.year - 1, 3, 1)
 
 
-def build_condensed_context(payload: dict, today: date = None) -> dict:
+def build_condensed_context(payload: dict, today: date = None, company=None) -> dict:
     """Token-lean context sent to OpenAI, built from an explicit include-list
     — anything not listed here is dropped even if present in `payload`. Never
     includes route['geometry'], route['sections'], coordinates, customer PII,
@@ -215,7 +221,7 @@ def build_condensed_context(payload: dict, today: date = None) -> dict:
     route = payload.get('route') or {}
     legs = _legs(payload)
     toll_cost = _f(payload.get('toll_cost'))
-    sanral_class, class_label = _toll_class(payload.get('vehicle_type'))
+    sanral_class, class_label = _toll_class(payload.get('vehicle_type'), company)
     return {
         'lane': {
             'origin': payload.get('origin'),
@@ -504,31 +510,60 @@ def _fuel_period(today: date):
     return prev, _first_wednesday(prev.year, prev.month)
 
 
+# Stored FuelPrice rows the fuel check trusts, in main's trust order: an ops
+# MANUAL override beats the FIASA feed (core.services.fuel_price._SOURCE_TRUST).
+# Scraper fallbacks (AA/SAPIA/DMRE) and the FALLBACK table are not official.
+OFFICIAL_FUEL_SOURCES = ('MANUAL', 'FIASA')
+# The latest official price is still shown (labelled as the latest, with its
+# date) up to this long after it took effect; older than that it isn't used.
+FUEL_MAX_AGE_DAYS = 62
+
+
+def _fuel_effective_date(rec):
+    """The day a stored price took effect, or None if unknown. FIASA rows
+    carry main's effective_from (the dated column the price came from); a
+    MANUAL row without one counts from the 1st of the month it is filed
+    under."""
+    if rec.effective_from is not None:
+        return timezone.localtime(rec.effective_from).date()
+    return rec.date if rec.source == 'MANUAL' else None
+
+
 def official_fuel_price(fuel_type, zone, today: date) -> dict:
-    """The diesel price in force today from the app's own FIASA record (the
-    body the regulated monthly price is published through — see
-    core.services.fuel_price). {'price_per_litre', 'other_zone_price',
-    'zone', 'effective_date', 'error'}. Never raises."""
-    out = {'price_per_litre': None, 'other_zone_price': None, 'zone': None, 'effective_date': None, 'error': None}
+    """The official diesel price in force today, read ONLY from the app's
+    stored FuelPrice rows. Never scrapes: refreshing is the refresh_fuel_price
+    beat task's job, and a live scrape here could hold the request for ~23 s.
+
+    Uses the newest MANUAL or FIASA row (FIASA only for the 50ppm grade, as
+    QuoteBuilder shows) whose effective_from is on or before today. `current`
+    is True when that is the adjustment in force today (SA fuel changes on the
+    first Wednesday of the month); otherwise it is the latest one on record
+    and the UI says so. {'price_per_litre', 'other_zone_price', 'zone',
+    'effective_date', 'current', 'source', 'error'}. Never raises."""
+    out = {'price_per_litre': None, 'other_zone_price': None, 'zone': None, 'effective_date': None,
+           'current': None, 'source': None, 'error': None}
     if (fuel_type or 'Diesel').strip().lower() != 'diesel':
         out['error'] = f'only diesel has an official monthly price ({fuel_type})'
         return out
-    month, effective = _fuel_period(today)
+    _, change = _fuel_period(today)
     try:
         from core.models.fuel_price import FuelPrice
-        from core.services.fuel_price import fetch_fuel_prices
 
-        def current(rec):
-            return (rec is not None and rec.source == 'FIASA' and rec.fetched_at is not None
-                    and timezone.localtime(rec.fetched_at).date() >= effective)
-
-        rec = FuelPrice.objects.filter(date=month).first()
-        if not current(rec) and month == today.replace(day=1):
-            # This month's record is missing or was scraped before the change —
-            # ask the app's own scraper (it rate-limits its own retries).
-            rec = fetch_fuel_prices(month, force_update=rec is not None and rec.source == 'FIASA')
-        if not current(rec):
-            out['error'] = f'no official price recorded for the {_long_date(effective)} adjustment'
+        rec = eff = None
+        rows = (FuelPrice.objects.filter(source__in=OFFICIAL_FUEL_SOURCES, date__lte=today.replace(day=1))
+                .order_by('-date')[:4])
+        for row in rows:
+            if row.source == 'FIASA' and row.diesel_grade != '50ppm':
+                continue
+            row_eff = _fuel_effective_date(row)
+            if row_eff is not None and row_eff <= today:
+                rec, eff = row, row_eff
+                break
+        if rec is None:
+            out['error'] = 'no official price on record'
+            return out
+        if (today - eff).days > FUEL_MAX_AGE_DAYS:
+            out['error'] = f'the latest official price on record is from {_long_date(eff)}'
             return out
     except Exception as exc:
         logger.warning('AI price analysis: official fuel price lookup failed: %s', exc)
@@ -539,7 +574,10 @@ def official_fuel_price(fuel_type, zone, today: date) -> dict:
         'price_per_litre': float(rec.diesel_coastal if coastal else rec.diesel_inland),
         'other_zone_price': float(rec.diesel_inland if coastal else rec.diesel_coastal),
         'zone': 'coastal' if coastal else 'inland',
-        'effective_date': effective.isoformat(),
+        'effective_date': eff.isoformat(),
+        # A MANUAL row without effective_from is the override for its month.
+        'current': eff >= change or (rec.effective_from is None and rec.date == change.replace(day=1)),
+        'source': rec.source,
     })
     return out
 
@@ -561,9 +599,18 @@ def lane_benchmark(payload: dict, company) -> dict:
 # Deterministic verdicts — each returns an item dict for the response.
 # ---------------------------------------------------------------------------
 
-def _item(verdict, current, market, reason, note, sources, detail):
+# What a verdict rests on, for the frontend's badge (`verification_kind`):
+#   official   fuel, from the stored official monthly price (FIASA / ops override)
+#   benchmark  base rate, from the lane benchmark of real quotes (not the web)
+#   source     tolls / driver allowance, found on the page the search cited
+#   unverified nothing to rest a verdict on (verdict is could_not_verify)
+VERIFICATION_KINDS = ('official', 'benchmark', 'source', 'unverified')
+
+
+def _item(verdict, current, market, reason, note, sources, detail, kind='unverified'):
     toggleable = verdict == 'needs_adjustment'
     return {
+        'verification_kind': kind if verdict != 'could_not_verify' else 'unverified',
         'verdict': verdict,
         'toggleable': toggleable,
         'current_value_zar': _money(current),
@@ -590,7 +637,8 @@ def _fuel_item(official, payload):
     sources = [{'title': FIASA_TITLE, 'url': FIASA_URL}]
     detail = {'litres': round(litres, 2), 'your_price_per_litre': yours_rate, 'market_price_per_litre': None,
               'effective_date': official.get('effective_date'), 'zone': official.get('zone'),
-              'other_zone_price_per_litre': official.get('other_zone_price'), 'source': 'FIASA'}
+              'other_zone_price_per_litre': official.get('other_zone_price'),
+              'source': official.get('source') or 'FIASA', 'current': official.get('current')}
 
     def not_verified(reason, note):
         return _item('could_not_verify', yours_total, None, reason, note, [], detail)
@@ -606,27 +654,50 @@ def _fuel_item(official, payload):
     eff = date.fromisoformat(official['effective_date'])
     other = official.get('other_zone_price')
     other_zone = 'coastal' if official.get('zone') == 'inland' else 'inland'
-    published = (f'the official {official.get("zone")} diesel price {_fmt_rand(market_rate)}/L '
-                 f'(from {_long_date(eff)}' + (f'; {other_zone} {_fmt_rand(other)}/L)' if other else ')'))
-    note = 'official monthly price (FIASA)'
+    current = official.get('current') is not False
+    # A price that isn't the adjustment in force today is still the best
+    # official figure on record, and is labelled as exactly that.
+    published = ((f'the official {official.get("zone")} diesel price {_fmt_rand(market_rate)}/L (from '
+                  if current else
+                  f'the latest official {official.get("zone")} diesel price {_fmt_rand(market_rate)}/L (effective ')
+                 + _long_date(eff) + (f'; {other_zone} {_fmt_rand(other)}/L)' if other else ')'))
+    if official.get('source') == 'MANUAL':
+        note = 'official monthly price (entered by TruckWys)' if current else 'latest official price on record'
+    else:
+        note = 'official monthly price (FIASA)' if current else 'latest official price on record (FIASA)'
     if abs(yours_rate - market_rate) <= FUEL_TOLERANCE * market_rate:
         return _item('accurate', yours_total, None, f'Your {_fmt_rand(yours_rate)}/L matches {published}.',
-                     note, sources, detail)
+                     note, sources, detail, 'official')
     return _item('needs_adjustment', yours_total, _whole_rand(litres * market_rate),
-                 f'Your {_fmt_rand(yours_rate)}/L vs {published}.', note, sources, detail)
+                 f'Your {_fmt_rand(yours_rate)}/L vs {published}.', note, sources, detail, 'official')
 
 
-def _tolls_item(raw, payload, sources_by_id, pages, today):
+def _excl_vat(amount_incl_vat) -> float:
+    """SANRAL publishes tariffs INCLUDING VAT; quotes price tolls EXCLUDING
+    VAT (the invoice adds 15% once). main's toll_calculator.tariff_excl_vat,
+    so both sides round the same way."""
+    from core.services.toll_calculator import tariff_excl_vat
+    return float(tariff_excl_vat(amount_incl_vat))
+
+
+def _tolls_item(raw, payload, sources_by_id, pages, today, company=None):
+    """Tolls against the published SANRAL tariffs. The published figure is
+    VAT inclusive: it is matched on the source page AS PRINTED, then
+    converted to excl. VAT (like main's route calc) before it is compared
+    with the operator's toll or used as a market value."""
     legs = _legs(payload)
     yours_total = _f(payload.get('toll_cost'), 0.0) or 0.0
     yours_one_way = yours_total / legs
     route_plazas = _route_plazas(payload)
-    _, class_label = _toll_class(payload.get('vehicle_type'))
+    _, class_label = _toll_class(payload.get('vehicle_type'), company)
     found = [p for p in ((raw or {}).get('plazas') or []) if isinstance(p, dict)]
 
     rows, matched, all_sources = [], set(), []
     for rp in route_plazas:
+        # your_tariff_zar and market_tariff_zar are both excl. VAT;
+        # published_tariff_incl_vat_zar is the figure as printed.
         row = {'plaza': rp['plaza'], 'your_tariff_zar': rp['tariff_zar'], 'market_tariff_zar': None,
+               'published_tariff_incl_vat_zar': None, 'matches_yours': None,
                'verified': False, 'note': 'not found in published tariffs'}
         candidates = _plaza_candidates(rp['plaza'], found)
         matched.update(candidates)
@@ -642,17 +713,22 @@ def _tolls_item(raw, payload, sources_by_id, pages, today):
             if tariff is None or not (0 < tariff <= PLAZA_TARIFF_MAX):
                 row['note'] = 'failed sanity check'
             elif not fresh:
-                row.update({'market_tariff_zar': tariff, 'note': f'{fresh_note}'
-                            + (f' (from {_long_date(eff)})' if eff else '')})
+                row.update({'market_tariff_zar': _excl_vat(tariff), 'published_tariff_incl_vat_zar': tariff,
+                            'note': f'{fresh_note}' + (f' (from {_long_date(eff)})' if eff else '')})
             else:
+                # Matched on the page as printed (VAT inclusive).
                 ok, note = source_verification.check_figure(tariff, _verify_urls(srcs), pages,
                                                             near_any=_schedule_date_forms(eff))
-                row.update({'market_tariff_zar': tariff, 'verified': ok, 'note': note})
+                market = _excl_vat(tariff)
+                row.update({'market_tariff_zar': market, 'published_tariff_incl_vat_zar': tariff,
+                            'verified': ok, 'note': note})
+                if rp['tariff_zar'] is not None:
+                    row['matches_yours'] = abs(rp['tariff_zar'] - market) <= TOLL_TOLERANCE * market
         rows.append(row)
     extra = [fp.get('plaza') for i, fp in enumerate(found) if i not in matched and fp.get('plaza')]
     detail = {'legs': legs, 'toll_class': class_label, 'plazas': rows, 'other_plazas_mentioned': extra,
               'your_one_way_zar': round(yours_one_way, 2), 'market_one_way_zar': None,
-              'schedule_from': _toll_schedule_start(today).isoformat()}
+              'vat_basis': 'excl_vat', 'schedule_from': _toll_schedule_start(today).isoformat()}
 
     if not route_plazas:
         return _item('could_not_verify', yours_total, None, 'This route has no toll plazas to check.',
@@ -663,16 +739,29 @@ def _tolls_item(raw, payload, sources_by_id, pages, today):
                      f'{len(rows) - len(unverified)} of {len(rows)} plazas confirmed on the current published tariff '
                      f'({", ".join(unverified)} not confirmed).',
                      'not every plaza confirmed', all_sources, detail)
-    market_one_way = sum(r['market_tariff_zar'] for r in rows)
-    detail['market_one_way_zar'] = round(market_one_way, 2)
+    market_one_way = round(sum(r['market_tariff_zar'] for r in rows), 2)
+    detail['market_one_way_zar'] = market_one_way
     if abs(yours_one_way - market_one_way) <= TOLL_TOLERANCE * market_one_way:
         return _item('accurate', yours_total, None,
-                     f'All {len(rows)} plazas match the published {class_label} tariffs.',
-                     'checked on source page', all_sources, detail)
+                     f'All {len(rows)} plazas match the published {class_label} tariffs (excl. VAT).',
+                     'checked on source page', all_sources, detail, 'source')
     return _item('needs_adjustment', yours_total, market_one_way * legs,
-                 f'Published {class_label} tariffs total {_fmt_rand(market_one_way)} one way '
+                 f'Published {class_label} tariffs total {_fmt_rand(market_one_way)} excl. VAT one way '
                  f'vs your {_fmt_rand(yours_one_way)}.',
-                 'checked on source page', all_sources, detail)
+                 'checked on source page', all_sources, detail, 'source')
+
+
+def _nights_away(driving_hours):
+    """Nights the driver sleeps away from home: driving days - 1, where
+    driving days = ceil(driving hours / DRIVER_DRIVING_HOURS_PER_DAY). The
+    NBCRFLI night-out allowance is paid per night slept away, and the SARS
+    subsistence allowance needs at least one night away, so a trip that fits
+    in one driving day (the driver is home that night) gets none. None if
+    the driving time is unknown."""
+    if not driving_hours:
+        return None, None
+    days = math.ceil(driving_hours / DRIVER_DRIVING_HOURS_PER_DAY)
+    return days, max(days - 1, 0)
 
 
 def _driver_item(raw, payload, sources_by_id, pages, today):
@@ -684,8 +773,10 @@ def _driver_item(raw, payload, sources_by_id, pages, today):
     rate = _f(raw.get('rate_per_day_zar'))
     kind = raw.get('allowance_type')
     driving_hours = (minutes * legs / 60.0) if minutes else None
-    days = math.ceil(driving_hours / DRIVER_DRIVING_HOURS_PER_DAY) if driving_hours else None
+    days, nights = _nights_away(driving_hours)
+    # `days` = driving days; the allowance is per NIGHT away (`nights`).
     detail = {'rate_per_day_zar': None, 'allowance_type': None, 'allowance_label': None, 'days': days,
+              'nights': nights, 'allowance_basis': 'per_night_away',
               'driving_hours': round(driving_hours, 1) if driving_hours else None,
               'hours_per_day': DRIVER_DRIVING_HOURS_PER_DAY, 'market_total_zar': None, 'effective_date': None}
 
@@ -717,17 +808,23 @@ def _driver_item(raw, payload, sources_by_id, pages, today):
                             note)
     detail.update({'rate_per_day_zar': rate, 'allowance_type': kind, 'allowance_label': label,
                    'effective_date': eff.isoformat()})
-    if not days:
-        return not_verified('Trip driving time is missing, so days can’t be worked out.', note)
-    market_total = rate * days
-    detail['market_total_zar'] = round(market_total, 2)
-    basis = f'{_fmt_rand(rate)}/day × {days} day{"s" if days != 1 else ""} (≈{DRIVER_DRIVING_HOURS_PER_DAY:g} driving h/day)'
+    if nights is None:
+        return not_verified('Trip driving time is missing, so nights away can’t be worked out.', note)
+    market_total = round(rate * nights, 2)
+    detail['market_total_zar'] = market_total
+    if nights == 0:
+        basis = (f'no night away (about {driving_hours:.1f} driving hours fits in one '
+                 f'{DRIVER_DRIVING_HOURS_PER_DAY:g}-hour driving day)')
+        return _item('accurate', yours_total, None, f'The published {label} does not apply: {basis}.',
+                     note, sources, detail, 'source')
+    basis = (f'{_fmt_rand(rate)}/night × {nights} night{"s" if nights != 1 else ""} away '
+             f'({days} driving days at about {DRIVER_DRIVING_HOURS_PER_DAY:g} h/day)')
     if yours_total >= market_total:
         return _item('accurate', yours_total, None, f'Your allowance covers the published {label}: {basis}.',
-                     note, sources, detail)
+                     note, sources, detail, 'source')
     return _item('needs_adjustment', yours_total, market_total,
                  f'Published {label}: {basis} = {_fmt_rand(market_total)} vs your {_fmt_rand(yours_total)}.',
-                 note, sources, detail)
+                 note, sources, detail, 'source')
 
 
 def _base_rate_item(benchmark, payload, pass_through_market):
@@ -765,16 +862,16 @@ def _base_rate_item(benchmark, payload, pass_through_market):
     low, high = round(implied * (1 - BASE_BAND), 2), round(implied * (1 + BASE_BAND), 2)
     detail.update({'market_low_per_km': low, 'market_high_per_km': high, 'implied_rate_per_km': round(implied, 2)})
     basis = (f'The {BENCHMARK_SOURCES[source]} is {_fmt_rand(rate)}; after market fuel, tolls and driver that '
-             f'leaves {_fmt_rand(implied)}/km (band {_fmt_rand(low)}–{_fmt_rand(high)}/km)')
+             f'leaves {_fmt_rand(implied)}/km (band {_fmt_rand(low)} to {_fmt_rand(high)}/km)')
     note = 'lane benchmark from real quotes'
     if low <= round(yours_rate, 2) <= high:
         return _item('accurate', yours_total, None, f'{basis}; your {_fmt_rand(yours_rate)}/km is inside it.',
-                     note, [], detail)
+                     note, [], detail, 'benchmark')
     target = low if yours_rate < low else high
     detail['ai_rate_per_km'] = target
     direction = 'below' if yours_rate < low else 'above'
     return _item('needs_adjustment', yours_total, _whole_rand(target * distance),
-                 f'{basis}; your {_fmt_rand(yours_rate)}/km is {direction} it.', note, [], detail)
+                 f'{basis}; your {_fmt_rand(yours_rate)}/km is {direction} it.', note, [], detail, 'benchmark')
 
 
 def _return_leg(items: dict, payload: dict):
@@ -787,8 +884,15 @@ def _return_leg(items: dict, payload: dict):
     per_litre = fuel.get('market_price_per_litre') or _f(payload.get('fuel_price_used'), 0.0) or 0.0
     fuel_zar = _whole_rand(litres * per_litre)
     tolls_zar = _money(items['tolls']['ai_value_zar'])
-    days, rate = driver.get('days'), driver.get('rate_per_day_zar')
-    driver_zar = _money(rate * days) if rate and days else _money(items['driver_allowance']['ai_value_zar'])
+    # The empty run home adds only the extra nights away that a round trip
+    # has over the one-way trip (a short run home is the same day).
+    rate = driver.get('rate_per_day_zar')
+    one_way_hours = driver.get('driving_hours')
+    if rate and one_way_hours:
+        extra_nights = _nights_away(one_way_hours * 2)[1] - _nights_away(one_way_hours)[1]
+        driver_zar = _money(rate * extra_nights)
+    else:
+        driver_zar = _money(items['driver_allowance']['ai_value_zar'])
     return {'fuel_zar': fuel_zar, 'tolls_zar': tolls_zar, 'driver_zar': driver_zar,
             'total_zar': _money(fuel_zar + tolls_zar + driver_zar),
             'fuel_basis': 'official' if fuel.get('market_price_per_litre') else 'yours'}
@@ -941,7 +1045,7 @@ def compute_pricing(extracted, payload: dict, sources_by_id: dict, pages: dict, 
     if benchmark is None:
         benchmark = lane_benchmark(payload, company)
     fuel = _fuel_item(official_fuel, payload)
-    tolls = _tolls_item(extracted.get('tolls'), payload, sources_by_id, pages, today)
+    tolls = _tolls_item(extracted.get('tolls'), payload, sources_by_id, pages, today, company)
     driver = _driver_item(extracted.get('driver_allowance'), payload, sources_by_id, pages, today)
     cross_border = _f(payload.get('cross_border_cost'), 0.0) or 0.0
     pass_through_market = fuel['ai_value_zar'] + tolls['ai_value_zar'] + driver['ai_value_zar'] + cross_border
@@ -998,8 +1102,12 @@ def _usd_cost(usage, *, model=None, web_search_calls=0) -> dict:
     model = model or AI_QUOTE_ANALYSIS_MODEL
     pricing = OPENAI_PRICING.get(model)
     if pricing is None:
-        logger.error('No pricing entry for model %r — cost will report as $0, fix OPENAI_PRICING', model)
-        pricing = {'input_per_1m': 0, 'cached_input_per_1m': 0, 'output_per_1m': 0}
+        # Never record an unknown model as free: that would also let it slip
+        # under the daily budget. Charge it at the dearest known rates.
+        logger.warning('AI price analysis: no OPENAI_PRICING entry for model %r; costing it at the '
+                       'most expensive known rates until the table is updated', model)
+        pricing = {k: max(p[k] for p in OPENAI_PRICING.values())
+                   for k in ('input_per_1m', 'cached_input_per_1m', 'output_per_1m')}
 
     cached = getattr(getattr(usage, 'input_tokens_details', None), 'cached_tokens', 0) or 0
     input_tokens = getattr(usage, 'input_tokens', 0) or 0
@@ -1076,7 +1184,8 @@ def analyze_quote_price(*, payload: dict, user=None, company=None, quote=None, t
     started = time.monotonic()
     deadline = started + AI_QUOTE_ANALYSIS_DEADLINE_SECONDS
     today = today or timezone.localdate()
-    context = build_condensed_context(payload, today)
+
+    context = build_condensed_context(payload, today, company)
     trigger_type = payload.get('trigger_type') if payload.get('trigger_type') in ('auto', 'manual') else 'auto'
     row_fields = {
         'quote': quote,

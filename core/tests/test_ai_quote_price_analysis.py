@@ -43,8 +43,9 @@ PAGES = {
 # What the app's own FIASA record and resolve_market_rate would return.
 OFFICIAL_FUEL = {'price_per_litre': 29.11, 'other_zone_price': 28.24, 'zone': 'inland',
                  'effective_date': (TODAY - timedelta(days=5)).isoformat(), 'error': None}
-# 13,391 fuel + 1,850 tolls + 487.26 driver + 21.50 x 1,400 base: 21.50 is the implied rate.
-BENCHMARK = {'rate': 13391 + 1850 + 487.26 + 21.5 * 1400, 'source': 'platform'}
+# 13,391 fuel + 1,608.70 tolls (excl. VAT) + 243.63 driver (1 night) + 21.50 x 1,400 base:
+# 21.50 is the implied rate.
+BENCHMARK = {'rate': 13391 + 1608.70 + 243.63 + 21.5 * 1400, 'source': 'platform'}
 
 
 def _usage(input_tokens=1000, cached_tokens=0, output_tokens=200, reasoning_tokens=0):
@@ -186,8 +187,10 @@ def _make_quote(company, customer, number='AI-Q1'):
 
 # Operator's own figures: 12000 + 1800 + 0 + 21.5 x 1400 = 43,900.
 # Market: fuel 460 L x 29.11 = 13,390.60 -> R13,391 (whole rand, as
-# QuoteBuilder rounds); tolls 950 + 900 = 1,850; driver 16 h driving ->
-# 2 days x 243.63 = 487.26; base 21.50 = the benchmark's implied rate.
+# QuoteBuilder rounds); tolls: published 950 + 900 incl. VAT = 826.09 + 782.61
+# = 1,608.70 excl. VAT (quotes price tolls excl. VAT, like main's route calc);
+# driver 16 h driving -> 2 driving days = 1 night away x 243.63; base 21.50 =
+# the benchmark's implied rate.
 ANALYSIS_PAYLOAD = {
     'distance_km': 1400, 'one_way_distance_km': 1400, 'legs': 1, 'trip_type': 'ONE_WAY',
     'duration_minutes': 960, 'origin': 'JHB', 'destination': 'CPT', 'vehicle_type': 'Flatbed',
@@ -197,7 +200,7 @@ ANALYSIS_PAYLOAD = {
     'route': {'road_type': 'Mostly Highway', 'terrain': ['Coastal'],
               'toll_breakdown': [{'plaza': 'Grasmere', 'tariff': 900}, {'plaza': 'Huguenot', 'tariff': 900}]},
 }
-EXPECTED_MARKET_PRICE = 13391 + 1850 + 487.26 + 30100
+EXPECTED_MARKET_PRICE = 13391 + 1608.70 + 243.63 + 30100
 
 
 class CondensedContextTests(SimpleTestCase):
@@ -290,9 +293,13 @@ class AnalyzeQuotePriceTests(TestCase):
         self.assertEqual(items['fuel']['sources'][0]['url'],
                          'https://fuelsindustry.org.za/consumer-information/fuel-prices-current-past/')
         self.assertEqual(items['tolls']['verdict'], 'needs_adjustment')
-        self.assertEqual(items['tolls']['ai_value_zar'], 1850.0)
-        self.assertEqual(items['driver_allowance']['ai_value_zar'], 487.26)
+        self.assertEqual(items['tolls']['ai_value_zar'], 1608.70)
+        self.assertEqual(items['driver_allowance']['ai_value_zar'], 243.63)
         self.assertEqual(items['driver_allowance']['detail']['days'], 2)
+        self.assertEqual(items['driver_allowance']['detail']['nights'], 1)
+        self.assertEqual({t: items[t]['verification_kind'] for t in items},
+                         {'fuel': 'official', 'tolls': 'source', 'driver_allowance': 'source',
+                          'base_rate': 'benchmark'})
         self.assertIn('NBCRFLI', items['driver_allowance']['reason'])
         self.assertEqual(items['base_rate']['verdict'], 'accurate')
         self.assertEqual(result['verification_status'], 'verified')
@@ -303,7 +310,8 @@ class AnalyzeQuotePriceTests(TestCase):
         self.assertEqual(sorted(result['toggleable_items']), ['driver_allowance', 'fuel', 'tolls'])
         self.assertEqual(len(result['combinations']), 8)
         self.assertEqual(result['win_model']['reason'], 'not_enough_history')
-        self.assertAlmostEqual(result['return_leg']['total_zar'], 13391 + 1850 + 487.26, places=2)
+        # The empty run home adds 2 more nights (32 h round trip = 3 nights, vs 1 one way).
+        self.assertAlmostEqual(result['return_leg']['total_zar'], 13391 + 1608.70 + 487.26, places=2)
 
         row = AIQuotePriceAnalysis.objects.get(id=result['usage_log_id'])
         self.assertEqual(row.status, 'success')
@@ -453,7 +461,7 @@ class ComputePricingTests(SimpleTestCase):
 
     def test_round_trip_tolls_are_one_way_market_times_legs(self):
         p = self._price(legs=2, toll_cost=3600, distance_km=2800)
-        self.assertEqual(p['cost_breakdown']['tolls']['ai_value_zar'], 3700.0)
+        self.assertEqual(p['cost_breakdown']['tolls']['ai_value_zar'], 3217.4)
 
     def test_extra_plazas_are_listed_but_not_priced(self):
         extracted = self._extracted()
@@ -461,7 +469,7 @@ class ComputePricingTests(SimpleTestCase):
                                              'effective_date': PERIOD.isoformat(), 'sources': ['S1']})
         tolls = self._price(extracted=extracted)['cost_breakdown']['tolls']
         self.assertEqual(tolls['detail']['other_plazas_mentioned'], ['Verkeerdevlei'])
-        self.assertEqual(tolls['ai_value_zar'], 1850.0)
+        self.assertEqual(tolls['ai_value_zar'], 1608.7)
 
     def test_a_ramp_plaza_never_stands_in_for_the_mainline_plaza(self):
         extracted = self._extracted()
@@ -470,7 +478,8 @@ class ComputePricingTests(SimpleTestCase):
         pages = self._page(TOLL_URL, f'From 1 March {Y}. Grasmere Ramp R58.00. Grasmere R 950.00. Huguenot R 900.00.')
         tolls = self._price(extracted, pages)['cost_breakdown']['tolls']
         grasmere = next(r for r in tolls['detail']['plazas'] if r['plaza'] == 'Grasmere')
-        self.assertEqual(grasmere['market_tariff_zar'], 950.0)
+        self.assertEqual(grasmere['market_tariff_zar'], 826.09)  # R950.00 incl. VAT
+        self.assertEqual(grasmere['published_tariff_incl_vat_zar'], 950.0)
         self.assertIn('Grasmere Ramp', tolls['detail']['other_plazas_mentioned'])
 
     def test_plaza_names_match_on_whole_words(self):
@@ -490,10 +499,62 @@ class ComputePricingTests(SimpleTestCase):
         self.assertEqual((grasmere['verified'], grasmere['note']),
                          (False, 'more than one published plaza matches this name'))
 
+    def test_correct_excl_vat_toll_is_at_market(self):
+        # Main's route calc prices tolls excl. VAT: R950 / 1.15 = 826.09 and
+        # R900 / 1.15 = 782.61. The published figures are matched on the page
+        # as printed (incl. VAT), then compared excl. VAT.
+        route = {'toll_breakdown': [{'plaza': 'Grasmere', 'tariff': 826.09}, {'plaza': 'Huguenot', 'tariff': 782.61}]}
+        tolls = self._price(toll_cost=1608.70, route=route)['cost_breakdown']['tolls']
+        self.assertEqual((tolls['verdict'], tolls['ai_value_zar'], tolls['verification_kind']),
+                         ('accurate', 1608.70, 'source'))
+        self.assertEqual(tolls['detail']['market_one_way_zar'], 1608.70)
+        self.assertEqual([r['matches_yours'] for r in tolls['detail']['plazas']], [True, True])
+        self.assertEqual([r['published_tariff_incl_vat_zar'] for r in tolls['detail']['plazas']], [950.0, 900.0])
+
+    def test_vat_inclusive_toll_is_adjusted_down_to_excl_vat(self):
+        tolls = self._price(toll_cost=1850)['cost_breakdown']['tolls']
+        self.assertEqual((tolls['verdict'], tolls['ai_value_zar']), ('needs_adjustment', 1608.70))
+        self.assertIn('excl. VAT', tolls['reason'])
+
+    def test_implied_base_rate_uses_excl_vat_tolls(self):
+        # BENCHMARK's implied 21.50/km only comes out if the tolls in the
+        # market pass-through are excl. VAT.
+        base = self._price()['cost_breakdown']['base_rate']
+        self.assertEqual(base['detail']['implied_rate_per_km'], 21.5)
+
+    def test_unverified_items_say_so(self):
+        p = self._price(pages={}, fuel={'price_per_litre': None}, benchmark={'rate': None, 'source': 'none'})
+        self.assertEqual({t: i['verification_kind'] for t, i in p['cost_breakdown'].items()},
+                         {t: 'unverified' for t in ('fuel', 'tolls', 'driver_allowance', 'base_rate')})
+
+    def test_latest_but_not_current_fuel_price_is_labelled_as_such(self):
+        stale = dict(OFFICIAL_FUEL, current=False, effective_date=(TODAY - timedelta(days=40)).isoformat())
+        fuel = self._price(fuel=stale)['cost_breakdown']['fuel']
+        self.assertIn('the latest official inland diesel price', fuel['reason'])
+        self.assertIn('(effective ', fuel['reason'])
+        self.assertEqual(fuel['verification_note'], 'latest official price on record (FIASA)')
+        current = self._price()['cost_breakdown']['fuel']
+        self.assertIn('the official inland diesel price', current['reason'])
+
     # ---- driver ----
+    def test_same_day_trip_gets_no_night_out_allowance(self):
+        d = self._price(duration_minutes=180)['cost_breakdown']['driver_allowance']  # 3 h, home that night
+        self.assertEqual((d['verdict'], d['ai_value_zar'], d['detail']['nights']), ('accurate', 0.0, 0))
+        self.assertEqual(d['detail']['market_total_zar'], 0.0)
+        # A same-day round trip (2 x 4 h) is still one driving day.
+        rt = self._price(duration_minutes=240, legs=2, distance_km=2800, toll_cost=3600)
+        self.assertEqual(rt['cost_breakdown']['driver_allowance']['detail']['nights'], 0)
+        self.assertEqual(rt['cost_breakdown']['driver_allowance']['verdict'], 'accurate')
+
+    def test_multi_day_trip_pays_one_allowance_per_night_away(self):
+        for minutes, days, nights in ((540, 1, 0), (541, 2, 1), (1080, 2, 1), (1081, 3, 2)):
+            d = self._price(duration_minutes=minutes)['cost_breakdown']['driver_allowance']
+            self.assertEqual((d['detail']['days'], d['detail']['nights']), (days, nights), minutes)
+            self.assertEqual(d['detail']['market_total_zar'], round(243.63 * nights, 2), minutes)
+
     def test_driver_days_from_driving_time_and_yours_at_or_above_market_is_kept(self):
-        d = self._price(duration_minutes=1500)['cost_breakdown']['driver_allowance']  # 25 h -> 3 days
-        self.assertEqual((d['detail']['days'], d['ai_value_zar']), (3, round(243.63 * 3, 2)))
+        d = self._price(duration_minutes=1500)['cost_breakdown']['driver_allowance']  # 25 h -> 3 days, 2 nights
+        self.assertEqual((d['detail']['days'], d['detail']['nights'], d['ai_value_zar']), (3, 2, round(243.63 * 2, 2)))
         kept = self._price(driver_cost=1000)['cost_breakdown']['driver_allowance']
         self.assertEqual((kept['verdict'], kept['ai_value_zar']), ('accurate', 1000.0))
 
@@ -557,7 +618,7 @@ class ComputePricingTests(SimpleTestCase):
     # ---- return leg / status ----
     def test_empty_return_note_only_for_one_way(self):
         one_way = self._price()['return_leg']
-        self.assertEqual((one_way['fuel_zar'], one_way['tolls_zar'], one_way['driver_zar']), (13391.0, 1850.0, 487.26))
+        self.assertEqual((one_way['fuel_zar'], one_way['tolls_zar'], one_way['driver_zar']), (13391.0, 1608.7, 487.26))
         self.assertIsNone(self._price(legs=2, distance_km=2800, toll_cost=3600)['return_leg'])
 
     def test_status_is_derived_from_verified_count(self):
@@ -566,45 +627,79 @@ class ComputePricingTests(SimpleTestCase):
                                      benchmark={'rate': None, 'source': 'none'})['verification_status'], 'unverified')
 
 
+def _sast(y, m, d):
+    """00:01 SAST on that day: when an SA fuel adjustment takes effect."""
+    from zoneinfo import ZoneInfo
+    return datetime(y, m, d, 0, 1, tzinfo=ZoneInfo('Africa/Johannesburg'))
+
+
 class OfficialFuelPriceTests(TestCase):
-    def _record(self, month, source='FIASA', fetched=None, inland='29.1111', coastal='28.2391'):
+    """Rows shaped like main's FuelPrice pipeline (0128 provenance fields)."""
+
+    def _record(self, month, source='FIASA', effective=None, grade='50ppm', fetched=None,
+                inland='29.1111', coastal='28.2391'):
         from core.models.fuel_price import FuelPrice
         return FuelPrice.objects.create(
             date=month, diesel_inland=Decimal(inland), diesel_coastal=Decimal(coastal),
             petrol_95=Decimal('26.92'), petrol_93=Decimal('26.10'), source=source,
+            diesel_grade=grade, effective_from=effective,
             fetched_at=fetched or datetime(month.year, month.month, 20, 12, tzinfo=dt_timezone.utc))
 
-    def _lookup(self, today, zone='INLAND', fuel_type='Diesel', fetch_result=None):
+    def _lookup(self, today, zone='INLAND', fuel_type='Diesel'):
         from core.services.quote_ai_pricing import official_fuel_price
-        with mock.patch('core.services.fuel_price.fetch_fuel_prices', return_value=fetch_result) as fetch:
+        # Must never scrape from the request path: any call here is a failure.
+        with mock.patch('core.services.fuel_price.fetch_fuel_prices') as fetch, \
+                mock.patch('core.services.fuel_price._fetch_live') as live:
             out = official_fuel_price(fuel_type, zone, today)
-        return out, fetch
+        self.assertFalse(fetch.called or live.called, 'official_fuel_price scraped from the request path')
+        return out
 
     def test_fiasa_record_for_the_month_in_force(self):
-        self._record(date(2026, 9, 1))
-        out, fetch = self._lookup(date(2026, 9, 24))
-        self.assertEqual((out['price_per_litre'], out['zone'], out['effective_date']), (29.1111, 'inland', '2026-09-02'))
-        self.assertFalse(fetch.called)
-        self.assertEqual(self._lookup(date(2026, 9, 24), zone='COASTAL')[0]['price_per_litre'], 28.2391)
+        self._record(date(2026, 9, 1), effective=_sast(2026, 9, 2))
+        out = self._lookup(date(2026, 9, 24))
+        self.assertEqual((out['price_per_litre'], out['zone'], out['effective_date'], out['current'], out['source']),
+                         (29.1111, 'inland', '2026-09-02', True, 'FIASA'))
+        self.assertEqual(self._lookup(date(2026, 9, 24), zone='COASTAL')['price_per_litre'], 28.2391)
 
     def test_before_the_first_wednesday_last_months_price_is_in_force(self):
-        self._record(date(2026, 8, 1), inland='26.1721')
-        self._record(date(2026, 9, 1))
-        out, _ = self._lookup(date(2026, 9, 1))  # the September change is on Wednesday 2 September
-        self.assertEqual((out['price_per_litre'], out['effective_date']), (26.1721, '2026-08-05'))
+        self._record(date(2026, 8, 1), effective=_sast(2026, 8, 5), inland='26.1721')
+        self._record(date(2026, 9, 1), effective=_sast(2026, 9, 2))
+        out = self._lookup(date(2026, 9, 1))  # the September change is on Wednesday 2 September
+        self.assertEqual((out['price_per_litre'], out['effective_date'], out['current']),
+                         (26.1721, '2026-08-05', True))
 
-    def test_fallback_or_pre_change_records_are_not_official(self):
-        self._record(date(2026, 9, 1), source='FALLBACK')
-        self.assertIsNone(self._lookup(date(2026, 9, 24))[0]['price_per_litre'])
+    def test_effective_from_not_fetched_at_decides_which_adjustment_it_is(self):
+        # Re-scraped on 20 September, but FIASA still showed the August column.
+        self._record(date(2026, 9, 1), effective=_sast(2026, 8, 5), inland='26.1721',
+                     fetched=datetime(2026, 9, 20, 12, tzinfo=dt_timezone.utc))
+        out = self._lookup(date(2026, 9, 24))
+        self.assertEqual((out['price_per_litre'], out['effective_date'], out['current']),
+                         (26.1721, '2026-08-05', False))
+
+    def test_manual_override_is_official(self):
+        self._record(date(2026, 9, 1), source='MANUAL', grade=None, effective=None, inland='30.0000')
+        out = self._lookup(date(2026, 9, 24))
+        self.assertEqual((out['price_per_litre'], out['effective_date'], out['current'], out['source']),
+                         (30.0, '2026-09-01', True, 'MANUAL'))
+
+    def test_fallback_scraper_and_legacy_grade_rows_are_not_official(self):
         from core.models.fuel_price import FuelPrice
-        FuelPrice.objects.all().delete()
-        self._record(date(2026, 9, 1), fetched=datetime(2026, 9, 1, 8, tzinfo=dt_timezone.utc))  # before 2 Sep
-        out, fetch = self._lookup(date(2026, 9, 24))
-        self.assertTrue(fetch.called)  # asked the app's scraper to refresh
-        self.assertIsNotNone(out['error'])
+        for source, grade in (('FALLBACK', None), ('AA_SA', None), ('FIASA', None), ('FIASA', '500ppm')):
+            FuelPrice.objects.all().delete()
+            self._record(date(2026, 9, 1), source=source, grade=grade, effective=_sast(2026, 9, 2))
+            out = self._lookup(date(2026, 9, 24))
+            self.assertIsNone(out['price_per_litre'], (source, grade))
+            self.assertIsNotNone(out['error'])
+
+    def test_no_row_means_no_price_and_no_scrape(self):
+        self.assertEqual(self._lookup(date(2026, 9, 24))['error'], 'no official price on record')
+
+    def test_a_long_out_of_date_price_is_not_used(self):
+        self._record(date(2026, 6, 1), effective=_sast(2026, 6, 3))
+        self.assertIsNone(self._lookup(date(2026, 9, 24))['price_per_litre'])
 
     def test_non_diesel_has_no_official_price(self):
-        self.assertIsNone(self._lookup(date(2026, 9, 24), fuel_type='Petrol')[0]['price_per_litre'])
+        self.assertIsNone(self._lookup(date(2026, 9, 24), fuel_type='Petrol')['price_per_litre'])
 
 
 def _pricing_for_win_tests():
@@ -743,6 +838,31 @@ class UsdCostMathTests(SimpleTestCase):
         cached = _usd_cost(_usage(input_tokens=1_000_000, cached_tokens=1_000_000, output_tokens=0), model='gpt-4o-mini')
         self.assertAlmostEqual(cached['input_cost_usd'], pricing['cached_input_per_1m'], places=4)
 
+    def test_unknown_model_is_costed_at_the_dearest_known_rate_not_zero(self):
+        from core.services.quote_ai_pricing import _usd_cost, OPENAI_PRICING
+        with self.assertLogs('core.services.quote_ai_pricing', level='WARNING'):
+            cost = _usd_cost(_usage(input_tokens=1_000_000, output_tokens=0), model='gpt-unknown')
+        self.assertEqual(cost['input_cost_usd'], max(p['input_per_1m'] for p in OPENAI_PRICING.values()))
+
+    def test_model_field_default_matches_the_settings_default(self):
+        from core.services.quote_ai_pricing import OPENAI_PRICING
+        field = AIQuotePriceAnalysis._meta.get_field('model')
+        self.assertEqual(field.default, 'gpt-4o-mini')
+        self.assertIn(field.default, OPENAI_PRICING)
+
+
+class TollClassTests(TestCase):
+    def test_vehicle_type_sanral_class_wins_over_the_name(self):
+        from core.models import VehicleType
+        from core.services.quote_ai_pricing import _toll_class, build_condensed_context
+        company, _, _ = _make_company_customer_user()
+        # "Flatbed" guesses Class 4 by name; this fleet's Flatbed is a 2-axle.
+        VehicleType.objects.create(company=company, name='Flatbed', capacity=8, max_distance=1000,
+                                   base_rate=10, sanral_toll_class=2)
+        self.assertEqual(_toll_class('Flatbed')[0], 4)
+        self.assertEqual(_toll_class('Flatbed', company)[0], 2)
+        self.assertEqual(build_condensed_context(ANALYSIS_PAYLOAD, company=company)['tolls']['sanral_class'], 2)
+
     def test_reasoning_kwargs_only_for_reasoning_models(self):
         from core.services.quote_ai_pricing import _reasoning_kwargs
         self.assertEqual(_reasoning_kwargs('gpt-4o-mini'), {})
@@ -814,6 +934,15 @@ class AIQuotePriceAnalysisViewTests(TestCase):
         self.assertIsNone(seen['distance_km'])
         self.assertEqual(seen['route'], {})
 
+    def test_another_companys_quote_id_is_ignored(self):
+        other_company, other_customer, _ = _make_company_customer_user(suffix='-b')
+        foreign = _make_quote(other_company, other_customer, number='AI-FOREIGN')
+        resp = self._post(FakeOpenAI(), foreign.id)
+        self.assertEqual(resp.status_code, 200)
+        row = AIQuotePriceAnalysis.objects.get(id=resp.json()['usage_log_id'])
+        self.assertIsNone(row.quote_id)
+        self.assertEqual(row.company_id, self.company.id)
+
     def test_malformed_quote_and_customer_ids_are_ignored(self):
         resp, seen = self._captured_payload(quote_id='abc', customer_id='1e999')
         self.assertEqual(resp.status_code, 200)
@@ -853,3 +982,4 @@ class AdminAIUsageViewTests(TestCase):
         client = APIClient()
         client.force_authenticate(user=self.user)
         self.assertEqual(client.get('/api/v1/admin/ai-usage/').status_code, 403)
+
