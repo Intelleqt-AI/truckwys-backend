@@ -39,6 +39,7 @@ from .push_subscription import PushSubscription
 from .pending_signup import PendingSignup
 from .location_search_history import LocationSearchHistory
 from .ml_model_version import MLModelVersion, MLUserRetrainQueue
+from .ai_quote_price_analysis import AIQuotePriceAnalysis
 
 __all__ = [
     'User',
@@ -88,4 +89,5 @@ __all__ = [
     'TaskRunLog',
     'MLModelVersion',
     'MLUserRetrainQueue',
+    'AIQuotePriceAnalysis',
 ]

@@ -9,13 +9,14 @@ Impersonation ("log in as") was explicitly dropped from scope.
 """
 from datetime import timedelta
 
-from django.db.models import Count, Max, Q
+from django.db.models import Count, Max, Q, Sum
+from django.db.models.functions import TruncMonth
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from core.models import AuditLog, Company, User, Quote, Load, TaskRunLog, UserActivityLog, UserSession
+from core.models import AuditLog, Company, User, Quote, Load, TaskRunLog, UserActivityLog, UserSession, AIQuotePriceAnalysis
 from core.services.demo_seed import IDLE_RESET_AFTER, reset_demo_company
 from core.views import IsSuperUser
 
@@ -1046,6 +1047,87 @@ class AdminModelHealthView(APIView):
             'blockers': blockers,
             'can_train': not blockers,
             'active_models': active,
+            'recent_failures': recent_failures,
+        })
+
+
+class AdminAIUsageView(APIView):
+    """Platform-wide OpenAI spend for the quote price-analysis feature only
+    (AIQuotePriceAnalysis) — not the other LLM call sites in the app (Copilot
+    chat, CFO insights, etc), which don't track usage/cost yet. All-time +
+    this-month totals, a 12-month trend, and a per-user cost breakdown."""
+    permission_classes = [IsSuperUser]
+
+    def get(self, request):
+        qs = AIQuotePriceAnalysis.objects.all()
+        month_start = timezone.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+        # Sum every token column explicitly and combine in Python — Django's
+        # aggregate() sums each named field independently, it doesn't add
+        # fields together for you.
+        token_fields = [
+            'research_input_tokens', 'research_output_tokens',
+            'structuring_input_tokens', 'structuring_output_tokens',
+        ]
+
+        def _totals(queryset):
+            agg = queryset.aggregate(
+                calls=Count('id'),
+                success_calls=Count('id', filter=Q(status='success')),
+                failed_calls=Count('id', filter=Q(status='failed')),
+                total_cost_usd=Sum('total_cost_usd'),
+                **{f: Sum(f) for f in token_fields},
+            )
+            total_tokens = sum((agg.get(f) or 0) for f in token_fields)
+            return {
+                'calls': agg['calls'] or 0,
+                'success_calls': agg['success_calls'] or 0,
+                'failed_calls': agg['failed_calls'] or 0,
+                'total_cost_usd': float(agg['total_cost_usd'] or 0),
+                'total_tokens': total_tokens,
+            }
+
+        by_month_qs = (
+            qs.annotate(month=TruncMonth('created_at'))
+            .values('month')
+            .annotate(total_calls=Count('id'), total_cost_usd=Sum('total_cost_usd'))
+            .order_by('-month')[:12]
+        )
+        by_month = [{
+            'month': row['month'].strftime('%Y-%m') if row['month'] else None,
+            'total_calls': row['total_calls'],
+            'total_cost_usd': float(row['total_cost_usd'] or 0),
+        } for row in by_month_qs][::-1]
+
+        user_rows = (
+            qs.exclude(triggered_by__isnull=True)
+            .values('triggered_by_id', 'triggered_by__first_name', 'triggered_by__last_name',
+                    'triggered_by__username', 'triggered_by__email',
+                    'triggered_by__company_id', 'triggered_by__company__company_name')
+            .annotate(total_calls=Count('id'), total_cost_usd=Sum('total_cost_usd'))
+        )
+        by_user = sorted([{
+            'user_id': row['triggered_by_id'],
+            'name': f"{row['triggered_by__first_name']} {row['triggered_by__last_name']}".strip()
+                    or row['triggered_by__username'],
+            'email': row['triggered_by__email'],
+            'company_id': row['triggered_by__company_id'],
+            'company_name': row['triggered_by__company__company_name'],
+            'calls': row['total_calls'],
+            'total_cost_usd': float(row['total_cost_usd'] or 0),
+        } for row in user_rows], key=lambda r: r['total_cost_usd'], reverse=True)
+
+        recent_failures = list(
+            qs.filter(status='failed').order_by('-created_at')[:10]
+            .values('id', 'created_at', 'quote_id', 'failed_at_call', 'error_message',
+                    'triggered_by__username')
+        )
+
+        return Response({
+            'all_time': _totals(qs),
+            'this_month': _totals(qs.filter(created_at__gte=month_start)),
+            'by_month': by_month,
+            'by_user': by_user,
             'recent_failures': recent_failures,
         })
 
