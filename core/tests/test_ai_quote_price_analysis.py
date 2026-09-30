@@ -1148,3 +1148,27 @@ class AdminAIUsageViewTests(TestCase):
         client.force_authenticate(user=self.user)
         self.assertEqual(client.get('/api/v1/admin/ai-usage/').status_code, 403)
 
+
+class RouteSnapshotSerializerTests(TestCase):
+    def setUp(self):
+        self.company, self.customer, self.user = _make_company_customer_user()
+        self.quote = _make_quote(self.company, self.customer)
+        Quote.objects.filter(id=self.quote.id).update(route_snapshot={'request': {'origin': 'JHB'}})
+        self.quote.refresh_from_db()
+
+    def test_size_cap(self):
+        from rest_framework import serializers as drf_serializers
+        from core.serializers import QuoteSerializer
+        s = QuoteSerializer()
+        self.assertEqual(s.validate_route_snapshot({'a': 1}), {'a': 1})
+        with self.assertRaises(drf_serializers.ValidationError):
+            s.validate_route_snapshot({'geometry': 'x' * 200_001})
+        with self.assertRaises(drf_serializers.ValidationError):
+            s.validate_route_snapshot(['not', 'an', 'object'])
+
+    def test_left_out_of_list_responses_but_kept_on_detail(self):
+        from core.serializers import QuoteSerializer
+        self.assertEqual(QuoteSerializer(self.quote).data['route_snapshot'], {'request': {'origin': 'JHB'}})
+        listed = QuoteSerializer(Quote.objects.filter(id=self.quote.id), many=True).data
+        self.assertNotIn('route_snapshot', listed[0])
+        self.assertIn('base_rate_per_km', listed[0])
