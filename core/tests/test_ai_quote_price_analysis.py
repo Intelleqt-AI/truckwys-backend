@@ -19,7 +19,7 @@ from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache, caches
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -232,12 +232,18 @@ class CondensedContextTests(SimpleTestCase):
         self.assertIn('1 March 2025', _topic_prompt('tolls', build_condensed_context(ANALYSIS_PAYLOAD, date(2026, 2, 10))))
 
 
+# A dummy key: the OpenAI client itself is always mocked, and the network
+# is never used. Without a key the feature reports itself unavailable.
+TEST_KEY = override_settings(OPENAI_API_KEY='sk-test-not-a-real-key')
+
+
 def _clear_caches(test):
     cache.clear()
     caches['ai_sources'].clear()
     test.addCleanup(caches['ai_sources'].clear)
 
 
+@TEST_KEY
 class AnalyzeQuotePriceTests(TestCase):
     def setUp(self):
         _clear_caches(self)
@@ -369,6 +375,8 @@ class AnalyzeQuotePriceTests(TestCase):
         with mock.patch('core.services.quote_ai_pricing.compute_pricing', side_effect=OverflowError('boom')):
             result, _ = self._run()
         self.assertFalse(result['success'])
+        self.assertEqual(result['code'], 'failed')
+        self.assertNotIn('\u2014', result['message'])
         row = AIQuotePriceAnalysis.objects.get(id=result['usage_log_id'])
         self.assertEqual((row.status, row.failed_at_call), ('failed', 'pricing'))
         self.assertEqual(row.structuring_input_tokens, 1000)
@@ -381,6 +389,87 @@ class AnalyzeQuotePriceTests(TestCase):
         self.assertTrue(result['success'])
         self.assertEqual(result['verification_status'], 'partially_verified')  # fuel + base still checked
         self.assertEqual(sorted(result['toggleable_items']), ['fuel'])
+
+
+class UnavailableTests(TestCase):
+    """B3: no key / kill switch / a client that can't start never 500s and
+    never spends."""
+
+    def setUp(self):
+        _clear_caches(self)
+        self.company, self.customer, self.user = _make_company_customer_user()
+
+    def _run(self):
+        from core.services.quote_ai_pricing import analyze_quote_price
+        with mock.patch.dict('os.environ', {'OPENAI_API_KEY': ''}):
+            return analyze_quote_price(payload=dict(ANALYSIS_PAYLOAD), user=self.user, company=self.company)
+
+    @override_settings(OPENAI_API_KEY='')
+    def test_missing_key_is_unavailable_without_calling_openai(self):
+        with mock.patch('core.services.quote_ai_pricing._client') as client:
+            result = self._run()
+        self.assertFalse(client.called)
+        self.assertEqual((result['success'], result['code'], result['reason']), (False, 'unavailable', 'no_api_key'))
+        self.assertNotIn('\u2014', result['message'])
+        self.assertEqual(AIQuotePriceAnalysis.objects.count(), 0)
+
+    @override_settings(OPENAI_API_KEY='')
+    def test_missing_key_with_the_real_client_does_not_raise(self):
+        # openai 2.x raises OpenAIError on an empty key; that must never escape.
+        result = self._run()
+        self.assertEqual(result['code'], 'unavailable')
+
+    @override_settings(OPENAI_API_KEY='sk-test-not-a-real-key')
+    def test_client_that_cannot_start_is_unavailable(self):
+        with mock.patch('core.services.quote_ai_pricing._client', side_effect=RuntimeError('bad config')):
+            result = self._run()
+        self.assertEqual((result['code'], result['reason']), ('unavailable', 'client_error'))
+
+    @override_settings(OPENAI_API_KEY='sk-test-not-a-real-key', AI_PRICE_ANALYSIS_ENABLED=False)
+    def test_kill_switch(self):
+        with mock.patch('core.services.quote_ai_pricing._client') as client:
+            result = self._run()
+        self.assertFalse(client.called)
+        self.assertEqual((result['code'], result['reason']), ('unavailable', 'disabled'))
+
+
+class SpendCapTests(TestCase):
+    def setUp(self):
+        self.company, self.customer, self.user = _make_company_customer_user()
+        self.other, _, _ = _make_company_customer_user(suffix='-b')
+
+    def _rows(self, company, n, cost='0.020000', status='success'):
+        for _ in range(n):
+            AIQuotePriceAnalysis.objects.create(company=company, status=status, total_cost_usd=Decimal(cost))
+
+    @override_settings(AI_PRICE_ANALYSIS_COMPANY_DAILY_RUNS=3, AI_PRICE_ANALYSIS_GLOBAL_DAILY_BUDGET_USD=0)
+    def test_company_daily_run_cap_counts_failed_runs_and_is_per_company(self):
+        from core.services.quote_ai_pricing import check_spend_caps
+        self._rows(self.company, 2)
+        self.assertIsNone(check_spend_caps(self.company))
+        self._rows(self.company, 1, status='failed')
+        capped = check_spend_caps(self.company)
+        self.assertEqual((capped['code'], capped['limit']), ('budget', 'company_daily_runs'))
+        self.assertGreater(capped['retry_after_seconds'], 0)
+        self.assertLessEqual(capped['retry_after_seconds'], 86401)
+        self.assertIsNone(check_spend_caps(self.other))
+
+    @override_settings(AI_PRICE_ANALYSIS_COMPANY_DAILY_RUNS=3)
+    def test_yesterdays_runs_do_not_count(self):
+        from core.services.quote_ai_pricing import check_spend_caps
+        self._rows(self.company, 3)
+        AIQuotePriceAnalysis.objects.update(created_at=timezone.now() - timedelta(days=2))
+        self.assertIsNone(check_spend_caps(self.company))
+
+    @override_settings(AI_PRICE_ANALYSIS_COMPANY_DAILY_RUNS=0, AI_PRICE_ANALYSIS_GLOBAL_DAILY_BUDGET_USD=1.0)
+    def test_global_daily_budget_across_companies(self):
+        from core.services.quote_ai_pricing import check_spend_caps
+        self._rows(self.other, 1, cost='0.990000')
+        self.assertIsNone(check_spend_caps(self.company))
+        self._rows(self.other, 1, cost='0.010000')
+        capped = check_spend_caps(self.company)
+        self.assertEqual((capped['code'], capped['limit']), ('budget', 'global_daily_budget'))
+        self.assertNotIn('\u2014', capped['message'])
 
 
 class ComputePricingTests(SimpleTestCase):
@@ -869,6 +958,7 @@ class TollClassTests(TestCase):
         self.assertIn('reasoning', _reasoning_kwargs('gpt-5.6-luna'))
 
 
+@TEST_KEY
 class AIQuotePriceAnalysisViewTests(TestCase):
     def setUp(self):
         _clear_caches(self)
@@ -933,6 +1023,81 @@ class AIQuotePriceAnalysisViewTests(TestCase):
         self.assertTrue(resp.json()['success'])
         self.assertIsNone(seen['distance_km'])
         self.assertEqual(seen['route'], {})
+
+    # ---- B3 / H4 / response shape ----
+    def _no_key(self):
+        return mock.patch.dict('os.environ', {'OPENAI_API_KEY': ''})
+
+    def test_missing_key_is_a_clean_503_that_keeps_the_cooldown_free(self):
+        fake = FakeOpenAI()
+        with override_settings(OPENAI_API_KEY=''), self._no_key():
+            resp = self._post(fake, self.quote.id)
+        self.assertEqual(resp.status_code, 503)
+        body = resp.json()
+        self.assertEqual((body['success'], body['code'], body['retry_after_seconds']), (False, 'unavailable', None))
+        self.assertNotIn('\u2014', body['message'])
+        self.assertEqual(fake.calls, [])
+        self.assertEqual(AIQuotePriceAnalysis.objects.count(), 0)
+        # Once the key is back, the same quote runs straight away (no cooldown burned).
+        self.assertEqual(self._post(FakeOpenAI(), self.quote.id).status_code, 200)
+
+    def test_missing_key_with_the_real_openai_client_is_not_a_500(self):
+        with override_settings(OPENAI_API_KEY=''), self._no_key(), \
+                mock.patch('core.services.quote_ai_pricing.unavailable_reason', return_value=None):
+            # Even if the up-front check were bypassed, openai 2.x's
+            # "Missing credentials" must not escape as a 500.
+            resp = self.client_api.post('/api/v1/quotes/ai-price-analysis/',
+                                        dict(ANALYSIS_PAYLOAD, quote_id=self.quote.id), format='json')
+        self.assertEqual(resp.status_code, 503)
+        self.assertEqual(resp.json()['code'], 'unavailable')
+
+    @override_settings(AI_PRICE_ANALYSIS_ENABLED=False)
+    def test_kill_switch_returns_unavailable_without_spending(self):
+        fake = FakeOpenAI()
+        resp = self._post(fake, self.quote.id)
+        self.assertEqual((resp.status_code, resp.json()['code'], resp.json()['reason']), (503, 'unavailable', 'disabled'))
+        self.assertEqual(fake.calls, [])
+
+    @override_settings(AI_PRICE_ANALYSIS_COMPANY_DAILY_RUNS=1)
+    def test_company_run_cap_blocks_before_any_paid_call(self):
+        self.assertEqual(self._post(FakeOpenAI(), self.quote.id).status_code, 200)
+        other = _make_quote(self.company, self.customer, number='AI-Q2')
+        fake = FakeOpenAI()
+        resp = self._post(fake, other.id)
+        self.assertEqual(resp.status_code, 429)
+        body = resp.json()
+        self.assertEqual((body['code'], body['limit']), ('budget', 'company_daily_runs'))
+        self.assertGreater(body['retry_after_seconds'], 0)
+        self.assertEqual(resp['Retry-After'], str(body['retry_after_seconds']))
+        self.assertEqual(fake.calls, [])
+
+    @override_settings(AI_PRICE_ANALYSIS_GLOBAL_DAILY_BUDGET_USD=0.01)
+    def test_global_budget_blocks_before_any_paid_call(self):
+        other_company, _, _ = _make_company_customer_user(suffix='-b')
+        AIQuotePriceAnalysis.objects.create(company=other_company, status='success', total_cost_usd=Decimal('0.02'))
+        fake = FakeOpenAI()
+        resp = self._post(fake, self.quote.id)
+        self.assertEqual((resp.status_code, resp.json()['code'], resp.json()['limit']),
+                         (429, 'budget', 'global_daily_budget'))
+        self.assertEqual(fake.calls, [])
+
+    def test_cooldown_and_throttle_have_stable_codes(self):
+        self._post(FakeOpenAI(), self.quote.id)
+        body = self._post(FakeOpenAI(), self.quote.id).json()
+        self.assertEqual((body['code'], body['error'], body['retry_after_seconds']), ('cooldown', 'cooldown', 20))
+        self.assertNotIn('\u2014', body['message'])
+        from rest_framework.throttling import ScopedRateThrottle
+        with mock.patch.object(ScopedRateThrottle, 'allow_request', return_value=False), \
+                mock.patch.object(ScopedRateThrottle, 'wait', return_value=11.2):
+            resp = self._post(FakeOpenAI(), self.quote.id)
+        self.assertEqual(resp.status_code, 429)
+        self.assertEqual((resp.json()['code'], resp.json()['retry_after_seconds']), ('throttled', 12))
+
+    def test_success_response_carries_verification_kind_per_item(self):
+        data = self._post(FakeOpenAI(), self.quote.id).json()
+        for item in data['cost_breakdown'].values():
+            self.assertIn(item['verification_kind'], ('official', 'benchmark', 'source', 'unverified'))
+            self.assertIn('verification', item)  # the old field stays for compatibility
 
     def test_another_companys_quote_id_is_ignored(self):
         other_company, other_customer, _ = _make_company_customer_user(suffix='-b')

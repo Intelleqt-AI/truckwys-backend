@@ -124,7 +124,18 @@ DATE_NEAR_CHARS = 300
 # within this many standard deviations of what the model was trained on.
 WIN_FEATURE_Z_LIMIT = 2.0
 
-UNAVAILABLE_MESSAGE = 'AI price verification is temporarily unavailable — please try again shortly.'
+UNAVAILABLE_MESSAGE = 'AI price verification is temporarily unavailable. Please try again shortly.'
+# Shown when the feature is switched off or not configured (no OpenAI key).
+# No time to retry is given: it needs an operator, not a wait.
+NOT_CONFIGURED_MESSAGE = 'AI price verification is not available right now.'
+
+# Stable error codes for the frontend (the `code` field of every error
+# response). Human text may change; these may not.
+ERROR_UNAVAILABLE = 'unavailable'   # switched off, no key, or the client can't start
+ERROR_COOLDOWN = 'cooldown'         # same quote re-checked within the cooldown
+ERROR_THROTTLED = 'throttled'       # per-user request rate
+ERROR_BUDGET = 'budget'             # company daily run cap or platform daily $ budget
+ERROR_FAILED = 'failed'             # the run itself failed after starting
 
 
 _MONTHS = ('January', 'February', 'March', 'April', 'May', 'June', 'July', 'August',
@@ -165,13 +176,70 @@ def _reasoning_kwargs(model: str) -> dict:
     return {}
 
 
+def _api_key() -> str:
+    return (os.environ.get('OPENAI_API_KEY') or getattr(settings, 'OPENAI_API_KEY', '') or '').strip()
+
+
 def _client():
     """Fresh client per call so a rotated key takes effect without a restart.
     No SDK retries: a retried call could double a call's time and blow the
     run deadline; a failed topic just comes back not verified.
     THIS is the test mock point: patch 'core.services.quote_ai_pricing._client'."""
-    api_key = os.environ.get('OPENAI_API_KEY') or getattr(settings, 'OPENAI_API_KEY', '')
-    return OpenAI(api_key=api_key, timeout=AI_QUOTE_ANALYSIS_TIMEOUT_SECONDS, max_retries=0)
+    return OpenAI(api_key=_api_key(), timeout=AI_QUOTE_ANALYSIS_TIMEOUT_SECONDS, max_retries=0)
+
+
+def error_response(code: str, message: str, retry_after_seconds=None, **extra) -> dict:
+    """The one shape every error response has: a stable `code` the frontend
+    switches on, human text without em dashes, and when to try again
+    (None = don't retry automatically)."""
+    return {'success': False, 'code': code, 'error': code, 'message': message,
+            'retry_after_seconds': retry_after_seconds, 'verification_status': 'unverified', **extra}
+
+
+def unavailable_reason():
+    """Why the feature can't run at all right now, or None if it can. Cheap
+    and free: checked before the cooldown, the caps and any paid call."""
+    if not getattr(settings, 'AI_PRICE_ANALYSIS_ENABLED', True):
+        return 'disabled'
+    if not _api_key():
+        return 'no_api_key'
+    return None
+
+
+def _seconds_until_local_midnight(now=None) -> int:
+    now = timezone.localtime(now or timezone.now())
+    midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return max(int((midnight - now).total_seconds()) + 1, 1)
+
+
+def check_spend_caps(company, now=None):
+    """None if a paid run may start, else an error_response() dict (code
+    'budget'). Two caps, both reset at local midnight:
+      * AI_PRICE_ANALYSIS_COMPANY_DAILY_RUNS: runs per company per day
+        (every recorded run counts, failed ones too: they were paid for);
+      * AI_PRICE_ANALYSIS_GLOBAL_DAILY_BUDGET_USD: recorded spend across all
+        companies today.
+    A value of 0 (or less) switches that cap off."""
+    from django.db.models import Sum
+    from core.models import AIQuotePriceAnalysis
+
+    now = now or timezone.now()
+    day_start = timezone.localtime(now).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_rows = AIQuotePriceAnalysis.objects.filter(created_at__gte=day_start)
+    retry = _seconds_until_local_midnight(now)
+
+    run_cap = int(getattr(settings, 'AI_PRICE_ANALYSIS_COMPANY_DAILY_RUNS', 50) or 0)
+    if run_cap > 0 and company is not None and today_rows.filter(company=company).count() >= run_cap:
+        return error_response(ERROR_BUDGET, f'Your company has used all {run_cap} AI price checks for today. '
+                              'They reset at midnight.', retry, limit='company_daily_runs')
+    budget = float(getattr(settings, 'AI_PRICE_ANALYSIS_GLOBAL_DAILY_BUDGET_USD', 20) or 0)
+    if budget > 0:
+        spent = today_rows.aggregate(total=Sum('total_cost_usd'))['total'] or 0
+        if float(spent) >= budget:
+            logger.warning('AI price analysis: platform daily budget of $%.2f reached ($%.4f spent)', budget, spent)
+            return error_response(ERROR_BUDGET, 'AI price checks have reached today\'s platform limit. '
+                                  'They reset at midnight.', retry, limit='global_daily_budget')
+    return None
 
 
 def _legs(payload: dict) -> int:
@@ -1185,6 +1253,19 @@ def analyze_quote_price(*, payload: dict, user=None, company=None, quote=None, t
     deadline = started + AI_QUOTE_ANALYSIS_DEADLINE_SECONDS
     today = today or timezone.localdate()
 
+    # Nothing is spent (and nothing recorded) when the feature can't run:
+    # switched off, or no OpenAI key (openai 2.x raises on an empty key).
+    reason = unavailable_reason()
+    if reason is not None:
+        if reason == 'no_api_key':
+            logger.error('AI price analysis: OPENAI_API_KEY is not set; the feature is unavailable')
+        return error_response(ERROR_UNAVAILABLE, NOT_CONFIGURED_MESSAGE, None, reason=reason)
+    try:
+        client = _client()
+    except Exception as exc:
+        logger.error('AI price analysis: OpenAI client could not start: %s', type(exc).__name__)
+        return error_response(ERROR_UNAVAILABLE, NOT_CONFIGURED_MESSAGE, None, reason='client_error')
+
     context = build_condensed_context(payload, today, company)
     trigger_type = payload.get('trigger_type') if payload.get('trigger_type') in ('auto', 'manual') else 'auto'
     row_fields = {
@@ -1202,8 +1283,6 @@ def analyze_quote_price(*, payload: dict, user=None, company=None, quote=None, t
 
     def elapsed_ms():
         return int((time.monotonic() - started) * 1000)
-
-    client = _client()
 
     # ---- 1. Web research for tolls + driver, in parallel (network only) ----
     responses, errors = {}, {}
@@ -1294,8 +1373,7 @@ def analyze_quote_price(*, payload: dict, user=None, company=None, quote=None, t
     except Exception as exc:
         logger.exception('AI price analysis: pricing failed')
         row = failed('pricing', exc, pages=pages)
-        return {'success': False, 'verification_status': 'unverified',
-                'message': UNAVAILABLE_MESSAGE, 'usage_log_id': row.id}
+        return error_response(ERROR_FAILED, UNAVAILABLE_MESSAGE, 60, usage_log_id=row.id)
 
     row = AIQuotePriceAnalysis.objects.create(
         **row_fields, status='success',

@@ -4,6 +4,7 @@ Sprint 1: AI Quoting Engine Upgrade with feedback loop, fuel alerts, win probabi
 """
 
 import logging
+import math
 import re
 from datetime import date, timedelta
 from decimal import Decimal
@@ -550,12 +551,31 @@ class AIQuotePriceAnalysisView(APIView):
     the manual "Re-check" button (trigger_type is accepted purely for
     admin-usage labelling — the "runs once automatically" behaviour is a
     frontend concern, gated on unsaved draft form state this endpoint never
-    sees). What IS enforced here: a per-quote cooldown + a per-user rate cap,
-    as cost-abuse guards, since every call spends real OpenAI dollars.
+    sees). What IS enforced here, in this order and before any paid call:
+    the kill switch / API key check (503 'unavailable'), the company daily
+    run cap and platform daily $ budget (429 'budget'), a per-quote cooldown
+    (429 'cooldown') and a per-user rate cap (429 'throttled').
+
+    Every error body is {'success': False, 'code', 'message',
+    'retry_after_seconds'} (see quote_ai_pricing.error_response).
     """
     permission_classes = [IsAuthenticated]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = 'ai_quote_analysis'
+
+    def handle_exception(self, exc):
+        from rest_framework.exceptions import Throttled
+        if isinstance(exc, Throttled):
+            from core.services import quote_ai_pricing
+            wait = int(math.ceil(exc.wait)) if exc.wait is not None else None
+            response = Response(quote_ai_pricing.error_response(
+                quote_ai_pricing.ERROR_THROTTLED,
+                'Too many AI price checks in a short time. Please wait a moment and try again.', wait),
+                status=status.HTTP_429_TOO_MANY_REQUESTS)
+            if wait is not None:
+                response['Retry-After'] = str(wait)
+            return response
+        return super().handle_exception(exc)
 
     def post(self, request):
         from core.views import resolve_user_company
@@ -563,6 +583,23 @@ class AIQuotePriceAnalysisView(APIView):
 
         data = request.data
         company = resolve_user_company(request.user)
+
+        # 1. Switched off or not configured: say so, spend nothing, and
+        #    leave the cooldown untouched so it works as soon as it's fixed.
+        reason = quote_ai_pricing.unavailable_reason()
+        if reason is not None:
+            if reason == 'no_api_key':
+                logger.error('AI price analysis: OPENAI_API_KEY is not set; the feature is unavailable')
+            return Response(quote_ai_pricing.error_response(
+                quote_ai_pricing.ERROR_UNAVAILABLE, quote_ai_pricing.NOT_CONFIGURED_MESSAGE, None, reason=reason),
+                status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        # 2. Spend caps (company runs per day, platform $ per day).
+        capped = quote_ai_pricing.check_spend_caps(company)
+        if capped is not None:
+            response = Response(capped, status=status.HTTP_429_TOO_MANY_REQUESTS)
+            response['Retry-After'] = str(capped['retry_after_seconds'])
+            return response
 
         quote_id = self._int(data.get('quote_id'))
         quote = None
@@ -572,14 +609,15 @@ class AIQuotePriceAnalysisView(APIView):
         cooldown_key = f'ai_quote_analysis_cooldown:quote:{quote.id}' if quote \
             else f'ai_quote_analysis_cooldown:user:{request.user.id}'
         cooldown_seconds = getattr(settings, 'AI_QUOTE_ANALYSIS_COOLDOWN_SECONDS', 20)
-        # Set BEFORE calling OpenAI (not after success) so two near-simultaneous
+        # 3. Set BEFORE calling OpenAI (not after success) so two near-simultaneous
         # requests (a double-click) both see the cooldown immediately.
         if not cache.add(cooldown_key, True, timeout=cooldown_seconds):
-            return Response({
-                'success': False, 'error': 'cooldown',
-                'message': 'An AI analysis was just run for this quote — please wait a few seconds before re-checking again.',
-                'retry_after_seconds': cooldown_seconds,
-            }, status=status.HTTP_429_TOO_MANY_REQUESTS)
+            response = Response(quote_ai_pricing.error_response(
+                quote_ai_pricing.ERROR_COOLDOWN,
+                'An AI analysis was just run for this quote. Please wait a few seconds before checking again.',
+                cooldown_seconds), status=status.HTTP_429_TOO_MANY_REQUESTS)
+            response['Retry-After'] = str(cooldown_seconds)
+            return response
 
         payload = {
             'quote_id': quote_id,
@@ -601,6 +639,10 @@ class AIQuotePriceAnalysisView(APIView):
         result = quote_ai_pricing.analyze_quote_price(
             payload=payload, user=request.user, company=company, quote=quote,
         )
+        if result.get('code') == quote_ai_pricing.ERROR_UNAVAILABLE:
+            # Nothing was spent: free the cooldown so a retry isn't blocked.
+            cache.delete(cooldown_key)
+            return Response(result, status=status.HTTP_503_SERVICE_UNAVAILABLE)
         return Response(result)
 
     # Generous real-world ceilings. Anything outside is treated as missing:

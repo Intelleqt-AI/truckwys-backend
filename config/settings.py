@@ -343,6 +343,16 @@ COPILOT_LLM_PROVIDER = config('COPILOT_LLM_PROVIDER', default='auto')
 # AI quote-price-analysis (QuoteBuilder's "AI price review" panel) — separate
 # from COPILOT_LLM_PROVIDER/OPENAI_CHAT_MODEL above; reuses OPENAI_API_KEY
 # only. See core.services.quote_ai_pricing.
+# Kill switch: False makes the endpoint answer 503 {'code': 'unavailable'}
+# without spending anything. It is also unavailable when OPENAI_API_KEY is
+# empty.
+AI_PRICE_ANALYSIS_ENABLED = config('AI_PRICE_ANALYSIS_ENABLED', default=True, cast=bool)
+# Spend caps, checked before any paid call (429 {'code': 'budget'} with
+# retry_after_seconds until local midnight). 0 switches a cap off.
+#   runs per company per local day (failed runs count: they were paid for)
+AI_PRICE_ANALYSIS_COMPANY_DAILY_RUNS = config('AI_PRICE_ANALYSIS_COMPANY_DAILY_RUNS', default=50, cast=int)
+#   recorded OpenAI spend across ALL companies per local day, in USD
+AI_PRICE_ANALYSIS_GLOBAL_DAILY_BUDGET_USD = config('AI_PRICE_ANALYSIS_GLOBAL_DAILY_BUDGET_USD', default=20, cast=float)
 AI_QUOTE_ANALYSIS_MODEL = config('AI_QUOTE_ANALYSIS_MODEL', default='gpt-4o-mini')
 # The structuring call never touches the web and only extracts figures from
 # the research findings into JSON.
@@ -369,7 +379,7 @@ AI_QUOTE_ANALYSIS_RESEARCH_TIMEOUT_SECONDS = config('AI_QUOTE_ANALYSIS_RESEARCH_
 AI_QUOTE_ANALYSIS_COOLDOWN_SECONDS = config('AI_QUOTE_ANALYSIS_COOLDOWN_SECONDS', default=20, cast=int)
 AI_QUOTE_ANALYSIS_MAX_REFERENCES = config('AI_QUOTE_ANALYSIS_MAX_REFERENCES', default=8, cast=int)
 # Hard cap on web_search calls PER TOPIC research call (API-enforced via
-# max_tool_calls). There are four topic calls (fuel, tolls, driver, base rate).
+# max_tool_calls). There are two topic calls (tolls, driver allowance).
 AI_QUOTE_ANALYSIS_MAX_WEB_SEARCH_CALLS = config('AI_QUOTE_ANALYSIS_MAX_WEB_SEARCH_CALLS', default=1, cast=int)
 # Driver-allowance days are estimated from the route's driving time at this
 # many driving hours per day (owner decision) — shown on screen, not hidden.
