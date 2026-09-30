@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('core', '0123_quote_base_rate_per_km_quote_route_snapshot_and_more'),
+        ('core', '0131_quote_base_rate_per_km_quote_route_snapshot_and_more'),
     ]
 
     operations = [

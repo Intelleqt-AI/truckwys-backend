@@ -8,7 +8,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('core', '0122_add_company_fuel_zone'),
+        ('core', '0130_alter_user_role'),
     ]
 
     operations = [
