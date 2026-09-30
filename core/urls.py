@@ -14,7 +14,7 @@ from .views_admin import (
     AdminBorderFeesView, AdminBorderFeeDetailView,
     AdminCountryTransitRatesView, AdminCountryTransitRateDetailView,
     AdminSearchView, AdminJobHealthView, AdminIntegrationsHealthView,
-    AdminModelHealthView, AdminAuditLogView,
+    AdminModelHealthView, AdminAuditLogView, AdminAIUsageView,
 )
 from .views import (
     UserViewSet, CustomerViewSet, DriverViewSet,
@@ -33,7 +33,7 @@ from .views import (
     AuthHandoffMintView, AuthHandoffExchangeView,
 )
 from .views_ai_quote import (
-    AIChatQuoteView, AIQuoteAnalyzeView, AIQuoteSuggestionView, AIVoiceQuoteView,
+    AIChatQuoteView, AIQuoteAnalyzeView, AIQuotePriceAnalysisView, AIQuoteSuggestionView, AIVoiceQuoteView,
     FuelPriceCurrentView, FuelPriceSurchargeCheckView,
     QuoteBenchmarkView, QuoteFuelAlertView, QuoteModelStatsView,
     QuoteOutcomeView, QuoteWinProbabilityView, RevenueGuardView
@@ -166,6 +166,7 @@ urlpatterns = [
     path('admin/job-health/', AdminJobHealthView.as_view(), name='admin-job-health'),
     path('admin/integrations-health/', AdminIntegrationsHealthView.as_view(), name='admin-integrations-health'),
     path('admin/model-health/', AdminModelHealthView.as_view(), name='admin-model-health'),
+    path('admin/ai-usage/', AdminAIUsageView.as_view(), name='admin-ai-usage'),
     path('admin/audit-log/', AdminAuditLogView.as_view(), name='admin-audit-log'),
     path('billing/confirm/', ConfirmPaymentView.as_view(), name='billing-confirm'),
     path('auth/me/', UserProfileView.as_view(), name='user-profile'),
@@ -226,6 +227,7 @@ urlpatterns = [
     path('agent/memory/', CopilotMemoryView.as_view(), name='agent-memory'),
     path('quotes/optimize/', AIPriceOptimizeView.as_view(), name='quote-optimize'),
     path('quotes/analyze/', AIQuoteAnalyzeView.as_view(), name='quote-analyze'),
+    path('quotes/ai-price-analysis/', AIQuotePriceAnalysisView.as_view(), name='quote-ai-price-analysis'),
     path('risk/underwrite/', RiskUnderwriteView.as_view(), name='risk-underwrite'),
     path('risk/score/<int:pk>/explain/', RiskScoreExplainView.as_view(), name='risk-score-explain'),
     path('dashboard/overview/', DashboardOverviewView.as_view(), name='dashboard-overview'),
