@@ -6,6 +6,9 @@ never borrow a real company's name, and it must never touch another tenant.
 """
 import os
 import re
+import shutil
+import tempfile
+from collections import defaultdict
 from datetime import timedelta
 from decimal import Decimal
 from io import StringIO
@@ -13,13 +16,15 @@ from unittest import mock
 
 from django.core.management import call_command
 from django.db.models import Count, Sum
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from core.models import (
-    ActivityEvent, Company, Customer, Driver, Expense, Invoice, Load, Notification,
-    Payment, Quote, Settlement, Trip, User, Vehicle, VehicleLog, VehicleType,
+    ActivityEvent, Company, CopilotConversation, CopilotMessage, Customer, Driver, Expense, Invoice, Load,
+    Notification, Payment, Quote, Settlement, Trip, User, Vehicle, VehicleLog, VehicleType,
 )
+
+_MEDIA = tempfile.mkdtemp(prefix='demo-seed-media-')
 from core.services import demo_seed, demo_seed_data
 
 # Real South African (and multinational) brands a fictional demo must never
@@ -77,7 +82,13 @@ class DemoSeedDataTests(TestCase):
         self.assertFalse(hasattr(demo_seed, 'DEMO_USER_PASSWORD'))
 
 
+@override_settings(MEDIA_ROOT=_MEDIA)
 class DemoCompanySeedTests(TestCase):
+    @classmethod
+    def tearDownClass(cls):
+        super().tearDownClass()
+        shutil.rmtree(_MEDIA, ignore_errors=True)
+
     @classmethod
     def setUpTestData(cls):
         # A real tenant with its own data — the seed must never touch it.
@@ -100,6 +111,8 @@ class DemoCompanySeedTests(TestCase):
         with mock.patch.dict(os.environ, {demo_seed.DEMO_PASSWORD_ENV: 'local-only-test-pw'}):
             cls.summary = demo_seed.seed_demo_company()
         cls.company = cls.summary['company']
+        cls.today = timezone.localdate()
+        cls.window_start = demo_seed._window_start(cls.today)
 
     @staticmethod
     def _snapshot(company):
@@ -134,6 +147,31 @@ class DemoCompanySeedTests(TestCase):
         self.assertEqual(self.company.subscription_status, 'active')
         self.assertEqual(Company.objects.filter(is_demo=True).count(), 1)
 
+    def test_demo_is_on_an_active_paid_plan_that_can_never_be_charged(self):
+        company = Company.objects.get(pk=self.company.pk)
+        self.assertEqual(company.subscription_plan, 'pro')  # not "Free plan" in the sidebar
+        self.assertEqual(company.subscription_status, 'active')
+        self.assertFalse(company.cancel_at_period_end)
+        self.assertGreater(company.next_billing_date, self.today)
+        # No card on file: the monthly sweep skips it, so no Paystack call, ever.
+        self.assertFalse(company.paystack_authorization_code)
+        from core.services.subscription_billing import charge_monthly_subscription_fee
+        company.next_billing_date = self.today
+        with mock.patch('core.services.paystack.charge_authorization') as charge:
+            result = charge_monthly_subscription_fee(company)
+        charge.assert_not_called()
+        self.assertFalse(result['charged'])
+        # The billing status the sidebar reads.
+        from core.serializers_billing import BillingStatusSerializer
+        data = BillingStatusSerializer(Company.objects.get(pk=self.company.pk)).data
+        self.assertEqual((data['subscription_plan'], data['subscription_status']), ('pro', 'active'))
+
+    def test_invoices_carry_fictional_bank_details(self):
+        from core.services.payment_details import public_payment_details
+        details = public_payment_details(self.company)
+        self.assertIsNotNone(details)
+        self.assertIn('fictional', details['bank_name'].lower())
+
     def test_fleet_drivers_customers(self):
         self.assertEqual(Vehicle.objects.filter(company=self.company).count(), len(demo_seed_data.DEMO_VEHICLES))
         drivers = Driver.objects.filter(company=self.company)
@@ -152,15 +190,74 @@ class DemoCompanySeedTests(TestCase):
 
     def test_twelve_months_of_history_ending_today(self):
         loads = Load.objects.filter(company=self.company)
-        today = timezone.localdate()
-        first = loads.order_by('pickup_date').first().pickup_date.date()
-        self.assertLessEqual(first, today - timedelta(days=365))
+        today = self.today
+        in_window = loads.filter(pickup_date__date__gte=self.window_start)
+        first = in_window.order_by('pickup_date').first().pickup_date.astimezone(timezone.get_current_timezone()).date()
+        self.assertLessEqual((first - self.window_start).days, 4)
+        self.assertEqual(self.window_start.day, 1)
+        self.assertEqual((today.year * 12 + today.month) - (self.window_start.year * 12 + self.window_start.month), 11)
         self.assertTrue(loads.filter(pickup_date__date=today - timedelta(days=1)).exists()
                         or loads.filter(pickup_date__date=today).exists())
         by_status = dict(loads.values_list('status').annotate(n=Count('id')))
         self.assertGreater(by_status['INVOICED'], 0.9 * loads.count())
-        for status in ('IN_TRANSIT', 'ASSIGNED'):
-            self.assertIn(status, by_status)
+        self.assertTrue(set(by_status) & {'IN_TRANSIT', 'LOADING', 'ASSIGNED'}, by_status)
+
+    def test_every_list_stays_under_the_dashboard_row_cap(self):
+        # The dashboard reads each list through fetchAllPages (50 pages x 20):
+        # at 1 000 rows or more Home, P&L, Debtors, VAT and Expenses go partial.
+        cap = demo_seed.FRONTEND_ROW_CAP
+        self.assertEqual(cap, 1000)
+        counts = {
+            'quotes': Quote.objects.filter(company=self.company).count(),
+            'loads': Load.objects.filter(company=self.company).count(),
+            'invoices': Invoice.objects.filter(company=self.company).count(),
+            'payments': Payment.objects.filter(company=self.company).count(),
+            'expenses': Expense.objects.filter(company=self.company).count(),
+            'trips': Trip.objects.filter(load__company=self.company).count(),
+            'customers': Customer.objects.filter(company=self.company).count(),
+            'vehicles': Vehicle.objects.filter(company=self.company).count(),
+            'drivers': Driver.objects.filter(company=self.company).count(),
+        }
+        for kind, n in counts.items():
+            self.assertLess(n, cap, f'{kind}: {n} rows')
+        # Headroom so a busy month never tips a list over the cap.
+        self.assertLessEqual(counts['loads'], 960, counts)
+        self.assertLessEqual(counts['invoices'], 930, counts)
+        self.assertLessEqual(counts['payments'], 880, counts)
+        self.assertLessEqual(counts['expenses'], 900, counts)
+        self.assertLessEqual(counts['quotes'], 950, counts)
+        # About five loads per truck a month.
+        in_window = Load.objects.filter(company=self.company, pickup_date__date__gte=self.window_start).count()
+        per_truck_month = in_window / len(demo_seed_data.DEMO_VEHICLES) / 12
+        self.assertTrue(3.8 <= per_truck_month <= 5.5, per_truck_month)
+
+    def test_nothing_is_dated_after_today(self):
+        today, now = self.today, timezone.now()
+        c = self.company
+        self.assertFalse(Load.objects.filter(company=c, pickup_date__date__gt=today).exists())
+        self.assertFalse(Load.objects.filter(company=c, delivery_date__date__gt=today).exists())
+        self.assertFalse(Load.objects.filter(company=c, actual_delivered_at__gt=now).exists())
+        self.assertFalse(Load.objects.filter(company=c, created_at__gt=now).exists())
+        self.assertFalse(Invoice.objects.filter(company=c, issue_date__gt=today).exists())
+        self.assertFalse(Invoice.objects.filter(company=c, created_at__gt=now).exists())
+        self.assertFalse(Payment.objects.filter(company=c, payment_date__gt=today).exists())
+        self.assertFalse(Expense.objects.filter(company=c, expense_date__gt=today).exists())
+        self.assertFalse(Quote.objects.filter(company=c, created_at__gt=now).exists())
+        self.assertFalse(Trip.objects.filter(load__company=c, start_time__gt=now).exists())
+        self.assertFalse(Settlement.objects.filter(company=c, end_date__gt=today).exists())
+        self.assertFalse(CopilotMessage.objects.filter(user__company=c, created_at__gt=now).exists())
+
+    def test_only_an_opening_debtors_book_predates_the_window(self):
+        c, start = self.company, self.window_start
+        # Home compares with "the prior 12 months": nothing there to compare.
+        self.assertFalse(Payment.objects.filter(company=c, payment_date__lt=start).exists())
+        self.assertFalse(Expense.objects.filter(company=c, expense_date__lt=start).exists())
+        self.assertFalse(Quote.objects.filter(company=c, created_at__date__lt=start).exists())
+        opening = Invoice.objects.filter(company=c, issue_date__lt=start)
+        self.assertTrue(opening.exists())
+        for inv in opening:
+            self.assertFalse(Payment.objects.filter(invoice=inv, payment_date__lt=start).exists())
+            self.assertGreaterEqual(inv.issue_date, start - timedelta(days=demo_seed.RUN_IN_DAYS + 1))
 
     def test_stale_open_loads_are_deliberate_and_rare(self):
         now = timezone.now()
@@ -221,20 +318,93 @@ class DemoCompanySeedTests(TestCase):
                                                due_date__lt=today - timedelta(days=30)).exists())
 
     def test_margin_is_believable_and_two_lanes_lose_money(self):
-        today = timezone.localdate()
-        since = today - timedelta(days=365)
+        since = self.window_start
         revenue = Invoice.objects.filter(company=self.company, issue_date__gte=since).exclude(
             status__in=['DRAFT', 'CANCELLED']).aggregate(s=Sum('subtotal'))['s']
-        costs = Expense.objects.filter(company=self.company, expense_date__gte=since).exclude(
-            status='REJECTED').aggregate(s=Sum('amount'))['s']
+        costs = Expense.objects.filter(company=self.company, expense_date__gte=since,
+                                       status='APPROVED').aggregate(s=Sum('amount'))['s']
         margin = (revenue - costs) / revenue * 100
-        self.assertTrue(10 <= margin <= 25, f'overall margin {margin:.1f}%')
+        # Home's net margin is on the cash basis: receipts excl. VAT.
+        cash = Payment.objects.filter(company=self.company, payment_date__gte=since).aggregate(s=Sum('amount'))['s']
+        cash_excl = cash / Decimal('1.15')
+        cash_margin = (cash_excl - costs) / cash_excl * 100
+        # Target 12-20% on both bases; a little tolerance because the history
+        # is generated relative to whatever day the tests run.
+        self.assertTrue(10 <= margin <= 22, f'invoice-basis margin {margin:.1f}%')
+        self.assertTrue(10 <= cash_margin <= 22, f'cash-basis margin {cash_margin:.1f}%')
 
         from core.services.reports import margin_by_lane
         lanes = margin_by_lane(self.company)
         rows = lanes['lanes'] if isinstance(lanes, dict) else lanes
         losing = {r['lane'] for r in rows if r['margin_pct'] is not None and r['margin_pct'] < 0}
         self.assertEqual(losing, {'Durban → Gqeberha', 'Johannesburg → Polokwane'})
+
+    def test_collection_rate_is_realistic(self):
+        # Most of the book is collected within 60 days of invoicing.
+        cutoff = self.today - timedelta(days=60)
+        invoices = Invoice.objects.filter(company=self.company, issue_date__gte=self.window_start,
+                                          issue_date__lte=cutoff).exclude(status__in=['DRAFT', 'CANCELLED'])
+        billed = collected = Decimal('0')
+        for inv in invoices:
+            billed += inv.total_amount
+            collected += sum((p.amount for p in inv.payments.all()
+                              if (p.payment_date - inv.issue_date).days <= 60), Decimal('0'))
+        rate = collected / billed * 100
+        self.assertTrue(78 <= rate <= 93, f'collected within 60 days: {rate:.1f}%')
+        # This month's invoices already partly paid (the Invoices "Collected" tile).
+        month = Invoice.objects.filter(company=self.company, issue_date__gte=self.today.replace(day=1)).exclude(
+            status__in=['DRAFT', 'CANCELLED'])
+        if self.today.day >= 20:
+            billed = month.aggregate(s=Sum('total_amount'))['s']
+            paid = month.aggregate(s=Sum('paid_amount'))['s']
+            self.assertGreater(paid / billed, Decimal('0.1'))
+
+    def test_quote_margins_are_believable(self):
+        margins = list(Quote.objects.filter(company=self.company).values_list('margin_percentage', flat=True))
+        self.assertTrue(margins)
+        self.assertTrue(all(Decimal('12') <= m <= Decimal('25') for m in margins), (min(margins), max(margins)))
+
+    def test_every_lane_has_a_sample_worth_ranking(self):
+        per_lane = defaultdict(int)
+        for pickup, delivery in Load.objects.filter(company=self.company, status='INVOICED').values_list(
+                'pickup_city', 'delivery_city'):
+            per_lane[(pickup, delivery)] += 1
+        self.assertEqual(len(per_lane), len(demo_seed_data.DEMO_LANES))
+        self.assertGreaterEqual(min(per_lane.values()), 20, per_lane)
+
+    def test_pod_files_on_most_delivered_loads(self):
+        from django.core.files.storage import default_storage
+        delivered = Load.objects.filter(company=self.company, status='INVOICED')
+        with_pod = delivered.exclude(pod_document='').exclude(pod_document__isnull=True)
+        share = with_pod.count() / delivered.count()
+        self.assertTrue(0.5 <= share <= 0.7, share)
+        sample = with_pod.first()
+        self.assertTrue(sample.pod_document.name.startswith(demo_seed.POD_DIR))
+        self.assertTrue(default_storage.exists(sample.pod_document.name))
+        with default_storage.open(sample.pod_document.name) as fh:
+            self.assertEqual(fh.read(8), b'\x89PNG\r\n\x1a\n')
+        # The two "no POD on file" stories stay without one.
+        self.assertTrue(delivered.filter(pod_received_by='', pod_document='').exists())
+
+    def test_copilot_has_stored_sample_conversations_that_match_the_books(self):
+        user = User.objects.get(username=demo_seed.DEMO_USER_EMAIL)
+        convs = CopilotConversation.objects.filter(user=user)
+        self.assertTrue(2 <= convs.count() <= 3)
+        for conv in convs:
+            roles = list(conv.messages.order_by('created_at').values_list('role', flat=True))
+            self.assertEqual(roles, ['user', 'assistant'])
+        debtors = convs.get(messages__content='Who owes me the most right now?')
+        answer = debtors.messages.get(role='assistant').content
+        owed = defaultdict(Decimal)
+        for inv in Invoice.objects.filter(company=self.company, balance__gt=0,
+                                          status__in=['SENT', 'VIEWED', 'PARTIALLY_PAID', 'OVERDUE']):
+            owed[inv.customer.name] += inv.balance
+        top = max(owed, key=owed.get)
+        self.assertIn(f'**{top}**', answer)
+        self.assertIn(f'R{owed[top]:,.0f}', answer)
+        self.assertRegex(answer, r'KL-INV-\d{5}')
+        lanes = convs.get(messages__content='Which lane lost money last month?').messages.get(role='assistant').content
+        self.assertIn('Durban → Gqeberha', lanes)
 
     def test_quote_win_rate(self):
         quotes = Quote.objects.filter(company=self.company)
@@ -250,12 +420,24 @@ class DemoCompanySeedTests(TestCase):
         from core.management.commands.seed_toll_data import _PLAZA_DATA
         n3 = sum(d['tariff_class_5'] for d in _PLAZA_DATA if d['route'] == 'N3')
         trip = Trip.objects.filter(load__company=self.company, status='COMPLETED', load__pickup_city='Johannesburg',
-                                   load__delivery_city='Durban', vehicle__vehicle_type__sanral_toll_class=4).first()
+                                   load__delivery_city='Durban', vehicle__vehicle_type__sanral_toll_class=4,
+                                   start_time__date__gte=self.window_start).first()
         self.assertEqual(trip.actual_toll_cost, n3)
-        fuel = Expense.objects.get(trip=trip, category='FUEL')
-        month = trip.load.pickup_date.astimezone(timezone.get_current_timezone()).date()
+        # Fuel is booked as one fuel-card statement per truck a month: the
+        # loaded legs' litres plus the empty-running share, at that month's
+        # diesel price.
+        tz = timezone.get_current_timezone()
+        month = trip.start_time.astimezone(tz).date().replace(day=1)
+        statement = Expense.objects.get(company=self.company, category='FUEL', vehicle=trip.vehicle,
+                                        description__startswith=f'Fuel card statement - {trip.vehicle.plate} - {month:%b %Y}')
         price = demo_seed._diesel_by_month(month, month)[(month.year, month.month)]
-        self.assertEqual(fuel.amount, (trip.actual_fuel_litres * price).quantize(Decimal('0.01')))
+        litres = int(re.search(r'\((\d+) L\)', statement.description).group(1))
+        self.assertAlmostEqual(float(statement.amount), litres * float(price), delta=float(price) * 1.01)
+        loaded = sum((t.actual_fuel_litres or 0) for t in Trip.objects.filter(
+            vehicle=trip.vehicle, status='COMPLETED', start_time__date__gte=month,
+            start_time__date__lt=(month + timedelta(days=32)).replace(day=1)))
+        self.assertGreaterEqual(litres + 1, loaded)
+        self.assertLessEqual(litres, loaded * Decimal('1.5') + 900)
 
     def test_expenses_include_pending_approvals_and_every_category(self):
         expenses = Expense.objects.filter(company=self.company)

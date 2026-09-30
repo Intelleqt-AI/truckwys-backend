@@ -196,27 +196,27 @@ DEMO_CUSTOMERS = [
     {'name': 'Bothaville Ridge Maize Co-op',      'slug': 'bothavilleridge',  'sector': 'Agriculture', 'city': 'Bothaville',       'state': 'Free State',     'contact': 'Hendrik du Plessis', 'terms': 'NET30', 'profile': 'steady',  'lanes': ['BTV-JHB'], 'weight': 5, 'season': (5, 6, 7, 8, 9), 'cargo': ['Bulk yellow maize', 'Bulk white maize'], 'quotes': False},
     {'name': 'Groenkloof Citrus Packhouse',       'slug': 'groenkloofcitrus', 'sector': 'Agriculture', 'city': 'Tzaneen',          'state': 'Limpopo',        'contact': 'Marelize Joubert',   'terms': 'NET30', 'profile': 'prompt',  'lanes': ['TZN-JHB'], 'weight': 5, 'season': (4, 5, 6, 7, 8, 9), 'cargo': ['Palletised oranges (cold chain)', 'Palletised lemons (cold chain)'], 'quotes': False},
     {'name': 'Kraalspruit Feed Mills',            'slug': 'kraalspruitfeeds', 'sector': 'Agriculture', 'city': 'Standerton',       'state': 'Mpumalanga',     'contact': 'Sizwe Mabena',       'terms': 'NET30', 'profile': 'slow',    'lanes': ['JHB-DBN', 'JHB-BFN'], 'weight': 4, 'cargo': ['Bagged animal feed', 'Bagged poultry feed'], 'quotes': True},
-    {'name': 'Crocodile River Veg Growers',       'slug': 'crocriverveg',     'sector': 'Agriculture', 'city': 'Brits',            'state': 'North West',     'contact': 'Annatjie Smit',      'terms': 'NET30', 'profile': 'steady',  'lanes': ['JHB-DBN', 'JHB-CPT'], 'weight': 3, 'cargo': ['Onions in 10kg pockets', 'Potatoes in 10kg pockets'], 'quotes': True},
+    {'name': 'Crocodile River Veg Growers',       'slug': 'crocriverveg',     'sector': 'Agriculture', 'city': 'Brits',            'state': 'North West',     'contact': 'Annatjie Smit',      'terms': 'NET30', 'profile': 'prompt',  'lanes': ['JHB-DBN', 'JHB-CPT'], 'weight': 4, 'cargo': ['Onions in 10kg pockets', 'Potatoes in 10kg pockets'], 'quotes': True},
     {'name': 'Lowveld Canopy Nuts',               'slug': 'lowveldcanopy',    'sector': 'Agriculture', 'city': 'Mbombela',         'state': 'Mpumalanga',     'contact': 'Grant Liebenberg',   'terms': 'NET30', 'profile': 'prompt',  'lanes': ['MBB-MPM'], 'weight': 4, 'cargo': ['Macadamia nut-in-shell for export', 'Containerised macadamias'], 'quotes': False},
     {'name': 'Nyoni Cane & Agri Supplies',        'slug': 'nyonicane',        'sector': 'Agriculture', 'city': 'KwaDukuza',        'state': 'KwaZulu-Natal',  'contact': 'Bheki Ngcobo',       'terms': 'NET60', 'profile': 'chronic', 'lanes': ['DBN-JHB', 'DBN-GQB'], 'weight': 3, 'cargo': ['Bagged fertiliser', 'Bagged sugar'], 'quotes': True},
     {'name': 'Kouebokkeveld Rooibos Traders',     'slug': 'kbvrooibos',       'sector': 'Agriculture', 'city': 'Ceres',            'state': 'Western Cape',   'contact': 'Elmarie Kotze',      'terms': 'NET30', 'profile': 'steady',  'lanes': ['CPT-JHB'], 'weight': 2, 'cargo': ['Bulk rooibos tea in bales'], 'quotes': True},
     # FMCG distribution
     {'name': 'Ubuntu Pantry Distributors',        'slug': 'ubuntupantry',     'sector': 'FMCG distribution', 'city': 'Germiston',  'state': 'Gauteng',        'contact': 'Palesa Mofokeng',    'terms': 'NET30', 'profile': 'steady',  'lanes': ['JHB-DBN', 'MID-PTA'], 'weight': 6, 'cargo': ['Palletised dry groceries', 'Mixed FMCG pallets'], 'quotes': False},
-    {'name': 'Blue Crane Beverage Distributors',  'slug': 'bluecranebev',     'sector': 'FMCG distribution', 'city': 'Pinetown',   'state': 'KwaZulu-Natal',  'contact': 'Kavitha Naidoo',     'terms': 'NET30', 'profile': 'prompt',  'lanes': ['DBN-JHB', 'DBN-PMB'], 'weight': 6, 'cargo': ['Palletised soft drinks', 'Bottled water pallets'], 'quotes': False},
-    {'name': 'Kaapse Kombuis Wholesale',          'slug': 'kaapsekombuis',    'sector': 'FMCG distribution', 'city': 'Cape Town',  'state': 'Western Cape',   'contact': 'Yusuf Isaacs',       'terms': 'NET60', 'profile': 'slow',    'lanes': ['CPT-JHB', 'JHB-CPT'], 'weight': 5, 'cargo': ['Canned goods and preserves', 'Palletised baking supplies'], 'quotes': False},
-    {'name': 'Imbali Cash & Carry',               'slug': 'imbalicc',         'sector': 'FMCG distribution', 'city': 'Pietermaritzburg', 'state': 'KwaZulu-Natal', 'contact': 'Nokuthula Shezi',  'terms': 'NET30', 'profile': 'chronic', 'lanes': ['DBN-PMB'], 'weight': 3, 'cargo': ['Mixed grocery pallets', 'Bagged maize meal'], 'quotes': True},
-    {'name': 'Kestrel Snacks & Confectionery',    'slug': 'kestrelsnacks',    'sector': 'FMCG distribution', 'city': 'Kempton Park', 'state': 'Gauteng',      'contact': 'Riana Oosthuizen',   'terms': 'NET30', 'profile': 'steady',  'lanes': ['JHB-CPT', 'JHB-BFN'], 'weight': 4, 'cargo': ['Boxed confectionery', 'Palletised snack foods'], 'quotes': True},
-    {'name': 'Suikerbos Household Goods',         'slug': 'suikerboshh',      'sector': 'FMCG distribution', 'city': 'Midrand',    'state': 'Gauteng',        'contact': 'Tebogo Masemola',    'terms': 'NET30', 'profile': 'prompt',  'lanes': ['MID-PTA', 'JHB-DBN'], 'weight': 4, 'cargo': ['Cleaning products', 'Paper and household goods'], 'quotes': False},
-    {'name': 'Seaview Canned Foods Distribution', 'slug': 'seaviewcanned',    'sector': 'FMCG distribution', 'city': 'Gqeberha',   'state': 'Eastern Cape',   'contact': 'Warren Jacobs',      'terms': 'NET60', 'profile': 'slow',    'lanes': ['DBN-GQB'], 'weight': 4, 'cargo': ['Canned fish and vegetables', 'Palletised canned foods'], 'quotes': False},
+    {'name': 'Blue Crane Beverage Distributors',  'slug': 'bluecranebev',     'sector': 'FMCG distribution', 'city': 'Pinetown',   'state': 'KwaZulu-Natal',  'contact': 'Kavitha Naidoo',     'terms': 'NET30', 'profile': 'prompt',  'lanes': ['DBN-JHB', 'DBN-PMB'], 'weight': 5, 'cargo': ['Palletised soft drinks', 'Bottled water pallets'], 'quotes': False},
+    {'name': 'Kaapse Kombuis Wholesale',          'slug': 'kaapsekombuis',    'sector': 'FMCG distribution', 'city': 'Cape Town',  'state': 'Western Cape',   'contact': 'Yusuf Isaacs',       'terms': 'NET30', 'profile': 'slow',    'lanes': ['CPT-JHB', 'JHB-CPT'], 'weight': 7, 'cargo': ['Canned goods and preserves', 'Palletised baking supplies'], 'quotes': False},
+    {'name': 'Imbali Cash & Carry',               'slug': 'imbalicc',         'sector': 'FMCG distribution', 'city': 'Pietermaritzburg', 'state': 'KwaZulu-Natal', 'contact': 'Nokuthula Shezi',  'terms': 'NET30', 'profile': 'chronic', 'lanes': ['DBN-PMB'], 'weight': 2, 'cargo': ['Mixed grocery pallets', 'Bagged maize meal'], 'quotes': True},
+    {'name': 'Kestrel Snacks & Confectionery',    'slug': 'kestrelsnacks',    'sector': 'FMCG distribution', 'city': 'Kempton Park', 'state': 'Gauteng',      'contact': 'Riana Oosthuizen',   'terms': 'NET30', 'profile': 'prompt',  'lanes': ['JHB-CPT', 'JHB-BFN'], 'weight': 5, 'cargo': ['Boxed confectionery', 'Palletised snack foods'], 'quotes': True},
+    {'name': 'Suikerbos Household Goods',         'slug': 'suikerboshh',      'sector': 'FMCG distribution', 'city': 'Midrand',    'state': 'Gauteng',        'contact': 'Tebogo Masemola',    'terms': 'NET30', 'profile': 'prompt',  'lanes': ['MID-PTA', 'JHB-DBN'], 'weight': 3, 'cargo': ['Cleaning products', 'Paper and household goods'], 'quotes': False},
+    {'name': 'Seaview Canned Foods Distribution', 'slug': 'seaviewcanned',    'sector': 'FMCG distribution', 'city': 'Gqeberha',   'state': 'Eastern Cape',   'contact': 'Warren Jacobs',      'terms': 'NET30', 'profile': 'slow',    'lanes': ['DBN-GQB'], 'weight': 4, 'cargo': ['Canned fish and vegetables', 'Palletised canned foods'], 'quotes': False},
     {'name': 'Riverbend Dairy Distributors',      'slug': 'riverbenddairy',   'sector': 'FMCG distribution', 'city': 'Howick',     'state': 'KwaZulu-Natal',  'contact': 'Craig McKenzie',     'terms': 'NET30', 'profile': 'stopped', 'lanes': ['DBN-JHB'], 'weight': 4, 'cargo': ['Long-life milk pallets', 'UHT dairy products'], 'quotes': False},
     # Building supplies
     {'name': 'Rietspruit Bricks & Blocks',        'slug': 'rietspruitbricks', 'sector': 'Building supplies', 'city': 'Brakpan',    'state': 'Gauteng',        'contact': 'Lebo Mashaba',       'terms': 'NET30', 'profile': 'steady',  'lanes': ['JHB-EML', 'ISA-SEC'], 'weight': 3, 'cargo': ['Clay stock bricks', 'Cement blocks on pallets'], 'quotes': True},
-    {'name': 'Ironbark Roofing & Steel',          'slug': 'ironbarkroofing',  'sector': 'Building supplies', 'city': 'Vereeniging', 'state': 'Gauteng',       'contact': 'Deon Swanepoel',     'terms': 'NET60', 'profile': 'slow',    'lanes': ['JHB-BFN', 'JHB-DBN'], 'weight': 4, 'cargo': ['IBR roof sheeting', 'Steel purlins and lipped channel'], 'quotes': True},
+    {'name': 'Ironbark Roofing & Steel',          'slug': 'ironbarkroofing',  'sector': 'Building supplies', 'city': 'Vereeniging', 'state': 'Gauteng',       'contact': 'Deon Swanepoel',     'terms': 'NET30', 'profile': 'slow',    'lanes': ['JHB-BFN', 'JHB-DBN'], 'weight': 4, 'cargo': ['IBR roof sheeting', 'Steel purlins and lipped channel'], 'quotes': True},
     {'name': 'Rooihuis Timber & Hardware',        'slug': 'rooihuistimber',   'sector': 'Building supplies', 'city': 'Polokwane',  'state': 'Limpopo',        'contact': 'Johan Grobler',      'terms': 'NET30', 'profile': 'chronic', 'lanes': ['JHB-PLK'], 'weight': 4, 'cargo': ['Treated pine timber', 'Hardware and fittings'], 'quotes': False},
-    {'name': 'Kgosi Building Supplies',           'slug': 'kgosibuild',       'sector': 'Building supplies', 'city': 'Pretoria',   'state': 'Gauteng',        'contact': 'Kgomotso Mahlangu',  'terms': 'NET30', 'profile': 'steady',  'lanes': ['MID-PTA', 'JHB-PLK'], 'weight': 3, 'cargo': ['Bagged cement', 'Plumbing and PVC pipe'], 'quotes': True},
+    {'name': 'Kgosi Building Supplies',           'slug': 'kgosibuild',       'sector': 'Building supplies', 'city': 'Pretoria',   'state': 'Gauteng',        'contact': 'Kgomotso Mahlangu',  'terms': 'NET30', 'profile': 'steady',  'lanes': ['MID-PTA', 'JHB-PLK'], 'weight': 2, 'cargo': ['Bagged cement', 'Plumbing and PVC pipe'], 'quotes': True},
     {'name': 'Bayside Tile & Sanitary',           'slug': 'baysidetile',      'sector': 'Building supplies', 'city': 'Durban',     'state': 'KwaZulu-Natal',  'contact': 'Ashwin Pillay',      'terms': 'NET30', 'profile': 'prompt',  'lanes': ['JHB-DBN'], 'weight': 3, 'cargo': ['Palletised floor tiles', 'Sanitaryware crates'], 'quotes': True},
-    {'name': 'Mzansi Glass & Aluminium',          'slug': 'mzansiglass',      'sector': 'Building supplies', 'city': 'Midrand',    'state': 'Gauteng',        'contact': 'Sello Ramaphakela',  'terms': 'NET30', 'profile': 'slow',    'lanes': ['JHB-CPT'], 'weight': 2, 'cargo': ['Glass on A-frames', 'Aluminium extrusions'], 'quotes': True},
-    {'name': 'Duinefontein Paint Wholesalers',    'slug': 'duinefonteinpaint', 'sector': 'Building supplies', 'city': 'Bellville', 'state': 'Western Cape',   'contact': 'Chantal Fortuin',    'terms': 'NET60', 'profile': 'steady',  'lanes': ['CPT-JHB'], 'weight': 3, 'cargo': ['Palletised paint drums', 'Coatings and thinners (non-hazardous)'], 'quotes': False},
+    {'name': 'Mzansi Glass & Aluminium',          'slug': 'mzansiglass',      'sector': 'Building supplies', 'city': 'Midrand',    'state': 'Gauteng',        'contact': 'Sello Ramaphakela',  'terms': 'NET30', 'profile': 'slow',    'lanes': ['JHB-CPT'], 'weight': 3, 'cargo': ['Glass on A-frames', 'Aluminium extrusions'], 'quotes': True},
+    {'name': 'Duinefontein Paint Wholesalers',    'slug': 'duinefonteinpaint', 'sector': 'Building supplies', 'city': 'Bellville', 'state': 'Western Cape',   'contact': 'Chantal Fortuin',    'terms': 'NET60', 'profile': 'steady',  'lanes': ['CPT-JHB'], 'weight': 4, 'cargo': ['Palletised paint drums', 'Coatings and thinners (non-hazardous)'], 'quotes': False},
     # Mining services
     {'name': 'Olifants Drill & Blast Services',   'slug': 'olifantsdrill',    'sector': 'Mining services', 'city': 'eMalahleni',   'state': 'Mpumalanga',     'contact': 'Vusi Mnisi',         'terms': 'NET60', 'profile': 'steady',  'lanes': ['JHB-EML'], 'weight': 3, 'cargo': ['Drill steel and bits', 'Mining consumables'], 'quotes': False},
     {'name': 'Waterberg Mining Consumables',      'slug': 'waterbergmining',  'sector': 'Mining services', 'city': 'Lephalale',    'state': 'Limpopo',        'contact': 'Francois Brits',     'terms': 'NET60', 'profile': 'slow',    'lanes': ['JHB-PLK'], 'weight': 2, 'cargo': ['Conveyor idlers', 'Mining PPE and consumables'], 'quotes': True},
@@ -238,6 +238,34 @@ DECLINE_REASONS = [
     'Awarded to their incumbent contract carrier',
     'Needed a flatbed, not a tautliner',
     'Budget cut for this quarter',
+]
+
+# Monthly cost structure for a 15-truck general-freight fleet doing about five
+# loads per truck a month. Fixed costs sized so the business runs a 12-20% net
+# margin on both the cash and the invoice basis.
+MONTHLY_COSTS = {
+    'insurance_per_truck': 6000,       # comprehensive + goods-in-transit, per truck a month
+    'rent': 50000,                     # City Deep yard and office
+    'telematics_per_unit': 465,
+    'it': (6500, 8200),                # office, telecoms & IT support (range)
+    'staff_count': 3,
+    'staff_salaries': 84000,           # operations & admin staff
+    'accounting': 9500,
+    'driver_basic': (16000, 19500),    # basic salary range per driver
+    'night_out': 480,                  # subsistence per night away
+    'finance_heavy': 28000,            # instalment, financed truck-tractor
+    'finance_light': 10900,            # instalment, financed box truck
+    'empty_fuel_share': '0.18',        # empty running on top of loaded-leg fuel
+    'empty_toll_share': '0.30',        # tolls on empty return legs
+    'claims_per_month': 2,             # driver out-of-pocket claims
+}
+
+# Driver out-of-pocket claims: (what, min rand, max rand).
+DRIVER_CLAIMS = [
+    ('overnight secure truck stop', 180, 420),
+    ('roadside puncture repair', 450, 950),
+    ('weighbridge and parking fees', 120, 300),
+    ('load straps replaced', 380, 760),
 ]
 
 # Fictional vendors for the expense ledger.

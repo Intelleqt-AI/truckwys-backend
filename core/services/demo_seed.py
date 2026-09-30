@@ -35,12 +35,13 @@ DEMO_USER_PASSWORD environment variable, or a random one is generated and
 returned once (the management command prints it). An existing login's
 password is never touched.
 """
+import logging
 import math
 import os
 import random
 import secrets
 from collections import defaultdict
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone as dt_timezone
 from decimal import Decimal, ROUND_HALF_UP
 
 from django.db import models, transaction
@@ -48,11 +49,13 @@ from django.db.models import Max, Q
 from django.utils import timezone
 
 from core.models import (
-    ActivityEvent, AdvanceRequest, Company, Customer, Driver, Expense, Invoice,
+    ActivityEvent, AdvanceRequest, Company, CopilotConversation, CopilotMessage, Customer, Driver, Expense, Invoice,
     Load, Notification, Payment, PaymentOutcome, Quote, QuoteOutcome, RiskScore,
     Settlement, Trip, User, UserSession, Vehicle, VehicleLog, VehicleType,
 )
 from core.services import demo_seed_data as data
+
+logger = logging.getLogger(__name__)
 
 IDLE_RESET_AFTER = timedelta(hours=1)
 
@@ -65,11 +68,38 @@ DEMO_PASSWORD_ENV = 'DEMO_USER_PASSWORD'
 NUMBER_PREFIX = 'KL-'
 HISTORY_MARKER_PREFIX = 'KL-LD-'
 
-# Twelve full months of history ending today, plus a ten-week run-in so the
-# first months of the window already have receipts coming in (a real
-# business doesn't start the year with an empty debtors book).
-HISTORY_DAYS = 365 + 70
-RNG_SEED = 20260930
+# Twelve calendar months of history: the 1st of the month eleven months ago up
+# to today — exactly the window Home and Reports call "12 months". Nothing is
+# dated before that window except an opening debtors book: loads delivered in
+# the RUN_IN_DAYS before it whose invoices were still unpaid on the first day
+# (so the first month already has receipts coming in, and there is no
+# half-filled "prior 12 months" for Home to compare against).
+HISTORY_MONTHS = 12
+RUN_IN_DAYS = 75
+# Fixed so every reseed on a given day produces the same books. Picked (from
+# a sweep of seeds, generated as of 30 Sep 2026 for the website screenshots)
+# for a year with no loss-making month on the cash basis; any seed gives
+# books in the same ranges.
+RNG_SEED = 1
+
+# The dashboard reads every list (loads, invoices, payments, expenses, quotes)
+# through fetchAllPages: at most 50 pages x 20 rows = 1 000 rows per type.
+# Above that, Home, P&L, Debtors, VAT and Expenses show "first 1000 of ..."
+# partial figures. The demo keeps every type comfortably under it: four to five
+# loads per truck per month (~900 loads a year for 15 trucks), monthly fuel-card / e-tag statements per truck
+# instead of one expense per fill-up, and one payroll line per driver a month.
+FRONTEND_ROW_CAP = 1000
+LOADS_PER_TRUCK_MONTH = 4.7
+
+# Quoted (planned) margin shown on quotes: what the quote builder estimated at
+# the time, fully costed. Believable 12-25%; the two lanes that actually lose
+# money were quoted thin, which is the story Insights tells.
+QUOTE_MARGIN_RANGE = (Decimal('12.0'), Decimal('25.0'))
+THIN_LANES = ('DBN-GQB', 'JHB-PLK')
+# Share of a spot customer's loads booked off a quote, and how many lost or
+# expired quotes surround each win (about a 40% win rate overall).
+QUOTE_SHARE = 0.75
+LOST_PER_WIN_WEIGHTS = ([0, 1, 2, 3], [12, 36, 34, 18])
 
 _CENT = Decimal('0.01')
 VAT_RATE = Decimal('0.15')
@@ -114,13 +144,37 @@ def _seed_company():
     for key, value in data.DEMO_COMPANY_PROFILE.items():
         setattr(company, key, value)
         fields.append(key)
-    company.subscription_status = 'active'
-    fields.append('subscription_status')
+    fields += _subscription_fields(company)
     if not company.onboarding_completed_at:
         company.onboarding_completed_at = timezone.now()
         fields.append('onboarding_completed_at')
     company.save(update_fields=fields)
     return company
+
+
+def _subscription_fields(company):
+    """Show the demo as a paying TruckWys Fleet customer (the sidebar reads
+    Settings > Billing's status: plan + status), using the model's own
+    subscription fields only. No card on file: run_monthly_subscription_billing
+    skips a company without paystack_authorization_code ("no card on file"),
+    so the demo can never be charged or pushed into grace/suspended, and no
+    Paystack call is ever made for it."""
+    today = timezone.localdate()
+    next_month = (today.replace(day=28) + timedelta(days=4)).replace(day=1)
+    company.subscription_plan = 'pro'
+    company.subscription_status = 'active'
+    company.cancel_at_period_end = False
+    company.grace_period_expires_at = None
+    if not company.subscription_start:
+        company.subscription_start = _aware(_window_start(today) - timedelta(days=75), 10)
+    company.subscription_end = None
+    company.next_billing_date = next_month
+    company.next_billing_at = datetime.combine(next_month, time(0, 0), tzinfo=dt_timezone.utc)
+    company.paystack_authorization_code = None
+    company.paystack_customer_code = None
+    return ['subscription_plan', 'subscription_status', 'cancel_at_period_end', 'grace_period_expires_at',
+            'subscription_start', 'subscription_end', 'next_billing_date', 'next_billing_at',
+            'paystack_authorization_code', 'paystack_customer_code']
 
 
 def _seed_user(company):
@@ -396,6 +450,83 @@ def _lane_tolls():
 
 
 # ---------------------------------------------------------------------------
+# Proof-of-delivery files (generated locally, fictional)
+# ---------------------------------------------------------------------------
+
+POD_DIR = 'pod/demo/'
+POD_SHARE = 0.6  # of delivered loads carry a scanned delivery note
+
+
+def _render_pod_png(ld, company_name):
+    """A small signed delivery note as a PNG, drawn locally with Pillow.
+    Everything on it comes from the (fictional) load; it is marked as sample
+    data so it can never be mistaken for a real document."""
+    from io import BytesIO
+    from PIL import Image, ImageDraw, ImageFont
+
+    def font(size):
+        try:
+            return ImageFont.load_default(size=size)
+        except TypeError:  # Pillow without FreeType sizing
+            return ImageFont.load_default()
+
+    w, h = 720, 900
+    img = Image.new('RGB', (w, h), (252, 251, 248))
+    d = ImageDraw.Draw(img)
+    ink, soft, blue = (28, 30, 34), (110, 112, 118), (38, 76, 160)
+    d.rectangle([0, 0, w, 86], fill=(236, 234, 228))
+    d.text((32, 22), 'DELIVERY NOTE / PROOF OF DELIVERY', font=font(26), fill=ink)
+    d.text((32, 56), f'{company_name}  -  sample document, fictional demo data', font=font(15), fill=soft)
+    delivered = timezone.localtime(ld.actual_delivered_at)
+    rows = [
+        ('Load', ld.load_number),
+        ('Delivered', delivered.strftime('%d %b %Y, %H:%M')),
+        ('From', ld.pickup_location),
+        ('To', ld.delivery_location),
+        ('Consignee', ld.customer.name),
+        ('Goods', ld.cargo_description),
+        ('Weight', f'{int(ld.weight):,} kg'.replace(',', ' ')),
+        ('Vehicle', ld.vehicle.plate if ld.vehicle else '-'),
+    ]
+    y = 118
+    for label, value in rows:
+        d.text((32, y), label, font=font(16), fill=soft)
+        d.text((170, y), str(value)[:58], font=font(18), fill=ink)
+        y += 40
+    d.line([32, y + 6, w - 32, y + 6], fill=(210, 207, 200), width=2)
+    d.text((32, y + 26), 'Received in good order and condition.', font=font(19), fill=ink)
+    d.text((32, y + 70), f'Received by: {ld.pod_received_by}', font=font(18), fill=ink)
+    # Signature: a deterministic squiggle per load.
+    seed = sum(ord(c) for c in ld.load_number)
+    pts, x0, y0 = [], 60, y + 170
+    for i in range(26):
+        pts.append((x0 + i * 11, y0 + int(18 * math.sin((i + seed) * 0.9) + 9 * math.cos(i * 1.7 + seed))))
+    d.line(pts, fill=blue, width=3)
+    d.line([40, y0 + 36, 360, y0 + 36], fill=soft, width=1)
+    d.text((40, y0 + 44), 'Signature', font=font(14), fill=soft)
+    # Receiving stamp.
+    cx, cy, r = w - 170, y0 + 5, 78
+    d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=blue, width=4)
+    d.text((cx - 50, cy - 26), 'RECEIVED', font=font(20), fill=blue)
+    d.text((cx - 44, cy + 4), delivered.strftime('%d %b %Y'), font=font(15), fill=blue)
+    d.text((32, h - 40), 'SAMPLE - not a real delivery note. TruckWys public demo.', font=font(14), fill=soft)
+    out = BytesIO()
+    img.convert('P', palette=Image.ADAPTIVE, colors=16).save(out, format='PNG', optimize=True)
+    return out.getvalue()
+
+
+def _delete_demo_pods(company):
+    """Remove the generated POD files of the demo company's loads."""
+    from django.core.files.storage import default_storage
+    names = Load.objects.filter(company=company, pod_document__startswith=POD_DIR).values_list('pod_document', flat=True)
+    for name in names:
+        try:
+            default_storage.delete(name)
+        except Exception:  # a missing file must never block a reset
+            pass
+
+
+# ---------------------------------------------------------------------------
 # History generation
 # ---------------------------------------------------------------------------
 
@@ -422,15 +553,37 @@ def _aware(d, hour=0, minute=0):
     return timezone.make_aware(datetime.combine(d, time(hour, minute)))
 
 
-def _engine_margin_pct(total, distance, diesel):
-    """Same cost model as core.services.margin_calculator.calculate_true_margin
-    (what /reports/margin-by-lane/ shows), so quote margins agree with it."""
-    per_km = diesel / Decimal('2.8') + Decimal('3.50') + Decimal('0.45') + Decimal('0.65')
-    cost = Decimal(distance) * Decimal('1.3') * per_km
-    if not total:
-        return Decimal('0')
-    pct = (Decimal(total) - cost) / Decimal(total) * 100
-    return max(Decimal('-99'), min(Decimal('99'), pct)).quantize(_CENT)
+def _window_start(today):
+    """1st of the month eleven months before today: the dashboard's
+    "12 months" period (Oct 2025 - Sep 2026 when today is 30 Sep 2026)."""
+    y, m = today.year, today.month - (HISTORY_MONTHS - 1)
+    while m < 1:
+        y, m = y - 1, m + 12
+    return date(y, m, 1)
+
+
+def _end_of_day(d):
+    return _aware(d, 23, 50)
+
+
+def _month_end(month_first, today):
+    nxt = (month_first.replace(day=28) + timedelta(days=4)).replace(day=1)
+    return min(today, nxt - timedelta(days=1))
+
+
+def _quote_margin_pct(rng, lane_code, markup=Decimal('1')):
+    """Fully-costed margin the quote builder showed when the quote was priced
+    (fuel, tolls, driver, tyres, overhead share). Kept in a believable 12-25%
+    band: thin on the two lanes that turn out to lose money once empty
+    backhaul is counted, a little higher when the quote was priced above the
+    contract rate (the lost ones)."""
+    lo, hi = QUOTE_MARGIN_RANGE
+    if lane_code in THIN_LANES:
+        base = Decimal(str(round(rng.uniform(12.2, 14.6), 1)))
+    else:
+        base = Decimal(str(round(rng.uniform(15.0, 21.5), 1)))
+    pct = base + (Decimal(markup) - 1) * 60
+    return max(lo, min(hi, pct)).quantize(Decimal('0.1'))
 
 
 class _HistoryBuilder:
@@ -438,10 +591,14 @@ class _HistoryBuilder:
         self.company = company
         self.user = user
         self.rng = random.Random(RNG_SEED)
+        self.qrng = random.Random(RNG_SEED + 1)
         # Local time throughout, so every .date() below is a South African date.
         self.now = timezone.localtime()
         self.today = timezone.localdate()
-        self.start = self.today - timedelta(days=HISTORY_DAYS)
+        self.window_start = _window_start(self.today)
+        self.window_start_at = _aware(self.window_start)
+        self.start = self.window_start - timedelta(days=RUN_IN_DAYS)
+        self.eod = _end_of_day(self.today)
         self.diesel = _diesel_by_month(self.start - timedelta(days=31), self.today + timedelta(days=10))
         self.tolls = _lane_tolls()
         self.types = types_by_name
@@ -530,30 +687,32 @@ class _HistoryBuilder:
             weight *= 1.9 if d.month in season else 0.3
         return weight
 
-    def _price(self, lane, heavy, d):
+    def _price(self, lane, heavy, d, rng=None):
         base = lane['heavy'] if heavy else lane['rigid']
         # Rates were reviewed on 1 March (+6%); before that they were lower.
         review = date(self.today.year if self.today.month >= 3 else self.today.year - 1, 3, 1)
         factor = Decimal('1.00') if d >= review else Decimal('0.943')
-        noise = Decimal(str(round(self.rng.uniform(-0.035, 0.035), 4)))
+        noise = Decimal(str(round((rng or self.rng).uniform(-0.035, 0.035), 4)))
         total = Decimal(base) * factor * (1 + noise)
         return _q(total.quantize(Decimal('10')))
 
     # -- loads & quotes ---------------------------------------------------
     def build_loads(self):
+        """About LOADS_PER_TRUCK_MONTH loads per truck a month, weekday heavy,
+        growing gently over the year, with the December/January slowdown."""
         spec_by_pk = self.cspec
         customers = self.customers
-        end = self.today + timedelta(days=3)
+        per_month = LOADS_PER_TRUCK_MONTH * len(self.units)
+        weekday_base = per_month / (21.7 + 4.3 * 0.3 + 4.3 * 0.05)
+        span = (self.today - self.start).days or 1
         d = self.start
-        while d <= end:
+        while d <= self.today:
             weekday = d.weekday()
-            base = 5.1 if weekday < 5 else (1.6 if weekday == 5 else 0.25)
-            growth = 0.9 + 0.2 * ((d - self.start).days / HISTORY_DAYS)
+            base = weekday_base * (1.0 if weekday < 5 else (0.3 if weekday == 5 else 0.05))
+            growth = 0.95 + 0.1 * ((d - self.start).days / span)
             if d.month == 12:
-                base *= 0.45 if d.day > 15 else 0.85
+                base *= 0.85 if d.day > 15 else 0.97
             elif d.month == 1 and d.day < 10:
-                base *= 0.5
-            if d > self.today:
                 base *= 0.8
             expected = base * growth
             count = int(expected) + (1 if self.rng.random() < expected - int(expected) else 0)
@@ -567,11 +726,21 @@ class _HistoryBuilder:
                 self._make_load(customer, spec, lane, d)
             d += timedelta(days=1)
 
-    def _make_load(self, customer, spec, lane, d, pickup=None):
+    def _make_load(self, customer, spec, lane, d, pickup=None, delivery=None):
         rng = self.rng
+        explicit = pickup is not None
         if pickup is None:
             hour = rng.choice([5, 6, 6, 7, 7, 8, 9, 10, 11, 13, 14])
             pickup = _aware(d, hour, rng.choice([0, 30]))
+        if delivery is None:
+            delivery = pickup + timedelta(hours=lane['hours'] + rng.choice([0, 0, 1, 2]))
+        if delivery > self.eod:
+            if not explicit:
+                # Nothing is dated after today: a load that would still be on
+                # the road tomorrow is left out (build_in_flight places the
+                # live board's loads so they land today).
+                return None
+            delivery = self.eod
         if lane['heavy'] and lane['rigid']:
             want_heavy = rng.random() < 0.6
         else:
@@ -580,8 +749,6 @@ class _HistoryBuilder:
         unit, driver = self._pick_unit(lane, want_heavy, pickup)
         if unit is None and not is_future:
             return None
-        hours = lane['hours'] + rng.choice([0, 0, 1, 2])
-        delivery = pickup + timedelta(hours=hours)
         heavy = unit.heavy if unit else want_heavy
         vclass = unit.vtype.sanral_toll_class if unit else (4 if heavy else 3)
         total = self._price(lane, heavy, d)
@@ -598,7 +765,7 @@ class _HistoryBuilder:
         status = 'INVOICED'
         actual = None
         if is_future:
-            status = 'ASSIGNED' if (unit and (pickup - self.now) < timedelta(hours=40) and rng.random() < 0.75) else 'PENDING'
+            status = 'ASSIGNED' if (unit and (explicit or rng.random() < 0.75)) else 'PENDING'
             if status == 'PENDING':
                 unit, driver = None, None
         elif delivery > self.now:
@@ -628,7 +795,10 @@ class _HistoryBuilder:
             if status in ('INVOICED', 'IN_TRANSIT', 'LOADING'):
                 unit.place = lane['to'] if status == 'INVOICED' else lane['from']
 
-        from_quote = spec['quotes'] and rng.random() < 0.8
+        run_in = pickup.date() < self.window_start
+        # Spot customers book most loads off a quote; the opening-book loads
+        # (before the window) carry no quote rows.
+        from_quote = spec['quotes'] and not run_in and rng.random() < QUOTE_SHARE
         pk, dl = lane['pickup'], lane['delivery']
         load = Load(
             company=self.company,
@@ -662,7 +832,7 @@ class _HistoryBuilder:
         self.loads.append(load)
         self.load_meta[id(load)] = {
             'lane': lane, 'unit': unit, 'toll': toll, 'diesel': diesel, 'vtype': vtype_name,
-            'spec': spec, 'booked': booked,
+            'spec': spec, 'booked': booked, 'run_in': run_in,
         }
         if unit is not None and status in ('INVOICED', 'IN_TRANSIT', 'LOADING'):
             km = Decimal(lane['km'])
@@ -683,30 +853,55 @@ class _HistoryBuilder:
         return load
 
     def build_in_flight(self):
-        """Guarantee a live board whatever time of day the seed runs: a few
-        long-haul loads on the road right now and one being loaded."""
-        plan = [('JHB-CPT', 0.35), ('CPT-JHB', 0.6), ('JHB-DBN', 0.5), ('MBB-MPM', 0.4), ('DBN-GQB', 0.25), ('JHB-BFN', None)]
-        for code, frac in plan:
-            lane = data.DEMO_LANES[code]
-            if frac is None:
-                pickup = self.now - timedelta(minutes=40)
-            else:
-                pickup = self.now - timedelta(hours=lane['hours'] * frac)
-            shippers = [c for c in self.customers if code in self.cspec[c.pk]['lanes'] and c.is_active]
-            if not shippers:
-                continue
-            customer = self.rng.choice(shippers)
-            self._make_load(customer, self.cspec[customer.pk], lane, pickup.date(), pickup=pickup)
+        """Guarantee a live board whatever time of day the seed runs: loads on
+        the road right now, one being loaded and two assigned for later today.
+        Every one of them is due today, so nothing is dated after today."""
+        rng = self.rng
+        now, eod = self.now, self.eod
 
-    def _quote_values(self, lane, spec, customer, total, fuel_surcharge, toll, additional, vtype_name, weight_kg, diesel, created):
+        def shipper(code):
+            shippers = [c for c in self.customers if code in self.cspec[c.pk]['lanes'] and c.is_active]
+            return rng.choice(shippers) if shippers else None
+
+        # On the road: picked up at least two hours ago, arriving later today.
+        for code in ('CPT-JHB', 'JHB-DBN', 'TZN-JHB', 'JHB-BFN', 'DBN-GQB', 'MBB-MPM'):
+            lane = data.DEMO_LANES[code]
+            hours = timedelta(hours=lane['hours'])
+            lo = now + timedelta(minutes=30)
+            hi = min(eod, now + hours - timedelta(hours=2))
+            customer = shipper(code)
+            if customer is None or hi <= lo:
+                continue
+            delivery = lo + (hi - lo) * rng.uniform(0.15, 0.95)
+            self._make_load(customer, self.cspec[customer.pk], lane, delivery.date(),
+                            pickup=delivery - hours, delivery=delivery)
+
+        # Being loaded now, and two short runs assigned for later today.
+        plan = [('JHB-EML', timedelta(minutes=-40)), ('MID-PTA', timedelta(hours=1, minutes=30)),
+                ('ISA-SEC', timedelta(hours=2, minutes=30))]
+        for code, offset in plan:
+            lane = data.DEMO_LANES[code]
+            customer = shipper(code)
+            if customer is None:
+                continue
+            pickup = now + offset
+            if offset > timedelta(0) and pickup + timedelta(hours=lane['hours']) > eod:
+                # Late in the evening: the truck is booked but running late.
+                pickup = now - timedelta(minutes=20)
+            self._make_load(customer, self.cspec[customer.pk], lane, pickup.date(), pickup=pickup,
+                            delivery=min(eod, pickup + timedelta(hours=lane['hours'])))
+
+    def _quote_values(self, lane, spec, customer, total, fuel_surcharge, toll, additional, vtype_name, weight_kg, diesel, created,
+                      markup=Decimal('1'), rng=None):
+        rng = rng or self.rng
         pk, dl = lane['pickup'], lane['delivery']
-        pickup_day = created.date() + timedelta(days=self.rng.randint(2, 6))
+        pickup_day = created.date() + timedelta(days=rng.randint(2, 6))
         return dict(
             company=self.company,
             customer=customer,
             pickup_location=f'{pk[0]}, {pk[2]}', delivery_location=f'{dl[0]}, {dl[2]}',
             pickup_lat=pk[4], pickup_lng=pk[5], delivery_lat=dl[4], delivery_lng=dl[5],
-            cargo_description=self.rng.choice(spec['cargo']),
+            cargo_description=rng.choice(spec['cargo']),
             weight=weight_kg,
             distance=Decimal(lane['km']),
             vehicle_type=vtype_name,
@@ -719,7 +914,7 @@ class _HistoryBuilder:
             toll_charges=toll,
             additional_charges=additional,
             total_amount=total,
-            margin_percentage=_engine_margin_pct(total, lane['km'], diesel),
+            margin_percentage=_quote_margin_pct(rng, lane['code'], markup),
             fuel_price_at_creation=diesel,
             valid_until=created.date() + timedelta(days=7),
             created_by=self.user,
@@ -735,14 +930,14 @@ class _HistoryBuilder:
 
     def _quote_for(self, load, lane, spec, customer, total, fuel_surcharge, toll, additional, vtype_name, weight_kg, diesel, booked, accepted=True):
         created = booked - timedelta(days=self.rng.randint(1, 5), hours=self.rng.randint(1, 9))
-        created = max(created, _aware(self.start - timedelta(days=10), 9))
+        created = max(created, self.window_start_at + timedelta(hours=8))
         values = self._quote_values(lane, spec, customer, total, fuel_surcharge, toll, additional, vtype_name, weight_kg, diesel, created)
         values['pickup_date'] = load.pickup_date.date()
         values['delivery_date'] = load.delivery_date.date()
         margin = values['margin_percentage']
         return self._new_quote(
             values, 'ACCEPTED' if accepted else 'DECLINED', created,
-            confidence='HIGH' if margin > 20 else 'MEDIUM',
+            confidence='HIGH' if margin >= 20 else 'MEDIUM',
             win_probability=Decimal(self.rng.randint(55, 82)),
             outcome='accepted' if accepted else 'rejected',
             accepted_at=min(created + timedelta(hours=self.rng.randint(3, 60)), booked) if accepted else None,
@@ -751,8 +946,10 @@ class _HistoryBuilder:
         )
 
     def _lost_quotes(self, customer, spec, around):
-        rng = self.rng
-        n = rng.choices([0, 1, 2, 3], weights=[25, 38, 27, 10])[0]
+        # Own random stream: the quote pipeline can be tuned without
+        # reshuffling the operational history (loads, payments, costs).
+        rng = self.qrng
+        n = rng.choices(LOST_PER_WIN_WEIGHTS[0], weights=LOST_PER_WIN_WEIGHTS[1])[0]
         spot = [c for c in self.customers if self.cspec[c.pk]['quotes']]
         for _ in range(n):
             other = customer if rng.random() < 0.5 else rng.choice(spot)
@@ -761,9 +958,10 @@ class _HistoryBuilder:
                 other, ospec = customer, spec
             lane = data.DEMO_LANES[rng.choice(ospec['lanes'])]
             created = around - timedelta(days=rng.randint(0, 9), hours=rng.randint(0, 8))
-            created = min(max(created, _aware(self.start - timedelta(days=10), 9)), self.now - timedelta(minutes=30))
+            created = min(max(created, self.window_start_at + timedelta(hours=8)), self.now - timedelta(minutes=30))
             heavy = bool(lane['heavy']) and (not lane['rigid'] or rng.random() < 0.6)
-            total = _q(self._price(lane, heavy, created.date()) * Decimal(str(round(rng.uniform(1.03, 1.13), 3))))
+            markup = Decimal(str(round(rng.uniform(1.03, 1.13), 3)))
+            total = _q(self._price(lane, heavy, created.date(), rng=rng) * markup)
             diesel = self._diesel_on(created.date())
             additional = data.CROSS_BORDER_CHARGE if lane.get('cross_border') else Decimal('0')
             fuel_surcharge = _q((total - additional) * Decimal('0.08'))
@@ -771,12 +969,12 @@ class _HistoryBuilder:
             vtype_name = 'Superlink Tautliner' if heavy else 'Rigid 6x4 Curtainsider'
             weight_kg = Decimal(int(rng.uniform(0.7, 0.95) * (34000 if heavy else 14000)) // 10 * 10)
             values = self._quote_values(lane, ospec, other, total, fuel_surcharge, self.tolls[lane['code']][vclass],
-                                        additional, vtype_name, weight_kg, diesel, created)
+                                        additional, vtype_name, weight_kg, diesel, created, markup=markup, rng=rng)
             if values['valid_until'] >= self.today:
                 # Still inside its validity window: live pipeline, not lost yet.
                 self._new_quote(values, 'SENT', created, confidence='MEDIUM',
                                 win_probability=Decimal(rng.randint(30, 68)), outcome='pending')
-            elif rng.random() < 0.6:
+            elif rng.random() < 0.82:
                 self._new_quote(values, 'DECLINED', created, confidence='MEDIUM',
                                 win_probability=Decimal(rng.randint(18, 48)), outcome='rejected',
                                 rejected_at=created + timedelta(days=rng.randint(1, 5)),
@@ -788,23 +986,24 @@ class _HistoryBuilder:
     def build_open_pipeline(self):
         """Current drafts plus two stale 'sent' quotes whose validity lapsed
         without a follow-up (the Insights 'expired quotes' finding)."""
-        rng = self.rng
+        rng = self.qrng
         spot = [c for c in self.customers if self.cspec[c.pk]['quotes'] and c.is_active]
-        plan = [('DRAFT', 0), ('DRAFT', 1), ('DRAFT', 2), ('SENT', 11), ('SENT', 13)]
+        plan = [('DRAFT', 0), ('DRAFT', 1), ('DRAFT', 2), ('SENT', 1), ('SENT', 2), ('SENT', 3), ('SENT', 5),
+                ('SENT', 11), ('SENT', 13)]
         for status, days_ago in plan:
             customer = rng.choice(spot)
             spec = self.cspec[customer.pk]
             lane = data.DEMO_LANES[rng.choice(spec['lanes'])]
             created = self.now - timedelta(days=days_ago, hours=rng.randint(1, 6))
             heavy = bool(lane['heavy'])
-            total = self._price(lane, heavy, created.date())
+            total = self._price(lane, heavy, created.date(), rng=rng)
             diesel = self._diesel_on(created.date())
             additional = data.CROSS_BORDER_CHARGE if lane.get('cross_border') else Decimal('0')
             fuel_surcharge = _q((total - additional) * Decimal('0.08'))
             vclass = 4 if heavy else 3
             vtype_name = 'Superlink Tautliner' if heavy else 'Rigid 6x4 Curtainsider'
             values = self._quote_values(lane, spec, customer, total, fuel_surcharge, self.tolls[lane['code']][vclass],
-                                        additional, vtype_name, Decimal(28000 if heavy else 11000), diesel, created)
+                                        additional, vtype_name, Decimal(28000 if heavy else 11000), diesel, created, rng=rng)
             self._new_quote(values, status, created, confidence='MEDIUM',
                             win_probability=Decimal(rng.randint(35, 70)), outcome='pending')
 
@@ -835,6 +1034,12 @@ class _HistoryBuilder:
     def _maintenance(self, unit, d, log_type, category, description, cost, vendor):
         if d > self.today:
             d = self.today
+        if d < self.window_start:
+            # Before the 12-month window: the truck's service clock moves on,
+            # but no cost is booked (nothing is dated before the window).
+            if log_type == 'SERVICE':
+                unit.last_service_date = d
+            return
         log = VehicleLog(vehicle=unit.vehicle, user=self.user, log_type=log_type, description=description,
                          mileage=_q(unit.odo), cost=cost, date=d)
         self._stamp(log, _aware(d, 15))
@@ -880,29 +1085,16 @@ class _HistoryBuilder:
             self._stamp(trip, ld.pickup_date - timedelta(hours=3))
             self.trips.append(trip)
             meta['trip'] = trip
-            if ld.status in ('INVOICED', 'IN_TRANSIT', 'LOADING') and meta.get('litres'):
-                self._trip_expenses(ld, meta, trip)
 
         for ld in invoiced:
             self._invoice_for(ld)
 
-    def _trip_expenses(self, ld, meta, trip):
-        lane = meta['lane']
-        d = ld.pickup_date.date()
-        route = f"{ld.pickup_city} to {ld.delivery_city}"
-        fuel_cost = _q(meta['litres'] * meta['diesel'])
-        self._expense('FUEL', f"Diesel {meta['litres']:.0f} L - {route} ({ld.load_number})", fuel_cost, d,
-                      data.VENDORS['fuel'], vehicle=ld.vehicle, driver=ld.driver, trip=trip)
-        if meta['toll'] > 0:
-            self._expense('TOLLS', f"Tolls - {route} ({ld.load_number})", meta['toll'], d,
-                          data.VENDORS['tolls'], vehicle=ld.vehicle, driver=ld.driver, trip=trip)
-        nights = int(lane['hours'] // 10)
-        if nights:
-            self._expense('DRIVER_COST', f"Subsistence allowance - {nights} night(s), {route}",
-                          _q(Decimal('480') * nights), d, 'Driver allowance', vehicle=ld.vehicle, driver=ld.driver, trip=trip)
-        if lane.get('cross_border'):
-            self._expense('OTHER', f"Border clearing & Moamba toll - {ld.load_number}", data.CROSS_BORDER_AGENT_FEE, d,
-                          data.VENDORS['clearing'], vehicle=ld.vehicle, driver=ld.driver, trip=trip)
+        # Opening debtors book: of the loads before the window, keep only the
+        # ones whose invoice was still unpaid on its first day.
+        dropped = {id(ld) for ld in self.loads if self.load_meta[id(ld)]['run_in']
+                   and not self.load_meta[id(ld)].get('open_at_start')}
+        self.loads = [ld for ld in self.loads if id(ld) not in dropped]
+        self.trips = [t for t in self.trips if id(t.load) not in dropped]
 
     def _invoice_for(self, ld):
         rng = self.rng
@@ -915,19 +1107,26 @@ class _HistoryBuilder:
         vat = _q(subtotal * VAT_RATE)
         total = subtotal + vat
         profile = spec['profile']
+        # Days relative to the due date. Most of the book is collected inside
+        # 60 days of invoicing (about 85%); prompt payers run weekly payment
+        # runs and settle two to three weeks after the invoice.
         if profile == 'prompt':
-            offset = rng.randint(-12, 2)
+            offset = rng.randint(5, 18) - terms_days
         elif profile == 'steady':
-            offset = rng.randint(-5, 9)
+            offset = rng.randint(-12, 4)
         elif profile == 'slow':
-            offset = rng.randint(6, 32)
+            offset = rng.randint(8, 34)
         elif profile == 'chronic':
-            offset = None if rng.random() < 0.16 else rng.randint(28, 110)
+            offset = None if rng.random() < 0.08 else rng.randint(24, 95)
         else:  # stopped: paid early for months, nothing since ~3 months ago
             offset = rng.randint(-8, -1) if (self.today - issue).days > 100 else None
         pay_day = due + timedelta(days=offset) if offset is not None else None
         if pay_day is not None and pay_day <= issue:
             pay_day = issue + timedelta(days=rng.randint(3, 8))
+        if meta['run_in']:
+            if pay_day is not None and pay_day < self.window_start:
+                return  # settled before the window: not part of the opening book
+            meta['open_at_start'] = True
 
         invoice = Invoice(
             company=self.company,
@@ -1059,6 +1258,7 @@ class _HistoryBuilder:
 
     # -- fixed monthly costs ---------------------------------------------------
     def _expense(self, category, description, amount, d, vendor, vehicle=None, driver=None, trip=None):
+        d = min(d, self.today)  # nothing is dated after today
         exp = Expense(
             company=self.company,
             expense_number=f"{NUMBER_PREFIX}EXP-{self._next('expense', 60000):05d}",
@@ -1074,65 +1274,107 @@ class _HistoryBuilder:
         return exp
 
     def build_monthly_costs(self):
+        """Every cost in the 12-month window, booked the way a fleet's books
+        actually receive them: one fuel-card statement and one e-tag statement
+        per truck a month (loaded legs plus empty running), one payroll line
+        per driver a month (basic plus nights-out subsistence), the clearing
+        agent's monthly statement, fixed overheads, workshop jobs and a few
+        driver claims. Keeps the expense list well under FRONTEND_ROW_CAP."""
         rng = self.rng
-        month = self.start.replace(day=1)
-        salaries = {d.pk: Decimal(rng.randrange(18500, 23500, 250)) for d in self.drivers}
+        costs = data.MONTHLY_COSTS
+        nights = defaultdict(int)       # (driver pk, month) -> nights out
+        crossings = defaultdict(int)    # month -> border crossings
+        trips_by_month = defaultdict(list)
+        for ld in self.loads:
+            meta = self.load_meta[id(ld)]
+            if ld.status not in ('INVOICED', 'IN_TRANSIT', 'LOADING') or ld.driver is None:
+                continue
+            key = _month_key(timezone.localtime(ld.pickup_date).date())
+            nights[(ld.driver.pk, key)] += int(meta['lane']['hours'] // 10)
+            if meta['lane'].get('cross_border'):
+                crossings[key] += 1
+            if ld.status == 'INVOICED' and meta.get('trip') is not None:
+                trips_by_month[key].append(ld)
+        salaries = {d.pk: Decimal(rng.randrange(*costs['driver_basic'], 250)) for d in self.drivers}
+        n_units = len(self.units)
+        month = self.window_start
         while month <= self.today:
             key = _month_key(month)
-            first = max(month, self.start)
+            end = _month_end(month, self.today)
+            label = f'{month:%b %Y}' + (' to date' if end < _month_end(month, date.max) else '')
             payday = month.replace(day=25)
-            # Fleet insurance premium (comprehensive + goods-in-transit).
-            self._expense('INSURANCE', 'Fleet comprehensive + GIT insurance premium',
-                          Decimal(7100) * len(self.units), first, data.VENDORS['insurance'])
-            self._expense('OVERHEAD', 'Depot rent - City Deep yard and office', Decimal('64500'), first, data.VENDORS['rent'])
-            self._expense('OVERHEAD', f'Telematics & tracking - {len(self.units)} units',
-                          Decimal(465) * len(self.units), first, data.VENDORS['telematics'])
-            self._expense('OVERHEAD', 'Office, telecoms & IT support', Decimal(rng.randrange(8900, 11200, 50)), first, data.VENDORS['it'])
-            if payday <= self.today and payday >= self.start:
-                self._expense('OVERHEAD', 'Salaries - operations, workshop & admin staff (6)', Decimal('138000'), payday, 'Payroll')
-                self._expense('OVERHEAD', 'Accounting & payroll services', Decimal('14500'), payday, data.VENDORS['accounting'])
+            self._expense('INSURANCE', f'Fleet comprehensive + GIT insurance premium - {month:%b %Y}',
+                          Decimal(costs['insurance_per_truck']) * n_units, month, data.VENDORS['insurance'])
+            self._expense('OVERHEAD', f'Depot rent - City Deep yard and office - {month:%b %Y}',
+                          Decimal(costs['rent']), month, data.VENDORS['rent'])
+            self._expense('OVERHEAD', f'Telematics & tracking - {n_units} units - {month:%b %Y}',
+                          Decimal(costs['telematics_per_unit']) * n_units, month, data.VENDORS['telematics'])
+            self._expense('OVERHEAD', f'Office, telecoms & IT support - {month:%b %Y}',
+                          Decimal(rng.randrange(*costs['it'], 50)), min(month + timedelta(days=2), self.today),
+                          data.VENDORS['it'])
+            if payday <= self.today:
+                self._expense('OVERHEAD', f"Salaries - operations & admin staff ({costs['staff_count']}) - {month:%b %Y}",
+                              Decimal(costs['staff_salaries']), payday, 'Payroll')
+                self._expense('OVERHEAD', f'Accounting & payroll services - {month:%b %Y}',
+                              Decimal(costs['accounting']), payday, data.VENDORS['accounting'])
                 for drv in self.drivers:
                     if not self._driver_active_on(drv, payday):
                         continue
-                    self._expense('DRIVER_COST', f'Salary - {drv.user.first_name} {drv.user.last_name}',
-                                  salaries[drv.pk] + Decimal(rng.randrange(0, 2600, 50)), payday, 'Payroll', driver=drv)
+                    n = nights.get((drv.pk, key), 0)
+                    amount = salaries[drv.pk] + Decimal(rng.randrange(0, 1500, 50)) + Decimal(costs['night_out']) * n
+                    extra = f' + {n} nights S&T' if n else ''
+                    self._expense('DRIVER_COST',
+                                  f'Driver payroll - {drv.user.first_name} {drv.user.last_name} - {month:%b %Y} (basic{extra})',
+                                  amount, payday, 'Payroll', driver=drv)
             for unit in self.units:
                 if unit.spec['financed']:
-                    self._expense('OVERHEAD', f'Vehicle finance instalment - {unit.vehicle.plate}',
-                                  Decimal('34000') if unit.heavy else Decimal('10900'), first, data.VENDORS['finance'],
-                                  vehicle=unit.vehicle)
-                # Empty running: repositioning/return kms not on any load.
-                km = unit.km_by_month.get(key)
-                if km:
-                    litres = unit.litres_by_month[key] * Decimal('0.25')
+                    self._expense('OVERHEAD', f'Vehicle finance instalment - {unit.vehicle.plate} - {month:%b %Y}',
+                                  Decimal(costs['finance_heavy'] if unit.heavy else costs['finance_light']), month,
+                                  data.VENDORS['finance'], vehicle=unit.vehicle)
+                if unit.km_by_month.get(key):
+                    # Loaded legs + empty running (repositioning / return kms).
+                    litres = unit.litres_by_month[key] * (1 + Decimal(costs['empty_fuel_share']))
                     diesel = self.diesel.get(key) or self.diesel[max(self.diesel)]
-                    last_day = min(self.today, (month.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1))
-                    self._expense('FUEL', f'Diesel {litres:.0f} L - empty return legs ({unit.vehicle.plate})',
-                                  litres * diesel, last_day, data.VENDORS['fuel'], vehicle=unit.vehicle)
-                    toll = unit.tolls_by_month[key] * Decimal('0.45')
+                    driver = self.drivers[unit.spec['driver']] if unit.spec['driver'] is not None else None
+                    self._expense('FUEL', f'Fuel card statement - {unit.vehicle.plate} - {label} ({int(litres)} L)',
+                                  litres * diesel, end, data.VENDORS['fuel'], vehicle=unit.vehicle, driver=driver)
+                    toll = unit.tolls_by_month[key] * (1 + Decimal(costs['empty_toll_share']))
                     if toll > 0:
-                        self._expense('TOLLS', f'Tolls - empty return legs ({unit.vehicle.plate})', toll, last_day,
-                                      data.VENDORS['tolls'], vehicle=unit.vehicle)
-                if month.month == ((unit.spec['n'] * 5) % 12) + 1 and first >= self.start:
+                        self._expense('TOLLS', f'e-tag toll statement - {unit.vehicle.plate} - {label}', toll, end,
+                                      data.VENDORS['tolls'], vehicle=unit.vehicle, driver=driver)
+                if month.month == ((unit.spec['n'] * 5) % 12) + 1:
                     self._expense('OTHER', f'Annual licence disc & roadworthy - {unit.vehicle.plate}',
-                                  Decimal('6850') if unit.heavy else Decimal('3400'), first + timedelta(days=9),
-                                  data.VENDORS['licensing'], vehicle=unit.vehicle)
+                                  Decimal('6850') if unit.heavy else Decimal('3400'),
+                                  min(month + timedelta(days=9), self.today), data.VENDORS['licensing'], vehicle=unit.vehicle)
+            if crossings.get(key):
+                n = crossings[key]
+                self._expense('OTHER', f'Border clearing & Moamba tolls - {n} crossings - {label}',
+                              data.CROSS_BORDER_AGENT_FEE * n, end, data.VENDORS['clearing'])
+            # A couple of driver claims a month (secure parking, roadside repairs).
+            done = trips_by_month.get(key, [])
+            for ld in rng.sample(done, min(len(done), costs['claims_per_month'])):
+                what, lo, hi = rng.choice(data.DRIVER_CLAIMS)
+                claim = self._expense('DRIVER_COST', f'Driver claim - {what} ({ld.load_number})',
+                                      Decimal(rng.randrange(lo, hi, 10)), timezone.localtime(ld.pickup_date).date(),
+                                      'Driver claim', vehicle=ld.vehicle, driver=ld.driver,
+                                      trip=self.load_meta[id(ld)]['trip'])
+                claim._is_claim = True
             month = (month.replace(day=28) + timedelta(days=4)).replace(day=1)
 
     def apply_expense_approvals(self):
-        """Most recent costs still waiting for approval, a few older ones
-        forgotten in the queue, and two rejected claims."""
+        """This week's workshop jobs and driver claims still waiting for
+        approval, a few older ones forgotten in the queue, and two rejected
+        claims. Statements and payroll are always approved."""
         rng = self.rng
-        for exp in self.expenses:
-            age = (self.today - exp.expense_date).days
-            if age <= 6 and exp.category in ('FUEL', 'TOLLS', 'MAINTENANCE', 'DRIVER_COST', 'OTHER') and rng.random() < 0.35:
+        small = [e for e in self.expenses if e.category == 'MAINTENANCE' or getattr(e, '_is_claim', False)]
+        for exp in small:
+            if (self.today - exp.expense_date).days <= 6 and rng.random() < 0.5:
                 self._pending(exp)
-        older = sorted((e for e in self.expenses if 9 <= (self.today - e.expense_date).days <= 26
-                        and e.category in ('MAINTENANCE', 'OTHER', 'TOLLS')),
+        older = sorted((e for e in small if 9 <= (self.today - e.expense_date).days <= 26),
                        key=lambda e: e.amount, reverse=True)
         for exp in older[:3]:
             self._pending(exp)
-        claims = [e for e in self.expenses if e.category == 'DRIVER_COST' and e.trip is not None
+        claims = [e for e in self.expenses if getattr(e, '_is_claim', False)
                   and 30 <= (self.today - e.expense_date).days <= 200]
         for exp in claims[:2]:
             exp.status = 'REJECTED'
@@ -1222,6 +1464,25 @@ class _HistoryBuilder:
             self._stamp(ev, q.accepted_at)
             self.events.append(ev)
 
+    # -- proof of delivery ------------------------------------------------------
+    def attach_pods(self):
+        """A scanned, signed delivery note on about 60% of delivered loads
+        (the others were signed on the driver app only). The two late
+        invoices with no POD at all (apply_debtor_stories) stay without."""
+        from django.core.files.base import ContentFile
+        from django.core.files.storage import default_storage
+        delivered = [ld for ld in self.loads if ld.status == 'INVOICED' and ld.pod_received_by]
+        for ld in delivered:
+            if self.rng.random() >= POD_SHARE:
+                continue
+            name = f'{POD_DIR}{ld.load_number}.png'
+            if default_storage.exists(name):
+                default_storage.delete(name)
+            ld.pod_document = default_storage.save(name, ContentFile(_render_pod_png(ld, self.company.company_name)))
+            trip = self.load_meta[id(ld)].get('trip')
+            if trip is not None:
+                trip.pod_type = 'PHOTO'
+
     # -- persist ------------------------------------------------------------------
     def save(self):
         def backdate(model, objs):
@@ -1284,7 +1545,7 @@ class _HistoryBuilder:
             # Next service date projected from this truck's own km per day.
             interval = Decimal(v.service_interval_km or 30000)
             remaining = interval - (unit.odo - unit.last_service_odo)
-            per_day = sum(unit.km_by_month.values(), Decimal('0')) * Decimal('1.3') / HISTORY_DAYS
+            per_day = sum(unit.km_by_month.values(), Decimal('0')) * Decimal('1.3') / max(1, (self.today - self.start).days)
             days_left = int(remaining / per_day) if per_day > 0 else 120
             v.next_maintenance_due = today + timedelta(days=max(4, min(days_left, 150)))
             v.insurance_expiry = today + timedelta(days=150)
@@ -1362,6 +1623,108 @@ class _HistoryBuilder:
                 credit_limit=_q(max(Decimal('50000'), (monthly * 2 / 10000).quantize(Decimal('1')) * 10000)),
             )
 
+    # -- copilot ------------------------------------------------------------------
+    def build_copilot(self):
+        """Three short stored Copilot threads (no LLM call) on the questions an
+        owner actually asks, answered from this seed's own numbers so the
+        answers match Debtors, Invoices and Insights."""
+        convs = []
+        open_inv = [i for i in self.invoices if i.status in ('SENT', 'VIEWED', 'PARTIALLY_PAID', 'OVERDUE')
+                    and i.balance > 0]
+
+        def rand(x):
+            return f'R{x:,.0f}'
+
+        # 1. Who owes me the most right now?
+        by_customer = defaultdict(list)
+        for inv in open_inv:
+            by_customer[inv.customer].append(inv)
+        ranked = sorted(by_customer.items(), key=lambda kv: sum(i.balance for i in kv[1]), reverse=True)[:3]
+        if ranked:
+            lines = []
+            for cust, invs in ranked:
+                owed = sum(i.balance for i in invs)
+                late = sum(i.balance for i in invs if i.due_date < self.today)
+                lines.append(f'| {cust.name} | {rand(owed)} | {len(invs)} | {rand(late)} |')
+            top, top_invs = ranked[0]
+            late_invs = sorted((i for i in top_invs if i.due_date < self.today), key=lambda i: i.due_date)
+            owed = sum(i.balance for i in top_invs)
+            if late_invs:
+                oldest = late_invs[0]
+                detail = (f'The oldest is **{oldest.invoice_number}** ({rand(oldest.balance)}), '
+                          f'{(self.today - oldest.due_date).days} days past its due date.')
+                nxt = f'Want me to draft a reminder for {oldest.invoice_number}?'
+            else:
+                detail = 'None of it is past due yet.'
+                nxt = 'Nothing to chase yet: the earliest due date is ' + min(i.due_date for i in top_invs).strftime('%-d %b') + '.'
+            answer = (
+                f'**{top.name}** owes you the most: **{rand(owed)}** across {len(top_invs)} open invoices. {detail}\n\n'
+                '| Customer | Owed | Invoices | Past due |\n|---|---|---|---|\n' + '\n'.join(lines) + '\n\n'
+                'Amounts incl. VAT, from open invoices (disputed ones excluded, as in the Debtors report). ' + nxt
+            )
+            convs.append(('Who owes me the most?', 'Who owes me the most right now?', answer, self.now - timedelta(minutes=25)))
+
+        # 2. Which lane lost money last month?
+        from core.services.margin_calculator import calculate_true_margin
+        last_month_end = self.today.replace(day=1) - timedelta(days=1)
+        lm = last_month_end.replace(day=1)
+        lanes = defaultdict(lambda: {'loads': 0, 'revenue': Decimal('0'), 'cost': Decimal('0')})
+        for ld in self.loads:
+            if ld.status != 'INVOICED' or not ld.actual_delivered_at:
+                continue
+            if not (lm <= timezone.localtime(ld.actual_delivered_at).date() <= last_month_end):
+                continue
+            key = f'{ld.pickup_city} → {ld.delivery_city}'
+            res = calculate_true_margin({'distance_km': float(ld.distance)}, truck_type='articulated',
+                                        load_type='general', quote_price=Decimal(str(ld.total_amount)))
+            lanes[key]['loads'] += 1
+            lanes[key]['revenue'] += ld.total_amount
+            lanes[key]['cost'] += Decimal(str(res.true_cost))
+        losing = sorted(((k, v) for k, v in lanes.items() if v['revenue'] < v['cost']),
+                        key=lambda kv: kv[1]['revenue'] - kv[1]['cost'])
+        month_name = f'{lm:%B}'
+        if losing:
+            rows = [f"| {k} | {v['loads']} | {rand(v['revenue'])} | {rand(v['cost'])} | {rand(v['revenue'] - v['cost'])} |"
+                    for k, v in losing]
+            names = ' and '.join(k for k, _ in losing)
+            answer = (
+                f'{len(losing)} {"lane" if len(losing) == 1 else "lanes"} lost money in {month_name}: {names}.\n\n'
+                '| Lane | Loads | Revenue | Est. cost | Result |\n|---|---|---|---|---|\n' + '\n'.join(rows) + '\n\n'
+                'Revenue excl. VAT; cost is the distance-based estimate Insights uses (fuel, driver, tyres and '
+                'maintenance, with the empty return leg). Durban → Gqeberha has no return load, and the four N1 '
+                'plazas on the short Polokwane run eat the rate. Both need a rate review or a backhaul.'
+            )
+        else:
+            answer = f'No lane lost money in {month_name}: every lane covered its estimated cost.'
+        convs.append((f'Lanes that lost money in {month_name}', 'Which lane lost money last month?', answer,
+                      self.now - timedelta(days=1, hours=3)))
+
+        # 3. Which invoices should I chase today?
+        late = sorted((i for i in open_inv if i.due_date < self.today), key=lambda i: i.balance, reverse=True)[:3]
+        if late:
+            rows = [f'| {i.invoice_number} | {i.customer.name} | {rand(i.balance)} | {(self.today - i.due_date).days} | '
+                    f'{i.reminder_count or 0} |' for i in late]
+            never = [i for i in late if not i.reminder_count]
+            tail = (f' {never[0].invoice_number} has never had a reminder, so start there.' if never else '')
+            answer = (
+                'These three are the biggest past-due balances:\n\n'
+                '| Invoice | Customer | Balance | Days late | Reminders |\n|---|---|---|---|---|\n' + '\n'.join(rows)
+                + '\n\nTogether ' + rand(sum(i.balance for i in late)) + ' incl. VAT.' + tail
+            )
+            convs.append(('Invoices to chase today', 'Which invoices should I chase today?', answer,
+                          self.now - timedelta(days=3, hours=5)))
+
+        for title, question, answer, when in convs:
+            conv = CopilotConversation.objects.create(user=self.user, title=title)
+            msgs = CopilotMessage.objects.bulk_create([
+                CopilotMessage(user=self.user, conversation=conv, role='user', content=question),
+                CopilotMessage(user=self.user, conversation=conv, role='assistant', content=answer),
+            ])
+            CopilotMessage.objects.filter(pk=msgs[0].pk).update(created_at=when)
+            CopilotMessage.objects.filter(pk=msgs[1].pk).update(created_at=when + timedelta(seconds=9))
+            CopilotConversation.objects.filter(pk=conv.pk).update(created_at=when, updated_at=when + timedelta(seconds=9))
+        return len(convs)
+
     def run(self):
         self.backdate_fixed_rows()
         self.build_loads()
@@ -1373,10 +1736,18 @@ class _HistoryBuilder:
         self.apply_expense_approvals()
         self.build_settlements()
         self.build_feed()
+        self.attach_pods()
         self.save()
         self.finalise_fleet()
         self.update_customer_stats()
+        copilot = self.build_copilot()
+        for kind, rows in (('quotes', self.quotes), ('loads', self.loads), ('invoices', self.invoices),
+                           ('payments', self.payments), ('expenses', self.expenses)):
+            if len(rows) >= FRONTEND_ROW_CAP:
+                logger.warning('demo seed: %s %s rows - the dashboard only reads the first %s',
+                               len(rows), kind, FRONTEND_ROW_CAP)
         return {
+            'copilot_conversations': copilot,
             'quotes': len(self.quotes), 'loads': len(self.loads), 'trips': len(self.trips),
             'invoices': len(self.invoices), 'payments': len(self.payments), 'expenses': len(self.expenses),
             'vehicle_logs': len(self.vehicle_logs), 'settlements': len(self.settlements),
@@ -1417,8 +1788,11 @@ def _quiet_delete(qs):
 
 def _wipe_history(company):
     """Remove every transactional row of the demo company (quotes, loads,
-    trips, invoices, payments, expenses, logs, settlements, feed). Fleet,
-    customers and the login stay."""
+    trips, invoices, payments, expenses, logs, settlements, feed, Copilot
+    threads, generated POD files). Fleet, customers and the login stay."""
+    _delete_demo_pods(company)
+    CopilotConversation.objects.filter(user__company=company).delete()
+    CopilotMessage.objects.filter(user__company=company).delete()
     PaymentOutcome.objects.filter(Q(invoice__company=company) | Q(invoice__load__company=company)).delete()
     AdvanceRequest.objects.filter(Q(invoice__company=company) | Q(invoice__load__company=company)).delete()
     RiskScore.objects.filter(Q(company=company) | Q(customer__company=company)).delete()
