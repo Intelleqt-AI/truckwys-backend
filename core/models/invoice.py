@@ -6,6 +6,20 @@ from .customer import Customer
 from .load import Load
 
 
+def paid_at_for(payment_date):
+    """When an invoice counts as paid, from the payment that settled it.
+
+    The payment's own date, not the moment it was recorded: an EFT from last
+    week recorded today is last week's revenue (the frontend ledgers date cash
+    by payment_date too). Noon local time keeps the day intact in UTC. Today
+    or no date: now."""
+    from datetime import datetime, time
+    today = timezone.localdate()
+    if payment_date is None or payment_date >= today:
+        return timezone.now()
+    return timezone.make_aware(datetime.combine(payment_date, time(12, 0)))
+
+
 class Invoice(models.Model):
     STATUS_CHOICES = [
         ('DRAFT', 'Draft'),
@@ -156,8 +170,9 @@ class Invoice(models.Model):
 
     @property
     def is_overdue(self) -> bool:
-        """Check if invoice is overdue."""
-        return date.today() > self.due_date and self.status not in ['PAID', 'CANCELLED']
+        """Check if invoice is overdue. A draft is never overdue: it isn't
+        owed until it's sent (the nightly sweep skips drafts the same way)."""
+        return date.today() > self.due_date and self.status not in ['DRAFT', 'PAID', 'CANCELLED']
 
     @property
     def days_until_due(self) -> int:
@@ -216,6 +231,12 @@ class Invoice(models.Model):
         # Auto-update status based on payment
         if self.balance == 0 and self.paid_amount > 0:
             self.status = 'PAID'
+            # Revenue is dated by paid_at: a PAID invoice without one dropped
+            # out of every revenue window (e.g. INV-20260615-96400).
+            if self.paid_at is None:
+                last = (self.payments.order_by('-payment_date').values_list('payment_date', flat=True).first()
+                        if self.pk else None)
+                self.paid_at = paid_at_for(last)
         elif self.paid_amount > 0 and self.balance > 0:
             self.status = 'PARTIALLY_PAID'
         elif self.is_overdue and self.status not in ['PAID', 'CANCELLED', 'DISPUTED']:

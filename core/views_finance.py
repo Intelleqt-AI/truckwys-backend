@@ -443,16 +443,17 @@ class InvoiceFinanceViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.Model
                 total=Sum('paid_amount')
             )['total'] or Decimal('0')
 
-            # Overdue invoices (due_date < today and not paid)
+            # Overdue: the same rule as the aging report and the finance
+            # dashboard (sent, unpaid balance, past due). Drafts aren't owed.
+            from core.services.aging_service import OUTSTANDING_STATUSES
             today = date.today()
             overdue = base.filter(
                 due_date__lt=today,
-                status__in=['SENT', 'OVERDUE', 'PARTIALLY_PAID', 'DRAFT']
+                balance__gt=0,
+                status__in=OUTSTANDING_STATUSES,
             )
             overdue_count = overdue.count()
-            overdue_amount = overdue.aggregate(
-                total=Sum(F('total_amount') - F('paid_amount'))
-            )['total'] or Decimal('0')
+            overdue_amount = overdue.aggregate(total=Sum('balance'))['total'] or Decimal('0')
 
             # Average days to pay (for paid invoices)
             paid_invoices = base.filter(
@@ -488,6 +489,8 @@ class InvoiceFinanceViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.Model
                 'overdue_count': overdue_count,
                 'overdue_amount': float(overdue_amount),
                 'avg_days_to_pay': round(avg_days, 1),
+                # Same DSO as the aging report; None when not measurable.
+                'dso': AgingAnalysisService(company).calculate_dso(),
                 'collection_rate': round(collection_rate, 2),
                 'by_status': by_status
             })
@@ -716,11 +719,17 @@ class FinanceDashboardView(APIView):
     - from: YYYY-MM-DD (optional, defaults to start of month)
     - to: YYYY-MM-DD (optional, defaults to today)
     - compare: 'previous_period' (optional, returns previous period data for delta calculation)
+    - months: months in monthly_trend, 1 to 24 (optional, default 6)
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         today = date.today()
+
+        try:
+            trend_months = min(max(int(request.query_params.get('months', 6)), 1), 24)
+        except (TypeError, ValueError):
+            return Response({'error': 'months must be a whole number from 1 to 24'}, status=400)
 
         # Parse date range from query params
         from_date_str = request.query_params.get('from')
@@ -853,17 +862,18 @@ class FinanceDashboardView(APIView):
             id__in=active_vehicle_ids
         ).count()
 
-        # Outstanding invoices
+        # Outstanding invoices (the aging report's rule)
+        from core.services.aging_service import OUTSTANDING_STATUSES
         outstanding_total = inv_qs.filter(
             balance__gt=0,
-            status__in=['SENT', 'VIEWED', 'PARTIALLY_PAID', 'OVERDUE']
+            status__in=OUTSTANDING_STATUSES
         ).aggregate(total=Sum('balance'))['total'] or Decimal('0.00')
 
         # Overdue invoices
         overdue_total = inv_qs.filter(
             due_date__lt=today,
             balance__gt=0,
-            status__in=['SENT', 'VIEWED', 'PARTIALLY_PAID', 'OVERDUE']
+            status__in=OUTSTANDING_STATUSES
         ).aggregate(total=Sum('balance'))['total'] or Decimal('0.00')
 
         # DSO (Days Sales Outstanding)
@@ -901,9 +911,9 @@ class FinanceDashboardView(APIView):
             invoice_count=Count('id')
         ).order_by('-revenue')[:10]
 
-        # Monthly trend (last 6 months)
+        # Monthly trend (last `months` months, this month included)
         monthly_trend = []
-        for i in range(5, -1, -1):
+        for i in range(trend_months - 1, -1, -1):
             month_date = today - relativedelta(months=i)
             month_start = month_date.replace(day=1)
             month_end = (month_start + relativedelta(months=1)) - timedelta(days=1)
