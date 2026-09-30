@@ -11,6 +11,7 @@ from html import escape as html_escape
 from core.services.payment_details import (
     company_bank_details, bank_details_html, reference_text,
 )
+from core.formatting import format_zar
 
 
 resend.api_key = settings.RESEND_API_KEY
@@ -320,7 +321,7 @@ def send_invoice_email(invoice, company, pdf_bytes=None):
         company: Company model instance
         pdf_bytes: bytes - Optional PDF attachment
     """
-    amount_formatted = f"R {invoice.total_amount:,.2f}" if hasattr(invoice, 'total_amount') else f"R {invoice.amount:,.2f}"
+    amount_formatted = format_zar(invoice.total_amount) if hasattr(invoice, 'total_amount') else format_zar(invoice.amount)
     invoice_number = invoice.invoice_number if hasattr(invoice, 'invoice_number') else invoice.number
 
     due_date = invoice.due_date.strftime('%d %B %Y') if hasattr(invoice, 'due_date') and invoice.due_date else 'Upon receipt'
@@ -399,7 +400,7 @@ def send_payment_reminder_email(invoice, company, tone='gentle', days_overdue=0)
     tone: 'gentle' (not yet/just overdue), 'firm' (overdue), 'final' (well overdue).
     """
     amount = invoice.balance if getattr(invoice, 'balance', None) else invoice.total_amount
-    amount_formatted = f"R {amount:,.2f}"
+    amount_formatted = format_zar(amount)
     invoice_number = invoice.invoice_number
     due_date = invoice.due_date.strftime('%d %B %Y') if invoice.due_date else 'on receipt'
     company_name = getattr(company, 'name', None) or getattr(company, 'company_name', 'TruckWys')
@@ -458,7 +459,7 @@ def send_advance_approved_email(user, amount, invoice_number):
         amount: Decimal - Advance amount approved
         invoice_number: str - Related invoice number
     """
-    amount_formatted = f"R {amount:,.2f}"
+    amount_formatted = format_zar(amount)
 
     body_content = f"""
         <h2>Your Advance Has Been Approved!</h2>

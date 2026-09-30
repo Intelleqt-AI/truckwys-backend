@@ -43,6 +43,7 @@ import django_filters
 from django.utils import timezone
 from django.conf import settings
 from decouple import config
+from core.formatting import format_zar
 
 
 class CompanyFilterMixin:
@@ -378,7 +379,7 @@ class CompleteSignupView(APIView):
         from core.services.email_service import send_billing_email
         send_billing_email(
             user.email, user.first_name or user.username, 'Welcome to TruckWys — payment confirmed',
-            f'Your subscription is active: R{MONTHLY_FEE:,.2f}/month charged to your card ending '
+            f'Your subscription is active: {format_zar(MONTHLY_FEE)}/month charged to your card ending '
             f'{authorization.get("last4", "")}. Your next charge is due {company.next_billing_date.strftime("%d %b %Y")}.',
             link='/settings/billing',
         )
@@ -1404,7 +1405,7 @@ class FleetOverviewView(APIView):
                 {
                     'id': 'avg_margin_per_vehicle',
                     'title': 'Avg Margin per Vehicle (MTD)',
-                    'value': f"R {avg_margin_per_vehicle:,.2f}" if avg_margin_per_vehicle is not None else None,
+                    'value': format_zar(avg_margin_per_vehicle) if avg_margin_per_vehicle is not None else None,
                     'raw_value': avg_margin_per_vehicle,
                     'data_status': 'ok' if avg_margin_per_vehicle is not None else 'insufficient_data',
                     'trend': {
@@ -1514,7 +1515,7 @@ class VehicleInsightsView(APIView):
                 'driver_name': driver_name,
                 'status': status_label,
                 'status_color': status_color,
-                'margin_per_trip': f'R {margin:,.2f}',
+                'margin_per_trip': format_zar(margin),
                 'margin_per_trip_raw': margin,
                 'cost_per_km': f'R {cost:.1f}',
                 'cost_per_km_raw': cost,
@@ -1802,7 +1803,7 @@ class DriverOverviewView(APIView):
                 {
                     'id': 'fleet_margin',
                     'title': 'Fleet Avg. Margin',
-                    'value': f'R {fleet_margin:,.2f}',
+                    'value': format_zar(fleet_margin),
                     'raw_value': fleet_margin,
                     'icon': 'dollar-sign',
                     'description': 'per trip'
@@ -1928,7 +1929,7 @@ class QuotesPipelineOverviewView(APIView):
                 'label': status_labels[status_key],
                 'count': count,
                 'total_value': float(total_value),
-                'formatted_value': f"~R {float(total_value):,.0f}"
+                'formatted_value': f"~{format_zar(total_value, 0)}"
             }
         
         # Get quotes for each column
@@ -4199,7 +4200,7 @@ class DashboardSignalsView(APIView):
                 'type': 'CRITICAL',
                 'category': 'Cash Alerts',
                 'title': f'Invoice Overdue — {inv.invoice_number}',
-                'body': f'{inv.customer.name} owes R {inv.total_amount:,.2f}. Due {inv.due_date}. Chase now.',
+                'body': f'{inv.customer.name} owes {format_zar(inv.total_amount)}. Due {inv.due_date}. Chase now.',
                 'action': 'CHASE',
                 'action_url': f'/finance/invoices/{inv.id}',
                 'severity': 'high',
@@ -4234,7 +4235,7 @@ class DashboardSignalsView(APIView):
                 'title': f'Fast Pay — {eligible.count()} Invoices Ready',
                 # Fee and payout time are not promised here: the fee is priced
                 # per invoice by the risk engine and payout time is not measured.
-                'body': f'R {float(total):,.0f} in eligible invoices.',
+                'body': f'{format_zar(total, 0)} in eligible invoices.',
                 'action': 'FAST PAY',
                 'action_url': '/capital',
                 'severity': 'low',
@@ -4251,7 +4252,7 @@ class DashboardSignalsView(APIView):
                     'title': f'Fast Pay — {sent.count()} Invoices Sent',
                     # These invoices are NOT flagged early_pay_eligible, so no
                     # eligibility or fee claim is made.
-                    'body': f'R {float(total):,.0f} awaiting payment.',
+                    'body': f'{format_zar(total, 0)} awaiting payment.',
                     'action': 'FAST PAY',
                     'action_url': '/capital',
                     'severity': 'low',

@@ -2,6 +2,7 @@
 
 from django.db.models.signals import post_save, post_delete, pre_save
 from django.dispatch import receiver
+from core.formatting import format_zar
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +196,7 @@ def _auto_invoice_on_delivery(load):
             getattr(load, 'company_id', None),
             'SUCCESS',
             'Invoice auto-raised on delivery',
-            f'{invoice.invoice_number} · R{float(invoice.total_amount):,.0f} · ready for fast-pay',
+            f'{invoice.invoice_number} · {format_zar(invoice.total_amount, 0)} · ready for fast-pay',
             link=f'/finance/invoices/{invoice.id}',
             event='invoice.auto_created',
         )
@@ -538,7 +539,7 @@ def advance_saved(sender, instance, created, **kwargs):
                 company_id,
                 'SUCCESS',
                 'Advance approved',
-                f'R{float(instance.net_amount):,.0f} approved · {inv_num}',
+                f'{format_zar(instance.net_amount, 0)} approved · {inv_num}',
                 link=f'/capital/advances/{instance.id}',
                 event='advance.approved',
                 exclude_user_id=getattr(instance, '_notify_actor_id', None),
@@ -574,7 +575,7 @@ def advance_saved(sender, instance, created, **kwargs):
                 company_id,
                 'SUCCESS',
                 'Funds disbursed',
-                f'R{float(instance.net_amount):,.0f} disbursed · {inv_num}',
+                f'{format_zar(instance.net_amount, 0)} disbursed · {inv_num}',
                 link=f'/capital/advances/{instance.id}',
                 event='advance.disbursed',
                 exclude_user_id=getattr(instance, '_notify_actor_id', None),

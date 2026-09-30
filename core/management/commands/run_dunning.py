@@ -6,6 +6,7 @@ Designed to run daily from cron. Throttled internally so customers aren't spamme
 from django.core.management.base import BaseCommand
 
 from core.services.collections import run_dunning
+from core.formatting import format_zar
 
 
 class Command(BaseCommand):
@@ -32,4 +33,4 @@ class Command(BaseCommand):
             f"failed={summary['failed']}"
         ))
         for r in summary.get('reminders', []):
-            self.stdout.write(f"  {r['tone']:6} {r['invoice_number']} · R{r['amount']:,.0f}")
+            self.stdout.write(f"  {r['tone']:6} {r['invoice_number']} · {format_zar(r['amount'], 0)}")

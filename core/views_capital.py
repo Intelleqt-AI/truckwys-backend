@@ -40,6 +40,7 @@ from core.serializers_capital import (
     SettleAdvanceSerializer,
 )
 from core.services.risk_engine import RiskEngine
+from core.formatting import format_zar
 
 
 def _capital_scope(view, qs, company_lookup):
@@ -373,7 +374,7 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
                 getattr(facility, 'company_id', None),
                 'SUCCESS',
                 'Advance requested',
-                f'{invoice.invoice_number} — R{float(advance_request.net_amount):,.0f} net ({result.risk_tier} tier)',
+                f'{invoice.invoice_number} — {format_zar(advance_request.net_amount, 0)} net ({result.risk_tier} tier)',
                 link=f'/capital/advances/{advance_request.id}',
                 event='advance.created',
                 exclude_user_id=request.user.id,
@@ -413,7 +414,7 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
                 advance.save()
 
             _notify_advance(advance, 'SUCCESS', 'Advance approved',
-                            f'{_inv_no(advance)} approved — R{float(advance.net_amount):,.0f} to be disbursed',
+                            f'{_inv_no(advance)} approved — {format_zar(advance.net_amount, 0)} to be disbursed',
                             exclude_user_id=request.user.id)
             response_serializer = AdvanceRequestSerializer(advance)
             return Response(response_serializer.data)
@@ -486,7 +487,7 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
                 advance.save()
 
             _notify_advance(advance, 'SUCCESS', 'Advance disbursed',
-                            f'{_inv_no(advance)} — R{float(advance.net_amount):,.0f} paid out',
+                            f'{_inv_no(advance)} — {format_zar(advance.net_amount, 0)} paid out',
                             exclude_user_id=request.user.id)
             response_serializer = AdvanceRequestSerializer(advance)
             return Response(response_serializer.data)
