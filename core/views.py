@@ -342,6 +342,11 @@ class CompleteSignupView(APIView):
                 email=pending.email, username=pending.username,
                 first_name=pending.first_name, last_name=pending.last_name,
                 password=pending.password_hash, is_active=True,
+                # The signer-upper is the company's founding owner — explicit,
+                # not left to User.role's default (which is deliberately the
+                # lowest-privilege role, so any OTHER creation path that
+                # forgets to set a role can't silently mint an admin).
+                role='ADMIN',
             )
             first_billing_date, first_billing_at = compute_next_cycle(None)
             company = Company.objects.create(
@@ -3055,7 +3060,7 @@ class PublicQuoteRespondView(APIView):
 
             # IT/COMPLETED are decided too — a stale link must never re-decide
             # a quote that is already being executed.
-            if quote.status in ['ACCEPTED', 'DECLINED', 'IT', 'COMPLETED']:
+            if quote.status in ['ACCEPTED', 'DECLINED', 'IT', 'COMPLETED', 'EXPIRED']:
                 return Response(
                     {
                         'error': 'This quote has already been responded to',
@@ -3063,6 +3068,21 @@ class PublicQuoteRespondView(APIView):
                         'already_responded': True,
                     },
                     status=status.HTTP_409_CONFLICT
+                )
+
+            # Checked directly against valid_until (not just quote.status ==
+            # 'EXPIRED') so a customer can't accept/decline in the window
+            # between a quote going stale and the next expiry sweep run —
+            # previously only the customer-facing page's own UI stopped this,
+            # nothing enforced it server-side.
+            if quote.valid_until and quote.valid_until < timezone.now().date():
+                return Response(
+                    {
+                        'error': 'This quote has expired',
+                        'status': 'EXPIRED',
+                        'expired': True,
+                    },
+                    status=status.HTTP_410_GONE
                 )
 
             action = request.data.get('action')
@@ -4626,6 +4646,12 @@ class IntegrationAPIKeyViewSet(viewsets.ModelViewSet):
     def get_serializer_class(self):
         from core.serializers import IntegrationAPIKeySerializer
         return IntegrationAPIKeySerializer
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        # The one moment the operator needs the real secret to copy it.
+        context['show_full_key'] = (self.action == 'create')
+        return context
 
     def perform_create(self, serializer):
         serializer.save(operator=self.request.user)

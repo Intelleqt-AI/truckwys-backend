@@ -238,6 +238,15 @@ class SelfProfileSerializer(UserSerializer):
                     f'You cannot change your own {field.replace("_", " ")} here; '
                     'ask a company admin.'
                 ]
+        # Session-hijack hardening: a stolen access token could otherwise change
+        # the password with no proof of the current one, locking the real user
+        # out permanently. ChangePasswordView (/auth/change-password/) is the one
+        # path that verifies the current password before setting a new one.
+        if 'password' in data:
+            errors['password'] = [
+                'Change your password from Security settings (this verifies your '
+                'current password first), not here.'
+            ]
         if errors:
             raise serializers.ValidationError(errors)
         return attrs
@@ -264,6 +273,20 @@ class DriverSerializer(serializers.ModelSerializer):
     user_details = UserSerializer(source='user', read_only=True)
     assigned_vehicle = serializers.SerializerMethodField()
     total_trips = serializers.SerializerMethodField()
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # 'user' defaults to an unscoped User.objects.all() PK field, so
+        # without this a driver record could be linked to another company's
+        # user id. Same policy as CompanyFilterMixin: a platform superuser
+        # with no company of their own stays unscoped, everyone else (staff
+        # included) is limited to their own company's users.
+        request = self.context.get('request')
+        user = getattr(request, 'user', None)
+        if user is not None and user.is_authenticated:
+            if user.is_superuser and getattr(user, 'company_id', None) is None:
+                return
+            self.fields['user'].queryset = User.objects.filter(company_id=getattr(user, 'company_id', None))
 
     class Meta:
         model = Driver
@@ -874,7 +897,15 @@ class WebhookSerializer(serializers.ModelSerializer):
 
 
 class IntegrationAPIKeySerializer(serializers.ModelSerializer):
-    """Serializer for IntegrationAPIKey model."""
+    """Serializer for IntegrationAPIKey model.
+
+    The full key is only ever shown once, in the response to the request that
+    generated it (IntegrationAPIKeyViewSet sets show_full_key=True only for
+    'create') — every other read (list/retrieve/update) gets a masked value.
+    Losing the full value after that point is the point: it lives in the
+    operator's password manager from here on, not in a browser tab they can
+    leave open, and not in every future API response.
+    """
 
     class Meta:
         from core.models import IntegrationAPIKey
@@ -886,6 +917,13 @@ class IntegrationAPIKeySerializer(serializers.ModelSerializer):
             'allowed_ips', 'webhook_url',
         ]
         read_only_fields = ['id', 'key', 'created_at', 'last_used_at', 'usage_count', 'quota_used']
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if not self.context.get('show_full_key'):
+            full = data.get('key') or ''
+            data['key'] = ('•' * 8 + full[-4:]) if len(full) >= 4 else '•' * 8
+        return data
 
 
 class APICallLogSerializer(serializers.ModelSerializer):

@@ -156,13 +156,27 @@ class SelfProfileEscalationTests(TestCase):
             self.assertEqual(getattr(user, k), v, k)
         self.assertEqual(resp.json()['role'], 'DRIVER')
 
-    def test_user_can_still_change_password_via_me(self):
+    def test_password_change_via_me_is_rejected(self):
+        """A stolen access token must not be able to set a new password with no
+        proof of the current one — that's what /auth/change-password/ is for."""
         user = self.users['DISPATCHER']
+        original_hash = user.password
         resp = self._client(user).patch(
             '/api/v1/auth/me/', {'password': 'Brand-new-pass-456!'}, format='json')
-        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.content)
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST, resp.content)
+        self.assertIn('password', resp.json())
         user.refresh_from_db()
-        self.assertTrue(user.check_password('Brand-new-pass-456!'))
+        self.assertEqual(user.password, original_hash)
+
+    def test_password_change_mixed_with_profile_fields_changes_nothing(self):
+        user = self.users['DISPATCHER']
+        original_hash = user.password
+        resp = self._client(user).patch(
+            '/api/v1/auth/me/', {'first_name': 'Sneaky', 'password': 'Brand-new-pass-456!'}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST, resp.content)
+        user.refresh_from_db()
+        self.assertEqual(user.password, original_hash)
+        self.assertNotEqual(user.first_name, 'Sneaky')
 
     def test_get_me_still_returns_role_and_status(self):
         resp = self._client(self.users['VIEWER']).get('/api/v1/auth/me/')
