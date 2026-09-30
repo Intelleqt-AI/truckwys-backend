@@ -6,6 +6,11 @@ import resend
 from django.conf import settings
 from decimal import Decimal
 from datetime import datetime
+from html import escape as html_escape
+
+from core.services.payment_details import (
+    company_bank_details, bank_details_html, reference_text,
+)
 
 
 resend.api_key = settings.RESEND_API_KEY
@@ -321,8 +326,25 @@ def send_invoice_email(invoice, company, pdf_bytes=None):
     due_date = invoice.due_date.strftime('%d %B %Y') if hasattr(invoice, 'due_date') and invoice.due_date else 'Upon receipt'
     issue_date = invoice.created_at.strftime('%d %B %Y') if hasattr(invoice, 'created_at') else datetime.now().strftime('%d %B %Y')
 
+    # How to pay — real bank details only when the company has set them;
+    # never print a placeholder like "Available on invoice" in their place.
+    bank = company_bank_details(company)
+    company_display = getattr(company, 'name', None) or getattr(company, 'company_name', '') or 'us'
+    if bank:
+        banking_block = f"""<div class="info-box">
+            <p><strong>How to pay:</strong><br>
+            {bank_details_html(bank)}<br>
+            Reference: <strong>{html_escape(str(invoice_number))}</strong> — {html_escape(reference_text(bank, invoice_number))}</p>
+        </div>"""
+    else:
+        banking_block = f"""<div class="info-box">
+            <p><strong>Banking Details:</strong><br>
+            Please contact {html_escape(company_display)} for banking details.<br>
+            Please use the invoice number <strong>{html_escape(str(invoice_number))}</strong> as your payment reference.</p>
+        </div>"""
+
     body_content = f"""
-        <h2>Invoice from {company.name}</h2>
+        <h2>Invoice from {company_display}</h2>
         <p>Please find your invoice details below:</p>
 
         <table class="table">
@@ -346,12 +368,7 @@ def send_invoice_email(invoice, company, pdf_bytes=None):
 
         <a href="{settings.FRONTEND_URL.rstrip('/')}/invoice/view/{invoice.id}/{getattr(invoice, 'view_token', '') or ''}" class="cta-button">View Invoice</a>
 
-        <div class="info-box">
-            <p><strong>Banking Details:</strong><br>
-            Account Name: {company.name}<br>
-            Bank: {getattr(company, 'bank_name', 'Available on invoice')}<br>
-            Account Number: {getattr(company, 'bank_account_number', 'Available on invoice')}</p>
-        </div>
+        {banking_block}
 
         <p>Thank you for your business. Please remit payment by the due date shown above.</p>
     """
@@ -361,7 +378,7 @@ def send_invoice_email(invoice, company, pdf_bytes=None):
     params = {
         "from": settings.EMAIL_FROM,
         "to": [invoice.customer_email if hasattr(invoice, 'customer_email') else invoice.client.email],
-        "subject": f"Invoice {invoice_number} from {company.name} — {amount_formatted}",
+        "subject": f"Invoice {invoice_number} from {company_display} — {amount_formatted}",
         "html": html_content,
     }
 
@@ -401,6 +418,14 @@ def send_payment_reminder_email(invoice, company, tone='gentle', days_overdue=0)
         lead = (f"A friendly reminder that invoice <strong>{invoice_number}</strong> for "
                 f"{amount_formatted} is due on {due_date}. We'd appreciate prompt payment.")
 
+    # Company bank details, only when set — nothing extra otherwise.
+    bank = company_bank_details(company)
+    bank_block = (
+        f'<div class="info-box"><p><strong>How to pay:</strong><br>{bank_details_html(bank)}<br>'
+        f'Reference: <strong>{html_escape(str(invoice_number))}</strong> — '
+        f'{html_escape(reference_text(bank, invoice_number))}</p></div>'
+    ) if bank else ''
+
     body_content = f"""
         <h2>{heading}</h2>
         <p>{lead}</p>
@@ -410,6 +435,7 @@ def send_payment_reminder_email(invoice, company, tone='gentle', days_overdue=0)
             <tr><th>Amount outstanding</th><td class="amount-highlight">{amount_formatted}</td></tr>
         </table>
         <a href="{settings.FRONTEND_URL.rstrip('/')}/invoice/view/{invoice.id}/{getattr(invoice, 'view_token', '') or ''}" class="cta-button">View &amp; pay invoice</a>
+        {bank_block}
         <p>If payment has already been made, please disregard this notice. Thank you for your business.</p>
         <p>{company_name}</p>
     """

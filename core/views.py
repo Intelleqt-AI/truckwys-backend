@@ -53,8 +53,15 @@ class CompanyFilterMixin:
         user = self.request.user
         if not user.is_authenticated:
             return qs.none()
-        if user.is_superuser:
-            return qs  # Superusers see all
+        if user.is_superuser and getattr(user, 'company_id', None) is None:
+            # A platform superuser with no company has no tenant to scope to
+            # and keeps the platform-wide view (unchanged).
+            return qs
+        # Tenant isolation (2026-09): a superuser who BELONGS to a company is
+        # scoped to it like any other member on these ordinary app endpoints —
+        # they used to see every tenant's rows (and company-less rows) mixed
+        # into their own Invoices/Quotes/... pages. Platform-wide access lives
+        # on the /api/v1/admin/* views (IsSuperUser), which don't use this mixin.
         if hasattr(qs.model, 'company_id'):
             return qs.filter(company=user.company)
         return qs
@@ -146,7 +153,7 @@ from .models import (
 from .utils.request_meta import parse_device, client_ip, mask_email
 from .utils.auth_events import log_auth_event
 from .serializers import (
-    UserSerializer, CustomerSerializer, DriverSerializer,
+    UserSerializer, SelfProfileSerializer, CustomerSerializer, DriverSerializer,
     VehicleSerializer, VehicleTypeSerializer, VehicleLogSerializer, LoadSerializer,
     QuoteSerializer, InvoiceSerializer, PaymentSerializer,
     ExpenseSerializer, SettlementSerializer, NotificationSerializer,
@@ -335,6 +342,11 @@ class CompleteSignupView(APIView):
                 email=pending.email, username=pending.username,
                 first_name=pending.first_name, last_name=pending.last_name,
                 password=pending.password_hash, is_active=True,
+                # The signer-upper is the company's founding owner — explicit,
+                # not left to User.role's default (which is deliberately the
+                # lowest-privilege role, so any OTHER creation path that
+                # forgets to set a role can't silently mint an admin).
+                role='ADMIN',
             )
             first_billing_date, first_billing_at = compute_next_cycle(None)
             company = Company.objects.create(
@@ -809,7 +821,10 @@ class UserProfileView(APIView):
     def patch(self, request):
         if _demo_settings_locked(request.user):
             return Response({'error': DEMO_SETTINGS_LOCKED_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
-        serializer = UserSerializer(request.user, data=request.data, partial=True, context={'request': request})
+        # SelfProfileSerializer, NOT UserSerializer: role/status/is_active/
+        # username are admin-only fields (UserViewSet) and must not be
+        # self-editable, or any user could PATCH {"role": "ADMIN"}.
+        serializer = SelfProfileSerializer(request.user, data=request.data, partial=True, context={'request': request})
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data)
@@ -1205,7 +1220,7 @@ class CompanyProfileView(APIView):
 
     def get(self, request):
         company = self.get_object()
-        serializer = CompanySerializer(company)
+        serializer = CompanySerializer(company, context={'request': request})
         return Response(serializer.data)
     
     def patch(self, request):
@@ -1225,7 +1240,7 @@ class CompanyProfileView(APIView):
             current_contact.update(data['contact'])
             data['contact'] = current_contact
             
-        serializer = CompanySerializer(company, data=data, partial=True)
+        serializer = CompanySerializer(company, data=data, partial=True, context={'request': request})
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data)
@@ -1289,7 +1304,10 @@ class FleetOverviewView(APIView):
             margin=Sum('total_amount')
         ).aggregate(avg_margin=Avg('margin'))
         
-        avg_margin_per_vehicle = float(vehicle_margins['avg_margin']) if vehicle_margins['avg_margin'] else 7266.67
+        # No loads -> no figure. This used to fall back to invented constants
+        # (7266.67 / 6500.00 / 12.0 / 2.3), shown to users as real KPIs.
+        # See docs/backend-changes/2026-09-api-data-correctness.md.
+        avg_margin_per_vehicle = float(vehicle_margins['avg_margin']) if vehicle_margins['avg_margin'] else None
         
         # Last month comparison
         last_month_loads = Load.objects.filter(
@@ -1303,8 +1321,11 @@ class FleetOverviewView(APIView):
             margin=Sum('total_amount')
         ).aggregate(avg_margin=Avg('margin'))
         
-        last_month_avg = float(last_month_vehicle_margins['avg_margin']) if last_month_vehicle_margins['avg_margin'] else 6500.00
-        margin_improvement = ((avg_margin_per_vehicle - last_month_avg) / last_month_avg * 100) if last_month_avg > 0 else 12.0
+        last_month_avg = float(last_month_vehicle_margins['avg_margin']) if last_month_vehicle_margins['avg_margin'] else None
+        margin_improvement = (
+            round((avg_margin_per_vehicle - last_month_avg) / last_month_avg * 100, 1)
+            if avg_margin_per_vehicle is not None and last_month_avg else None
+        )
         
         # Fleet Cost per KM
         total_expenses = Expense.objects.filter(
@@ -1322,9 +1343,10 @@ class FleetOverviewView(APIView):
             company=request.user.company
         ).aggregate(total=Sum('distance'))['total']
         
-        total_distance = float(total_distance) if total_distance else 1.0
-        
-        cost_per_km = total_expenses / total_distance if total_distance > 0 else 22.0
+        # No delivered distance -> no cost per km (was: divide by a fake 1 km).
+        total_distance = float(total_distance) if total_distance else 0.0
+
+        cost_per_km = total_expenses / total_distance if total_distance > 0 else None
         target_cost_per_km = 20.0
         
         # AI Health Score — real aggregates from Vehicle model fields
@@ -1338,8 +1360,6 @@ class FleetOverviewView(APIView):
         uptime_score = 0  # Not stored per-vehicle; kept for response shape compatibility
         maintenance_score = round(float(vehicle_agg['avg_maint'] or 0))
         
-        # Banner message data
-        margin_change = 2.3
         # Vehicles flagged by km-based service (within 10% of interval or overdue)
         # plus those with expiring registration/insurance.
         company_vehicles = Vehicle.objects.filter(company=request.user.company)
@@ -1365,7 +1385,7 @@ class FleetOverviewView(APIView):
                 }
             },
             'banner': {
-                'message': f"Fleet margin up {margin_change}% this month driven by improved route pairing and fewer idling hours. {flagged_vehicles} vehicles flagged for maintenance risk.",
+                'message': self._banner_message(margin_improvement, flagged_vehicles),
                 'type': 'info'
             },
             'kpi_cards': [
@@ -1384,25 +1404,30 @@ class FleetOverviewView(APIView):
                 {
                     'id': 'avg_margin_per_vehicle',
                     'title': 'Avg Margin per Vehicle (MTD)',
-                    'value': f"R {avg_margin_per_vehicle:,.2f}",
+                    'value': f"R {avg_margin_per_vehicle:,.2f}" if avg_margin_per_vehicle is not None else None,
                     'raw_value': avg_margin_per_vehicle,
+                    'data_status': 'ok' if avg_margin_per_vehicle is not None else 'insufficient_data',
                     'trend': {
-                        'value': round(margin_improvement, 1),
-                        'label': f"+{round(margin_improvement, 1)}% improvement",
-                        'direction': 'up',
-                        'type': 'positive'
-                    },
+                        'value': margin_improvement,
+                        'label': f"{margin_improvement:+.1f}% vs last month",
+                        'direction': 'up' if margin_improvement >= 0 else 'down',
+                        'type': 'positive' if margin_improvement >= 0 else 'negative'
+                    } if margin_improvement is not None else None,
                     'icon': 'trending-up'
                 },
                 {
                     'id': 'fleet_cost_per_km',
                     'title': 'Fleet Cost per KM',
-                    'value': f"R {cost_per_km:.1f}",
+                    'value': f"R {cost_per_km:.1f}" if cost_per_km is not None else None,
                     'raw_value': cost_per_km,
+                    'data_status': 'ok' if cost_per_km is not None else 'insufficient_data',
                     'comparison': {
                         'label': f"vs Target R {target_cost_per_km:.1f}",
                         'target': target_cost_per_km,
-                        'status': 'warning' if cost_per_km > target_cost_per_km else 'success'
+                        'status': (
+                            None if cost_per_km is None
+                            else 'warning' if cost_per_km > target_cost_per_km else 'success'
+                        )
                     },
                     'icon': 'alert-circle'
                 },
@@ -1421,6 +1446,21 @@ class FleetOverviewView(APIView):
                 }
             ]
         })
+
+
+    @staticmethod
+    def _banner_message(margin_improvement, flagged_vehicles):
+        """Only real facts: the month-on-month change when both months have
+        loads, and the maintenance flag count. (Previously a fixed 'up 2.3%
+        ... improved route pairing and fewer idling hours'.)"""
+        parts = []
+        if margin_improvement is not None:
+            word = 'up' if margin_improvement >= 0 else 'down'
+            parts.append(f"Avg margin per vehicle {word} {abs(margin_improvement):.1f}% vs last month.")
+        parts.append(
+            f"{flagged_vehicles} vehicle{'s' if flagged_vehicles != 1 else ''} flagged for maintenance risk."
+        )
+        return ' '.join(parts)
 
 
 class VehicleInsightsView(APIView):
@@ -2011,11 +2051,16 @@ class UserViewSet(viewsets.ModelViewSet):
         """Filter users by company for multi-tenancy."""
         qs = super().get_queryset()
         user = self.request.user
-        if user.is_superuser:
-            return qs  # Superusers see all
-        if hasattr(user, 'company') and user.company:
-            return qs.filter(company=user.company)
-        return qs
+        company_id = getattr(user, 'company_id', None)
+        if user.is_superuser and company_id is None:
+            return qs  # platform superuser with no company: unchanged
+        # Tenant isolation (2026-09): a superuser in a company sees their own
+        # team here (the admin dashboard has /api/v1/admin/users/ for all
+        # users), and a company-less account sees only itself — this used to
+        # return every user on the platform to both.
+        if company_id is not None:
+            return qs.filter(company_id=company_id)
+        return qs.filter(pk=user.pk)
 
     def perform_create(self, serializer):
         """Bind newly-created users to the creating admin's company (multi-tenancy)."""
@@ -2251,6 +2296,7 @@ class VehicleTypeViewSet(DemoFixedDataMixin, viewsets.ModelViewSet):
     COPYABLE_FIELDS = [
         'name', 'description', 'capacity', 'max_distance', 'base_rate',
         'fuel_consumption_l_per_100km', 'fuel_consumption_sensitivity_pct', 'fuel_type', 'active',
+        'sanral_toll_class',
     ]
 
     def update(self, request, *args, **kwargs):
@@ -3014,7 +3060,7 @@ class PublicQuoteRespondView(APIView):
 
             # IT/COMPLETED are decided too — a stale link must never re-decide
             # a quote that is already being executed.
-            if quote.status in ['ACCEPTED', 'DECLINED', 'IT', 'COMPLETED']:
+            if quote.status in ['ACCEPTED', 'DECLINED', 'IT', 'COMPLETED', 'EXPIRED']:
                 return Response(
                     {
                         'error': 'This quote has already been responded to',
@@ -3022,6 +3068,21 @@ class PublicQuoteRespondView(APIView):
                         'already_responded': True,
                     },
                     status=status.HTTP_409_CONFLICT
+                )
+
+            # Checked directly against valid_until (not just quote.status ==
+            # 'EXPIRED') so a customer can't accept/decline in the window
+            # between a quote going stale and the next expiry sweep run —
+            # previously only the customer-facing page's own UI stopped this,
+            # nothing enforced it server-side.
+            if quote.valid_until and quote.valid_until < timezone.now().date():
+                return Response(
+                    {
+                        'error': 'This quote has expired',
+                        'status': 'EXPIRED',
+                        'expired': True,
+                    },
+                    status=status.HTTP_410_GONE
                 )
 
             action = request.data.get('action')
@@ -3113,7 +3174,7 @@ class PublicInvoiceView(APIView):
             except Exception:
                 company_logo_url = None
 
-        return Response({
+        payload = {
             'invoice_number': invoice.invoice_number,
             'issue_date': str(invoice.issue_date),
             'due_date': str(invoice.due_date),
@@ -3133,7 +3194,14 @@ class PublicInvoiceView(APIView):
             'company_phone': contact.get('phone', ''),
             'company_email': contact.get('email', ''),
             'company_address': contact.get('address', ''),
-        })
+        }
+        # "How to pay" block — only when the company has set its bank details;
+        # the key is omitted otherwise so the page keeps its old wording.
+        from core.services.payment_details import public_payment_details
+        payment_details = public_payment_details(company)
+        if payment_details:
+            payload['payment_details'] = payment_details
+        return Response(payload)
 
 
 class InvoiceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
@@ -3323,7 +3391,9 @@ class RouteCalculatorView(APIView):
         from core.services.cross_border import (detect_countries, calculate_cross_border_costs,
                                                 get_cross_border_warnings, country_distances_km)
         from core.services.fuel_price import fetch_fuel_prices
-        from core.services.toll_calculator import calculate_tolls, calculate_tolls_by_geometry, resolve_toll_truck_type
+        from decimal import Decimal
+        from core.services.toll_calculator import (VAT_RATE, calculate_tolls, calculate_tolls_by_geometry,
+                                                   resolve_toll_class)
 
         data = request.data
         origin = data.get('origin', '')
@@ -3467,37 +3537,75 @@ class RouteCalculatorView(APIView):
                 }, status=status.HTTP_403_FORBIDDEN)
 
         # Toll cost — matched PER ROUTE via point-to-polyline plaza matching.
-        # resolve_toll_truck_type handles exact names, DB VehicleType names
-        # ("Medium Truck (4–8 tonnes)"), and free-form UI values by keyword.
-        toll_truck_type = resolve_toll_truck_type(vehicle_type)
+        # SANRAL class: the VehicleType's explicit sanral_toll_class when set,
+        # else a guess from the name (resolve_toll_class reports which).
+        toll_class = resolve_toll_class(vehicle_type, getattr(request.user, 'company', None))
+        toll_truck_type = toll_class.truck_type
+
+        _TOLL_UNAVAILABLE_MESSAGES = {
+            'routing_unavailable': ('Live routing was unavailable, so the road route (and the toll '
+                                    'plazas on it) is unknown. Tolls are NOT included; add them manually.'),
+            'toll_calculation_failed': 'The toll calculation failed. Tolls are NOT included; add them manually.',
+            'no_toll_data': 'No toll plaza data is loaded. Tolls are NOT included; add them manually.',
+            'no_geometry': 'The route has no geometry to match toll plazas against. Tolls are NOT included.',
+            'no_known_toll_corridor': ('The route could not be matched to a known toll road. Tolls are '
+                                       'NOT included; add them manually if the route uses toll roads.'),
+        }
 
         def _toll_for_route(geom):
-            """(toll_zar, breakdown, routes_used) for one route polyline.
+            """Toll result for one route polyline, as a dict.
 
-            Geometry present → authoritative point-to-polyline geofence: only SA plazas
-            the route actually passes are charged. For cross-border only SA plazas exist
-            in the DB, so this also windows SA-side tolls to the driven SA portion.
-            No geometry (estimated route) → keyword best-effort. There is deliberately NO
-            'geofence-found-0 → keyword' fallback: 0 matched plazas means the route
-            genuinely has none (e.g. Pretoria↔Johannesburg = R0)."""
-            if geom:
-                try:
+            Amounts: 'excl' is VAT-exclusive (what enters the quote), 'incl'
+            the published VAT-inclusive tariff total.
+
+            TomTom geometry → authoritative point-to-polyline geofence: only SA
+            plazas the route actually passes are charged. For cross-border only
+            SA plazas exist in the DB, so this also windows SA-side tolls to the
+            driven SA portion. 0 matched plazas on a real route is a genuine R0
+            (e.g. Pretoria↔Johannesburg) and is NOT flagged.
+
+            Straight-line fallback geometry (TomTom down) is NOT geofenced: a
+            chord between the endpoints says nothing about which plazas the
+            road passes, so the result is flagged unavailable instead of a
+            silent R0 (or a random partial match).
+            No geometry at all → keyword corridor best-effort, flagged estimated."""
+            out = {'excl': Decimal('0.00'), 'incl': Decimal('0.00'), 'breakdown': [], 'routes': [],
+                   'estimated': source != 'tomtom' or not geom, 'unavailable_reason': None}
+            if source != 'tomtom':
+                out['unavailable_reason'] = 'routing_unavailable'
+                return out
+            try:
+                if geom:
                     res = calculate_tolls_by_geometry(geom, toll_truck_type)
-                except Exception:
-                    return 0.0, [], []
-            else:
-                try:
+                else:
                     res = calculate_tolls(f"{origin} {origin_label}",
                                           f"{destination} {dest_label}", toll_truck_type)
-                except Exception:
-                    return 0.0, [], []
-            bd = [{'plaza': it.plaza_name, 'route': it.route,
-                   'location_km': float(it.location_km), 'tariff': float(it.tariff)}
-                  for it in res.breakdown]
-            return float(res.total_zar), bd, list(res.routes_used)
+                    if not res.routes_used:
+                        res.unavailable_reason = res.unavailable_reason or 'no_known_toll_corridor'
+            except Exception:
+                _exc_logger.exception('Toll calculation failed for %s → %s (%s)', origin, destination, toll_truck_type)
+                out['unavailable_reason'] = 'toll_calculation_failed'
+                return out
+            out['unavailable_reason'] = res.unavailable_reason
+            out['excl'] = res.total_excl_vat
+            out['incl'] = res.total_zar
+            out['routes'] = list(res.routes_used)
+            # 'tariff' is VAT-exclusive so the breakdown sums to toll_cost_zar;
+            # the published (VAT-inclusive) tariff is kept as tariff_incl_vat.
+            out['breakdown'] = [{'plaza': it.plaza_name, 'route': it.route,
+                                 'location_km': float(it.location_km),
+                                 'tariff': float(it.tariff_excl_vat),
+                                 'tariff_excl_vat': float(it.tariff_excl_vat),
+                                 'tariff_incl_vat': float(it.tariff)}
+                                for it in res.breakdown]
+            return out
 
         geometry = routes_raw[0].get('geometry', []) if routes_raw else []
-        toll_zar, toll_breakdown, toll_routes_used = _toll_for_route(geometry)
+        toll_result = _toll_for_route(geometry)
+        toll_zar = float(toll_result['excl'])
+        toll_breakdown = toll_result['breakdown']
+        toll_routes_used = toll_result['routes']
+        toll_unavailable_reason = toll_result['unavailable_reason']
 
         # Cross-border costs
         additional_costs = {}
@@ -3548,8 +3656,21 @@ class RouteCalculatorView(APIView):
             'fuel_usage_litres': fuel_litres,
             'fuel_cost_zar': fuel_zar,
             'fuel_rate_l_per_100km': round(fuel_rate * 100, 1),
+            # VAT-EXCLUSIVE since 2026-09 (docs/backend-changes/2026-09-toll-class-vat.md):
+            # this is the carrier's toll cost for a quote priced excl. VAT.
             'toll_cost_zar': round(toll_zar, 2),
-            'toll_source': 'geofence' if geometry else 'estimated',
+            'toll_cost_includes_vat': False,
+            'toll_cost_incl_vat_zar': float(toll_result['incl']),
+            'toll_vat_zar': float(toll_result['incl'] - toll_result['excl']),
+            'toll_vat_rate': float(VAT_RATE),
+            'toll_source': 'estimated' if toll_result['estimated'] else 'geofence',
+            'toll_sanral_class': toll_class.sanral_class,
+            'toll_class_source': toll_class.source,
+            'toll_class_detail': toll_class.detail,
+            'tolls_estimated': toll_result['estimated'],
+            'tolls_unavailable': toll_unavailable_reason is not None,
+            'tolls_unavailable_reason': toll_unavailable_reason,
+            'toll_warning': _TOLL_UNAVAILABLE_MESSAGES.get(toll_unavailable_reason) if toll_unavailable_reason else None,
             'toll_routes': toll_routes_used,
             'toll_breakdown': toll_breakdown,
             'total_cost_zar': round(fuel_zar + toll_zar + sum(additional_costs.values()), 2),
@@ -3585,11 +3706,8 @@ class RouteCalculatorView(APIView):
             r_fuel = round(r_litres * diesel_price, 2)
             analysis = self._analyze_route(rt)
             terrain = self._infer_terrain(rt['geometry'], origin, destination)
-            if i == 0:
-                rt_toll_zar, rt_breakdown = round(toll_zar, 2), toll_breakdown
-            else:
-                _tz, rt_breakdown, _ru = _toll_for_route(rt.get('geometry', []))
-                rt_toll_zar = round(_tz, 2)
+            rt_toll = toll_result if i == 0 else _toll_for_route(rt.get('geometry', []))
+            rt_toll_zar, rt_breakdown = round(float(rt_toll['excl']), 2), rt_toll['breakdown']
             routes_out.append({
                 'index': i,
                 'is_best': i == 0,
@@ -3604,7 +3722,10 @@ class RouteCalculatorView(APIView):
                 'arrival_time': rt['arrival_time'],
                 'fuel_usage_litres': r_litres,
                 'fuel_cost_zar': r_fuel,
-                'toll_cost_zar': rt_toll_zar,
+                'toll_cost_zar': rt_toll_zar,   # VAT-exclusive
+                'toll_cost_incl_vat_zar': float(rt_toll['incl']),
+                'tolls_unavailable': rt_toll['unavailable_reason'] is not None,
+                'tolls_unavailable_reason': rt_toll['unavailable_reason'],
                 'toll_breakdown': rt_breakdown,
                 'total_cost_zar': round(r_fuel + rt_toll_zar + extra_costs, 2),
                 # Rich route metadata from section analysis
@@ -4094,7 +4215,9 @@ class DashboardSignalsView(APIView):
                 'type': 'WARNING',
                 'category': 'Fleet Performance',
                 'title': f'{idle_vehicles.count()} Vehicles Idle',
-                'body': f'{names} available with no assigned load. Estimated revenue loss: R {idle_vehicles.count() * 8000:,}/day.',
+                # No "estimated revenue loss" figure: it was a flat R 8,000 per
+                # truck per day with no basis in the company's data.
+                'body': f'{names} available with no assigned load.',
                 'action': 'ASSIGN',
                 'action_url': '/fleet',
                 'severity': 'medium',
@@ -4109,7 +4232,9 @@ class DashboardSignalsView(APIView):
                 'type': 'OPPORTUNITY',
                 'category': 'Cash Alerts',
                 'title': f'Fast Pay — {eligible.count()} Invoices Ready',
-                'body': f'R {float(total):,.0f} in eligible invoices. Advance at 2–3% fee. Cash in 4 hours.',
+                # Fee and payout time are not promised here: the fee is priced
+                # per invoice by the risk engine and payout time is not measured.
+                'body': f'R {float(total):,.0f} in eligible invoices.',
                 'action': 'FAST PAY',
                 'action_url': '/capital',
                 'severity': 'low',
@@ -4124,7 +4249,9 @@ class DashboardSignalsView(APIView):
                     'type': 'OPPORTUNITY',
                     'category': 'Cash Alerts',
                     'title': f'Fast Pay — {sent.count()} Invoices Sent',
-                    'body': f'R {float(total):,.0f} awaiting payment. Eligible for fast pay at 2.5% fee.',
+                    # These invoices are NOT flagged early_pay_eligible, so no
+                    # eligibility or fee claim is made.
+                    'body': f'R {float(total):,.0f} awaiting payment.',
                     'action': 'FAST PAY',
                     'action_url': '/capital',
                     'severity': 'low',
@@ -4519,6 +4646,12 @@ class IntegrationAPIKeyViewSet(viewsets.ModelViewSet):
     def get_serializer_class(self):
         from core.serializers import IntegrationAPIKeySerializer
         return IntegrationAPIKeySerializer
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        # The one moment the operator needs the real secret to copy it.
+        context['show_full_key'] = (self.action == 'create')
+        return context
 
     def perform_create(self, serializer):
         serializer.save(operator=self.request.user)

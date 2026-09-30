@@ -635,7 +635,18 @@ def _serialize_vehicle_type(vt):
         'fuel_consumption_l_per_100km': vt.fuel_consumption_l_per_100km,
         'fuel_consumption_sensitivity_pct': vt.fuel_consumption_sensitivity_pct,
         'fuel_type': vt.fuel_type, 'active': vt.active,
+        'sanral_toll_class': vt.sanral_toll_class,
     }
+
+
+def _clean_sanral_toll_class(raw):
+    """None/'' → None; 1–4 → int; anything else → ValueError."""
+    if raw in (None, ''):
+        return None
+    value = int(raw)
+    if value not in (1, 2, 3, 4):
+        raise ValueError(value)
+    return value
 
 
 class AdminVehicleTypesView(APIView):
@@ -662,6 +673,10 @@ class AdminVehicleTypesView(APIView):
             return Response({'error': 'name is required'}, status=status.HTTP_400_BAD_REQUEST)
         if VehicleType.objects.filter(company__isnull=True, name=name).exists():
             return Response({'error': f'A shared vehicle type named "{name}" already exists.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            toll_class = _clean_sanral_toll_class(request.data.get('sanral_toll_class'))
+        except (TypeError, ValueError):
+            return Response({'error': 'sanral_toll_class must be 1, 2, 3, 4 or blank'}, status=status.HTTP_400_BAD_REQUEST)
 
         vt = VehicleType.objects.create(
             company=None, name=name,
@@ -673,6 +688,7 @@ class AdminVehicleTypesView(APIView):
             fuel_consumption_sensitivity_pct=request.data.get('fuel_consumption_sensitivity_pct') or 2,
             fuel_type=request.data.get('fuel_type') or 'Diesel',
             active=request.data.get('active', True),
+            sanral_toll_class=toll_class,
         )
         _log(request, 'CREATE', 'VehicleType', vt.pk, admin_action='create_shared_vehicle_type', name=name)
         return Response(_serialize_vehicle_type(vt), status=status.HTTP_201_CREATED)
@@ -686,6 +702,7 @@ class AdminVehicleTypeDetailView(APIView):
     EDITABLE_FIELDS = [
         'name', 'description', 'capacity', 'max_distance', 'base_rate',
         'fuel_consumption_l_per_100km', 'fuel_consumption_sensitivity_pct', 'fuel_type', 'active',
+        'sanral_toll_class',
     ]
 
     def patch(self, request, type_id):
@@ -694,12 +711,19 @@ class AdminVehicleTypeDetailView(APIView):
             vt = VehicleType.objects.get(pk=type_id, company__isnull=True)
         except VehicleType.DoesNotExist:
             return Response({'error': 'Shared vehicle type not found'}, status=status.HTTP_404_NOT_FOUND)
+        if 'sanral_toll_class' in request.data:
+            try:
+                _clean_sanral_toll_class(request.data['sanral_toll_class'])
+            except (TypeError, ValueError):
+                return Response({'error': 'sanral_toll_class must be 1, 2, 3, 4 or blank'}, status=status.HTTP_400_BAD_REQUEST)
 
         changes = {}
         for field in self.EDITABLE_FIELDS:
             if field not in request.data:
                 continue
             old, new = getattr(vt, field), request.data[field]
+            if field == 'sanral_toll_class':
+                new = _clean_sanral_toll_class(new)
             if str(old) != str(new):
                 changes[field] = {'old': str(old), 'new': str(new)}
             setattr(vt, field, new)

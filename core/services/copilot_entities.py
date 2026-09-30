@@ -160,7 +160,7 @@ def _quote_execute_create(company, user, payload):
     if not payload.get('quote_number'):
         payload['quote_number'] = _gen_quote_number()
 
-    serializer = QuoteSerializer(data=payload)
+    serializer = QuoteSerializer(data=payload, context={'company': company})
     if not serializer.is_valid():
         raise ToolError(_serializer_errors(serializer))
     quote = serializer.save(company=company, created_by=user)

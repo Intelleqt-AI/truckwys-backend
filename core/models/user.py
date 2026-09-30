@@ -20,7 +20,12 @@ class User(AbstractUser):
     ]
     
     company = models.ForeignKey("Company", on_delete=models.CASCADE, null=True, blank=True, related_name="users")
-    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='ADMIN')
+    # Lowest-privilege choice on purpose: every real creation path sets role=
+    # explicitly (signup grants the founding owner ADMIN; invites and admin
+    # forms pass whatever was chosen). This default only fires if one of those
+    # paths has a bug and forgets to — it should fail closed to "can't do much
+    # yet", never fail open to "company admin".
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='VIEWER')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='ACTIVE')
     phone = models.CharField(max_length=20, blank=True)
     address = models.TextField(blank=True)

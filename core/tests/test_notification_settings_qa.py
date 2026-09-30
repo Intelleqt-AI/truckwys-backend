@@ -389,7 +389,10 @@ class NewEventsAndSweepsTests(NotifQABase):
         self.assertEqual(result["expired"], 1)
         q.refresh_from_db()
         self.assertEqual(q.status, "EXPIRED")
-        self.assertTrue(Notification.objects.filter(title="Quote expired").exists())
+        # signals.py's _QUOTE_STATUS_NOTIFY intentionally prefixes only the
+        # two terminal, notable outcomes (not the routine "Quote sent") —
+        # COMPLETED gets ✅, EXPIRED gets ⏳.
+        self.assertTrue(Notification.objects.filter(title="⏳ Quote expired").exists())
 
     def test_maintenance_sweep_notifies_and_dedupes(self):
         self.set_prefs(self.colleague, ALL_ON)

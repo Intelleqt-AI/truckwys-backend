@@ -1,21 +1,28 @@
 """
-Fuel price service — fetches South African monthly retail fuel prices.
+Fuel price service — fetches South African monthly fuel prices.
+
+Diesel: the published figure is the wholesale list price (there is no
+regulated diesel retail price), for Gauteng (inland) and Coast. Rows written
+from FIASA store the 50ppm grade as diesel_inland/diesel_coastal, keep the
+500ppm grade alongside, and record the effective date of the column used.
 
 Primary source: FIASA (Fuels Industry Association of South Africa) —
 confirmed live 2026-08; publishes the official DMRE-regulated monthly price.
 Further live attempts (AA SA, SAPIA, DMRE) are kept as fallbacks in the chain
 in case FIASA ever goes down too, though all three are currently dead on
 their own (moved page / 404 / unreachable). Final fallback: a hardcoded
-table of known recent prices seeded directly in this file.
+table of approximate prices seeded directly in this file — used only when no
+row exists yet for a month; it never replaces a live or MANUAL row.
 
 Alert: logs a WARNING when price changes >5% month-over-month.
 """
 
 import logging
 import re
-from datetime import date
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import requests
 from django.utils import timezone as django_timezone
@@ -153,70 +160,164 @@ def _extract_prices_from_soup(soup) -> Optional[dict]:
     return prices
 
 
-def _fiasa_row_value(cells: list) -> Optional[Decimal]:
-    """cells = [row label, month1, month2, ...], values in cents/litre with a
-    comma decimal (SA convention, e.g. '2530,01'). Returns the most recent
-    NON-EMPTY month as Rand (÷100) — trailing months are blank placeholders
-    for prices not yet officially announced, so the last cell isn't
-    necessarily the current one."""
-    for cell in reversed(cells[1:]):
-        cell = cell.strip()
-        if not cell:
-            continue
+# FIASA row labels -> our keys. "Diesel 0.005%" is 50ppm sulphur, "Diesel
+# 0.05%" is 500ppm (the page's own naming; the DMPR uses the same two grades).
+# Matched with startswith on the lower-cased label, so the order does not
+# matter: '0.005%' and '0.05%' are not prefixes of each other.
+_FIASA_ROWS = {
+    '95 ulp': 'petrol_95',
+    '93 ulp': 'petrol_93',
+    'diesel 0.005%': 'diesel_50ppm',
+    'diesel 0.05%': 'diesel_500ppm',
+}
+
+_FIASA_HEADER_FORMATS = ('%d-%b-%y', '%d-%b-%Y', '%d %b %Y', '%d %b %y', '%d-%B-%y', '%d %B %Y')
+
+# SA fuel price adjustments take effect at 00:01 local time on the effective
+# date (the first Wednesday of the month).
+_SAST = ZoneInfo('Africa/Johannesburg')
+
+
+def _fiasa_effective_from(header: str) -> Optional[datetime]:
+    """FIASA column header ('2-Sep-26') -> 00:01 SAST on that date, or None."""
+    text = (header or '').strip()
+    for fmt in _FIASA_HEADER_FORMATS:
         try:
-            cents = Decimal(cell.replace(',', '.'))
-            return (cents / 100).quantize(Decimal('0.0001'))
-        except InvalidOperation:
+            d = datetime.strptime(text, fmt).date()
+        except ValueError:
             continue
+        return datetime(d.year, d.month, d.day, 0, 1, tzinfo=_SAST)
     return None
 
 
-def _fiasa_table_values(table) -> dict:
-    """One FIASA region table -> {'diesel': ..., 'petrol_95': ..., 'petrol_93': ...}."""
-    wanted = {'95 ulp': 'petrol_95', '93 ulp': 'petrol_93', 'diesel 0.05%': 'diesel'}
-    out: dict[str, Decimal] = {}
+def _fiasa_cell_value(cell: str) -> Optional[Decimal]:
+    """'2955,51' (cents/litre, comma decimal) -> Decimal('29.5551') Rand, or
+    None if blank/unparseable."""
+    cell = (cell or '').strip()
+    if not cell:
+        return None
+    try:
+        cents = Decimal(cell.replace(',', '.'))
+    except InvalidOperation:
+        return None
+    return (cents / 100).quantize(Decimal('0.0001'))
+
+
+def _fiasa_table_values(table, cutoff: datetime) -> Optional[dict]:
+    """One FIASA region table -> values from the column in force at `cutoff`.
+
+    The table header row is ['Products', '1-Jan-26', '4-Feb-26', ...]: each
+    column is the date a price takes effect, and FIASA fills columns ahead of
+    time (e.g. the 7-Oct column a few days before 7 Oct). So the column used is
+    the LATEST one whose effective date is <= cutoff. Blank trailing columns are
+    placeholders and are never chosen over a dated, filled one.
+
+    Returns {'effective_from', 'diesel_50ppm', 'diesel_500ppm', 'petrol_95',
+    'petrol_93'} (missing products are simply absent), or None when no column
+    is in force or the header cannot be dated. A present-but-unparseable cell
+    in the chosen column is treated as missing: we never step back to an older
+    column, which would quietly store last month's price as this month's.
+    """
+    rows = []
     for tr in table.find_all('tr'):
         cells = [c.get_text(strip=True) for c in tr.find_all(['th', 'td'])]
-        if not cells:
-            continue
+        if cells:
+            rows.append(cells)
+    if not rows:
+        return None
+
+    header = rows[0]
+    dated = [(i, _fiasa_effective_from(h)) for i, h in enumerate(header) if i > 0]
+    dated = [(i, eff) for i, eff in dated if eff is not None]
+    if not dated:
+        return None
+
+    product_rows = {}
+    for cells in rows[1:]:
         label = cells[0].lower()
-        for prefix, key in wanted.items():
-            if key not in out and label.startswith(prefix):
-                val = _fiasa_row_value(cells)
-                if val is not None:
-                    out[key] = val
+        for prefix, key in _FIASA_ROWS.items():
+            if key not in product_rows and label.startswith(prefix):
+                product_rows[key] = cells
+
+    def filled(i):
+        cells = product_rows.get('diesel_50ppm') or product_rows.get('diesel_500ppm')
+        return bool(cells) and i < len(cells) and bool(cells[i].strip())
+
+    in_force = [(i, eff) for i, eff in dated if eff <= cutoff and filled(i)]
+    if not in_force:
+        return None
+    col, effective_from = max(in_force, key=lambda x: x[1])
+
+    out: dict = {'effective_from': effective_from}
+    for key, cells in product_rows.items():
+        val = _fiasa_cell_value(cells[col]) if col < len(cells) else None
+        if val is not None:
+            out[key] = val
     return out
 
 
-def _fetch_from_fiasa() -> Optional[dict]:
+def _fiasa_region_tables(soup) -> tuple:
+    """(coastal_table, inland_table) from the FIASA page.
+
+    The tabs are labelled on the page ('Coastal Fuel Prices 2026' / 'Gauteng
+    Fuel Prices 2026' in <li data-tab="tab-N">). Use those labels; fall back to
+    the historical id mapping (#tab-1 Coastal, #tab-2 Gauteng) only when the
+    labels are absent, so a reordering of the tabs cannot silently swap zones.
+    """
+    tab_ids = {}
+    for li in soup.find_all(attrs={'data-tab': True}):
+        text = li.get_text(' ', strip=True).lower()
+        if 'coastal' in text and 'coastal' not in tab_ids:
+            tab_ids['coastal'] = li['data-tab']
+        elif ('gauteng' in text or 'inland' in text) and 'inland' not in tab_ids:
+            tab_ids['inland'] = li['data-tab']
+    if 'coastal' not in tab_ids or 'inland' not in tab_ids:
+        tab_ids = {'coastal': 'tab-1', 'inland': 'tab-2'}
+
+    def table_for(tab_id):
+        div = soup.find('div', id=tab_id)
+        return div.find('table') if div else None
+
+    return table_for(tab_ids['coastal']), table_for(tab_ids['inland'])
+
+
+def _fetch_from_fiasa(as_of: Optional[datetime] = None) -> Optional[dict]:
     """Scrape FIASA (Fuels Industry Association of South Africa) — the actual
     source the DMRE-regulated monthly price is published from, confirmed
     live 2026-08 (unlike AA SA/SAPIA/DMRE below, which had all quietly gone
     dead: AA's URL now redirects to an unrelated news article, SAPIA's page
     404s, DMRE times out).
 
-    The page splits prices across two tabs by region: #tab-1 is Coastal (no
-    93-octane row — coastal/sea-level engines don't need it) and #tab-2 is
-    Gauteng/Inland (carries 93-octane, needed at altitude) — that presence/
-    absence of a 93 row, not any explicit label, is how the two are told
-    apart here. Values are cents/litre with a comma decimal."""
+    Returns the prices IN FORCE at `as_of` (default: now), taken from the
+    dated column whose effective date is the latest one <= as_of, with:
+      diesel_inland/diesel_coastal  = Diesel 0.005% (50ppm) wholesale list
+      diesel_500ppm_inland/_coastal = Diesel 0.05% (500ppm) wholesale list
+      effective_from                = that column's date, 00:01 SAST
+    Zones come from the tab labels (Coastal / Gauteng). Values on the page
+    are cents/litre with a comma decimal. Returns None (a failed fetch) if
+    either zone's 50ppm diesel or the 95 price is missing for that column, or
+    the two zones disagree on the effective date."""
     try:
         from bs4 import BeautifulSoup
+        cutoff = as_of or django_timezone.now()
         url = 'https://fuelsindustry.org.za/consumer-information/fuel-prices-current-past/'
         r = requests.get(url, headers=_HEADERS, timeout=8)
         r.raise_for_status()
         soup = BeautifulSoup(r.text, 'lxml')
 
-        coastal_div = soup.find('div', id='tab-1')
-        inland_div = soup.find('div', id='tab-2')
-        coastal_table = coastal_div.find('table') if coastal_div else None
-        inland_table = inland_div.find('table') if inland_div else None
+        coastal_table, inland_table = _fiasa_region_tables(soup)
         if not coastal_table or not inland_table:
             return None
 
-        coastal = _fiasa_table_values(coastal_table)
-        inland = _fiasa_table_values(inland_table)
-        if 'diesel' not in coastal or 'diesel' not in inland:
+        coastal = _fiasa_table_values(coastal_table, cutoff)
+        inland = _fiasa_table_values(inland_table, cutoff)
+        if not coastal or not inland:
+            return None
+        if 'diesel_50ppm' not in coastal or 'diesel_50ppm' not in inland:
+            return None
+        if coastal['effective_from'] != inland['effective_from']:
+            logger.warning('FIASA coastal/inland columns disagree on effective date (%s vs %s)',
+                           coastal['effective_from'], inland['effective_from'])
             return None
 
         petrol_95 = inland.get('petrol_95') or coastal.get('petrol_95')
@@ -224,8 +325,12 @@ def _fetch_from_fiasa() -> Optional[dict]:
             return None
 
         return {
-            'diesel_inland': inland['diesel'],
-            'diesel_coastal': coastal['diesel'],
+            'diesel_inland': inland['diesel_50ppm'],
+            'diesel_coastal': coastal['diesel_50ppm'],
+            'diesel_grade': '50ppm',
+            'diesel_500ppm_inland': inland.get('diesel_500ppm'),
+            'diesel_500ppm_coastal': coastal.get('diesel_500ppm'),
+            'effective_from': inland['effective_from'],
             'petrol_95': petrol_95,
             # Coastal genuinely has no 93-octane grade — fall back to a
             # typical differential below 95 rather than leave it unset.
@@ -300,21 +405,121 @@ def _fetch_from_dmre() -> Optional[dict]:
 # Public API
 # ---------------------------------------------------------------------------
 
+_FALLBACK_SOURCES = ('FALLBACK', 'FALLBACK_LATEST')
+
+# How much an automated refresh may trust each source. An automated write may
+# only replace a stored row with data of EQUAL OR HIGHER trust (and, at equal
+# trust, not with an older effective date). MANUAL rows are never touched by
+# automation — only a person replacing them (the staff POST / Django admin).
+# Unknown/legacy source strings count as a live-but-unverified source.
+_SOURCE_TRUST = {
+    'MANUAL': 100,
+    'FIASA': 50,
+    'AA_SA': 20, 'SAPIA': 20, 'DMRE': 20,
+    'FALLBACK': 0, 'FALLBACK_LATEST': 0,
+}
+_UNKNOWN_SOURCE_TRUST = 20
+
+
+def _trust(source: Optional[str]) -> int:
+    return _SOURCE_TRUST.get(source or '', _UNKNOWN_SOURCE_TRUST)
+
+
+def _next_month(d: date) -> date:
+    return date(d.year + (d.month // 12), d.month % 12 + 1, 1)
+
+
+def _fetch_live(target_date: date) -> Optional[dict]:
+    """Live data for the calendar month `target_date` (the 1st), or None.
+
+    * Current month: the price in force now (FIASA, dated column), then the
+      AA SA / SAPIA / DMRE scrapers, which can only ever see *today's* price.
+    * Past month: FIASA only, using the column in force at the end of that
+      month. The other scrapers are skipped — storing today's price under a
+      past date is exactly the bug this guards against (review F3).
+    * Future month: nothing is in force yet, so no live source is used.
+    """
+    now = django_timezone.now()
+    # "Which month is it" in SA time (TIME_ZONE=Africa/Johannesburg), from the
+    # same clock as the column cut-off, so the two can never disagree.
+    current_month = django_timezone.localdate(now).replace(day=1)
+    if target_date > current_month:
+        return None
+    if target_date == current_month:
+        return (_fetch_from_fiasa(as_of=now) or _fetch_from_aa_sa()
+                or _fetch_from_sapia() or _fetch_from_dmre())
+    nm = _next_month(target_date)
+    month_end = datetime(nm.year, nm.month, nm.day, tzinfo=_SAST)
+    data = _fetch_from_fiasa(as_of=min(now, month_end - timedelta(microseconds=1)))
+    if data and data['effective_from'] < datetime(target_date.year, target_date.month, 1, tzinfo=_SAST):
+        # The page has no adjustment dated inside that month (e.g. it only
+        # carries the current year): the column found belongs to an earlier
+        # month. Don't file it under this one.
+        return None
+    return data
+
+
+def _fallback_data(target_date: date) -> dict:
+    key = (target_date.year, target_date.month)
+    if key in _FALLBACK_PRICES:
+        di, dc, p95, p93 = _FALLBACK_PRICES[key]
+        logger.info('Using fallback fuel prices for %s (live sources unavailable)', target_date)
+        source = 'FALLBACK'
+    else:
+        latest_key = max(_FALLBACK_PRICES.keys())
+        di, dc, p95, p93 = _FALLBACK_PRICES[latest_key]
+        logger.warning(
+            'No fallback data for %s — using latest known prices from %s-%02d',
+            target_date, *latest_key,
+        )
+        source = 'FALLBACK_LATEST'
+    return {
+        'diesel_inland': _to_decimal(di),
+        'diesel_coastal': _to_decimal(dc),
+        'petrol_95': _to_decimal(p95),
+        'petrol_93': _to_decimal(p93),
+        'source': source,
+    }
+
+
+def _may_replace(existing, data: dict) -> bool:
+    """Never-downgrade rule for automated writes over an existing row."""
+    if existing.source == 'MANUAL':
+        return False
+    new_trust, old_trust = _trust(data['source']), _trust(existing.source)
+    if new_trust != old_trust:
+        return new_trust > old_trust
+    new_eff, old_eff = data.get('effective_from'), existing.effective_from
+    if new_eff and old_eff and new_eff < old_eff:
+        return False
+    return True
+
+
 def fetch_fuel_prices(
     target_date: Optional[date] = None,
     *,
     force_update: bool = False,
 ) -> 'FuelPrice':  # noqa: F821 — resolved at call time
     """
-    Fetch (or load fallback) fuel prices for *target_date* and persist them.
+    Fetch (or load fallback) fuel prices for the calendar month *target_date*
+    (the 1st) and persist them.
 
-    If a record already exists for that date and *force_update* is False,
-    the existing record is returned unchanged.
+    If a record already exists for that month and *force_update* is False,
+    the existing record is returned unchanged (fallback rows are retried at
+    most hourly).
+
+    Automated writes never downgrade a stored row (review F2/F7):
+      * a MANUAL row is returned untouched — no scrape happens;
+      * a failed or lower-trust fetch leaves the stored price as it is and
+        stamps ``fetch_failed_at`` so callers can flag it as stale;
+      * a successful fetch of equal/higher trust replaces it and clears
+        ``fetch_failed_at``.
+    Historical months only take FIASA's column for that month (F3).
 
     Alert: if any diesel price changes >5% compared with the previous month,
     a WARNING is logged.
 
-    Returns the saved FuelPrice instance.
+    Returns the FuelPrice instance for the month.
     """
     from core.models.fuel_price import FuelPrice
 
@@ -322,12 +527,14 @@ def fetch_fuel_prices(
         today = date.today()
         target_date = today.replace(day=1)
 
-    # Return existing record unless forced or it was stored as a fallback.
-    # Fallback records are always overwritten — live sources may have recovered.
     existing = FuelPrice.objects.filter(date=target_date).first()
-    is_stale_fallback = existing and existing.source in ('FALLBACK', 'FALLBACK_LATEST')
+    is_stale_fallback = bool(existing) and existing.source in _FALLBACK_SOURCES
     if existing and not force_update and not is_stale_fallback:
         logger.info('FuelPrice for %s already exists — skipping fetch', target_date)
+        return existing
+    if existing and existing.source == 'MANUAL':
+        # A person set this price; only a person replaces it.
+        logger.info('FuelPrice for %s is a MANUAL override — automated refresh skipped', target_date)
         return existing
     if is_stale_fallback and not force_update:
         gate_key = f'fuel_price_live_retry:{target_date.isoformat()}'
@@ -335,64 +542,50 @@ def fetch_fuel_prices(
             logger.info('FuelPrice for %s is a fallback but was retried recently — skipping', target_date)
             return existing
         cache.set(gate_key, True, _LIVE_RETRY_GATE_SECONDS)
-
     if is_stale_fallback:
-        force_update = True  # ensure we overwrite rather than try to create
         logger.info('FuelPrice for %s is a fallback — retrying live sources', target_date)
 
-    # Attempt live sources in priority order — FIASA is the confirmed-working
-    # one; the other three are kept as further attempts in case it ever goes
-    # down too, even though all three are currently dead on their own.
-    data = _fetch_from_fiasa() or _fetch_from_aa_sa() or _fetch_from_sapia() or _fetch_from_dmre()
+    now = django_timezone.now()
+    data = _fetch_live(target_date)
+    live_ok = data is not None
+
+    if existing and not (live_ok and _may_replace(existing, data)):
+        if existing.source not in _FALLBACK_SOURCES:
+            # Keep the good row; record that this refresh did not confirm it.
+            existing.fetch_failed_at = now
+            existing.save(update_fields=['fetch_failed_at', 'updated_at'])
+            logger.warning(
+                'Fuel price refresh for %s failed or returned lower-trust data (%s) — '
+                'keeping stored %s price R%s',
+                target_date, data['source'] if data else 'no live source', existing.source,
+                existing.diesel_inland,
+            )
+            return existing
+        # Existing row is itself a fallback placeholder: refresh it from the
+        # table (same behaviour as before) so fetched_at shows the attempt.
 
     if data is None:
-        # Fall back to seeded table
-        key = (target_date.year, target_date.month)
-        if key in _FALLBACK_PRICES:
-            di, dc, p95, p93 = _FALLBACK_PRICES[key]
-            data = {
-                'diesel_inland': _to_decimal(di),
-                'diesel_coastal': _to_decimal(dc),
-                'petrol_95': _to_decimal(p95),
-                'petrol_93': _to_decimal(p93),
-                'source': 'FALLBACK',
-            }
-            logger.info(
-                'Using fallback fuel prices for %s (live sources unavailable)', target_date
-            )
-        else:
-            # Use the most recent fallback entry available
-            latest_key = max(_FALLBACK_PRICES.keys())
-            di, dc, p95, p93 = _FALLBACK_PRICES[latest_key]
-            data = {
-                'diesel_inland': _to_decimal(di),
-                'diesel_coastal': _to_decimal(dc),
-                'petrol_95': _to_decimal(p95),
-                'petrol_93': _to_decimal(p93),
-                'source': 'FALLBACK_LATEST',
-            }
-            logger.warning(
-                'No fallback data for %s — using latest known prices from %s-%02d',
-                target_date, *latest_key,
-            )
+        data = _fallback_data(target_date)
 
     # Ensure Decimal types
     for field in ('diesel_inland', 'diesel_coastal', 'petrol_95', 'petrol_93'):
         if not isinstance(data[field], Decimal):
             data[field] = _to_decimal(str(data[field]))
 
+    # Provenance fields: set every one explicitly so an overwrite can never
+    # leave a previous source's grade / effective date behind.
+    for field in ('diesel_grade', 'diesel_500ppm_inland', 'diesel_500ppm_coastal', 'effective_from'):
+        data.setdefault(field, None)
+
     # Stamp when we actually checked — distinct from `date`, which is just
-    # the calendar month this price represents (always the 1st). Reaching
-    # this line means a real attempt just happened (live or fallen through
-    # to the hardcoded table); the early-returns above (already-fresh
-    # record, retry-gate still active) skip this entirely, correctly
-    # leaving a prior fetched_at untouched when no check actually occurred.
-    data['fetched_at'] = django_timezone.now()
+    # the calendar month this row belongs to (always the 1st).
+    data['fetched_at'] = now
+    data['fetch_failed_at'] = None
 
     # Check for >5% month-over-month change
     _check_price_alert(target_date, data)
 
-    if existing and force_update:
+    if existing:
         for field, value in data.items():
             setattr(existing, field, value)
         existing.save()
