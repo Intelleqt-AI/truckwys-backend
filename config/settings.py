@@ -233,16 +233,23 @@ REST_FRAMEWORK = {
     'DEFAULT_FILTER_BACKENDS': [
         'django_filters.rest_framework.DjangoFilterBackend',
     ],
-    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
+    # 20 rows by default (unchanged); callers may ask for ?page_size= up to 100.
+    'DEFAULT_PAGINATION_CLASS': 'core.pagination.StandardResultsPagination',
     'PAGE_SIZE': 20,
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
     'DEFAULT_THROTTLE_CLASSES': [
         'rest_framework.throttling.AnonRateThrottle',
-        'rest_framework.throttling.UserRateThrottle',
+        # Reads and writes are counted separately (core/throttling.py). The old
+        # single 'user' 60/min bucket was hit by normal navigation.
+        'core.throttling.UserReadRateThrottle',
+        'core.throttling.UserWriteRateThrottle',
     ],
     'DEFAULT_THROTTLE_RATES': {
         'anon': '20/minute',
+        # Kept for any view that names UserRateThrottle explicitly (none today).
         'user': '60/minute',
+        'user_read': config('USER_READ_THROTTLE_RATE', default='600/minute'),
+        'user_write': config('USER_WRITE_THROTTLE_RATE', default='120/minute'),
         'login': '5/minute',  # Stricter rate for login/signup
         'otp_verify': '10/minute',  # 2FA code verification (per-challenge cap of 5 also applies)
         'otp_resend': '3/minute',   # 2FA code resend (plus a per-challenge 60s cooldown)
@@ -405,6 +412,13 @@ CACHES = {
 # ZAR diesel price used for cost/margin calculations.
 # Update this periodically to match the current pump price.
 FUEL_PRICE_ZAR = 22.50
+
+# Legacy regex daily fuel scraper (`manage.py fetch_fuel_price_daily`,
+# core/services/fuel_price_live.py). Off by default: it writes rows dated
+# today that compete with the monthly FIASA rows. The supported refresh is the
+# `refresh_fuel_price` beat task / `manage.py fetch_fuel_prices`.
+# See docs/backend-changes/2026-09-fuel-pipeline.md (F13).
+FUEL_PRICE_DAILY_SCRAPER_ENABLED = config('FUEL_PRICE_DAILY_SCRAPER_ENABLED', default=False, cast=bool)
 
 # ---------------------------------------------------------------------------
 # Celery
