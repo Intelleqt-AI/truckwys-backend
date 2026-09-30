@@ -15,6 +15,7 @@ from .views_admin import (
     AdminCountryTransitRatesView, AdminCountryTransitRateDetailView,
     AdminSearchView, AdminJobHealthView, AdminIntegrationsHealthView,
     AdminModelHealthView, AdminAuditLogView, AdminAIUsageView,
+    AdminVerifiedRatesView, AdminVerifiedRateReviewView, AdminVerifiedRatesRefreshView,
 )
 from .views import (
     UserViewSet, CustomerViewSet, DriverViewSet,
@@ -172,6 +173,12 @@ urlpatterns = [
     path('admin/integrations-health/', AdminIntegrationsHealthView.as_view(), name='admin-integrations-health'),
     path('admin/model-health/', AdminModelHealthView.as_view(), name='admin-model-health'),
     path('admin/ai-usage/', AdminAIUsageView.as_view(), name='admin-ai-usage'),
+    path('admin/verified-rates/', AdminVerifiedRatesView.as_view(), name='admin-verified-rates'),
+    path('admin/verified-rates/refresh/', AdminVerifiedRatesRefreshView.as_view(), name='admin-verified-rates-refresh'),
+    path('admin/verified-rates/<int:rate_id>/approve/', AdminVerifiedRateReviewView.as_view(review_action='approve'),
+         name='admin-verified-rate-approve'),
+    path('admin/verified-rates/<int:rate_id>/reject/', AdminVerifiedRateReviewView.as_view(review_action='reject'),
+         name='admin-verified-rate-reject'),
     path('admin/audit-log/', AdminAuditLogView.as_view(), name='admin-audit-log'),
     path('billing/confirm/', ConfirmPaymentView.as_view(), name='billing-confirm'),
     path('auth/me/', UserProfileView.as_view(), name='user-profile'),
