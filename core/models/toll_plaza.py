@@ -68,6 +68,22 @@ class TollPlaza(models.Model):
         default=500,
         help_text='Geofence trigger radius in metres (default 500 m to tolerate GPS uncertainty)',
     )
+    # Verification of the tariffs above against their published source (the
+    # SANRAL gazette / tariff poster). Set by the seed data migration, by the
+    # monthly refresh_verified_rates job when it confirms the stored figures
+    # on the source page, and when an admin approves a changed tariff
+    # (core.services.verified_rates). Null = never verified: the AI price
+    # check then reports this plaza's tolls as not verified.
+    tariff_effective_from = models.DateField(
+        null=True, blank=True,
+        help_text='Date the stored tariff schedule took effect (SANRAL changes it every 1 March)',
+    )
+    tariff_source_url = models.URLField(max_length=1000, blank=True, default='')
+    tariff_source_name = models.CharField(max_length=300, blank=True, default='')
+    tariff_verified_at = models.DateField(
+        null=True, blank=True,
+        help_text='Date the stored tariffs were last confirmed on their source',
+    )
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

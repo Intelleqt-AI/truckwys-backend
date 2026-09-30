@@ -40,6 +40,7 @@ from .pending_signup import PendingSignup
 from .location_search_history import LocationSearchHistory
 from .ml_model_version import MLModelVersion, MLUserRetrainQueue
 from .ai_quote_price_analysis import AIQuotePriceAnalysis
+from .verified_rate import VerifiedRate
 
 __all__ = [
     'User',
@@ -90,4 +91,5 @@ __all__ = [
     'MLModelVersion',
     'MLUserRetrainQueue',
     'AIQuotePriceAnalysis',
+    'VerifiedRate',
 ]

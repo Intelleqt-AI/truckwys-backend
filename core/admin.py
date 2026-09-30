@@ -5,6 +5,7 @@ from .models import (
     Trip, Facility, RiskScore, AdvanceRequest, AuditLog, FuelPrice, TollPlaza
 )
 from .models.border_crossing_fee import BorderCrossingFee
+from .models.verified_rate import VerifiedRate
 from .models.country_transit_rate import CountryTransitRate
 
 @admin.register(User)
@@ -170,8 +171,9 @@ class FuelPriceAdmin(admin.ModelAdmin):
 
 @admin.register(TollPlaza)
 class TollPlazaAdmin(admin.ModelAdmin):
-    list_display = ['name', 'route', 'location_km', 'tariff_class_3', 'tariff_class_4', 'tariff_class_5', 'tariff_year', 'is_active']
-    list_filter = ['route', 'is_active', 'tariff_year']
+    list_display = ['name', 'route', 'location_km', 'tariff_class_3', 'tariff_class_4', 'tariff_class_5', 'tariff_year',
+                    'tariff_effective_from', 'tariff_verified_at', 'is_active']
+    list_filter = ['route', 'is_active', 'tariff_year', 'tariff_verified_at']
     search_fields = ['name', 'direction']
     readonly_fields = ['created_at', 'updated_at']
 
@@ -190,3 +192,40 @@ class CountryTransitRateAdmin(admin.ModelAdmin):
     list_filter = ['is_active']
     search_fields = ['country_code', 'country_name']
     readonly_fields = ['updated_at']
+
+
+@admin.register(VerifiedRate)
+class VerifiedRateAdmin(admin.ModelAdmin):
+    """Stored figures for the AI quote price check and the refresh job's
+    proposals. Approve / reject through the actions (they apply the figure
+    exactly like /api/v1/admin/verified-rates/<id>/approve/); a new driver
+    allowance can be added here as PENDING and then approved."""
+    list_display = ['kind', 'label', 'value', 'published_value', 'previous_value', 'effective_from', 'status',
+                    'verified_at', 'proposed_by', 'created_at']
+    list_filter = ['kind', 'status']
+    search_fields = ['key', 'label', 'source_name', 'source_url']
+    readonly_fields = ['status', 'approved_by', 'approved_at', 'rejected_by', 'rejected_at', 'refresh_run',
+                       'created_at', 'updated_at']
+    actions = ['approve_selected', 'reject_selected']
+
+    def save_model(self, request, obj, form, change):
+        # Rows are created pending; only the approve action applies them.
+        if not change:
+            obj.status = VerifiedRate.STATUS_PENDING
+            obj.proposed_by = obj.proposed_by or f'admin:{request.user.username}'[:100]
+        super().save_model(request, obj, form, change)
+
+    @admin.action(description='Approve selected pending proposals')
+    def approve_selected(self, request, queryset):
+        from core.services import verified_rates
+        for rate in queryset.filter(status=VerifiedRate.STATUS_PENDING):
+            try:
+                verified_rates.approve(rate.id, request.user)
+            except verified_rates.ReviewError as exc:
+                self.message_user(request, f'{rate}: {exc}', level='error')
+
+    @admin.action(description='Reject selected pending proposals')
+    def reject_selected(self, request, queryset):
+        from core.services import verified_rates
+        for rate in queryset.filter(status=VerifiedRate.STATUS_PENDING):
+            verified_rates.reject(rate.id, request.user)

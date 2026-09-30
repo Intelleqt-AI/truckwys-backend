@@ -8,9 +8,15 @@ from django.db import models
 
 
 class AIQuotePriceAnalysis(models.Model):
+    # 'auto' / 'manual': the old per-quote web-search runs (history only).
+    # 'check': a per-quote check against stored verified figures (no OpenAI,
+    # cost 0; recorded so the company daily cap and admin usage count runs).
+    # 'refresh': one OpenAI lookup by the monthly refresh_verified_rates job.
     TRIGGER_CHOICES = [
         ('auto', 'Auto (first run)'),
         ('manual', 'Manual re-check'),
+        ('check', 'Price check (stored figures)'),
+        ('refresh', 'Verified-rate refresh (web search)'),
     ]
     STATUS_CHOICES = [
         ('success', 'Success'),
