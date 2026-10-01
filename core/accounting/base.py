@@ -264,6 +264,8 @@ class AccountingAdapter(abc.ABC):
     name: str = ''
     # One contact list for customers and suppliers (Xero) vs separate (QBO).
     shared_contact_list: bool = False
+    # Longest document number the provider keeps (QBO DocNumber: 21).
+    max_number_length: int | None = None
 
     # --- OAuth (classmethods: no connection exists yet)
     @classmethod
@@ -367,6 +369,11 @@ class AccountingAdapter(abc.ABC):
     # --- payments back
     @abc.abstractmethod
     def get_invoice_state(self, external_id: str) -> RemoteInvoiceState: ...
+
+    def get_bill_state(self, external_id: str) -> RemoteInvoiceState:
+        """Status / amount paid of a supplier bill (default: providers that
+        keep bills with invoices, like Xero)."""
+        return self.get_invoice_state(external_id)
 
     @abc.abstractmethod
     def list_payments_since(self, since: datetime | None) -> list[RemotePaymentChange]: ...

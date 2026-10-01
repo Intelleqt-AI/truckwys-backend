@@ -95,6 +95,9 @@ def poll_payments(connection) -> dict:
     adapter = get_adapter(connection)
     started = timezone.now()
     try:
+        # Provider settings that make pushing unsafe can change any time.
+        from core.accounting.mapping import refresh_blockers
+        refresh_blockers(connection, adapter)
         since = _cursor(connection, 'payments')
         changes = adapter.list_payments_since(since)
         changes += adapter.list_credit_note_allocations(since)

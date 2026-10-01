@@ -288,7 +288,25 @@ def _label(link):
 # ---------------------------------------------------------------- shared push steps
 
 def _key(link, h):
-    return f'tw-{link.company_id}-{link.object_type}-{link.local_id}-{h[:24]}'
+    """Idempotency key for a create. A verified-and-discarded attempt bumps
+    meta['tries'] so a retry after the cause is fixed is a NEW request, not a
+    replay of the discarded one."""
+    tries = int((link.meta or {}).get('tries', 0))
+    return f'tw-{link.company_id}-{link.object_type}-{link.local_id}-{h[:24]}-{tries}'
+
+
+def _bump_tries(link):
+    link.meta = {**(link.meta or {}), 'tries': int((link.meta or {}).get('tries', 0)) + 1}
+    link.save(update_fields=['meta', 'updated_at'])
+
+
+def _number_kept(adapter, doc, res) -> bool:
+    """The provider kept TruckWys' number (QBO renumbers when custom
+    transaction numbers are off; bills carry the supplier's number)."""
+    if doc.kind == 'BILL' or not res.external_number:
+        return True
+    want = doc.number[:adapter.max_number_length] if adapter.max_number_length else doc.number
+    return res.external_number == want
 
 
 def totals_diff(doc, res) -> list[str]:
@@ -354,13 +372,21 @@ def push_document(connection, adapter, link, doc, *, kind):
     res = pusher(doc, external_id=link.external_id, idempotency_key=_key(link, h))
     _save_external(link, res)
     diff = totals_diff(doc, res)
-    if diff:
+    renumbered = not _number_kept(adapter, doc, res)
+    if diff or renumbered:
         try:
             adapter.discard_document(kind, res.external_id)
             link.external_id = ''
             link.save(update_fields=['external_id', 'updated_at'])
         except Exception:
             logger.exception('could not discard unverified %s %s', kind, res.external_id)
+        _bump_tries(link)
+        if renumbered:
+            from core.accounting import mapping
+            mapping.refresh_blockers(connection, adapter)
+            raise Blocked(f'{provider} numbered {doc.number} as {res.external_number}, so it was removed again. '
+                          + ('; '.join(mapping.provider_blockers(connection)) or
+                             f'Check the numbering settings in {provider}.'))
         raise PermanentError(f'{provider} calculated different totals, so it was not posted: ' + '; '.join(diff))
     if res.status in ('DRAFT', 'SUBMITTED', ''):
         res = adapter.finalise_document(kind, res.external_id)
@@ -525,9 +551,24 @@ def _replace_bill(connection, adapter, link, doc, h, exp):
     """An edited expense. Never changes a posted bill in place (the new
     figures would post before they are verified): a draft is updated in
     place; a posted, unpaid bill is replaced by a new one that is created
-    unposted, verified, posted, and only then is the old one voided."""
+    unposted, verified, posted, and only then is the old one voided.
+
+    Resumable: meta['replacing'] holds the old bill until it is gone, so a
+    retry after a failed void only finishes that (it never re-creates, and
+    never removes, the replacement)."""
     provider = connection.get_provider_display()
-    state = adapter.get_invoice_state(link.external_id)
+    meta = dict(link.meta or {})
+    if meta.get('replacing'):
+        adapter.void_bill(meta['replacing'], version=meta.get('replacing_version', ''))
+        made_for = meta.get('replacement_hash')
+        for k in ('replacing', 'replacing_version', 'replacement_hash'):
+            meta.pop(k, None)
+        link.meta = meta
+        link.save(update_fields=['meta', 'updated_at'])
+        if made_for == h:
+            return adapter.get_document('BILL', link.external_id)
+        # The expense changed again meanwhile: replace once more.
+    state = adapter.get_bill_state(link.external_id)
     if state.status in ('PAID',) or state.amount_paid > 0:
         raise PermanentError(f'The bill for {exp.expense_number} is (partly) paid in {provider}; '
                              f'adjust it there.')
@@ -548,12 +589,20 @@ def _replace_bill(connection, adapter, link, doc, h, exp):
             adapter.discard_document('BILL', res.external_id)
         except Exception:
             logger.exception('could not discard unverified bill %s', res.external_id)
+        _bump_tries(link)
         raise PermanentError(f'{provider} calculated different totals for the updated bill, so it was not '
                              'changed: ' + '; '.join(diff))
     if res.status in ('DRAFT', 'SUBMITTED', ''):
         res = adapter.finalise_document('BILL', res.external_id)
+    # Point at the replacement and remember the old bill BEFORE voiding it.
+    link.meta = {**(link.meta or {}), 'replacing': old_id, 'replacing_version': old_version,
+                 'replacement_hash': h}
+    link.save(update_fields=['meta', 'updated_at'])
     _save_external(link, res)
     adapter.void_bill(old_id, version=old_version)
+    link.meta = {k: v for k, v in (link.meta or {}).items()
+                 if k not in ('replacing', 'replacing_version', 'replacement_hash')}
+    link.save(update_fields=['meta', 'updated_at'])
     log_event(connection, 'push_bill', f'{exp.expense_number} changed: bill replaced in {provider}',
               object_type='BILL', local_id=exp.pk, label=exp.expense_number)
     return res

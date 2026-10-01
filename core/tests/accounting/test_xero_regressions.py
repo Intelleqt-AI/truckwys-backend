@@ -314,3 +314,50 @@ class LimiterRefusalTests(SimpleTestCase):
         self.assertEqual(int(r.get(day[0])), 3)
         for k in r.scan_iter(f'{ns}:*'):
             r.delete(k)
+
+
+class ResumableReplacementTests(XeroFlowBase):
+    def _bill(self):
+        from core.serializers import ExpenseSerializer
+        sup = Supplier.objects.create(company=self.co, name='Midrand Fuel Depot', vat_number='4111111111')
+        ser = ExpenseSerializer(data={'category': 'TOLLS', 'description': 'N4 tolls', 'amount': '1150.00',
+                                      'expense_date': '2026-09-03', 'tax_code': 'STANDARD', 'supplier': sup.pk,
+                                      'expense_number': f'EXP-{self.co.pk}-9', 'receipt_number': 'TOLL-900'},
+                                context={'request': SimpleNamespace(user=self.admin), 'company': self.co})
+        ser.is_valid(raise_exception=True)
+        with no_commit_delay(self):
+            return ser.save(company=self.co, created_by=self.admin)
+
+    def test_failed_void_of_the_old_bill_is_finished_on_retry(self):
+        exp = self._bill()
+        old_id = self.link('BILL', exp.pk).external_id
+        self.xero.fail_next('POST', rf'/Invoices/{old_id}$', status=503)
+        with no_commit_delay(self):
+            exp.amount = D('1265.00')
+            exp.vat_amount = D('165.00')
+            exp.save()
+        link = self.link('BILL', exp.pk)
+        self.assertEqual(link.status, 'ERROR')
+        new_id = link.external_id
+        self.assertNotEqual(new_id, old_id)
+        ExternalLink.objects.filter(pk=link.pk).update(next_attempt_at=timezone.now() - timedelta(seconds=1))
+        sync.retry_due()
+        link = self.link('BILL', exp.pk)
+        self.assertEqual((link.status, link.external_id), ('SYNCED', new_id))
+        bills = self.xero.org()['invoices']
+        self.assertEqual((bills[old_id]['Status'], bills[new_id]['Status']), ('VOIDED', 'AUTHORISED'))
+        self.assertEqual(D(bills[new_id]['Total']), D('1265.00'))
+
+    def test_retry_after_a_discarded_attempt_is_a_new_request(self):
+        self.xero.force_tax_delta = D('0.01')
+        self.xero.honour_tax_amount = False
+        inv = self.issue()
+        link = self.link('INVOICE', inv.pk)
+        self.assertEqual(link.status, 'DEAD')
+        self.xero.force_tax_delta = D('0')
+        self.xero.honour_tax_amount = True
+        with no_commit_delay(self):
+            resp = self.api().post(f'/api/v1/integrations/accounting/connection/sync/{link.pk}/retry/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(self.link('INVOICE', inv.pk).status, 'SYNCED')
+        self.assertEqual(self.xinv(inv)['Status'], 'AUTHORISED')

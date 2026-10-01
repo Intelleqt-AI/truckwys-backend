@@ -68,6 +68,33 @@ def refresh_options(connection) -> dict:
     return opts
 
 
+def refresh_blockers(connection, adapter=None) -> list[str]:
+    """Re-read only the provider settings that block syncing (cheap; the
+    hourly poll and a renumbered document call it)."""
+    from django.db import transaction
+    from core.models import AccountingConnection
+    adapter = adapter or get_adapter(connection)
+    blockers = list(adapter.sync_blockers()) if hasattr(adapter, 'sync_blockers') else []
+    with transaction.atomic():
+        fresh = AccountingConnection.objects.select_for_update().get(pk=connection.pk)
+        s = dict(fresh.settings or {})
+        opts = dict(s.get('options') or {})
+        was = bool(opts.get('blockers'))
+        opts['blockers'] = blockers
+        s['options'] = opts
+        fresh.settings = s
+        fresh.save(update_fields=['settings', 'updated_at'])
+    connection.settings = s
+    if was and not blockers and is_complete(connection):
+        from core.accounting.sync import requeue_blocked
+        requeue_blocked(connection)
+    return blockers
+
+
+def provider_blockers(connection) -> list[str]:
+    return list(((connection.settings or {}).get('options') or {}).get('blockers') or [])
+
+
 def options(connection, *, refresh=False) -> dict:
     opts = (connection.settings or {}).get('options')
     if refresh or not opts:
