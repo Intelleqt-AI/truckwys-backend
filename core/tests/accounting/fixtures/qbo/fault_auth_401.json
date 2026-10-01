@@ -1,0 +1,31 @@
+{
+  "status": 401,
+  "headers": {
+    "Content-Type": "application/json",
+    "WWW-Authenticate": "Bearer realm=\"Intuit\""
+  },
+  "body": {
+    "warnings": null,
+    "intuitObject": null,
+    "fault": {
+      "error": [
+        {
+          "message": "message=AuthenticationFailed; errorCode=003200; statusCode=401",
+          "detail": "Token expired: eyJlbmMi...",
+          "code": "3200",
+          "element": null
+        }
+      ],
+      "type": "AUTHENTICATION"
+    },
+    "report": null,
+    "queryResponse": null,
+    "batchItemResponse": [],
+    "attachableResponse": [],
+    "syncErrorResponse": null,
+    "requestId": null,
+    "time": 1727712871112,
+    "status": null,
+    "cdcresponse": []
+  }
+}

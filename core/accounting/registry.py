@@ -14,7 +14,7 @@ class ProviderInfo:
 
 PROVIDERS = [
     ProviderInfo('XERO', 'xero', 'Xero', 'available'),
-    ProviderInfo('QBO', 'quickbooks', 'QuickBooks Online', 'coming_soon'),
+    ProviderInfo('QBO', 'quickbooks', 'QuickBooks Online', 'available'),
     ProviderInfo('SAGE', 'sage', 'Sage Business Cloud Accounting', 'coming_soon'),
 ]
 BY_SLUG = {p.slug: p for p in PROVIDERS}
@@ -25,6 +25,9 @@ def adapter_class(code: str):
     if code == 'XERO':
         from core.accounting.xero import XeroAdapter
         return XeroAdapter
+    if code == 'QBO':
+        from core.accounting.quickbooks import QuickBooksAdapter
+        return QuickBooksAdapter
     raise LookupError(f'No adapter for provider {code!r}')
 
 
@@ -32,6 +35,9 @@ def is_configured(code: str) -> bool:
     if code == 'XERO':
         from core.accounting import xero
         return xero.is_configured()
+    if code == 'QBO':
+        from core.accounting import quickbooks
+        return quickbooks.is_configured()
     return False
 
 

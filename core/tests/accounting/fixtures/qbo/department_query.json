@@ -1,0 +1,23 @@
+{
+  "QueryResponse": {
+    "Department": [
+      {
+        "Name": "Johannesburg",
+        "SubDepartment": false,
+        "FullyQualifiedName": "Johannesburg",
+        "Active": true,
+        "domain": "QBO",
+        "sparse": false,
+        "Id": "1",
+        "SyncToken": "0",
+        "MetaData": {
+          "CreateTime": "2019-03-01T02:20:00-07:00",
+          "LastUpdatedTime": "2019-03-01T02:20:00-07:00"
+        }
+      }
+    ],
+    "startPosition": 1,
+    "maxResults": 1
+  },
+  "time": "2026-09-30T08:14:31.112-07:00"
+}

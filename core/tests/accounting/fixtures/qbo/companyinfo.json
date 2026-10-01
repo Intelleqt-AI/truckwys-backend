@@ -1,0 +1,48 @@
+{
+  "CompanyInfo": {
+    "CompanyName": "Golden Haulage (Pty) Ltd",
+    "LegalName": "Golden Haulage (Pty) Ltd",
+    "CompanyAddr": {
+      "Id": "1",
+      "Line1": "12 Freight Road",
+      "City": "Germiston",
+      "Country": "ZA",
+      "PostalCode": "1401"
+    },
+    "CustomerCommunicationAddr": {
+      "Id": "1",
+      "Line1": "12 Freight Road",
+      "City": "Germiston",
+      "Country": "ZA"
+    },
+    "PrimaryPhone": {
+      "FreeFormNumber": "011 555 0100"
+    },
+    "CompanyStartDate": "2019-03-01",
+    "FiscalYearStartMonth": "March",
+    "Country": "ZA",
+    "Email": {
+      "Address": "accounts@goldenhaulage.co.za"
+    },
+    "SupportedLanguages": "en",
+    "NameValue": [
+      {
+        "Name": "NeoEnabled",
+        "Value": "true"
+      },
+      {
+        "Name": "OfferingSku",
+        "Value": "QuickBooks Online Plus"
+      }
+    ],
+    "domain": "QBO",
+    "sparse": false,
+    "Id": "1",
+    "SyncToken": "4",
+    "MetaData": {
+      "CreateTime": "2019-03-01T02:12:41-07:00",
+      "LastUpdatedTime": "2026-09-30T08:14:31.112-07:00"
+    }
+  },
+  "time": "2026-09-30T08:14:31.112-07:00"
+}

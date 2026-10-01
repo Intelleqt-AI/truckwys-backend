@@ -80,6 +80,15 @@ def mirror_invoice(connection, invoice, state, *, adapter=None) -> dict:
     desired = {}
     foreign_credit_notes = []
     for s in state.settlements:
+        if s.kind not in ('PAYMENT', 'OVERPAYMENT', 'PREPAYMENT', 'CREDIT_NOTE'):
+            # Credit TruckWys can't represent (e.g. a journal entry used as a
+            # write-off in the payment): never counted as money; reported, and
+            # reconciliation shows the open-balance difference.
+            log_event(connection, 'pull_payments',
+                      f'{invoice.invoice_number}: {provider} reduced it by R{s.amount} with {s.source_id} '
+                      f'(not a payment or credit note). Raise a credit note in TruckWys for it.',
+                      level='WARNING', object_type='INVOICE', local_id=invoice.pk, label=invoice.invoice_number)
+            continue
         if s.kind == 'CREDIT_NOTE':
             if s.source_id not in ours:
                 foreign_credit_notes.append(s)
@@ -277,7 +286,7 @@ def refresh_overpayment_remainders(connection, credits=None, adapter=None) -> in
     if not links:
         return 0
     if credits is None:
-        credits = (adapter or get_adapter(connection)).list_unallocated_credits()
+        credits = (adapter or get_adapter(connection)).unallocated_credits_for([l.external_id for l in links])
     remaining = {c.external_id: c.remaining for c in credits if c.kind == 'OVERPAYMENT'}
     changed = 0
     for link in links:

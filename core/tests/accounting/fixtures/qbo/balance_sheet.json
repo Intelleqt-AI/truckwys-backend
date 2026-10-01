@@ -1,0 +1,186 @@
+{
+  "Header": {
+    "Time": "2026-09-30T08:14:31.112-07:00",
+    "ReportName": "BalanceSheet",
+    "DateMacro": "",
+    "ReportBasis": "Accrual",
+    "StartPeriod": "2026-08-31",
+    "EndPeriod": "2026-08-31",
+    "SummarizeColumnsBy": "Total",
+    "Currency": "ZAR",
+    "Option": [
+      {
+        "Name": "AccountingStandard",
+        "Value": "IFRS"
+      },
+      {
+        "Name": "NoReportData",
+        "Value": "false"
+      }
+    ]
+  },
+  "Columns": {
+    "Column": [
+      {
+        "ColTitle": "",
+        "ColType": "Account",
+        "MetaData": [
+          {
+            "Name": "ColKey",
+            "Value": "account"
+          }
+        ]
+      },
+      {
+        "ColTitle": "Total",
+        "ColType": "Money",
+        "MetaData": [
+          {
+            "Name": "ColKey",
+            "Value": "total"
+          }
+        ]
+      }
+    ]
+  },
+  "Rows": {
+    "Row": [
+      {
+        "Header": {
+          "ColData": [
+            {
+              "value": "ASSETS"
+            },
+            {
+              "value": ""
+            }
+          ]
+        },
+        "Rows": {
+          "Row": [
+            {
+              "Header": {
+                "ColData": [
+                  {
+                    "value": "Current Assets"
+                  },
+                  {
+                    "value": ""
+                  }
+                ]
+              },
+              "Rows": {
+                "Row": [
+                  {
+                    "Header": {
+                      "ColData": [
+                        {
+                          "value": "Bank Accounts"
+                        },
+                        {
+                          "value": ""
+                        }
+                      ]
+                    },
+                    "Rows": {
+                      "Row": [
+                        {
+                          "ColData": [
+                            {
+                              "value": "FNB Business Cheque",
+                              "id": "35"
+                            },
+                            {
+                              "value": "125000.00"
+                            }
+                          ],
+                          "type": "Data"
+                        }
+                      ]
+                    },
+                    "Summary": {
+                      "ColData": [
+                        {
+                          "value": "Total Bank Accounts"
+                        },
+                        {
+                          "value": "125000.00"
+                        }
+                      ]
+                    },
+                    "type": "Section",
+                    "group": "BankAccounts"
+                  },
+                  {
+                    "Header": {
+                      "ColData": [
+                        {
+                          "value": "Accounts Receivable"
+                        },
+                        {
+                          "value": ""
+                        }
+                      ]
+                    },
+                    "Rows": {
+                      "Row": [
+                        {
+                          "ColData": [
+                            {
+                              "value": "Accounts Receivable (A/R)",
+                              "id": "84"
+                            },
+                            {
+                              "value": "234110.01"
+                            }
+                          ],
+                          "type": "Data"
+                        }
+                      ]
+                    },
+                    "Summary": {
+                      "ColData": [
+                        {
+                          "value": "Total Accounts Receivable"
+                        },
+                        {
+                          "value": "234110.01"
+                        }
+                      ]
+                    },
+                    "type": "Section",
+                    "group": "AR"
+                  }
+                ]
+              },
+              "Summary": {
+                "ColData": [
+                  {
+                    "value": "Total Current Assets"
+                  },
+                  {
+                    "value": "359110.01"
+                  }
+                ]
+              },
+              "type": "Section",
+              "group": "CurrentAssets"
+            }
+          ]
+        },
+        "Summary": {
+          "ColData": [
+            {
+              "value": "TOTAL ASSETS"
+            },
+            {
+              "value": "359110.01"
+            }
+          ]
+        },
+        "type": "Section",
+        "group": "TotalAssets"
+      }
+    ]
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "status": 400,
+  "headers": {
+    "Content-Type": "application/json"
+  },
+  "body": {
+    "Fault": {
+      "Error": [
+        {
+          "Message": "A business validation error has occurred while processing your request",
+          "Detail": "Business Validation Error: Make sure all your transactions have a VAT rate before you save.",
+          "code": "6000",
+          "element": ""
+        }
+      ],
+      "type": "ValidationFault"
+    },
+    "time": "2026-09-30T08:14:31.112-07:00"
+  }
+}
