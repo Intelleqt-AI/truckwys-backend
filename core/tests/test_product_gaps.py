@@ -197,3 +197,25 @@ class QuoteLoadLinkTests(Base):
         r = self.client.get(f'/api/v1/quotes/{quote.id}/').json()
         self.assertEqual(r['booked_load'], {'id': load.id, 'load_number': 'L-G-Q1', 'status': 'PENDING'})
         self.assertTrue(r['converted'])
+
+    def _quote(self, number, status='ACCEPTED'):
+        return Quote.objects.create(
+            company=self.co, customer=self.customer, quote_number=number,
+            pickup_location='Johannesburg', delivery_location='Durban', cargo_description='Freight',
+            weight=Decimal('10000'), base_rate=Decimal('3000'), fuel_surcharge=Decimal('1500'),
+            toll_charges=Decimal('500'), driver_allowance=Decimal('0'), additional_charges=Decimal('0'),
+            total_amount=Decimal('5000.00'), valid_until=TODAY + timedelta(days=14), status=status,
+        )
+
+    def test_board_splits_accepted_and_booked(self):
+        to_book = self._quote('Q-G-A')
+        booked = self._quote('Q-G-B')
+        self.load('L-G-B1', quote=booked, status='PENDING')
+        self.load('L-G-B2', quote=booked, status='PENDING')  # two loads: still one row
+        legacy = self._quote('Q-G-IT', status='IT')
+        self._quote('Q-G-S', status='SENT')
+
+        def ids(status):
+            return sorted(q['id'] for q in self.client.get(f'/api/v1/quotes/?status={status}').json()['results'])
+        self.assertEqual(ids('ACCEPTED'), [to_book.id])
+        self.assertEqual(ids('BOOKED'), sorted([booked.id, legacy.id]))

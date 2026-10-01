@@ -2596,8 +2596,14 @@ class QuoteFilterSet(django_filters.FilterSet):
         fields = ['status', 'customer']
 
     def filter_status(self, queryset, name, value):
+        # Board columns: ACCEPTED is "won, still to book"; BOOKED is a quote
+        # converted into a load (the load is the source of truth; legacy
+        # IT/COMPLETED quotes count as booked too). Not a stored status.
+        booked = Q(loads__isnull=False) | Q(status__in=['IT', 'COMPLETED'])
+        if value == 'BOOKED':
+            return queryset.filter(booked).distinct()
         if value == 'ACCEPTED':
-            return queryset.filter(status__in=['ACCEPTED', 'IT', 'COMPLETED'])
+            return queryset.filter(status='ACCEPTED').exclude(booked)
         return queryset.filter(status=value)
 
 
