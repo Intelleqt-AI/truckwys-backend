@@ -13,10 +13,23 @@ from core.formatting import format_zar
 
 
 class PaymentError(Exception):
-    """Validation failure with a user-friendly message."""
-    def __init__(self, message, status_code=400):
+    """Validation failure with a user-friendly message. `payload` (optional)
+    is the full error body for the API (code, provider, ...)."""
+    def __init__(self, message, status_code=400, payload=None):
         super().__init__(message)
         self.status_code = status_code
+        self.payload = payload
+
+    def as_response_body(self):
+        return dict(self.payload) if self.payload else {'error': str(self)}
+
+
+def _refuse_if_managed(company, invoice=None):
+    """Manual payments are refused while Xero/QBO manages payments."""
+    from core.accounting.guards import payments_managed_error
+    body = payments_managed_error(company, invoice)
+    if body:
+        raise PaymentError(body['error'], status_code=409, payload=body)
 
 
 def _parse_amount(value):
@@ -69,6 +82,8 @@ def record_payment(company, user, data, *, allow_overpayment=False):
             existing = Payment.objects.filter(company=company, source=source, external_id=external_id).first()
             if existing is not None:
                 return PaymentSerializer(existing, context={'company': company})
+        if source == 'MANUAL':
+            _refuse_if_managed(company, invoice)
 
         if invoice.status == 'CANCELLED':
             raise PaymentError('This invoice is void; a payment can\'t be recorded against it')
@@ -161,6 +176,7 @@ def update_payment(company, user, payment, data, *, allow_overpayment=False):
             raise PaymentError(f'{forbidden}: can\'t be changed on a recorded payment')
     if payment.source != 'MANUAL':
         raise PaymentError(f'This payment was synced from {payment.get_source_display()}; change it there')
+    _refuse_if_managed(company, payment.invoice)
 
     with transaction.atomic():
         invoice = Invoice.objects.select_for_update().get(pk=payment.invoice_id, company=company)
@@ -189,6 +205,7 @@ def reverse_payment(company, payment, user=None):
 
     if payment.source != 'MANUAL':
         raise PaymentError(f'This payment was synced from {payment.get_source_display()}; remove it there')
+    _refuse_if_managed(company, payment.invoice)
     with transaction.atomic():
         invoice = Invoice.objects.select_for_update().get(id=payment.invoice_id, company=company)
         payment.delete()

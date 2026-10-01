@@ -883,3 +883,11 @@ def alert_stale_scheduled_tasks():
             # line above is already on record either way.
             logger.exception('alert_stale_scheduled_tasks: could not email %s', user.pk)
     return {'stale': len(problems), 'notified': sent, 'tasks': [n for n, _ in problems]}
+
+
+# Accounting integrations (Xero, QuickBooks Online): registered here so
+# autodiscovery and the beat schedule find them.
+from core.accounting.tasks import (  # noqa: E402,F401
+    poll_all_payments, poll_connection, process_webhooks, push_link, reconcile_all,
+    reconcile_connection, retry_due, run_backfill,
+)

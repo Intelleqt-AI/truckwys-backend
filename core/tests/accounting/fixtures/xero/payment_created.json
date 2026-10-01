@@ -1,0 +1,42 @@
+{
+  "Id": "e3f5b7d9-1a2c-4e6f-8b0d-2c4e6a8b0d1f",
+  "Status": "OK",
+  "ProviderName": "TruckWys",
+  "DateTimeUTC": "/Date(1753002903517+0000)/",
+  "Payments": [
+    {
+      "PaymentID": "9d2f4b6e-8a0c-4e1f-b3d5-7f9b1d3f5a7c",
+      "Date": "/Date(1751500800000+0000)/",
+      "BankAmount": 1150.0,
+      "Amount": 1150.0,
+      "Reference": "TW receipt RCPT-0001",
+      "CurrencyRate": 1.0,
+      "PaymentType": "ACCRECPAYMENT",
+      "Status": "AUTHORISED",
+      "UpdatedDateUTC": "/Date(1753002903517+0000)/",
+      "HasAccount": true,
+      "IsReconciled": false,
+      "HasValidationErrors": false,
+      "Account": {
+        "AccountID": "13918178-849a-4823-9a31-57b7eac713d7",
+        "Code": "090"
+      },
+      "Invoice": {
+        "Type": "ACCREC",
+        "InvoiceID": "243216c5-369e-4056-ac67-05388f86dc81",
+        "InvoiceNumber": "INV-0042",
+        "Contact": {
+          "ContactID": "9b9ba9e5-e907-4b4e-8210-54d82b0aa479",
+          "Name": "Acme Mining (Pty) Ltd"
+        },
+        "Payments": [],
+        "CreditNotes": [],
+        "Prepayments": [],
+        "Overpayments": [],
+        "IsDiscounted": false,
+        "HasErrors": false,
+        "CurrencyCode": "ZAR"
+      }
+    }
+  ]
+}

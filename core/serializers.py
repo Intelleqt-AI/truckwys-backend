@@ -713,7 +713,7 @@ class InvoiceLineSerializer(serializers.ModelSerializer):
     class Meta:
         model = InvoiceLine
         fields = ['id', 'position', 'description', 'quantity', 'unit_price', 'discount_amount',
-                  'discount_percent', 'tax_code', 'tax_rate', 'net_amount', 'vat_amount',
+                  'discount_percent', 'tax_code', 'revenue_type', 'tax_rate', 'net_amount', 'vat_amount',
                   'total_amount', 'load', 'credited_net_amount']
         read_only_fields = fields
 
@@ -755,6 +755,12 @@ class InvoiceSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer
     lock_reason = serializers.SerializerMethodField()
     has_provisional_number = serializers.BooleanField(read_only=True)
     credit_notes = serializers.SerializerMethodField()
+    # Where this invoice is in Xero / QuickBooks (null when not connected).
+    accounting_sync = serializers.SerializerMethodField()
+
+    def get_accounting_sync(self, obj):
+        from core.accounting.presenters import accounting_sync
+        return accounting_sync(obj, 'INVOICE', self.context)
 
     # Statuses a client may create an invoice in ("Save as" on New invoice).
     # Every later change goes through an action (send, record payment), so a
@@ -946,8 +952,8 @@ class InvoiceSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer
 class CreditNoteLineSerializer(serializers.ModelSerializer):
     class Meta:
         model = CreditNoteLine
-        fields = ['id', 'position', 'description', 'quantity', 'unit_price', 'tax_code', 'tax_rate',
-                  'net_amount', 'vat_amount', 'total_amount', 'invoice_line']
+        fields = ['id', 'position', 'description', 'quantity', 'unit_price', 'tax_code', 'revenue_type',
+                  'tax_rate', 'net_amount', 'vat_amount', 'total_amount', 'invoice_line']
         read_only_fields = fields
 
 
@@ -956,13 +962,18 @@ class CreditNoteSerializer(serializers.ModelSerializer):
     lines = CreditNoteLineSerializer(many=True, read_only=True)
     invoice_number = serializers.CharField(source='invoice.invoice_number', read_only=True)
     customer_name = serializers.CharField(source='customer.name', read_only=True)
+    accounting_sync = serializers.SerializerMethodField()
 
     class Meta:
         model = CreditNote
         fields = ['id', 'credit_note_number', 'invoice', 'invoice_number', 'customer', 'customer_name',
                   'issue_date', 'reason', 'status', 'lines', 'subtotal', 'vat_amount', 'total_amount',
-                  'source', 'external_id', 'created_at', 'voided_at', 'void_reason']
+                  'source', 'external_id', 'created_at', 'voided_at', 'void_reason', 'accounting_sync']
         read_only_fields = fields
+
+    def get_accounting_sync(self, obj):
+        from core.accounting.presenters import accounting_sync
+        return accounting_sync(obj, 'CREDIT_NOTE', self.context)
 
 
 class SupplierSerializer(serializers.ModelSerializer):

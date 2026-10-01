@@ -1,0 +1,8 @@
+{
+  "status": 503,
+  "headers": {
+    "Retry-After": "120",
+    "Content-Type": "text/html; charset=utf-8"
+  },
+  "body": "The Xero API is currently offline for maintenance"
+}

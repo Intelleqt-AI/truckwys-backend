@@ -75,6 +75,7 @@ class InvoiceGenerator:
             'quantity': str(item.get('quantity') or 1),
             'unit_price': str(item.get('unit_price', item.get('amount'))),
             'tax_code': code,
+            'revenue_type': item.get('revenue_type', 'FREIGHT'),
             'load': self.trip.load_id if i == 0 else None,
         } for i, item in enumerate(line_items)]
 
@@ -124,7 +125,7 @@ class InvoiceGenerator:
             base_rate = self.trip.load.rate
 
         line_items.append({
-            'description': f'Freight Charge - {self.trip.origin} to {self.trip.destination}',
+            'description': f'Freight Charge - {self.trip.origin} to {self.trip.destination}', 'revenue_type': 'FREIGHT',
             'quantity': 1,
             'unit_price': float(base_rate),
             'amount': float(base_rate),
@@ -137,7 +138,7 @@ class InvoiceGenerator:
                 rate_per_km = Decimal('10.00')
                 extra_distance_charge = extra_km * rate_per_km
                 line_items.append({
-                    'description': f'Extra Distance ({extra_km} km)',
+                    'description': f'Extra Distance ({extra_km} km)', 'revenue_type': 'EXTRA_KM',
                     'quantity': float(extra_km),
                     'unit_price': float(rate_per_km),
                     'amount': float(extra_distance_charge),
@@ -147,14 +148,14 @@ class InvoiceGenerator:
         if fuel_surcharge_rate and self.trip.distance_km:
             fuel_surcharge = (self.trip.distance_km * fuel_surcharge_rate).quantize(Decimal('0.01'))
             line_items.append({
-                'description': f'Fuel Surcharge ({self.trip.distance_km} km)',
+                'description': f'Fuel Surcharge ({self.trip.distance_km} km)', 'revenue_type': 'FUEL_SURCHARGE',
                 'quantity': float(self.trip.distance_km),
                 'unit_price': float(fuel_surcharge_rate),
                 'amount': float(fuel_surcharge),
             })
         elif self.trip.load.fuel_surcharge:
             line_items.append({
-                'description': 'Fuel Surcharge',
+                'description': 'Fuel Surcharge', 'revenue_type': 'FUEL_SURCHARGE',
                 'quantity': 1,
                 'unit_price': float(self.trip.load.fuel_surcharge),
                 'amount': float(self.trip.load.fuel_surcharge),
@@ -163,7 +164,7 @@ class InvoiceGenerator:
         # 4. Toll costs (actual)
         if include_tolls and self.trip.actual_toll_cost:
             line_items.append({
-                'description': 'Toll Charges',
+                'description': 'Toll Charges', 'revenue_type': 'TOLLS',
                 'quantity': 1,
                 'unit_price': float(self.trip.actual_toll_cost),
                 'amount': float(self.trip.actual_toll_cost),
@@ -173,7 +174,7 @@ class InvoiceGenerator:
         if include_driver_premium:
             driver_premium = (base_rate * Decimal('0.10')).quantize(Decimal('0.01'))
             line_items.append({
-                'description': 'Driver Premium (Special Handling)',
+                'description': 'Driver Premium (Special Handling)', 'revenue_type': 'OTHER',
                 'quantity': 1,
                 'unit_price': float(driver_premium),
                 'amount': float(driver_premium),

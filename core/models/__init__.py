@@ -46,8 +46,12 @@ from .credit_note import CreditNote, CreditNoteLine
 from .document_sequence import DocumentSequence
 from .supplier import Supplier
 from .debtor_identity import DebtorIdentity
+from .accounting import (AccountingConnection, ExternalLink, AccountingSyncEvent, AccountingWebhookEvent,
+                         ReconciliationRun, ReconciliationDifference)
 
 __all__ = [
+    'AccountingConnection', 'ExternalLink', 'AccountingSyncEvent', 'AccountingWebhookEvent',
+    'ReconciliationRun', 'ReconciliationDifference',
     'InvoiceLine', 'CreditNote', 'CreditNoteLine', 'DocumentSequence', 'Supplier', 'DebtorIdentity',
     'User',
     'UserSession',

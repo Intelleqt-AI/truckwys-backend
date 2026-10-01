@@ -58,7 +58,7 @@ def _full_credit_lines(invoice):
         return [{
             'position': 0, 'description': f'Credit of invoice {invoice.invoice_number}',
             'quantity': Decimal('1'), 'unit_price': net,
-            'tax_code': 'STANDARD' if vat > 0 else 'NO_VAT',
+            'tax_code': 'STANDARD' if vat > 0 else 'NO_VAT', 'revenue_type': 'FREIGHT',
             'tax_rate': Decimal('15.00') if vat > 0 else rate,
             'net_amount': net, 'vat_amount': vat, 'total_amount': net + vat, 'invoice_line': None,
         }]
@@ -74,7 +74,7 @@ def _full_credit_lines(invoice):
             'position': len(out), 'description': line.description,
             'quantity': line.quantity if untouched else Decimal('1'),
             'unit_price': line.unit_price if untouched else r_net,
-            'tax_code': line.tax_code, 'tax_rate': line.tax_rate,
+            'tax_code': line.tax_code, 'tax_rate': line.tax_rate, 'revenue_type': line.revenue_type,
             'net_amount': r_net, 'vat_amount': r_vat, 'total_amount': r_net + r_vat,
             'invoice_line': line,
         })
@@ -145,6 +145,8 @@ def create_credit_note(invoice, *, user, reason, lines=None, full=False, issue_d
                     l['total_amount'] = l['net_amount'] + l['vat_amount']
                 credited[inv_line.pk] = (c_net + l['net_amount'], c_vat + l['vat_amount'])
                 l['invoice_line'] = inv_line
+                # Same income account as the line it reverses.
+                l['revenue_type'] = inv_line.revenue_type
 
         subtotal = sum((l['net_amount'] for l in computed), ZERO)
         vat = sum((l['vat_amount'] for l in computed), ZERO)
@@ -169,6 +171,7 @@ def create_credit_note(invoice, *, user, reason, lines=None, full=False, issue_d
             description=l['description'], quantity=l['quantity'], unit_price=l['unit_price'],
             tax_code=l['tax_code'], tax_rate=l['tax_rate'], net_amount=l['net_amount'],
             vat_amount=l['vat_amount'], total_amount=l['total_amount'],
+            revenue_type=l.get('revenue_type') or 'FREIGHT',
         ) for l in computed])
         recalculate_invoice(invoice, actor_id=getattr(user, 'id', None))
         if financed:
@@ -177,7 +180,9 @@ def create_credit_note(invoice, *, user, reason, lines=None, full=False, issue_d
     return cn
 
 
-def void_credit_note(cn, *, user, reason):
+def void_credit_note(cn, *, user, reason, allow_synced=False):
+    """Void an issued credit note. allow_synced: the accounting sync voids a
+    credit note it imported, mirroring the provider (never a user action)."""
     from core.models import CreditNote
     from core.services.ledger import recalculate_invoice
 
@@ -188,9 +193,10 @@ def void_credit_note(cn, *, user, reason):
         cn = CreditNote.objects.select_for_update().get(pk=cn.pk)
         if cn.status == CreditNote.VOID:
             return cn
-        if cn.source != 'MANUAL':
+        if cn.source != 'MANUAL' and not allow_synced:
             raise CreditNoteError(f'This credit note was synced from {cn.get_source_display()}; void it there.')
-        _guard_financed(cn.invoice, user)
+        if not allow_synced:
+            _guard_financed(cn.invoice, user)
         cn.status = CreditNote.VOID
         cn.voided_at = timezone.now()
         cn.void_reason = reason

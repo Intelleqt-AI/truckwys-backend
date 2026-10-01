@@ -1,0 +1,20 @@
+[
+  {
+    "id": "e1eede29-f875-4a5d-8470-17f6a29a88b1",
+    "authEventId": "6a0c2e4b-8d1f-4b3a-9c5e-7f9a1b3c5d7e",
+    "tenantId": "0c3f7d9e-2a4b-4e6f-9a1b-3c5d7e9f1a2b",
+    "tenantType": "ORGANISATION",
+    "tenantName": "Golden Haulage (Pty) Ltd",
+    "createdDateUtc": "2025-07-01T09:00:02.2833130",
+    "updatedDateUtc": "2025-07-01T09:00:02.2849090"
+  },
+  {
+    "id": "32587c85-a9b3-4306-ac30-b416e8f2c841",
+    "authEventId": "6a0c2e4b-8d1f-4b3a-9c5e-7f9a1b3c5d7e",
+    "tenantId": "c7a1e5f3-0b9d-4c2e-a6f8-1d3b5c7e9a0f",
+    "tenantType": "PRACTICEMANAGER",
+    "tenantName": "Golden Haulage Practice",
+    "createdDateUtc": "2025-07-01T09:00:02.3000000",
+    "updatedDateUtc": "2025-07-01T09:00:02.3000000"
+  }
+]

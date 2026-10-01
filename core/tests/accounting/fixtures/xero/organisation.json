@@ -1,0 +1,39 @@
+{
+  "Id": "e3f5b7d9-1a2c-4e6f-8b0d-2c4e6a8b0d1f",
+  "Status": "OK",
+  "ProviderName": "TruckWys",
+  "DateTimeUTC": "/Date(1753002903517+0000)/",
+  "Organisations": [
+    {
+      "OrganisationID": "b2c885a9-4bb9-4a00-9b6e-6c2bf60b1a2b",
+      "APIKey": "",
+      "Name": "Golden Haulage (Pty) Ltd",
+      "LegalName": "Golden Haulage (Pty) Ltd",
+      "PaysTax": true,
+      "Version": "ZA",
+      "OrganisationType": "COMPANY",
+      "BaseCurrency": "ZAR",
+      "CountryCode": "ZA",
+      "IsDemoCompany": false,
+      "OrganisationStatus": "ACTIVE",
+      "RegistrationNumber": "2015/123456/07",
+      "TaxNumber": "4123456789",
+      "FinancialYearEndDay": 28,
+      "FinancialYearEndMonth": 2,
+      "SalesTaxBasis": "INVOICE",
+      "SalesTaxPeriod": "TWOMONTHS",
+      "DefaultSalesTax": "Tax Exclusive",
+      "DefaultPurchasesTax": "Tax Inclusive",
+      "CreatedDateUTC": "/Date(1551694961000+0000)/",
+      "OrganisationEntityType": "COMPANY",
+      "Timezone": "SOUTHAFRICASTANDARDTIME",
+      "ShortCode": "!gH7kQ",
+      "Edition": "BUSINESS",
+      "Class": "STANDARD",
+      "Addresses": [],
+      "Phones": [],
+      "ExternalLinks": [],
+      "PaymentTerms": {}
+    }
+  ]
+}
