@@ -1,3 +1,4 @@
+import json
 import re
 from rest_framework import serializers
 from django.db.models import Avg, Q  # ADD THIS IMPORT
@@ -585,6 +586,28 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
                               f"of {vt.capacity}t — this can't be priced as a standard quote."
                 })
         return attrs
+
+    # route_snapshot is the raw route request+response kept for ML training.
+    # Client-supplied JSON: capped in size, and left out of list responses
+    # (it can be large and holds coordinates/addresses).
+    ROUTE_SNAPSHOT_MAX_BYTES = 200_000
+
+    def validate_route_snapshot(self, value):
+        if value in (None, ''):
+            return {}
+        if not isinstance(value, dict):
+            raise serializers.ValidationError('route_snapshot must be a JSON object.')
+        size = len(json.dumps(value, separators=(',', ':'), default=str).encode('utf-8'))
+        if size > self.ROUTE_SNAPSHOT_MAX_BYTES:
+            raise serializers.ValidationError(
+                f'route_snapshot is {size:,} bytes; the limit is {self.ROUTE_SNAPSHOT_MAX_BYTES:,}.')
+        return value
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if isinstance(self.parent, serializers.ListSerializer):
+            data.pop('route_snapshot', None)
+        return data
 
     def _converted_load(self, obj):
         # Assignment happens on the Load this quote was converted into (at

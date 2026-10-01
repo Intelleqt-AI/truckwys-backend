@@ -14,7 +14,8 @@ from .views_admin import (
     AdminBorderFeesView, AdminBorderFeeDetailView,
     AdminCountryTransitRatesView, AdminCountryTransitRateDetailView,
     AdminSearchView, AdminJobHealthView, AdminIntegrationsHealthView,
-    AdminModelHealthView, AdminAuditLogView,
+    AdminModelHealthView, AdminAuditLogView, AdminAIUsageView,
+    AdminVerifiedRatesView, AdminVerifiedRateReviewView, AdminVerifiedRatesRefreshView,
 )
 from .views import (
     UserViewSet, CustomerViewSet, DriverViewSet,
@@ -38,7 +39,7 @@ from .views_import import (
 )
 from .views_bulk_delete import CustomerBulkDeleteView, VehicleBulkDeleteView
 from .views_ai_quote import (
-    AIChatQuoteView, AIQuoteAnalyzeView, AIQuoteSuggestionView, AIVoiceQuoteView,
+    AIChatQuoteView, AIQuoteAnalyzeView, AIQuotePriceAnalysisView, AIQuoteSuggestionView, AIVoiceQuoteView,
     FuelPriceCurrentView, FuelPriceSurchargeCheckView,
     QuoteBenchmarkView, QuoteFuelAlertView, QuoteModelStatsView,
     QuoteOutcomeView, QuoteWinProbabilityView, RevenueGuardView
@@ -171,6 +172,13 @@ urlpatterns = [
     path('admin/job-health/', AdminJobHealthView.as_view(), name='admin-job-health'),
     path('admin/integrations-health/', AdminIntegrationsHealthView.as_view(), name='admin-integrations-health'),
     path('admin/model-health/', AdminModelHealthView.as_view(), name='admin-model-health'),
+    path('admin/ai-usage/', AdminAIUsageView.as_view(), name='admin-ai-usage'),
+    path('admin/verified-rates/', AdminVerifiedRatesView.as_view(), name='admin-verified-rates'),
+    path('admin/verified-rates/refresh/', AdminVerifiedRatesRefreshView.as_view(), name='admin-verified-rates-refresh'),
+    path('admin/verified-rates/<int:rate_id>/approve/', AdminVerifiedRateReviewView.as_view(review_action='approve'),
+         name='admin-verified-rate-approve'),
+    path('admin/verified-rates/<int:rate_id>/reject/', AdminVerifiedRateReviewView.as_view(review_action='reject'),
+         name='admin-verified-rate-reject'),
     path('admin/audit-log/', AdminAuditLogView.as_view(), name='admin-audit-log'),
     path('billing/confirm/', ConfirmPaymentView.as_view(), name='billing-confirm'),
     path('auth/me/', UserProfileView.as_view(), name='user-profile'),
@@ -241,6 +249,7 @@ urlpatterns = [
     path('agent/memory/', CopilotMemoryView.as_view(), name='agent-memory'),
     path('quotes/optimize/', AIPriceOptimizeView.as_view(), name='quote-optimize'),
     path('quotes/analyze/', AIQuoteAnalyzeView.as_view(), name='quote-analyze'),
+    path('quotes/ai-price-analysis/', AIQuotePriceAnalysisView.as_view(), name='quote-ai-price-analysis'),
     path('risk/underwrite/', RiskUnderwriteView.as_view(), name='risk-underwrite'),
     path('risk/score/<int:pk>/explain/', RiskScoreExplainView.as_view(), name='risk-score-explain'),
     path('dashboard/overview/', DashboardOverviewView.as_view(), name='dashboard-overview'),

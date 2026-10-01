@@ -262,6 +262,10 @@ REST_FRAMEWORK = {
         # Copilot chat is far more expensive than a normal API call (LLM + RAG +
         # snapshot). A tighter per-user cap prevents runaway OpenAI spend.
         'copilot': config('COPILOT_THROTTLE_RATE', default='15/minute'),
+        # AI quote price-check panel (stored figures, no $ cost since the
+        # 2026-10 redesign): a coarse per-user cap; the per-quote cooldown
+        # lives in AI_QUOTE_ANALYSIS_COOLDOWN_SECONDS below.
+        'ai_quote_analysis': config('AI_QUOTE_ANALYSIS_THROTTLE_RATE', default='10/minute'),
     }
 }
 
@@ -336,6 +340,58 @@ EMBEDDING_MODEL = config('EMBEDDING_MODEL', default='text-embedding-3-small')
 OPENAI_CHAT_MODEL = config('OPENAI_CHAT_MODEL', default='gpt-4o')
 COPILOT_LLM_PROVIDER = config('COPILOT_LLM_PROVIDER', default='auto')
 
+# AI quote-price-analysis (QuoteBuilder's "AI price review" panel). Since the
+# 2026-10 cost redesign the per-quote check (core.services.quote_ai_pricing)
+# makes no OpenAI or web calls: it compares the quote with stored, verified
+# figures and needs no API key. Only the monthly refresh_verified_rates job
+# (core.services.verified_rate_refresh) uses OPENAI_API_KEY; without a key it
+# skips.
+# Kill switch for both: False makes the check answer 503 {'code':
+# 'unavailable'} and the refresh job skip.
+AI_PRICE_ANALYSIS_ENABLED = config('AI_PRICE_ANALYSIS_ENABLED', default=True, cast=bool)
+# Checks per company per local day (429 {'code': 'budget'} with
+# retry_after_seconds until local midnight). A check costs nothing now, so the
+# cap is generous. 0 switches it off.
+AI_PRICE_ANALYSIS_COMPANY_DAILY_RUNS = config('AI_PRICE_ANALYSIS_COMPANY_DAILY_RUNS', default=200, cast=int)
+# Recorded OpenAI spend across the platform per local day, in USD. Checks
+# record $0, so this caps the refresh job (checked before every lookup).
+AI_PRICE_ANALYSIS_GLOBAL_DAILY_BUDGET_USD = config('AI_PRICE_ANALYSIS_GLOBAL_DAILY_BUDGET_USD', default=5, cast=float)
+# Refresh job: web_search calls allowed per lookup (one lookup per SANRAL
+# class, one for the driver allowance) and the SANRAL classes looked up.
+VERIFIED_RATES_MAX_WEB_SEARCH_CALLS = config('VERIFIED_RATES_MAX_WEB_SEARCH_CALLS', default=2, cast=int)
+VERIFIED_RATES_TOLL_CLASSES = tuple(
+    int(c) for c in config('VERIFIED_RATES_TOLL_CLASSES', default='1,2,3,4').split(',') if c.strip())
+AI_QUOTE_ANALYSIS_MODEL = config('AI_QUOTE_ANALYSIS_MODEL', default='gpt-4o-mini')
+# The structuring call never touches the web and only extracts figures from
+# the research findings into JSON.
+AI_QUOTE_ANALYSIS_STRUCTURING_MODEL = config('AI_QUOTE_ANALYSIS_STRUCTURING_MODEL', default='gpt-4o-mini')
+# Only sent to reasoning models (gpt-5*/o*); gpt-4o-mini doesn't accept it.
+AI_QUOTE_ANALYSIS_REASONING_EFFORT = config('AI_QUOTE_ANALYSIS_REASONING_EFFORT', default='low')
+# How much of each web_search result's content the research call pulls into
+# context ('low'|'medium'|'high'). For gpt-4o-mini / gpt-4.1-mini OpenAI bills
+# search content as a fixed 8,000-token block whatever this is, so 'medium'
+# buys better grounding (current figures) at the same price. On other models
+# it's a direct lever on input-token cost.
+AI_QUOTE_ANALYSIS_SEARCH_CONTEXT_SIZE = config('AI_QUOTE_ANALYSIS_SEARCH_CONTEXT_SIZE', default='medium')
+# Per OpenAI call timeout in the refresh job.
+AI_QUOTE_ANALYSIS_TIMEOUT_SECONDS = config('AI_QUOTE_ANALYSIS_TIMEOUT_SECONDS', default=60, cast=int)
+# Per-quote (or per-user, when the quote has no id yet) cooldown between
+# checks: a double-click guard now that a check is free and instant,
+# separate from the per-user 'ai_quote_analysis' throttle scope above.
+AI_QUOTE_ANALYSIS_COOLDOWN_SECONDS = config('AI_QUOTE_ANALYSIS_COOLDOWN_SECONDS', default=3, cast=int)
+# Cited sources kept per refresh lookup.
+AI_QUOTE_ANALYSIS_MAX_REFERENCES = config('AI_QUOTE_ANALYSIS_MAX_REFERENCES', default=8, cast=int)
+# Driver-allowance days are estimated from the route's driving time at this
+# many driving hours per day (owner decision) — shown on screen, not hidden.
+DRIVER_DRIVING_HOURS_PER_DAY = config('DRIVER_DRIVING_HOURS_PER_DAY', default=9, cast=float)
+# Source-page verification: every market figure must appear on the page it
+# cites (core.services.source_verification).
+AI_SOURCE_FETCH_TIMEOUT_SECONDS = config('AI_SOURCE_FETCH_TIMEOUT_SECONDS', default=6, cast=float)
+# Whole-download cap per page (the timeout above is per socket read).
+AI_SOURCE_FETCH_TOTAL_SECONDS = config('AI_SOURCE_FETCH_TOTAL_SECONDS', default=15, cast=float)
+AI_SOURCE_FETCH_MAX_BYTES = config('AI_SOURCE_FETCH_MAX_BYTES', default=3_000_000, cast=int)
+AI_SOURCE_CACHE_SECONDS = config('AI_SOURCE_CACHE_SECONDS', default=86400, cast=int)
+
 # Frontend URL for email links
 FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:3701')
 
@@ -406,7 +462,15 @@ CACHES = {
     'default': {
         'BACKEND': 'django.core.cache.backends.db.DatabaseCache',
         'LOCATION': 'tw_cache_table',
-    }
+    },
+    # Source pages fetched by the AI price analysis (up to 400k chars each).
+    # Kept OUT of the shared DB cache: filling that culls its lowest keys,
+    # which include login/2FA and invite entries. Per-process memory, small.
+    'ai_sources': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'ai-source-pages',
+        'OPTIONS': {'MAX_ENTRIES': 64},
+    },
 }
 
 # ZAR diesel price used for cost/margin calculations.
@@ -603,6 +667,15 @@ CELERY_BEAT_SCHEDULE = {
     'sweep-stale-activity-logs': {
         'task': 'core.tasks.sweep_stale_activity_logs',
         'schedule': crontab(hour='4', minute='0'),
+    },
+    # Look up the current SANRAL toll tariffs and driver allowance on the web
+    # (OpenAI web search) and write PENDING proposals for any that changed,
+    # for a superuser to approve. Monthly, 05:30 SAST on the 2nd: the
+    # figures change about once a year (1 March), so this is plenty. A few
+    # US cents a run, capped by AI_PRICE_ANALYSIS_GLOBAL_DAILY_BUDGET_USD.
+    'refresh-verified-rates': {
+        'task': 'core.tasks.refresh_verified_rates',
+        'schedule': crontab(day_of_month='2', hour='5', minute='30'),
     },
 }
 

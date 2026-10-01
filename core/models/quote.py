@@ -60,6 +60,21 @@ class Quote(models.Model):
     # actually priced and shown to the customer.
     route_geometry = models.JSONField(default=list, blank=True)
 
+    # Full raw request+response from the route-calculate call that priced this
+    # quote's currently-selected route — {"request": {...}, "response": {...},
+    # "selected_route_index": int}. Deliberately NOT pre-flattened: captures
+    # whatever RouteCalculatorView returns today (road_type, terrain, toll
+    # breakdown, traffic/congestion, alternative routes, ...) so a future ML
+    # feature-engineering pass never discovers a field it needed wasn't kept.
+    # route_geometry above stays the lightweight "just the polyline" field
+    # every map view reads; this is the exhaustive one, for training data only.
+    route_snapshot = models.JSONField(default=dict, blank=True)
+
+    # The per-km rate that (x distance) produced base_rate below. base_rate
+    # itself is the TOTAL — this was previously frontend-only UI state
+    # (baseRatePerKm in QuoteBuilder), never sent to the backend.
+    base_rate_per_km = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+
     origin = models.CharField(max_length=50, blank=True)  # e.g., "JHB", "CPT"
     destination = models.CharField(max_length=50, blank=True)  # e.g., "DUR", "PE"
     
