@@ -402,8 +402,18 @@ class RiskEngine:
                 severity='critical'
             ))
 
-        # No POD
-        if self.invoice.load and not getattr(self.invoice.load, 'pod_signature', None):
+        # No load / no POD. An invoice with no load used to skip the POD rule
+        # entirely, so a typed-up invoice with nothing delivered behind it was
+        # fundable (audit §6 #5). Evidence = a stored POD file or a captured
+        # signature (see capital_guard.load_has_pod_evidence).
+        from core.services.capital_guard import load_has_pod_evidence
+        if not self.invoice.load:
+            reasons.append(IneligibilityReason(
+                rule='no_load',
+                description='Invoice is not linked to a delivered load',
+                severity='critical'
+            ))
+        elif not load_has_pod_evidence(self.invoice.load):
             reasons.append(IneligibilityReason(
                 rule='no_pod',
                 description='No proof of delivery on file',

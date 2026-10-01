@@ -51,11 +51,17 @@ XERO_CLIENT_SECRET = config('XERO_CLIENT_SECRET', default='')
 XERO_REDIRECT_URI = config('XERO_REDIRECT_URI', default='http://localhost:8000/api/v1/integrations/xero/callback/')
 FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:3701')
 
-# Encryption key for secrets at rest (Xero OAuth tokens). A urlsafe-base64 32-byte
-# Fernet key (python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())").
-# If unset, a stable key is derived from SECRET_KEY. Set a dedicated key in production
-# so rotating SECRET_KEY doesn't invalidate stored tokens.
+# Encryption key for secrets at rest (Xero tokens, Cartrack/CtrlFleet credentials).
+# A urlsafe-base64 32-byte Fernet key
+# (python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"),
+# or several comma-separated during a rotation (the first encrypts).
+# REQUIRED in production: with DEBUG off the app refuses to start without it
+# (core.utils.crypto.validate_encryption_config). Only DEBUG/test runs derive a
+# key from SECRET_KEY.
 FIELD_ENCRYPTION_KEY = config('FIELD_ENCRYPTION_KEY', default='')
+# Previous key(s), comma-separated, read only by `manage.py reencrypt_fields`
+# to move stored secrets onto FIELD_ENCRYPTION_KEY.
+FIELD_ENCRYPTION_KEY_OLD = config('FIELD_ENCRYPTION_KEY_OLD', default='')
 
 # Carrier-finance spine: when a load is delivered, auto-raise its invoice (SENT)
 # so the receivable exists and becomes fast-pay eligible with no manual step.

@@ -38,6 +38,17 @@ class Customer(models.Model):
     zip_code = models.CharField(max_length=20, blank=True)
     billing_address = models.TextField(blank=True)
 
+    # Business identity. Normalised by the serializer (core.services.identity):
+    # VAT 10 digits starting with 4; CIPC as YYYY/NNNNNN/NN.
+    vat_number = models.CharField(max_length=20, blank=True, default='')
+    registration_number = models.CharField(max_length=20, blank=True, default='', db_index=True)
+    country = models.CharField(max_length=2, default='ZA', help_text='ISO 3166-1 alpha-2')
+    # Normalised legal name ('abc logistics' for 'ABC Logistics (Pty) Ltd').
+    legal_name_key = models.CharField(max_length=200, blank=True, default='', db_index=True)
+    # Global identity shared across tenants for Capital only; never serialised.
+    debtor_identity = models.ForeignKey('DebtorIdentity', on_delete=models.SET_NULL, null=True, blank=True,
+                                        related_name='customers')
+
     # NEW: Structured payment terms
     payment_terms_default = models.CharField(
         max_length=20,
@@ -126,6 +137,22 @@ class Customer(models.Model):
 
     def __str__(self):
         return f"{self.name} - {self.company_name}" if self.company_name else self.name
+
+    def save(self, *args, **kwargs):
+        from core.services.identity import legal_name_key, link_debtor_identity
+        self.legal_name_key = legal_name_key(self.company_name or self.name)
+        update_fields = kwargs.get('update_fields')
+        if update_fields is not None:
+            kwargs['update_fields'] = set(update_fields) | {'legal_name_key'}
+        super().save(*args, **kwargs)
+        if self.registration_number or self.vat_number:
+            try:
+                identity = link_debtor_identity(self)
+            except Exception:  # identity is best-effort; never block a customer save
+                identity = None
+            if identity is not None and identity.pk != self.debtor_identity_id:
+                self.debtor_identity = identity
+                type(self).objects.filter(pk=self.pk).update(debtor_identity=identity)
 
     @property
     def relationship_months(self) -> int:

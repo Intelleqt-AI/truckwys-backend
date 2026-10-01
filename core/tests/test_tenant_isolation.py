@@ -287,6 +287,18 @@ class LenderAdvanceIsolationTests(_TwoTenantFixture):
             issue_date=today, due_date=today + timedelta(days=30),
             subtotal=Decimal('50.00'), status='SENT',
         )
+        # Capital-safety 2026-10: lender keys are DB keys bound to the
+        # transporters they fund, and only offered invoices with a delivered,
+        # POD-backed load can be advanced. Bind this key to both tenants so the
+        # test still isolates the facility choice, not the key scope.
+        from core.models import IntegrationAPIKey
+        key = IntegrationAPIKey.objects.create(
+            name='Iso Lender', key='ISO-LENDER-KEY', key_type='LENDER', operator=cls.staff_none)
+        key.allowed_companies.set([cls.co_a, cls.co_b])
+        Load.objects.filter(pk__in=[cls.load_a.pk, cls.load_b.pk]).update(
+            status='DELIVERED', pod_signature='signed-on-glass')
+        Invoice.objects.filter(pk=cls.lend_b.pk).update(load=cls.load_b, early_pay_eligible=True)
+        Invoice.objects.filter(pk=cls.lend_a.pk).update(load=cls.load_a, early_pay_eligible=True)
 
     def _post(self, invoice, amount):
         c = APIClient()

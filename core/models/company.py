@@ -4,6 +4,10 @@ class Company(models.Model):
     company_name = models.CharField(max_length=200)
     registration_number = models.CharField(max_length=100, blank=True)
     vat_number = models.CharField(max_length=100, blank=True)
+    # Whether this company charges VAT. Defaults True because every invoice
+    # before the foundation release was charged 15%; a non-vendor turns it
+    # off and its lines default to NO_VAT (STANDARD is then refused).
+    vat_registered = models.BooleanField(default=True)
     industry = models.CharField(max_length=100, default='logistics')
     website = models.URLField(blank=True)
     description = models.TextField(blank=True)

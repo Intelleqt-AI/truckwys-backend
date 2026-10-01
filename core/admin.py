@@ -7,6 +7,7 @@ from .models import (
 from .models.border_crossing_fee import BorderCrossingFee
 from .models.verified_rate import VerifiedRate
 from .models.country_transit_rate import CountryTransitRate
+from .models.integration_api_key import IntegrationAPIKey
 
 @admin.register(User)
 class UserAdmin(admin.ModelAdmin):
@@ -128,10 +129,12 @@ class TripAdmin(admin.ModelAdmin):
 
 @admin.register(Facility)
 class FacilityAdmin(admin.ModelAdmin):
-    list_display = ['id', 'company', 'limit', 'outstanding', 'utilization_percent', 'status']
+    list_display = ['id', 'company', 'limit', 'outstanding', 'reserved', 'utilization_percent', 'status']
     list_filter = ['status']
     search_fields = ['company__company_name']
-    readonly_fields = ['created_at', 'updated_at', 'utilization_percent', 'available']
+    # outstanding/reserved are moved only by core.services.facility_ledger.
+    readonly_fields = ['created_at', 'updated_at', 'utilization_percent', 'available',
+                       'outstanding', 'reserved']
 
 
 @admin.register(RiskScore)
@@ -147,7 +150,20 @@ class AdvanceRequestAdmin(admin.ModelAdmin):
     list_display = ['id', 'invoice', 'facility', 'amount', 'fee_amount', 'net_amount', 'status', 'requested_at']
     list_filter = ['status']
     search_fields = ['invoice__invoice_number']
-    readonly_fields = ['created_at', 'updated_at']
+    # Status and capacity change only through the lifecycle (facility_ledger);
+    # editing them here would desync the facility ledger.
+    readonly_fields = ['created_at', 'updated_at', 'status', 'capacity_reserved',
+                       'settlement_reference', 'settlement_payment', 'settled_by']
+
+
+@admin.register(IntegrationAPIKey)
+class IntegrationAPIKeyAdmin(admin.ModelAdmin):
+    """Where platform staff bind a LENDER key to the transporters it funds."""
+    list_display = ['id', 'name', 'key_type', 'operator', 'active', 'last_used_at']
+    list_filter = ['key_type', 'active']
+    search_fields = ['name', 'operator__username']
+    filter_horizontal = ['allowed_companies']
+    readonly_fields = ['key', 'created_at', 'last_used_at', 'usage_count', 'quota_used', 'quota_period']
 
 
 @admin.register(AuditLog)
@@ -229,3 +245,33 @@ class VerifiedRateAdmin(admin.ModelAdmin):
         from core.services import verified_rates
         for rate in queryset.filter(status=VerifiedRate.STATUS_PENDING):
             verified_rates.reject(rate.id, request.user)
+
+
+# Foundation (accounting). Read-mostly: money moves through the services
+# (ledger, credit notes, payments), never by editing rows here.
+from .models import CreditNote, Supplier, DocumentSequence, DebtorIdentity  # noqa: E402
+
+
+@admin.register(CreditNote)
+class CreditNoteAdmin(admin.ModelAdmin):
+    list_display = ['credit_note_number', 'company', 'invoice', 'issue_date', 'total_amount', 'status']
+    list_filter = ['status']
+    search_fields = ['credit_note_number', 'invoice__invoice_number']
+    readonly_fields = [f.name for f in CreditNote._meta.fields]
+
+
+@admin.register(Supplier)
+class SupplierAdmin(admin.ModelAdmin):
+    list_display = ['name', 'company', 'vat_number', 'category', 'is_active']
+    search_fields = ['name', 'vat_number']
+
+
+@admin.register(DocumentSequence)
+class DocumentSequenceAdmin(admin.ModelAdmin):
+    list_display = ['company', 'doc_type', 'prefix', 'next_number', 'padding']
+
+
+@admin.register(DebtorIdentity)
+class DebtorIdentityAdmin(admin.ModelAdmin):
+    list_display = ['registration_number', 'vat_number', 'legal_name_key', 'country']
+    search_fields = ['registration_number', 'vat_number', 'legal_name_key']

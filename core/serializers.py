@@ -4,7 +4,8 @@ from rest_framework import serializers
 from django.db.models import Avg, Q  # ADD THIS IMPORT
 from .models import (
     User, Customer, Driver, Vehicle, VehicleLog, VehicleType, Load,
-    Quote, Invoice, Payment, Expense, Settlement, Notification, Company, ActivityEvent
+    Quote, Invoice, Payment, Expense, Settlement, Notification, Company, ActivityEvent,
+    InvoiceLine, CreditNote, CreditNoteLine, Supplier,
 )
 from .serializers_billing import DeliveryFeeChargeSerializer
 
@@ -256,8 +257,9 @@ class SelfProfileSerializer(UserSerializer):
 class CustomerSerializer(serializers.ModelSerializer):
     class Meta:
         model = Customer
-        fields = '__all__'
-        read_only_fields = ['id', 'company', 'created_at', 'updated_at']
+        # debtor_identity is the cross-tenant Capital link: never exposed.
+        exclude = ['debtor_identity']
+        read_only_fields = ['id', 'company', 'created_at', 'updated_at', 'legal_name_key']
         # Address details are optional on quick-add (directory). They can be
         # filled in later from the full customer record.
         extra_kwargs = {
@@ -267,6 +269,26 @@ class CustomerSerializer(serializers.ModelSerializer):
             'city': {'required': False, 'allow_blank': True, 'default': ''},
             'phone': {'required': False, 'allow_blank': True, 'default': ''},
         }
+
+    def validate_country(self, value):
+        value = (value or 'ZA').strip().upper()
+        if not re.fullmatch(r'[A-Z]{2}', value):
+            raise serializers.ValidationError('Use a two-letter country code, e.g. ZA.')
+        return value
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        country = attrs.get('country') or (self.instance.country if self.instance else 'ZA')
+        errors = {}
+        for field, kind in (('vat_number', 'vat'), ('registration_number', 'reg')):
+            if field in attrs:
+                try:
+                    attrs[field] = _validate_identifier(attrs[field], kind, country)
+                except serializers.ValidationError as e:
+                    errors[field] = e.detail
+        if errors:
+            raise serializers.ValidationError(errors)
+        return attrs
 
 
 # Driver Serializer
@@ -515,7 +537,15 @@ class LoadSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
     class Meta:
         model = Load
         fields = '__all__'
-        read_only_fields = ['id', 'created_at', 'updated_at', 'created_by', 'actual_delivered_at', 'company']
+        # POD fields are evidence a capital advance is funded against, so they
+        # are written only by LoadViewSet.upload_pod (and fleet integrations),
+        # never by a PATCH that could type in a "signature" (audit §6 #5).
+        read_only_fields = [
+            'id', 'created_at', 'updated_at', 'created_by', 'actual_delivered_at', 'company',
+            'pod_signature', 'pod_received_by', 'pod_document',
+            'pod_captured_at', 'pod_latitude', 'pod_longitude', 'pod_device',
+            'pod_source', 'pod_file_sha256',
+        ]
 
     def get_fuel_cost_estimated(self, obj):
         value = obj.fuel_surcharge
@@ -675,7 +705,36 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
 
 
 # Invoice Serializer
+class InvoiceLineSerializer(serializers.ModelSerializer):
+    # How much of this line (excl. VAT) issued credit notes have reversed,
+    # so a partial-credit UI can cap each line without guessing.
+    credited_net_amount = serializers.SerializerMethodField()
+
+    class Meta:
+        model = InvoiceLine
+        fields = ['id', 'position', 'description', 'quantity', 'unit_price', 'discount_amount',
+                  'discount_percent', 'tax_code', 'tax_rate', 'net_amount', 'vat_amount',
+                  'total_amount', 'load', 'credited_net_amount']
+        read_only_fields = fields
+
+    def get_credited_net_amount(self, obj):
+        from django.db.models import Sum
+        from decimal import Decimal
+        total = obj.credit_note_lines.filter(credit_note__status='ISSUED').aggregate(t=Sum('net_amount'))['t']
+        return str(Decimal(total or 0).quantize(Decimal('0.01')))
+
+
 class InvoiceSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
+    """Invoices. Totals are computed from `lines` server-side
+    (core.services.invoice_lines); a client never sends money totals.
+
+    Write `lines`: [{description, quantity, unit_price, discount_amount |
+    discount_percent, tax_code, load?}]. Older clients that post
+    subtotal / vat_amount / line_items are translated to lines once.
+
+    Issued (non-draft) invoices are locked: only `notes` may change, and not
+    even that once the invoice is financed. Corrections are credit notes.
+    """
     company_scoped_relations = {
         'customer': 'company_id', 'load': 'company_id', 'trip': 'load__company_id',
     }
@@ -690,29 +749,60 @@ class InvoiceSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer
     # OneToOneField raises DoesNotExist for any invoice with no charge yet
     # (drafts, pre-this-feature invoices) — getattr's default swallows that.
     delivery_fee_charge = serializers.SerializerMethodField()
+    lines = InvoiceLineSerializer(many=True, read_only=True)
+    is_locked = serializers.BooleanField(read_only=True)
+    is_financed = serializers.SerializerMethodField()
+    lock_reason = serializers.SerializerMethodField()
+    has_provisional_number = serializers.BooleanField(read_only=True)
+    credit_notes = serializers.SerializerMethodField()
 
     # Statuses a client may create an invoice in ("Save as" on New invoice).
     # Every later change goes through an action (send, record payment), so a
     # PATCH can't mark an invoice paid with no payment behind it.
     CREATE_STATUSES = ('DRAFT', 'SENT')
-    # The due date stays editable until the invoice is settled.
-    DUE_DATE_LOCKED = ('PAID', 'CANCELLED')
+    # What may still change on an issued invoice.
+    LOCKED_EDITABLE = ('notes', 'early_pay_offered')
 
     class Meta:
         model = Invoice
         fields = '__all__'
-        # Money and payment state are server-derived: paid_amount/balance/
-        # paid_at move only through record_payment (services.payments), so the
+        # Money and payment state are server-derived: totals from the lines,
+        # paid/credited/balance from the ledger (services.ledger), so the
         # payment ledger and every revenue figure stay in step.
-        read_only_fields = ['id', 'company', 'created_at', 'updated_at',
-                            'paid_amount', 'balance', 'paid_at', 'sent_at', 'viewed_at']
-        # invoice_number is derivable server-side, so a client shouldn't have
-        # to send it: it's unique, and letting each client invent one (the web
-        # app used the last 6 digits of Date.now()) risks a collision that
-        # surfaces as an opaque 400.
+        # subtotal/discount stay writable as INPUT for older clients and the
+        # Copilot (they become one line via legacy_payload_to_lines); the
+        # stored values are always recomputed from the lines.
+        read_only_fields = ['id', 'company', 'created_at', 'updated_at', 'invoice_number',
+                            'vat_amount', 'tax_amount', 'tax_rate',
+                            'total_amount', 'paid_amount', 'credited_amount', 'balance',
+                            'paid_at', 'sent_at', 'viewed_at', 'totals_source', 'terms_days',
+                            'voided_at', 'void_reason', 'line_items', 'pdf_file', 'view_token',
+                            'last_reminder_at', 'reminder_count']
         extra_kwargs = {
-            'invoice_number': {'required': False},
+            'due_date': {'required': False},
+            'payment_terms': {'required': False},
+            'subtotal': {'required': False},
+            'discount': {'required': False},
         }
+
+    def get_is_financed(self, obj):
+        return obj.is_financed
+
+    def get_lock_reason(self, obj):
+        if obj.is_financed:
+            return 'Financed through Fast Pay: the invoice is locked. Contact the capital desk.'
+        if obj.status == 'CANCELLED':
+            return 'This invoice is void.'
+        if obj.is_locked:
+            return 'Issued invoices can\'t be edited. Issue a credit note to correct it.'
+        return None
+
+    def get_credit_notes(self, obj):
+        if not obj.pk:
+            return []
+        return [{'id': cn.id, 'credit_note_number': cn.credit_note_number,
+                 'issue_date': cn.issue_date, 'total_amount': str(cn.total_amount), 'status': cn.status}
+                for cn in obj.credit_notes.all()]
 
     def validate_status(self, value):
         if self.instance is None:
@@ -720,25 +810,85 @@ class InvoiceSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer
                 raise serializers.ValidationError('A new invoice is saved as a draft or sent.')
         elif value != self.instance.status:
             raise serializers.ValidationError(
-                'Change an invoice\'s status with its actions (send, record payment), not by editing it.')
+                'Change an invoice\'s status with its actions (send, record payment, void), not by editing it.')
         return value
+
+    def _locked_error(self, message):
+        err = serializers.ValidationError({'error': message, 'code': 'invoice_locked'})
+        return err
 
     def validate(self, attrs):
         attrs = super().validate(attrs)
+        inst = self.instance
+        raw = getattr(self, 'initial_data', {}) or {}
+        if inst is not None and inst.is_locked:
+            changed = {k for k, v in attrs.items() if getattr(inst, k, None) != v}
+            # Totals are read-only (DRF would silently drop them); a client
+            # trying to change one on an issued invoice gets told why.
+            for k in ('subtotal', 'vat_amount', 'tax_amount', 'discount', 'total_amount'):
+                if k in raw and str(raw[k]) not in ('', 'None') and _dec_or_none(raw[k]) != getattr(inst, k):
+                    changed.add(k)
+            if 'lines' in raw or ('line_items' in raw and raw['line_items'] != inst.line_items):
+                changed.add('lines')
+            if inst.is_financed and changed:
+                raise self._locked_error(self.get_lock_reason(inst))
+            if changed - set(self.LOCKED_EDITABLE):
+                raise self._locked_error(
+                    'This invoice has been issued and can\'t be edited. Issue a credit note to correct it.')
+        issue = attrs.get('issue_date') or (inst.issue_date if inst is not None else None)
         due = attrs.get('due_date')
-        if due is not None:
-            inst = self.instance
-            if inst is not None and due != inst.due_date and inst.status in self.DUE_DATE_LOCKED:
-                raise serializers.ValidationError(
-                    {'due_date': f'The due date of a {inst.get_status_display().lower()} invoice can\'t be changed.'})
-            issue = attrs.get('issue_date') or (inst.issue_date if inst is not None else None)
-            if issue and due < issue:
-                raise serializers.ValidationError({'due_date': 'The due date can\'t be before the issue date.'})
+        if due is not None and issue and due < issue:
+            raise serializers.ValidationError({'due_date': 'The due date can\'t be before the issue date.'})
         return attrs
 
+    def _raw_lines(self, company):
+        from core.services.invoice_lines import legacy_payload_to_lines
+        raw = getattr(self, 'initial_data', {}) or {}
+        if 'lines' in raw:
+            lines = raw.get('lines')
+            if isinstance(lines, str):
+                try:
+                    lines = json.loads(lines)
+                except ValueError:
+                    raise serializers.ValidationError({'lines': 'Not valid JSON.'})
+            return lines
+        if any(k in raw for k in ('subtotal', 'line_items')):
+            return legacy_payload_to_lines(raw, company)
+        return None
+
+    def _apply_terms(self, validated_data, customer, instance=None):
+        from core.services.invoice_lines import terms_days_for, due_date_for, customer_terms
+        terms = validated_data.get('payment_terms') or (instance.payment_terms if instance else None) \
+            or customer_terms(customer)
+        validated_data['payment_terms'] = terms
+        validated_data['terms_days'] = terms_days_for(terms)
+        issue = validated_data.get('issue_date') or (instance.issue_date if instance else None)
+        if issue is None:
+            from datetime import date as _date
+            issue = _date.today()
+            validated_data['issue_date'] = issue
+        if 'due_date' not in validated_data or validated_data['due_date'] is None:
+            if instance is None or 'payment_terms' in validated_data or 'issue_date' in validated_data:
+                validated_data['due_date'] = due_date_for(issue, terms)
+
     def update(self, instance, validated_data):
+        from django.db import transaction
+        from core.services.invoice_lines import apply_lines, LineError
         old_due = instance.due_date
-        instance = super().update(instance, validated_data)
+        if instance.status == 'DRAFT':
+            self._apply_terms(validated_data, validated_data.get('customer') or instance.customer, instance)
+        with transaction.atomic():
+            instance = super().update(instance, validated_data)
+            if instance.status == 'DRAFT':
+                raw_lines = self._raw_lines(instance.company)
+                try:
+                    if raw_lines is not None:
+                        apply_lines(instance, raw_lines)
+                    elif 'issue_date' in validated_data and instance.totals_source == 'LINES' and instance.lines.exists():
+                        # Re-rate on the new date (a VAT rate change is dated).
+                        apply_lines(instance, [self._line_as_raw(l) for l in instance.lines.all()])
+                except LineError as e:
+                    raise serializers.ValidationError({'lines': str(e)})
         if instance.due_date != old_due:
             # The due date drives overdue status, reminders and fast-pay, so a
             # change is recorded with both dates (the save signal only notes
@@ -752,23 +902,121 @@ class InvoiceSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer
                 pass
         return instance
 
+    @staticmethod
+    def _line_as_raw(line):
+        return {'description': line.description, 'quantity': line.quantity, 'unit_price': line.unit_price,
+                'discount_amount': line.discount_amount if line.discount_percent is None else None,
+                'discount_percent': line.discount_percent, 'tax_code': line.tax_code, 'load': line.load_id}
+
     def create(self, validated_data):
-        if not validated_data.get('invoice_number'):
-            from core.services.invoicing import _unique_invoice_number
-            validated_data['invoice_number'] = _unique_invoice_number()
-        # Invoice.save() recomputes balance from total_amount - paid_amount, so
-        # this only has to satisfy the not-null column.
-        if validated_data.get('balance') is None:
-            validated_data['balance'] = validated_data.get('total_amount') or 0
-        # Created as sent: stamp when, as mark_as_sent() does.
-        if validated_data.get('status') == 'SENT' and not validated_data.get('sent_at'):
-            from django.utils import timezone
-            validated_data['sent_at'] = timezone.now()
-        return super().create(validated_data)
+        from django.db import transaction
+        from django.utils import timezone
+        from core.services.invoice_lines import apply_lines, LineError
+        from core.services.numbering import provisional_number
+
+        company = validated_data.get('company')
+        if company is None:
+            request = self.context.get('request')
+            company = getattr(getattr(request, 'user', None), 'company', None)
+            validated_data['company'] = company
+        raw_lines = self._raw_lines(company)
+        if not raw_lines:
+            raise serializers.ValidationError({'lines': 'Add at least one line.'})
+        wanted_status = validated_data.pop('status', 'DRAFT') or 'DRAFT'
+        self._apply_terms(validated_data, validated_data['customer'])
+        validated_data.update(invoice_number=provisional_number(), status='DRAFT',
+                              subtotal=0, vat_amount=0, total_amount=0, balance=0)
+        with transaction.atomic():
+            invoice = Invoice(**validated_data)
+            try:
+                apply_lines(invoice, raw_lines)
+            except LineError as e:
+                raise serializers.ValidationError({'lines': str(e)})
+            if wanted_status == 'SENT':
+                invoice.status = 'SENT'
+                invoice.sent_at = timezone.now()
+                invoice.save()
+        return invoice
 
     def get_delivery_fee_charge(self, obj):
         charge = getattr(obj, 'delivery_fee_charge', None)
         return DeliveryFeeChargeSerializer(charge).data if charge else None
+
+
+class CreditNoteLineSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CreditNoteLine
+        fields = ['id', 'position', 'description', 'quantity', 'unit_price', 'tax_code', 'tax_rate',
+                  'net_amount', 'vat_amount', 'total_amount', 'invoice_line']
+        read_only_fields = fields
+
+
+class CreditNoteSerializer(serializers.ModelSerializer):
+    """Read shape; creation goes through core.services.credit_notes."""
+    lines = CreditNoteLineSerializer(many=True, read_only=True)
+    invoice_number = serializers.CharField(source='invoice.invoice_number', read_only=True)
+    customer_name = serializers.CharField(source='customer.name', read_only=True)
+
+    class Meta:
+        model = CreditNote
+        fields = ['id', 'credit_note_number', 'invoice', 'invoice_number', 'customer', 'customer_name',
+                  'issue_date', 'reason', 'status', 'lines', 'subtotal', 'vat_amount', 'total_amount',
+                  'source', 'external_id', 'created_at', 'voided_at', 'void_reason']
+        read_only_fields = fields
+
+
+class SupplierSerializer(serializers.ModelSerializer):
+    expense_count = serializers.IntegerField(read_only=True, required=False)
+
+    class Meta:
+        model = Supplier
+        fields = ['id', 'name', 'vat_number', 'registration_number', 'email', 'phone', 'category',
+                  'is_active', 'expense_count', 'source', 'external_id', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'expense_count', 'source', 'external_id', 'created_at', 'updated_at']
+
+    def validate_name(self, value):
+        from core.services.identity import legal_name_key
+        value = (value or '').strip()
+        if not value:
+            raise serializers.ValidationError('A supplier name is required.')
+        key = legal_name_key(value)
+        company_id = self.instance.company_id if self.instance else getattr(
+            getattr(self.context.get('request'), 'user', None), 'company_id', None)
+        dupe = Supplier.objects.filter(company_id=company_id, name_key=key)
+        if self.instance:
+            dupe = dupe.exclude(pk=self.instance.pk)
+        if dupe.exists():
+            raise serializers.ValidationError('A supplier with this name already exists.')
+        return value
+
+    def validate_vat_number(self, value):
+        return _validate_identifier(value, 'vat')
+
+    def validate_registration_number(self, value):
+        return _validate_identifier(value, 'reg')
+
+    def validate_category(self, value):
+        if value and value not in dict(Expense.CATEGORY_CHOICES):
+            raise serializers.ValidationError('Unknown category.')
+        return value
+
+
+def _dec_or_none(value):
+    from decimal import Decimal, InvalidOperation
+    try:
+        return Decimal(str(value)).quantize(Decimal('0.01'))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+
+
+def _validate_identifier(value, kind, country='ZA'):
+    from core.services.identity import normalise_vat_number, normalise_registration_number
+    try:
+        if kind == 'vat':
+            return normalise_vat_number(value, country)
+        return normalise_registration_number(value, country)
+    except ValueError as e:
+        raise serializers.ValidationError(str(e))
 
 
 # Payment Serializer
@@ -783,20 +1031,76 @@ class PaymentSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer
         # 'company' read-only (2026-09): it was writable on PATCH. Create
         # paths (services.payments.record_payment, CompanyFilterMixin) set it
         # server-side via save(company=).
-        read_only_fields = ['id', 'company', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'company', 'created_at', 'updated_at', 'source', 'external_id']
 
 
 # Expense Serializer
-class ExpenseSerializer(serializers.ModelSerializer):
+class ExpenseSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
+    """Expenses. `amount` is GROSS (incl. VAT, as on the receipt);
+    `vat_amount` is the input VAT inside it; `net_amount` = amount - VAT is
+    the cost every report uses. If vat_amount isn't sent it is derived from
+    the tax code (15/115 of the gross for STANDARD)."""
+    company_scoped_relations = {
+        'supplier': 'company_id', 'load': 'company_id', 'trip': 'load__company_id',
+    }
     vehicle_info = serializers.CharField(source='vehicle.__str__', read_only=True)
     driver_name = serializers.CharField(source='driver.user.username', read_only=True)
     created_by_name = serializers.CharField(source='created_by.username', read_only=True)
+    supplier_name = serializers.CharField(source='supplier.name', read_only=True)
+    net_amount = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
 
     class Meta:
         model = Expense
         fields = '__all__'
-        read_only_fields = ['id', 'created_at', 'updated_at', 'created_by']
-        extra_kwargs = {'expense_number': {'required': False}}
+        read_only_fields = ['id', 'created_at', 'updated_at', 'created_by', 'company']
+        extra_kwargs = {'expense_number': {'required': False},
+                        'tax_code': {'required': False},
+                        'vat_amount': {'required': False}}
+
+    def _company(self):
+        if self.instance is not None:
+            return self.instance.company
+        request = self.context.get('request')
+        return getattr(getattr(request, 'user', None), 'company', None)
+
+    def validate(self, attrs):
+        from core import tax_codes
+        from core.services.invoice_lines import default_tax_code
+        attrs = super().validate(attrs)
+        inst = self.instance
+        company = self._company()
+        amount = attrs.get('amount', inst.amount if inst else None)
+        supplier = attrs.get('supplier', inst.supplier if inst else None)
+        category = attrs.get('category', inst.category if inst else None)
+        code = attrs.get('tax_code')
+        if code is None and inst is None:
+            if company is not None and not getattr(company, 'vat_registered', True):
+                code = tax_codes.NO_VAT  # a non-vendor can't claim input VAT
+            elif supplier is not None and not supplier.vat_number:
+                code = tax_codes.NO_VAT  # no VAT number, no valid tax invoice
+            elif category == 'FUEL':
+                code = tax_codes.ZERO_RATED  # diesel and petrol are zero-rated (s11(1)(k))
+            else:
+                code = default_tax_code(company)
+            attrs['tax_code'] = code
+        code = attrs.get('tax_code', inst.tax_code if inst else tax_codes.NO_VAT)
+        if company is not None and not getattr(company, 'vat_registered', True) and code != tax_codes.NO_VAT:
+            raise serializers.ValidationError({'tax_code': 'This company is not VAT registered, so no input VAT can be claimed.'})
+        if amount is not None:
+            if 'vat_amount' in attrs and attrs['vat_amount'] is not None:
+                vat = attrs['vat_amount']
+                if code != tax_codes.STANDARD and vat != 0:
+                    raise serializers.ValidationError({'vat_amount': f'{code} expenses carry no VAT.'})
+            elif 'amount' in attrs or 'tax_code' in attrs or inst is None:
+                vat = tax_codes.vat_fraction_of_gross(amount, code)
+                attrs['vat_amount'] = vat
+            else:
+                vat = inst.vat_amount
+            if vat < 0 or vat > amount:
+                raise serializers.ValidationError({'vat_amount': 'VAT must be between zero and the amount.'})
+        if supplier is not None and not attrs.get('vendor') and (inst is None or not inst.vendor):
+            attrs['vendor'] = supplier.name[:200]
+        return attrs
 
     def create(self, validated_data):
         # Auto-generate a unique expense_number if the client didn't supply one.

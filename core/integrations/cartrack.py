@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
-from core.utils.crypto import decrypt_secret
+from core.utils.crypto import DecryptionError, decrypt_secret
 from .fleet import FleetIntegrationBase
 
 logger = logging.getLogger(__name__)
@@ -42,10 +42,21 @@ class CartrackClient:
 
     @classmethod
     def for_company(cls, company) -> 'CartrackClient':
-        """Build a client from a Company's stored (encrypted) Cartrack credentials."""
+        """Build a client from a Company's stored (encrypted) Cartrack credentials.
+
+        Credentials the current key can't decrypt (key rotated without running
+        reencrypt_fields) are treated as a broken connection: logged, and raised
+        as CartrackAPIError so views answer "reconnect" and sync tasks skip.
+        """
+        try:
+            password = decrypt_secret(company.cartrack_password)
+        except DecryptionError:
+            logger.error('Cartrack credentials for company %s cannot be decrypted; '
+                         'treating integration as disconnected', getattr(company, 'id', None))
+            raise CartrackAPIError('Stored Cartrack credentials are unreadable; reconnect Cartrack')
         return cls(
             username=company.cartrack_username or '',
-            password=decrypt_secret(company.cartrack_password),
+            password=password,
             base_url=company.cartrack_base_url or '',
         )
 

@@ -191,6 +191,7 @@ def send_weekly_summaries():
     from core.models import Company, Load, Quote, Invoice, Payment, User
     from core.services.notification_prefs import should_notify
     from core.services.email_service import send_weekly_summary_email
+    from core.services import accounting_reports
 
     now = timezone.now()
     week_end = (now - timedelta(days=now.weekday())).replace(
@@ -222,8 +223,11 @@ def send_weekly_summaries():
             'quotes_accepted': Quote.objects.filter(
                 company=company, accepted_at__gte=week_start,
                 accepted_at__lt=week_end).count(),
-            'invoiced_total': Invoice.objects.filter(company=company, **in_week)
-                .aggregate(s=Sum('total_amount'))['s'] or 0,
+            # Invoiced = accrual revenue EXCLUDING VAT (issued invoices less
+            # credit notes, by issue date; drafts/void never count). Was: every
+            # invoice created this week, drafts included, incl. VAT.
+            'invoiced_total': accounting_reports.sales(
+                company, week_start.date(), (week_end - timedelta(days=1)).date())['revenue_excl_vat'],
             'collected_total': Payment.objects.filter(company=company, **in_week)
                 .aggregate(s=Sum('amount'))['s'] or 0,
         }

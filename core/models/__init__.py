@@ -41,8 +41,14 @@ from .location_search_history import LocationSearchHistory
 from .ml_model_version import MLModelVersion, MLUserRetrainQueue
 from .ai_quote_price_analysis import AIQuotePriceAnalysis
 from .verified_rate import VerifiedRate
+from .invoice_line import InvoiceLine
+from .credit_note import CreditNote, CreditNoteLine
+from .document_sequence import DocumentSequence
+from .supplier import Supplier
+from .debtor_identity import DebtorIdentity
 
 __all__ = [
+    'InvoiceLine', 'CreditNote', 'CreditNoteLine', 'DocumentSequence', 'Supplier', 'DebtorIdentity',
     'User',
     'UserSession',
     'Vehicle',
