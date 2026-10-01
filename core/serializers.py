@@ -505,11 +505,31 @@ class LoadSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
     driver_name = serializers.SerializerMethodField()
     vehicle_info = serializers.SerializerMethodField()
     quote_number = serializers.SerializerMethodField()
+    # Estimated fuel: the quote's fuel line, copied to fuel_surcharge by
+    # convert_to_load. Actual fuel: approved FUEL expenses logged against the
+    # load's trips. None when there's no figure, never a misleading 0.
+    fuel_cost_estimated = serializers.SerializerMethodField()
+    fuel_cost_actual = serializers.SerializerMethodField()
 
     class Meta:
         model = Load
         fields = '__all__'
         read_only_fields = ['id', 'created_at', 'updated_at', 'created_by', 'actual_delivered_at', 'company']
+
+    def get_fuel_cost_estimated(self, obj):
+        value = obj.fuel_surcharge
+        return float(value) if value else None
+
+    def get_fuel_cost_actual(self, obj):
+        if hasattr(obj, 'fuel_actual_total'):
+            total = obj.fuel_actual_total
+        else:
+            from django.db.models import Sum
+            from core.models import Expense
+            total = Expense.objects.filter(
+                trip__load=obj, category='FUEL', status='APPROVED',
+            ).aggregate(t=Sum('amount'))['t']
+        return float(total) if total is not None else None
 
     def get_driver_name(self, obj):
         if not obj.driver:
@@ -558,6 +578,10 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
     quote_number = serializers.CharField(required=False, allow_blank=True)
     vehicle_display = serializers.SerializerMethodField()
     driver_display = serializers.SerializerMethodField()
+    # The load this quote was converted into (convert_to_load). The load is
+    # the source of truth for "converted": the quote itself stays ACCEPTED.
+    booked_load = serializers.SerializerMethodField()
+    converted = serializers.SerializerMethodField()
 
     class Meta:
         model = Quote
@@ -565,6 +589,19 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
         # 'company' read-only (2026-09): a PATCH could move a quote into
         # another tenant. Create paths set it server-side via save(company=).
         read_only_fields = ['id', 'company', 'created_at', 'updated_at', 'created_by']
+
+    def _first_load(self, obj):
+        # .all() so a prefetch_related('loads') on the viewset serves it.
+        loads = list(obj.loads.all())
+        return min(loads, key=lambda l: l.pk) if loads else None
+
+    def get_booked_load(self, obj):
+        load = self._first_load(obj)
+        return {'id': load.id, 'load_number': load.load_number, 'status': load.status} if load else None
+
+    def get_converted(self, obj):
+        # Legacy IT/COMPLETED rows predate convert_to_load and count as converted.
+        return self._first_load(obj) is not None or obj.status in ('IT', 'COMPLETED')
 
     def validate(self, attrs):
         # Safety net behind the frontend's own capacity check (QuoteBuilder's
@@ -631,18 +668,66 @@ class InvoiceSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer
     # (drafts, pre-this-feature invoices) — getattr's default swallows that.
     delivery_fee_charge = serializers.SerializerMethodField()
 
+    # Statuses a client may create an invoice in ("Save as" on New invoice).
+    # Every later change goes through an action (send, record payment), so a
+    # PATCH can't mark an invoice paid with no payment behind it.
+    CREATE_STATUSES = ('DRAFT', 'SENT')
+    # The due date stays editable until the invoice is settled.
+    DUE_DATE_LOCKED = ('PAID', 'CANCELLED')
+
     class Meta:
         model = Invoice
         fields = '__all__'
-        read_only_fields = ['id', 'company', 'created_at', 'updated_at']
-        # Both are derivable server-side, so a client shouldn't have to send
-        # them. invoice_number especially: it's unique, and letting each client
-        # invent one (the web app used the last 6 digits of Date.now()) risks a
-        # collision that surfaces as an opaque 400.
+        # Money and payment state are server-derived: paid_amount/balance/
+        # paid_at move only through record_payment (services.payments), so the
+        # payment ledger and every revenue figure stay in step.
+        read_only_fields = ['id', 'company', 'created_at', 'updated_at',
+                            'paid_amount', 'balance', 'paid_at', 'sent_at', 'viewed_at']
+        # invoice_number is derivable server-side, so a client shouldn't have
+        # to send it: it's unique, and letting each client invent one (the web
+        # app used the last 6 digits of Date.now()) risks a collision that
+        # surfaces as an opaque 400.
         extra_kwargs = {
             'invoice_number': {'required': False},
-            'balance': {'required': False},
         }
+
+    def validate_status(self, value):
+        if self.instance is None:
+            if value not in self.CREATE_STATUSES:
+                raise serializers.ValidationError('A new invoice is saved as a draft or sent.')
+        elif value != self.instance.status:
+            raise serializers.ValidationError(
+                'Change an invoice\'s status with its actions (send, record payment), not by editing it.')
+        return value
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        due = attrs.get('due_date')
+        if due is not None:
+            inst = self.instance
+            if inst is not None and due != inst.due_date and inst.status in self.DUE_DATE_LOCKED:
+                raise serializers.ValidationError(
+                    {'due_date': f'The due date of a {inst.get_status_display().lower()} invoice can\'t be changed.'})
+            issue = attrs.get('issue_date') or (inst.issue_date if inst is not None else None)
+            if issue and due < issue:
+                raise serializers.ValidationError({'due_date': 'The due date can\'t be before the issue date.'})
+        return attrs
+
+    def update(self, instance, validated_data):
+        old_due = instance.due_date
+        instance = super().update(instance, validated_data)
+        if instance.due_date != old_due:
+            # The due date drives overdue status, reminders and fast-pay, so a
+            # change is recorded with both dates (the save signal only notes
+            # that the invoice changed).
+            from core.models import AuditLog
+            request = self.context.get('request')
+            try:
+                AuditLog.log_update(instance, user=getattr(request, 'user', None),
+                                    changes={'due_date': [old_due.isoformat(), instance.due_date.isoformat()]})
+            except Exception:
+                pass
+        return instance
 
     def create(self, validated_data):
         if not validated_data.get('invoice_number'):
@@ -652,6 +737,10 @@ class InvoiceSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer
         # this only has to satisfy the not-null column.
         if validated_data.get('balance') is None:
             validated_data['balance'] = validated_data.get('total_amount') or 0
+        # Created as sent: stamp when, as mark_as_sent() does.
+        if validated_data.get('status') == 'SENT' and not validated_data.get('sent_at'):
+            from django.utils import timezone
+            validated_data['sent_at'] = timezone.now()
         return super().create(validated_data)
 
     def get_delivery_fee_charge(self, obj):
@@ -743,7 +832,7 @@ class CompanySerializer(serializers.ModelSerializer):
             'industry', 'website', 'description', 'logo_url',
             'address', 'contact',
             'default_base_rate_per_km', 'default_sla_hours',
-            'default_quote_validity_days', 'allow_cross_border',
+            'default_quote_validity_days', 'allow_cross_border', 'auto_email_invoices',
             'cross_border_crossings_per_year',
             'fuel_zone',
             'fuel_price_per_litre', 'fuel_price_petrol', 'fuel_price_electric', 'fuel_price_hybrid',

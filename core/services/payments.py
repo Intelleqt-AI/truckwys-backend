@@ -9,6 +9,8 @@ from decimal import Decimal, InvalidOperation
 from django.db import transaction
 from django.utils import timezone
 
+from core.formatting import format_zar
+
 
 class PaymentError(Exception):
     """Validation failure with a user-friendly message."""
@@ -49,7 +51,7 @@ def record_payment(company, user, data):
 
         if amount > invoice.balance:
             raise PaymentError(
-                f'Payment amount (R {amount}) exceeds invoice balance (R {invoice.balance})'
+                f'Payment amount ({format_zar(amount)}) exceeds invoice balance ({format_zar(invoice.balance)})'
             )
 
         # Fill in what the caller shouldn't have to: customer (from the

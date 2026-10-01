@@ -136,7 +136,7 @@ def _demo_settings_locked(user):
     return bool(company and company.is_demo)
 
 
-from django.db.models import Sum, Count, Q, Avg, F, ExpressionWrapper, DecimalField
+from django.db.models import Sum, Count, Q, Avg, F, ExpressionWrapper, DecimalField, OuterRef, Subquery
 from django.db.models.functions import TruncMonth
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -2353,7 +2353,14 @@ class VehicleLogViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
 
 
 class LoadViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
-    queryset = Load.objects.all()
+    # Actual fuel: approved FUEL expenses on the load's trips (one subquery,
+    # not a query per row). Read by LoadSerializer.fuel_cost_actual.
+    queryset = Load.objects.all().annotate(
+        fuel_actual_total=Subquery(
+            Expense.objects.filter(trip__load=OuterRef('pk'), category='FUEL', status='APPROVED')
+            .values('trip__load').annotate(t=Sum('amount')).values('t')[:1]
+        ),
+    )
     serializer_class = LoadSerializer
     permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
@@ -2595,7 +2602,7 @@ class QuoteFilterSet(django_filters.FilterSet):
 
 
 class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
-    queryset = Quote.objects.all()
+    queryset = Quote.objects.all().prefetch_related('loads')
     serializer_class = QuoteSerializer
     permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]

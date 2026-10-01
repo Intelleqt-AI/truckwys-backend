@@ -136,35 +136,12 @@ class InvoiceFinanceViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.Model
             "additional_recipients": ["email@example.com"]  // optional
         }
         """
+        from core.services.invoicing import email_invoice_to_customer
         invoice = self.get_object()
-
-        # Ensure PDF exists
-        if not invoice.pdf_file:
-            try:
-                pdf_path = InvoicePDFGenerator.generate_pdf(invoice)
-                invoice.pdf_file = pdf_path
-                invoice.save()
-            except Exception as e:
-                return Response(
-                    {'error': f'Failed to generate PDF: {str(e)}'},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )
-
-        # Ensure view token exists before sending (included in email body)
-        if not invoice.view_token:
-            import secrets
-            invoice.view_token = secrets.token_urlsafe(32)
-            invoice.save(update_fields=['view_token'])
-
-        # Send email
         additional_recipients = request.data.get('additional_recipients', [])
 
         try:
-            success = InvoiceEmailService.send_invoice(
-                invoice=invoice,
-                pdf_path=str(invoice.pdf_file),
-                additional_recipients=additional_recipients
-            )
+            success = email_invoice_to_customer(invoice, additional_recipients)
 
             if success:
                 from django.conf import settings as _s
@@ -209,11 +186,30 @@ class InvoiceFinanceViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.Model
 
     @action(detail=True, methods=['post'])
     def mark_paid(self, request, pk=None):
-        """Mark invoice as fully paid."""
+        """Mark invoice as fully paid by recording a payment for its balance.
+
+        Goes through record_payment like every other payment, so the invoice
+        never shows as paid without a payment behind it (the ledgers and
+        revenue are dated by payments). Optional body: payment_date,
+        payment_method (default BANK_TRANSFER), reference_number.
+        """
+        from core.services.payments import record_payment, PaymentError
         invoice = self.get_object()
-        invoice.mark_as_paid()
-        serializer = self.get_serializer(invoice)
-        return Response(serializer.data)
+        if invoice.status == 'PAID' or invoice.balance <= 0:
+            return Response(self.get_serializer(invoice).data)
+        try:
+            record_payment(invoice.company, request.user, {
+                'invoice': invoice.id,
+                'amount': str(invoice.balance),
+                'payment_date': request.data.get('payment_date') or timezone.localdate().isoformat(),
+                'payment_method': request.data.get('payment_method') or 'BANK_TRANSFER',
+                'reference_number': request.data.get('reference_number', ''),
+                'notes': request.data.get('notes') or 'Marked as paid',
+            })
+        except PaymentError as e:
+            return Response({'error': str(e)}, status=e.status_code)
+        invoice.refresh_from_db()
+        return Response(self.get_serializer(invoice).data)
 
     @action(detail=True, methods=['post'])
     def send_reminder(self, request, pk=None):

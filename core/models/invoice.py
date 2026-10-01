@@ -241,5 +241,8 @@ class Invoice(models.Model):
             self.status = 'PARTIALLY_PAID'
         elif self.is_overdue and self.status not in ['PAID', 'CANCELLED', 'DISPUTED']:
             self.status = 'OVERDUE'
+        elif self.status == 'OVERDUE' and not self.is_overdue:
+            # Due date moved into the future: no longer overdue.
+            self.status = 'VIEWED' if self.viewed_at else 'SENT'
 
         super().save(*args, **kwargs)
