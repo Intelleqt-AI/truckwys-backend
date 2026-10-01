@@ -168,6 +168,8 @@ Documented differences (by design, not rounding):
 
 All under `/api/v1/integrations/accounting/`; errors are `{"error": "...", "code": "..."}`.
 
+QuickBooks Online uses the same endpoints with slug `quickbooks` (`/integrations/quickbooks/callback/`, `/integrations/quickbooks/webhooks/`); its differences (items, `provider_settings`, contact search by kind) are in `QUICKBOOKS.md` §7.
+
 | Method | Path | Who | Purpose |
 |---|---|---|---|
 | GET | `providers/` | any | Provider cards (`configured`, `availability`) + current connection |

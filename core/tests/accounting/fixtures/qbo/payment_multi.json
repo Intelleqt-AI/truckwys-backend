@@ -1,0 +1,74 @@
+{
+  "Payment": {
+    "CustomerRef": {
+      "value": "58",
+      "name": "Acme Mining (Pty) Ltd"
+    },
+    "DepositToAccountRef": {
+      "value": "35"
+    },
+    "TotalAmt": 6000.0,
+    "UnappliedAmt": 100.0,
+    "ProcessPayment": false,
+    "domain": "QBO",
+    "sparse": false,
+    "Id": "201",
+    "SyncToken": "1",
+    "MetaData": {
+      "CreateTime": "2026-09-12T08:00:00-07:00",
+      "LastUpdatedTime": "2026-09-12T08:00:00-07:00"
+    },
+    "TxnDate": "2026-09-12",
+    "CurrencyRef": {
+      "value": "ZAR",
+      "name": "South African Rand"
+    },
+    "PaymentRefNum": "EFT 991",
+    "Line": [
+      {
+        "Amount": 4000.0,
+        "LinkedTxn": [
+          {
+            "TxnId": "130",
+            "TxnType": "Invoice"
+          }
+        ],
+        "LineEx": {
+          "any": [
+            {
+              "name": "{http://schema.intuit.com/finance/v3}NameValue",
+              "declaredType": "com.intuit.schema.finance.v3.NameValue",
+              "scope": "javax.xml.bind.JAXBElement$GlobalScope",
+              "value": {
+                "Name": "txnOpenBalance",
+                "Value": "25578.50"
+              },
+              "nil": false,
+              "globalScope": true,
+              "typeSubstituted": false
+            }
+          ]
+        }
+      },
+      {
+        "Amount": 2015.0,
+        "LinkedTxn": [
+          {
+            "TxnId": "140",
+            "TxnType": "Invoice"
+          }
+        ]
+      },
+      {
+        "Amount": 115.0,
+        "LinkedTxn": [
+          {
+            "TxnId": "77",
+            "TxnType": "CreditMemo"
+          }
+        ]
+      }
+    ]
+  },
+  "time": "2026-09-30T08:14:31.112-07:00"
+}

@@ -1,0 +1,68 @@
+{
+  "Preferences": {
+    "AccountingInfoPrefs": {
+      "TrackDepartments": true,
+      "DepartmentTerminology": "Location",
+      "ClassTrackingPerTxn": false,
+      "ClassTrackingPerTxnLine": true,
+      "CustomerTerminology": "Customers",
+      "BookCloseDate": "2026-02-28"
+    },
+    "ProductAndServicesPrefs": {
+      "ForSales": true,
+      "ForPurchase": true,
+      "QuantityWithPriceAndRate": true,
+      "QuantityOnHand": false
+    },
+    "SalesFormsPrefs": {
+      "CustomField": [],
+      "AllowDeposit": true,
+      "AllowDiscount": true,
+      "DefaultDiscountAccount": "86",
+      "AllowEstimates": true,
+      "ETransactionEnabledStatus": "NotApplicable",
+      "IPNSupportEnabled": false,
+      "AllowServiceDate": false,
+      "AllowShipping": false,
+      "DefaultTerms": {
+        "value": "3"
+      },
+      "CustomTxnNumbers": true,
+      "UsingProgressInvoicing": false
+    },
+    "VendorAndPurchasesPrefs": {
+      "TrackingByCustomer": true,
+      "BillableExpenseTracking": true
+    },
+    "TimeTrackingPrefs": {
+      "UseServices": true,
+      "BillCustomers": true
+    },
+    "TaxPrefs": {
+      "UsingSalesTax": true,
+      "PartnerTaxEnabled": true,
+      "TaxGroupCodeRef": {
+        "value": "3"
+      }
+    },
+    "CurrencyPrefs": {
+      "MultiCurrencyEnabled": false,
+      "HomeCurrency": {
+        "value": "ZAR"
+      }
+    },
+    "ReportPrefs": {
+      "ReportBasis": "Accrual",
+      "CalcAgingReportFromTxnDate": false
+    },
+    "domain": "QBO",
+    "sparse": false,
+    "Id": "1",
+    "SyncToken": "6",
+    "MetaData": {
+      "CreateTime": "2019-03-01T02:12:43-07:00",
+      "LastUpdatedTime": "2026-09-30T08:14:31.112-07:00"
+    }
+  },
+  "time": "2026-09-30T08:14:31.112-07:00"
+}

@@ -261,6 +261,16 @@ class AccountingAdapter(abc.ABC):
     name: str = ''
     # One contact list for customers and suppliers (Xero) vs separate (QBO).
     shared_contact_list: bool = False
+    # Sales lines post to products/services (QBO Items, account type 'ITEM')
+    # rather than straight to income accounts (Xero).
+    sales_lines_need_item: bool = False
+
+    def sync_blockers(self) -> list[str]:
+        """Provider settings that make syncing unsafe, as messages for the
+        user (e.g. QBO without custom transaction numbers). Read with the
+        other options (core.accounting.mapping.refresh_options); while any is
+        present, nothing is pushed. Default: none."""
+        return []
 
     # --- OAuth (classmethods: no connection exists yet)
     @classmethod

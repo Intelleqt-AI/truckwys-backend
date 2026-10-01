@@ -78,6 +78,7 @@ def blocking_reasons(connection) -> list[str]:
         reasons.append({'PENDING_ORG': 'Choose which organisation to connect',
                         'NEEDS_REAUTH': f'Reconnect {connection.get_provider_display()}',
                         'DISABLED': 'Disconnected'}.get(connection.status, connection.status))
+    reasons += mapping.provider_blockers(connection)
     if not mapping.is_complete(connection):
         reasons.append('Map every revenue type, expense category and tax code')
     if not connection.cutover_date:
@@ -196,6 +197,12 @@ def run_link(link_id) -> str | None:
         _finish(link, 'DEAD', error=f'No push handler for {link.object_type}')
         return 'DEAD'
     try:
+        from core.accounting.mapping import provider_blockers
+        blockers = provider_blockers(connection)
+        if blockers:
+            # A provider setting makes pushing unsafe (e.g. QBO would renumber
+            # our invoices); waits until the setting is fixed and re-read.
+            raise Blocked('; '.join(blockers))
         adapter = get_adapter(connection)
         fn(connection, adapter, link)
     except (Blocked, ContactBlocked) as exc:

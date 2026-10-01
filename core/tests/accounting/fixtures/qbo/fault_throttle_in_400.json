@@ -1,0 +1,19 @@
+{
+  "status": 400,
+  "headers": {
+    "Content-Type": "application/json"
+  },
+  "body": {
+    "Fault": {
+      "Error": [
+        {
+          "Message": "message=ThrottleExceeded; errorCode=003001; statusCode=429",
+          "Detail": "Throttled",
+          "code": "3001"
+        }
+      ],
+      "type": "ThrottleExceeded"
+    },
+    "time": "2026-09-30T08:14:31.112-07:00"
+  }
+}

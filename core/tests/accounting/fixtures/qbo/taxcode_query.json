@@ -1,0 +1,221 @@
+{
+  "QueryResponse": {
+    "TaxCode": [
+      {
+        "Name": "15.0% S",
+        "Description": "15.0% S",
+        "Active": true,
+        "Hidden": false,
+        "Taxable": true,
+        "TaxGroup": false,
+        "SalesTaxRateList": {
+          "TaxRateDetail": [
+            {
+              "TaxRateRef": {
+                "value": "1",
+                "name": ""
+              },
+              "TaxTypeApplicable": "TaxOnAmount",
+              "TaxOrder": 0
+            }
+          ]
+        },
+        "PurchaseTaxRateList": {
+          "TaxRateDetail": [
+            {
+              "TaxRateRef": {
+                "value": "2",
+                "name": ""
+              },
+              "TaxTypeApplicable": "TaxOnAmount",
+              "TaxOrder": 0
+            }
+          ]
+        },
+        "domain": "QBO",
+        "sparse": false,
+        "Id": "3",
+        "SyncToken": "0",
+        "MetaData": {
+          "CreateTime": "2019-03-01T02:12:46-07:00",
+          "LastUpdatedTime": "2019-03-01T02:12:46-07:00"
+        }
+      },
+      {
+        "Name": "0.0% Z",
+        "Description": "0.0% Z",
+        "Active": true,
+        "Hidden": false,
+        "Taxable": true,
+        "TaxGroup": false,
+        "SalesTaxRateList": {
+          "TaxRateDetail": [
+            {
+              "TaxRateRef": {
+                "value": "3",
+                "name": ""
+              },
+              "TaxTypeApplicable": "TaxOnAmount",
+              "TaxOrder": 0
+            }
+          ]
+        },
+        "PurchaseTaxRateList": {
+          "TaxRateDetail": [
+            {
+              "TaxRateRef": {
+                "value": "4",
+                "name": ""
+              },
+              "TaxTypeApplicable": "TaxOnAmount",
+              "TaxOrder": 0
+            }
+          ]
+        },
+        "domain": "QBO",
+        "sparse": false,
+        "Id": "4",
+        "SyncToken": "0",
+        "MetaData": {
+          "CreateTime": "2019-03-01T02:12:46-07:00",
+          "LastUpdatedTime": "2019-03-01T02:12:46-07:00"
+        }
+      },
+      {
+        "Name": "Exempt",
+        "Description": "Exempt",
+        "Active": true,
+        "Hidden": false,
+        "Taxable": true,
+        "TaxGroup": false,
+        "SalesTaxRateList": {
+          "TaxRateDetail": [
+            {
+              "TaxRateRef": {
+                "value": "5",
+                "name": ""
+              },
+              "TaxTypeApplicable": "TaxOnAmount",
+              "TaxOrder": 0
+            }
+          ]
+        },
+        "PurchaseTaxRateList": {
+          "TaxRateDetail": [
+            {
+              "TaxRateRef": {
+                "value": "6",
+                "name": ""
+              },
+              "TaxTypeApplicable": "TaxOnAmount",
+              "TaxOrder": 0
+            }
+          ]
+        },
+        "domain": "QBO",
+        "sparse": false,
+        "Id": "5",
+        "SyncToken": "0",
+        "MetaData": {
+          "CreateTime": "2019-03-01T02:12:46-07:00",
+          "LastUpdatedTime": "2019-03-01T02:12:46-07:00"
+        }
+      },
+      {
+        "Name": "15.0% CG",
+        "Description": "15.0% CG",
+        "Active": true,
+        "Hidden": false,
+        "Taxable": true,
+        "TaxGroup": false,
+        "SalesTaxRateList": {
+          "TaxRateDetail": []
+        },
+        "PurchaseTaxRateList": {
+          "TaxRateDetail": [
+            {
+              "TaxRateRef": {
+                "value": "9",
+                "name": ""
+              },
+              "TaxTypeApplicable": "TaxOnAmount",
+              "TaxOrder": 0
+            }
+          ]
+        },
+        "domain": "QBO",
+        "sparse": false,
+        "Id": "7",
+        "SyncToken": "0",
+        "MetaData": {
+          "CreateTime": "2019-03-01T02:12:46-07:00",
+          "LastUpdatedTime": "2019-03-01T02:12:46-07:00"
+        }
+      },
+      {
+        "Name": "Out of scope",
+        "Description": "Not subject to VAT",
+        "Active": true,
+        "Hidden": false,
+        "Taxable": false,
+        "TaxGroup": false,
+        "SalesTaxRateList": {
+          "TaxRateDetail": []
+        },
+        "PurchaseTaxRateList": {
+          "TaxRateDetail": []
+        },
+        "domain": "QBO",
+        "sparse": false,
+        "Id": "8",
+        "SyncToken": "0",
+        "MetaData": {
+          "CreateTime": "2019-03-01T02:12:46-07:00",
+          "LastUpdatedTime": "2019-03-01T02:12:46-07:00"
+        }
+      },
+      {
+        "Name": "Group 15%",
+        "Description": "Group 15%",
+        "Active": true,
+        "Hidden": false,
+        "Taxable": true,
+        "TaxGroup": false,
+        "SalesTaxRateList": {
+          "TaxRateDetail": [
+            {
+              "TaxRateRef": {
+                "value": "10",
+                "name": ""
+              },
+              "TaxTypeApplicable": "TaxOnAmount",
+              "TaxOrder": 0
+            },
+            {
+              "TaxRateRef": {
+                "value": "11",
+                "name": ""
+              },
+              "TaxTypeApplicable": "TaxOnAmount",
+              "TaxOrder": 0
+            }
+          ]
+        },
+        "PurchaseTaxRateList": {
+          "TaxRateDetail": []
+        },
+        "domain": "QBO",
+        "sparse": false,
+        "Id": "12",
+        "SyncToken": "0",
+        "MetaData": {
+          "CreateTime": "2019-03-01T02:12:46-07:00",
+          "LastUpdatedTime": "2019-03-01T02:12:46-07:00"
+        }
+      }
+    ],
+    "startPosition": 1,
+    "maxResults": 6
+  },
+  "time": "2026-09-30T08:14:31.112-07:00"
+}

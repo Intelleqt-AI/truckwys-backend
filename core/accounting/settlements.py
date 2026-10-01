@@ -202,7 +202,10 @@ def import_foreign_credit_note(connection, invoice, settlement, *, adapter=None,
         connection=connection, object_type='CREDIT_NOTE', local_id=cn.pk,
         defaults={'company_id': connection.company_id, 'provider': connection.provider,
                   'external_id': settlement.source_id, 'external_number': settlement.source_number,
-                  'status': 'SYNCED', 'last_synced_at': timezone.now(), 'meta': {'imported': True}})
+                  'status': 'SYNCED', 'last_synced_at': timezone.now(),
+                  # 'allocated' as for pushed credit notes, so reconciliation
+                  # counts it as credit (not money) on the invoice.
+                  'meta': {'imported': True, 'allocated': str(allocated_here)}})
     log_event(connection, 'pull_credit_notes', f'Imported {settlement.source_number} as {cn.credit_note_number}',
               object_type='CREDIT_NOTE', local_id=cn.pk, label=cn.credit_note_number)
     return True

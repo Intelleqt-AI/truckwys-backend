@@ -121,6 +121,9 @@ def start(connection, cutover_raw, user=None) -> dict:
     if existing and cutover > existing:
         raise BackfillError(f'The cut-over date can only move earlier (it is {existing}); documents from '
                             f'{existing} are already in {connection.get_provider_display()}.', 'invalid_cutover')
+    blockers = mapping.provider_blockers(connection)
+    if blockers:
+        raise BackfillError('; '.join(blockers), 'provider_settings')
     if not mapping.is_complete(connection):
         raise BackfillError('Map every revenue type, expense category and tax code first.', 'mapping_incomplete')
     pv = preview(connection, cutover)

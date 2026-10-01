@@ -54,6 +54,17 @@ XERO_WEBHOOK_KEY = config('XERO_WEBHOOK_KEY', default='')
 # Space-separated; leave unset to use core.accounting.xero.DEFAULT_SCOPES.
 XERO_SCOPES = config('XERO_SCOPES', default='')
 
+# QuickBooks Online (docs/integrations/QUICKBOOKS.md). Keys from the Intuit
+# developer portal: Development keys go with QBO_ENVIRONMENT=sandbox,
+# Production keys with production.
+QBO_CLIENT_ID = config('QBO_CLIENT_ID', default='')
+QBO_CLIENT_SECRET = config('QBO_CLIENT_SECRET', default='')
+QBO_REDIRECT_URI = config('QBO_REDIRECT_URI', default='http://localhost:8000/api/v1/integrations/quickbooks/callback/')
+QBO_ENVIRONMENT = config('QBO_ENVIRONMENT', default='sandbox')   # sandbox | production
+# Webhooks "Verifier Token" (intuit-signature header).
+QBO_WEBHOOK_VERIFIER_TOKEN = config('QBO_WEBHOOK_VERIFIER_TOKEN', default='')
+QBO_MINOR_VERSION = config('QBO_MINOR_VERSION', default='75')
+
 # Accounting integrations (core.accounting; docs/integrations/). Every
 # provider HTTP call has a (connect, read) timeout; nothing waits forever.
 ACCOUNTING_HTTP_TIMEOUT = (
