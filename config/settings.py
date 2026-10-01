@@ -732,6 +732,34 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'core.tasks.refresh_verified_rates',
         'schedule': crontab(day_of_month='2', hour='5', minute='30'),
     },
+    # Fast Pay (Capital) book automation (core.capital.jobs). Each is a fast
+    # no-op until a funder has lines or ledger rows.
+    # Release queued advances into freed headroom; expire stale queue items.
+    'capital-process-queue': {
+        'task': 'core.tasks.capital_process_queue',
+        'schedule': crontab(minute='*/15'),
+    },
+    # Limits, concentration, risk index, reconciliation, early warnings,
+    # overdue / paid-awaiting-settlement alerts and the daily book snapshot.
+    'capital-monitor': {
+        'task': 'core.tasks.capital_monitor',
+        'schedule': crontab(minute='20'),
+    },
+    # Rescore debtors with exposure and transporters with a line.
+    'capital-nightly-rescore': {
+        'task': 'core.tasks.capital_nightly_rescore',
+        'schedule': crontab(hour='2', minute='30'),
+    },
+    # Ledger vs cached facility / advance balances; RED alert on any break.
+    'capital-reconcile': {
+        'task': 'core.tasks.capital_reconcile',
+        'schedule': crontab(hour='2', minute='50'),
+    },
+    # Previous month's funder data room (skipped when it already exists).
+    'capital-monthly-data-room': {
+        'task': 'core.tasks.capital_monthly_data_room',
+        'schedule': crontab(day_of_month='1', hour='6', minute='30'),
+    },
 }
 
 # ---------------------------------------------------------------------------

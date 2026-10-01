@@ -11,9 +11,7 @@ cannot change before it reserves.
 """
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
-from datetime import date
 from decimal import Decimal
 
 from django.utils import timezone
@@ -148,7 +146,8 @@ def debtor_cap(st: BookState, debtor_id, grade: str | None, cold_start: bool) ->
         return ZERO, 'hold'
     if row is not None and row.amount is not None:
         return _q(row.amount), 'manual'
-    grade = grade or 'E'
+    if grade is None:  # never scored (e.g. legacy exposure): treat as a new, weak name
+        grade, cold_start = 'D', True
     cap = _q(st.pot * p.dec('debtor_cap_pct', grade))
     source = f'grade {grade} {p.dec("debtor_cap_pct", grade) * 100:.0f}% of pot'
     if grade == 'D':
@@ -169,7 +168,7 @@ def transporter_cap(st: BookState, company_id, line_limit, grade: str | None) ->
     line = _q(line_limit)
     if row is not None and row.amount is not None:
         return min(line, _q(row.amount)), 'manual'
-    grade = grade or 'E'
+    grade = grade or 'D'  # never scored: the new-transporter line
     cap, source = min(line, p.dec('transporter_cap', grade)), f'grade {grade}'
     if line <= cap:
         source = 'line limit'
@@ -285,8 +284,9 @@ def pd_horizon(pd_12m, dtp_days) -> Decimal:
 def _live_face_and_holdback(funder) -> tuple[Decimal, Decimal]:
     from core.models import AdvanceRequest
     face = hold = ZERO
-    for adv in (AdvanceRequest.objects.filter(funder=funder, status__in=('REQUESTED', 'SCORING', 'APPROVED',
-                                                                         'DISBURSED'))
+    from django.db.models import Q
+    for adv in (AdvanceRequest.objects.filter(Q(funder=funder) | Q(facility__funder=funder),
+                                              status__in=('REQUESTED', 'SCORING', 'APPROVED', 'DISBURSED'))
                 .select_related('invoice').only('amount', 'invoice__total_amount', 'invoice__credited_amount')):
         f = _q(adv.invoice.total_amount) - _q(getattr(adv.invoice, 'credited_amount', 0))
         face += f
@@ -457,14 +457,3 @@ def concentration_metrics(funder) -> dict:
     st = load_state(funder)
     risk = risk_summary(st)
     return {'state': st, 'risk': risk}
-
-
-def isfinite(x) -> bool:
-    try:
-        return math.isfinite(float(x))
-    except (TypeError, ValueError):
-        return False
-
-
-def today() -> date:
-    return timezone.localdate()

@@ -14,8 +14,6 @@ CAPITAL_PILOT_COMPANY_IDS) gates transporter requests and application submits.
 """
 from __future__ import annotations
 
-import csv
-import io
 import logging
 from decimal import Decimal, InvalidOperation
 

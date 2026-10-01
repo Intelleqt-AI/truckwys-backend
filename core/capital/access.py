@@ -97,7 +97,9 @@ def can_approve(user, funder) -> tuple[bool, str]:
     if role == APPROVER:
         return True, ''
     if role == STAFF:
-        if funder.staff_may_approve:
+        from core.models import FunderMembership
+        if funder.staff_may_approve or FunderMembership.objects.filter(
+                funder=funder, user=user, role=APPROVER).exists():
             return True, ''
         return False, ('This funder approves every advance itself (Mode A). The capital desk cannot approve '
                        'without a written delegation (Funder.staff_may_approve).')
