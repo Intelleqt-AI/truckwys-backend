@@ -115,7 +115,7 @@ REASONS: dict[str, tuple[str, str, str | None]] = {
     'R-REFER-AMOUNT': ('-', 'Referred: above R{limit}, debtor confirmation needed', 'Large invoices need a quick confirmation with your customer'),
     'R-DECLINE-EL': ('!', 'Expected loss {el}% is above policy', 'This invoice cannot be funded right now'),
     'R-DECLINE-FRAUD': ('!', 'Fraud score {score}', 'This invoice cannot be funded right now'),
-    'R-MODE-A': ('+', 'Sent to the funder for approval', 'Sent for approval. You will be notified when it is approved.'),
+    'R-MODE-A': ('+', 'Needs the funder\'s approval (Mode A)', 'The finance provider approves each advance before it is paid out.'),
     'R-AUTO': ('+', 'Inside the funder-signed auto-approval envelope', 'Approved automatically'),
     'R-FUND': ('+', 'All checks passed', 'All checks passed'),
 }

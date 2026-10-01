@@ -189,14 +189,25 @@ def fraud_checks(invoice, policy=None, *, as_of=None) -> dict:
         dup_numbers += list(others.filter(load_id=load.pk).order_by('id').values_list('invoice_number', flat=True))
     day = _delivery_day(load)
     same_debtor = list(others.filter(_same_debtor_q(invoice))
-                       .select_related('load').only('id', 'invoice_number', 'total_amount', 'issue_date', 'load'))
+                       .select_related('load').only('id', 'invoice_number', 'total_amount', 'issue_date', 'company_id',
+                                                'load__vehicle_id', 'load__actual_delivered_at', 'load__delivery_date'))
     dup_ids = set()
+    soft_same_day = []
     if day is not None:
         for o in same_debtor:
             if o.load_id and o.load_id != (load.pk if load else None) and _within_pct(o.total_amount, total) \
                     and _delivery_day(o.load) == day:
-                dup_numbers.append(o.invoice_number)
-                dup_ids.add(o.pk)
+                # Design key: (debtor, amount, delivery date, vehicle). Another
+                # transporter billing the same delivery, or the same truck twice,
+                # is a duplicate. Two of this transporter's trucks on the same
+                # lane and day is normal freight: a soft flag only.
+                other_tenant = o.company_id != invoice.company_id
+                same_vehicle = bool(load and load.vehicle_id and o.load.vehicle_id == load.vehicle_id)
+                if other_tenant or same_vehicle:
+                    dup_numbers.append(o.invoice_number)
+                    dup_ids.add(o.pk)
+                else:
+                    soft_same_day.append(o.pk)
     if load is not None:
         dup_ids |= set(others.filter(load_id=load.pk).values_list('id', flat=True))
     if dup_numbers:
@@ -207,8 +218,8 @@ def fraud_checks(invoice, policy=None, *, as_of=None) -> dict:
         flags.append(reason('E-DUPLICATE', detail=detail))
 
     # Same amount (+-1%) to the same debtor within 7 days, not already a duplicate
-    same_amount = [o for o in same_debtor if o.pk not in dup_ids and _within_pct(o.total_amount, total)
-                   and abs((o.issue_date - invoice.issue_date).days) <= 7]
+    same_amount = [o for o in same_debtor if o.pk not in dup_ids and (o.pk in soft_same_day or (
+        _within_pct(o.total_amount, total) and abs((o.issue_date - invoice.issue_date).days) <= 7))]
     if same_amount:
         score += W_SAME_AMOUNT
         flags.append(reason('F-SAME-AMOUNT', n=len(same_amount)))

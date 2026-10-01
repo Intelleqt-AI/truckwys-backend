@@ -39,14 +39,20 @@ DROP FUNCTION IF EXISTS capital_ledger_append_only();
 """
 
 
+def _run_raw(schema_editor, sql):
+    # A raw cursor without params, so the '%' in RAISE is not read as a placeholder.
+    with schema_editor.connection.cursor() as cur:
+        cur.execute(sql)
+
+
 def add_trigger(apps, schema_editor):
     if schema_editor.connection.vendor == 'postgresql':
-        schema_editor.execute(TRIGGER_SQL)
+        _run_raw(schema_editor, TRIGGER_SQL)
 
 
 def drop_trigger(apps, schema_editor):
     if schema_editor.connection.vendor == 'postgresql':
-        schema_editor.execute(DROP_TRIGGER_SQL)
+        _run_raw(schema_editor, DROP_TRIGGER_SQL)
 
 
 def forwards(apps, schema_editor):

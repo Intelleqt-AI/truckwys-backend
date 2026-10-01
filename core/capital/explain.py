@@ -27,7 +27,7 @@ def template(ev) -> str:
     parts = [DECISION_LEAD.get(ev.decision, '')]
     if ev.decision in ('FUND', 'PART_FUND', 'REFER') and ev.fundable_amount > 0:
         parts.append(
-            f'The advance is {_r(ev.fundable_amount)} ({ev.advance_rate_pct}% of what is still owed). '
+            f'The advance is {_r(ev.fundable_amount)} ({ev.advance_rate_pct.normalize():f}% of what is still owed). '
             f'The fee is {_r(ev.fee_amount)} plus {_r(ev.fee_vat_amount)} VAT on the platform part, '
             f'so you would receive {_r(ev.net_payout)}. The remaining {_r(ev.holdback_amount)} is paid to you '
             'when your customer pays, less any credit notes.')

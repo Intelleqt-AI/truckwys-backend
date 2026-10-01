@@ -345,12 +345,18 @@ def _price(ev: Evaluation, pair_share: Decimal):
         dtp, basis = D(str(p.params['dtp_prior_days']['UNKNOWN'])), {'prior': 'UNKNOWN'}
     ev.expected_dtp_days = D(str(dtp)).quantize(D('0.1'))
     ev.checks['dtp_basis'] = basis
-    issue = ev.invoice.issue_date or timezone.localdate()
-    ev.expected_payment_date = issue + timedelta(days=int(round(float(ev.expected_dtp_days))))
+    # The advance is outstanding only for the days still to run: expected
+    # days-to-pay from issue, less the invoice's age, at least a week.
+    today = timezone.localdate()
+    issue = ev.invoice.issue_date or today
+    age = max(0, (today - issue).days)
+    remaining = max(D('7'), ev.expected_dtp_days - D(age))
+    ev.fee_breakdown['funding_days'] = str(remaining)
+    ev.expected_payment_date = today + timedelta(days=int(round(float(remaining))))
 
     dg = ev.debtor_score.grade if ev.debtor_score else 'E'
     pd12 = D(str(ev.debtor_score.pd_12m)) if ev.debtor_score else p.representative_pd('E')
-    ev.pd_horizon = bookmod.pd_horizon(pd12, ev.expected_dtp_days)
+    ev.pd_horizon = bookmod.pd_horizon(pd12, remaining)
     lgd = p.dec('lgd', dg)
     el_nonrec = ev.pd_horizon * lgd
     tpd = D(str(ev.transporter_score.pd_12m)) if ev.transporter_score else D('1')
@@ -373,7 +379,7 @@ def _price(ev: Evaluation, pair_share: Decimal):
     ev.invoice_grade = grade
 
     cof = D(str(getattr(ev.funder, 'cost_of_funds_pct', None) or '13.5'))
-    funding_pct = cof * ev.expected_dtp_days / D('365')
+    funding_pct = cof * remaining / D('365')
     opex, platform, margin = p.dec('opex_pct'), p.dec('platform_fee_pct'), p.dec('funder_margin_pct')
     fee_pct = funding_pct + el_pct + opex + platform + margin
     fee_pct = min(max(fee_pct, p.dec('min_fee_pct')), p.dec('max_fee_pct'))

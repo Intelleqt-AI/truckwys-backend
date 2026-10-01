@@ -144,6 +144,27 @@ class FraudCheckTests(TestCase):
         self.assertEqual(res['score'], D('0.150'))
         self.assertIsNotNone(other.pk)
 
+    def test_same_transporter_two_trucks_same_day_is_not_a_duplicate(self):
+        from core.models import Vehicle
+        when = timezone.now() - timedelta(days=2)
+        def truck(n):
+            return Vehicle.objects.create(company=self.co_a, vin=f'VIN-TWIN-{n}', plate=f'TRK{n}GP', make='MAN',
+                                          model='TGS', year=2021, type='Truck', capacity=D('30000.00'),
+                                          fuel_type='Diesel', status='AVAILABLE')
+        v1, v2 = truck(1), truck(2)
+        la = make_load(self.co_a, self.cust_a, delivered=when, vehicle=v1)
+        lb = make_load(self.co_a, self.cust_a, delivered=when, vehicle=v2)
+        mine = make_invoice(self.co_a, self.cust_a, days_ago(1), load=la)
+        make_invoice(self.co_a, self.cust_a, days_ago(1), load=lb, number='INV-A-TWIN')
+        res = v.fraud_checks(mine, self.policy)
+        self.assertFalse(res['duplicate'])
+        self.assertIn('F-SAME-AMOUNT', flag_codes(res))
+        # the same truck billed twice for the same day and amount is a duplicate
+        type(lb).objects.filter(pk=lb.pk).update(vehicle=v1)
+        res = v.fraud_checks(mine, self.policy)
+        self.assertTrue(res['duplicate'])
+        self.assertIn('INV-A-TWIN', res['duplicate_detail'])
+
     def test_second_invoice_on_same_load_is_duplicate(self):
         la = make_load(self.co_a, self.cust_a)
         make_invoice(self.co_a, self.cust_a, days_ago(1), load=la, number='INV-A-1')

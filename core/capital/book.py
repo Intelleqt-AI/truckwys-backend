@@ -381,7 +381,8 @@ def overview(funder, *, policy: Policy | None = None) -> dict:
     for sector, amt in sorted(st.by_sector.items(), key=lambda x: -x[1]):
         cap, _ = sector_cap(st, sector)
         sectors.append({'sector': sector, 'label': sector_label(sector), 'exposure': amt,
-                        'pct_of_pot': (_pct(amt, st.pot) * 100).quantize(D('0.1')), 'cap': cap})
+                        'pct_of_pot': (_pct(amt, st.pot) * 100).quantize(D('0.1')), 'cap': cap,
+                        'cap_pct_of_pot': (_pct(cap, st.pot) * 100).quantize(D('0.1'))})
     grades = {}
     for did, amt in st.by_debtor.items():
         g = (st.debtor_meta.get(did, {}).get('grade') if did else None) or 'Unscored'

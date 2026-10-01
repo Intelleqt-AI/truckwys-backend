@@ -309,7 +309,9 @@ def check_risk_index(funder, st, risk) -> dict:
     band = ri.get('band')
     if band in ('amber', 'red'):
         sev = 'RED' if band == 'red' else 'AMBER'
-        extra = ' New advances are referred to a person.' if band == 'red' else ''
+        refers_all = bool(st.policy.get('red_index_refers_all', False))
+        extra = ((' New advances are referred to a person.' if refers_all else
+                  ' Auto-approval is off; the funder reviews each advance.') if band == 'red' else '')
         r('index', sev, f'Book Risk Index {ri.get("value")} ({band})',
           'Summary of expected loss, concentration and stress.' + extra,
           {'value': ri.get('value'), 'band': band, 'components': ri.get('components')})
