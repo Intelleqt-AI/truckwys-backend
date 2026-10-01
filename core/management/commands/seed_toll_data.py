@@ -23,9 +23,26 @@ Usage::
     python manage.py seed_toll_data --force   # overwrite existing records
 """
 
+from datetime import date
 from decimal import Decimal
 
 from django.core.management.base import BaseCommand
+
+# Where the figures below come from, recorded on each plaza it seeds
+# (TollPlaza.tariff_*) so the AI price check can show the source and when the
+# stored tariffs were last confirmed on it. VERIFIED_AT is the day these
+# figures were entered from the poster (commit c51a502), not the day the
+# command runs. The monthly refresh_verified_rates job re-confirms them.
+SANRAL_TARIFF_SOURCE_URL = 'https://www.nra.co.za/uploads/17/SANRAL%20Toll%20Tariff%202026%20A3%20Poster%20v2.pdf'
+SANRAL_TARIFF_SOURCE_NAME = 'SANRAL Toll Tariff 2026 A3 Poster v2 (GG 54087 & 54088)'
+SANRAL_TARIFF_EFFECTIVE_FROM = date(2026, 3, 1)
+SANRAL_TARIFF_VERIFIED_AT = date(2026, 7, 1)
+VERIFICATION_FIELDS = {
+    'tariff_effective_from': SANRAL_TARIFF_EFFECTIVE_FROM,
+    'tariff_source_url': SANRAL_TARIFF_SOURCE_URL,
+    'tariff_source_name': SANRAL_TARIFF_SOURCE_NAME,
+    'tariff_verified_at': SANRAL_TARIFF_VERIFIED_AT,
+}
 
 # ---------------------------------------------------------------------------
 # SANRAL toll plaza data — tariffs effective 1 March 2026.
@@ -467,7 +484,7 @@ class Command(BaseCommand):
             plaza, created = TollPlaza.objects.get_or_create(
                 name=data['name'],
                 route=data['route'],
-                defaults={**data, 'is_active': True},
+                defaults={**data, **VERIFICATION_FIELDS, 'is_active': True},
             )
             if created:
                 created_count += 1
@@ -476,7 +493,7 @@ class Command(BaseCommand):
                     f"class5=R{plaza.tariff_class_5}"
                 )
             elif force:
-                for field, value in data.items():
+                for field, value in {**data, **VERIFICATION_FIELDS}.items():
                     setattr(plaza, field, value)
                 plaza.is_active = True
                 plaza.save()

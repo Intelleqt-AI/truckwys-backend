@@ -36,6 +36,8 @@ TRACKED_TASKS = {
     'retrain_win_model': timedelta(hours=36),
     'sweep_user_win_model_training': timedelta(hours=36),
     'sweep_stale_activity_logs': timedelta(hours=36),
+    # Monthly (2nd, 05:30 SAST): a missed month plus a few days' slack.
+    'refresh_verified_rates': timedelta(days=35),
 }
 
 

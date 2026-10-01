@@ -405,9 +405,12 @@ class LenderAdvanceRequestView(LenderBaseView):
         if invoice.status not in ['SENT', 'DRAFT']:
             return Response({'error': f'Invoice status {invoice.status} not eligible for advance'}, status=400)
 
-        # Check facility
-        company = Company.objects.first()
-        facility = Facility.objects.filter(company=company, status='ACTIVE').first()
+        # Check facility — the INVOICE's company facility (tenant isolation,
+        # 2026-09). This used Company.objects.first(), so any tenant's invoice
+        # was checked against (and disclosed) the first tenant's facility.
+        facility = Facility.objects.filter(
+            company_id=invoice.company_id, status='ACTIVE'
+        ).first() if invoice.company_id else None
         if not facility:
             return Response({'error': 'No active facility found'}, status=400)
 
@@ -418,11 +421,15 @@ class LenderAdvanceRequestView(LenderBaseView):
             }, status=400)
 
         # Create advance
+        # 'PENDING' is not an AdvanceRequest status — full_clean() rejected it,
+        # so this path always 500'd. REQUESTED is the status the operator-side
+        # create flow uses for a new, not-yet-scored request.
         advance = AdvanceRequest.objects.create(
             invoice=invoice,
             facility=facility,
             amount=amount,
-            status='PENDING',
+            status='REQUESTED',
+            requested_at=timezone.now(),
             notes=f'Submitted by lender: {lender_name}',
         )
 
@@ -432,7 +439,7 @@ class LenderAdvanceRequestView(LenderBaseView):
             'invoice_number': invoice.invoice_number,
             'customer': invoice.customer.name,
             'requested_amount_zar': float(amount),
-            'status': 'PENDING',
+            'status': advance.status,
             'lender': lender_name,
             'submitted_at': timezone.now().isoformat(),
             'expected_disbursement': (date.today() + timedelta(hours=4)).isoformat(),

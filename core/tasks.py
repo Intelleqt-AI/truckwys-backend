@@ -463,15 +463,26 @@ def compute_all_driver_scores():
 def refresh_fuel_price(self):
     """
     Fetch current SA diesel price from live sources (FIASA → AA SA → SAPIA → DMRE).
-    Retries up to 3× with 6-hour gaps if all live sources fail.
+    Retries up to 3× with 6-hour gaps if the refresh fails.
     SA prices are announced on the first Wednesday of each month.
+
+    A refresh "fails" when the stored row is a fallback placeholder OR when
+    the live fetch failed and the previous good price was kept
+    (``fetch_failed_at`` set — see fetch_fuel_prices' never-downgrade rule).
+    Exactly one retry is scheduled per failed run: celery's Retry exception
+    is re-raised untouched instead of being caught by the generic handler
+    (which used to schedule a second retry for the same failure).
     """
+    from celery.exceptions import Retry
+
     try:
         from core.services.fuel_price import fetch_fuel_prices
         fp = fetch_fuel_prices(force_update=True)
-        if fp.source in ('FALLBACK', 'FALLBACK_LATEST'):
+        if fp.source in ('FALLBACK', 'FALLBACK_LATEST') or getattr(fp, 'fetch_failed_at', None):
             logger.warning(
-                'refresh_fuel_price: all live sources failed — will retry (attempt %d/3)',
+                'refresh_fuel_price: live refresh failed (stored source=%s, kept=%s) — '
+                'will retry (attempt %d/3)',
+                fp.source, fp.source not in ('FALLBACK', 'FALLBACK_LATEST'),
                 self.request.retries + 1,
             )
             raise self.retry()
@@ -480,6 +491,8 @@ def refresh_fuel_price(self):
             fp.diesel_inland, fp.source, fp.date,
         )
         return {'diesel_inland': float(fp.diesel_inland), 'source': fp.source}
+    except Retry:
+        raise
     except self.MaxRetriesExceededError:
         logger.error('refresh_fuel_price: max retries exceeded — manual update required via Admin > Fuel Prices')
     except Exception as exc:
@@ -508,6 +521,27 @@ def retrain_win_model():
     else:
         logger.info('Win model not retrained: %s', result.get('reason'))
     return result
+
+
+# ---------------------------------------------------------------------------
+# Verified rates for the AI quote price check (Celery Beat — monthly)
+# ---------------------------------------------------------------------------
+
+@shared_task(name='core.tasks.refresh_verified_rates')
+@track_task_run('refresh_verified_rates')
+def refresh_verified_rates(kinds=None, sanral_classes=None, triggered_by_id=None):
+    """Look up the current SANRAL toll tariffs and driver allowance (OpenAI
+    web search + source-page check) and write PENDING proposals for figures
+    that changed. Never applies anything: a superuser approves proposals
+    (/api/v1/admin/verified-rates/). Skips cleanly when switched off, without
+    an OpenAI key, or over the platform daily budget."""
+    from core.models import User
+    from core.services.verified_rate_refresh import KINDS, run_refresh
+
+    user = User.objects.filter(id=triggered_by_id).first() if triggered_by_id else None
+    summary = run_refresh(kinds=tuple(kinds or KINDS), sanral_classes=sanral_classes, triggered_by=user)
+    logger.info('refresh_verified_rates: %s', {k: v for k, v in summary.items() if k != 'unverified'})
+    return summary
 
 
 @shared_task(name='core.tasks.train_user_win_model')

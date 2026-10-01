@@ -8,9 +8,15 @@ from django.db import models
 
 
 class AIQuotePriceAnalysis(models.Model):
+    # 'auto' / 'manual': the old per-quote web-search runs (history only).
+    # 'check': a per-quote check against stored verified figures (no OpenAI,
+    # cost 0; recorded so the company daily cap and admin usage count runs).
+    # 'refresh': one OpenAI lookup by the monthly refresh_verified_rates job.
     TRIGGER_CHOICES = [
         ('auto', 'Auto (first run)'),
         ('manual', 'Manual re-check'),
+        ('check', 'Price check (stored figures)'),
+        ('refresh', 'Verified-rate refresh (web search)'),
     ]
     STATUS_CHOICES = [
         ('success', 'Success'),
@@ -37,7 +43,8 @@ class AIQuotePriceAnalysis(models.Model):
     )
     trigger_type = models.CharField(max_length=10, choices=TRIGGER_CHOICES, default='auto')
 
-    model = models.CharField(max_length=50, default='gpt-5.6-sol')
+    # Matches settings.AI_QUOTE_ANALYSIS_MODEL's default; every run sets it.
+    model = models.CharField(max_length=50, default='gpt-4o-mini')
     reasoning_effort = models.CharField(max_length=10, blank=True)
 
     status = models.CharField(max_length=10, choices=STATUS_CHOICES)
@@ -64,7 +71,9 @@ class AIQuotePriceAnalysis(models.Model):
     verification_status = models.CharField(max_length=20, blank=True)
     confidence = models.CharField(max_length=10, blank=True)
 
-    # request_context = the condensed payload actually sent to OpenAI.
+    # request_context = the condensed context the prompts are built from
+    # (only the plaza list, toll class and date reach OpenAI; never origin,
+    # destination or customer data).
     # raw_result = {'research_text', 'citations', 'structured'} — everything
     # both calls produced, for debugging/audit.
     request_context = models.JSONField(default=dict, blank=True)

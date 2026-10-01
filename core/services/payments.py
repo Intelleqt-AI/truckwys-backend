@@ -62,11 +62,19 @@ def record_payment(company, user, data):
         if payload.get('reference') and not payload.get('reference_number'):
             payload['reference_number'] = payload['reference']
 
-        serializer = PaymentSerializer(data=payload)
+        # context company: scopes invoice/customer ids to this tenant (a
+        # caller-supplied customer from another company is rejected); company
+        # itself is read-only on the serializer, so it is set on save.
+        serializer = PaymentSerializer(data=payload, context={
+            'company': company,
+            # The invoice's own customer is server-derived and always valid,
+            # even for a legacy customer row that predates company backfill.
+            'allow_relation_ids': {'customer': invoice.customer_id},
+        })
         if not serializer.is_valid():
             first_field, msgs = next(iter(serializer.errors.items()))
             raise PaymentError(f"{first_field}: {msgs[0] if isinstance(msgs, list) else msgs}")
-        serializer.save()
+        serializer.save(company=company)
 
         invoice.paid_amount += amount
         invoice.balance -= amount

@@ -24,7 +24,9 @@ channels>=4.0,<5
 daphne>=4.0
 uvicorn[standard]>=0.20.0
 channels_redis>=4.2
-openai>=1.30
+# 2.x: the AI price analysis uses the Responses API with web_search,
+# max_tool_calls and json_schema text format (tested on 2.41.1).
+openai>=2.0,<3
 langdetect>=1.0.9  # text-language detection for typed (non-voice) chat messages
 
 # Transactional email (invoices, payment reminders / dunning)
@@ -36,7 +38,8 @@ lxml>=4.9.0
 
 # PDF text extraction — AI price analysis checks each cited figure on its
 # source page, and many SA tariff sources (SANRAL, NBCRFLI) are PDFs.
-pypdf>=5.0
+# 6.x: 5.x had several DoS CVEs on malformed PDFs, and these come from the web.
+pypdf>=6.0,<7
 
 # Secrets-at-rest encryption (Xero OAuth tokens)
 cryptography>=42.0

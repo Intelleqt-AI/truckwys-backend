@@ -635,7 +635,18 @@ def _serialize_vehicle_type(vt):
         'fuel_consumption_l_per_100km': vt.fuel_consumption_l_per_100km,
         'fuel_consumption_sensitivity_pct': vt.fuel_consumption_sensitivity_pct,
         'fuel_type': vt.fuel_type, 'active': vt.active,
+        'sanral_toll_class': vt.sanral_toll_class,
     }
+
+
+def _clean_sanral_toll_class(raw):
+    """None/'' → None; 1–4 → int; anything else → ValueError."""
+    if raw in (None, ''):
+        return None
+    value = int(raw)
+    if value not in (1, 2, 3, 4):
+        raise ValueError(value)
+    return value
 
 
 class AdminVehicleTypesView(APIView):
@@ -662,6 +673,10 @@ class AdminVehicleTypesView(APIView):
             return Response({'error': 'name is required'}, status=status.HTTP_400_BAD_REQUEST)
         if VehicleType.objects.filter(company__isnull=True, name=name).exists():
             return Response({'error': f'A shared vehicle type named "{name}" already exists.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            toll_class = _clean_sanral_toll_class(request.data.get('sanral_toll_class'))
+        except (TypeError, ValueError):
+            return Response({'error': 'sanral_toll_class must be 1, 2, 3, 4 or blank'}, status=status.HTTP_400_BAD_REQUEST)
 
         vt = VehicleType.objects.create(
             company=None, name=name,
@@ -673,6 +688,7 @@ class AdminVehicleTypesView(APIView):
             fuel_consumption_sensitivity_pct=request.data.get('fuel_consumption_sensitivity_pct') or 2,
             fuel_type=request.data.get('fuel_type') or 'Diesel',
             active=request.data.get('active', True),
+            sanral_toll_class=toll_class,
         )
         _log(request, 'CREATE', 'VehicleType', vt.pk, admin_action='create_shared_vehicle_type', name=name)
         return Response(_serialize_vehicle_type(vt), status=status.HTTP_201_CREATED)
@@ -686,6 +702,7 @@ class AdminVehicleTypeDetailView(APIView):
     EDITABLE_FIELDS = [
         'name', 'description', 'capacity', 'max_distance', 'base_rate',
         'fuel_consumption_l_per_100km', 'fuel_consumption_sensitivity_pct', 'fuel_type', 'active',
+        'sanral_toll_class',
     ]
 
     def patch(self, request, type_id):
@@ -694,12 +711,19 @@ class AdminVehicleTypeDetailView(APIView):
             vt = VehicleType.objects.get(pk=type_id, company__isnull=True)
         except VehicleType.DoesNotExist:
             return Response({'error': 'Shared vehicle type not found'}, status=status.HTTP_404_NOT_FOUND)
+        if 'sanral_toll_class' in request.data:
+            try:
+                _clean_sanral_toll_class(request.data['sanral_toll_class'])
+            except (TypeError, ValueError):
+                return Response({'error': 'sanral_toll_class must be 1, 2, 3, 4 or blank'}, status=status.HTTP_400_BAD_REQUEST)
 
         changes = {}
         for field in self.EDITABLE_FIELDS:
             if field not in request.data:
                 continue
             old, new = getattr(vt, field), request.data[field]
+            if field == 'sanral_toll_class':
+                new = _clean_sanral_toll_class(new)
             if str(old) != str(new):
                 changes[field] = {'old': str(old), 'new': str(new)}
             setattr(vt, field, new)
@@ -1099,11 +1123,20 @@ class AdminAIUsageView(APIView):
                     'triggered_by__username')
         )
 
+        # 'check' = per-quote checks against stored figures (cost 0);
+        # 'refresh' = the monthly verified-rate job's web lookups; 'auto' /
+        # 'manual' = the old per-quote web-search runs (history).
+        by_trigger = {
+            row['trigger_type']: {'calls': row['calls'], 'total_cost_usd': float(row['cost'] or 0)}
+            for row in qs.values('trigger_type').annotate(calls=Count('id'), cost=Sum('total_cost_usd'))
+        }
+
         return Response({
             'all_time': _totals(qs),
             'this_month': _totals(qs.filter(created_at__gte=month_start)),
             'by_month': by_month,
             'by_user': by_user,
+            'by_trigger': by_trigger,
             'recent_failures': recent_failures,
         })
 
@@ -1142,3 +1175,143 @@ class AdminAuditLogView(APIView):
                 'created_at': r.created_at,
             } for r in page_qs],
         })
+
+
+class AdminVerifiedRatesView(APIView):
+    """GET  /api/v1/admin/verified-rates/?status=pending|approved|rejected|superseded|all&kind=toll_tariff|driver_allowance
+    The stored figures the AI quote price check compares against, and the
+    changes the monthly refresh job proposed (core.services.verified_rates).
+    Default status is 'pending'. Also returns how much of the SANRAL tariff
+    table is verified (`toll_table`).
+
+    POST /api/v1/admin/verified-rates/  {allowance_type, value, effective_from,
+    source_url, source_name}
+    Proposes a driver allowance by hand (e.g. the first NBCRFLI figure). It is
+    created PENDING and still needs /approve/, like a job proposal."""
+    permission_classes = [IsSuperUser]
+    STATUSES = ('pending', 'approved', 'rejected', 'superseded')
+
+    def get(self, request):
+        from core.models import VerifiedRate
+        from core.services import verified_rates
+
+        wanted = request.query_params.get('status', 'pending')
+        qs = VerifiedRate.objects.select_related('toll_plaza', 'approved_by', 'rejected_by').order_by('-created_at')
+        if wanted != 'all':
+            if wanted not in self.STATUSES:
+                return Response({'error': f'status must be one of {", ".join(self.STATUSES)} or all'},
+                                status=status.HTTP_400_BAD_REQUEST)
+            qs = qs.filter(status=wanted)
+        kind = request.query_params.get('kind')
+        if kind:
+            qs = qs.filter(kind=kind)
+        page_qs, count, page, page_size, num_pages = _paginate(qs, request, default_size=50, max_size=200)
+        today = timezone.localdate()
+        return Response({
+            'count': count, 'page': page, 'page_size': page_size, 'num_pages': num_pages,
+            'results': [verified_rates.serialize(r, today) for r in page_qs],
+            'toll_table': verified_rates.toll_verification_summary(),
+        })
+
+    def post(self, request):
+        from datetime import date as date_cls
+        from decimal import Decimal, InvalidOperation
+        from core.models import VerifiedRate
+        from core.services import verified_rates
+
+        data = request.data
+        kind = data.get('allowance_type')
+        if kind not in verified_rates.ALLOWANCE_LABELS:
+            return Response({'error': f'allowance_type must be one of {", ".join(verified_rates.ALLOWANCE_LABELS)}'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        try:
+            value = Decimal(str(data.get('value')))
+            if not (Decimal('0') < value <= Decimal('5000')):
+                raise InvalidOperation
+        except (InvalidOperation, ValueError, TypeError):
+            return Response({'error': 'value must be a positive amount in rand per night (at most 5000)'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        try:
+            effective_from = date_cls.fromisoformat(str(data.get('effective_from')))
+        except ValueError:
+            return Response({'error': 'effective_from must be a date (YYYY-MM-DD)'}, status=status.HTTP_400_BAD_REQUEST)
+        source_url = str(data.get('source_url') or '').strip()[:1000]
+        if not source_url.startswith(('https://', 'http://')):
+            return Response({'error': 'source_url must be the http(s) page the figure is published on'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        current = verified_rates.current_allowance_row(kind, timezone.localdate())
+        row, outcome = verified_rates.propose(
+            kind=VerifiedRate.KIND_DRIVER_ALLOWANCE, key=kind, label=verified_rates.ALLOWANCE_LABELS[kind],
+            value=value, published_value=value, previous_value=current.value if current else None,
+            unit='per_night', effective_from=effective_from, source_url=source_url,
+            source_name=str(data.get('source_name') or '').strip()[:300],
+            verified_at=timezone.localdate(), proposed_by=f'admin:{request.user.username}'[:100],
+        )
+        _log(request, 'CREATE', 'VerifiedRate', row.pk, admin_action='propose_verified_rate', outcome=outcome)
+        return Response({'outcome': outcome, 'rate': verified_rates.serialize(row)},
+                        status=status.HTTP_201_CREATED if outcome == 'created' else status.HTTP_200_OK)
+
+
+class AdminVerifiedRateReviewView(APIView):
+    """POST /api/v1/admin/verified-rates/<id>/approve/  {effective_from?, note?}
+    POST /api/v1/admin/verified-rates/<id>/reject/   {note?}
+    Approve applies the proposed figure from its effective date (a toll
+    tariff is written onto its plaza; a driver allowance becomes the approved
+    figure, the older ones stay as history). Reject keeps it on record, and
+    the refresh job won't propose the same figure and date again."""
+    permission_classes = [IsSuperUser]
+    review_action = None  # 'approve' | 'reject', set in urls.py
+
+    def post(self, request, rate_id):
+        from datetime import date as date_cls
+        from core.services import verified_rates
+
+        note = str(request.data.get('note') or '')[:2000]
+        try:
+            if self.review_action == 'approve':
+                effective_from = request.data.get('effective_from')
+                try:
+                    effective_from = date_cls.fromisoformat(str(effective_from)) if effective_from else None
+                except ValueError:
+                    return Response({'error': 'effective_from must be a date (YYYY-MM-DD)'},
+                                    status=status.HTTP_400_BAD_REQUEST)
+                rate = verified_rates.approve(rate_id, request.user, effective_from=effective_from, note=note)
+                _log(request, 'APPROVE', 'VerifiedRate', rate.pk, admin_action='approve_verified_rate',
+                     key=rate.key, value=str(rate.value), effective_from=rate.effective_from.isoformat())
+            else:
+                rate = verified_rates.reject(rate_id, request.user, note=note)
+                _log(request, 'DENY', 'VerifiedRate', rate.pk, admin_action='reject_verified_rate',
+                     key=rate.key, value=str(rate.value))
+        except verified_rates.ReviewError as exc:
+            code = status.HTTP_404_NOT_FOUND if 'not found' in str(exc) else status.HTTP_400_BAD_REQUEST
+            return Response({'error': str(exc)}, status=code)
+        return Response({'rate': verified_rates.serialize(rate)})
+
+
+class AdminVerifiedRatesRefreshView(APIView):
+    """POST /api/v1/admin/verified-rates/refresh/  {kinds?: [...], sanral_classes?: [...]}
+    Queues the refresh_verified_rates job now (it also runs monthly from
+    Celery beat). 202 with the task id; the proposals appear in the pending
+    list when it finishes. Costs a few US cents; capped by the platform
+    daily budget."""
+    permission_classes = [IsSuperUser]
+
+    def post(self, request):
+        from core.services.verified_rate_refresh import KINDS, refresh_unavailable_reason
+        from core.tasks import refresh_verified_rates
+
+        reason = refresh_unavailable_reason()
+        if reason is not None:
+            return Response({'queued': False, 'reason': reason}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        kinds = request.data.get('kinds')
+        kinds = [k for k in kinds if k in KINDS] if isinstance(kinds, list) else list(KINDS)
+        classes = request.data.get('sanral_classes')
+        classes = [int(c) for c in classes if str(c) in ('1', '2', '3', '4')] if isinstance(classes, list) else None
+        try:
+            task = refresh_verified_rates.delay(kinds=kinds or list(KINDS), sanral_classes=classes or None,
+                                                triggered_by_id=request.user.id)
+        except Exception as exc:
+            return Response({'queued': False, 'reason': 'queue_unavailable', 'error': type(exc).__name__},
+                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        _log(request, 'OTHER', 'VerifiedRate', '', admin_action='refresh_verified_rates')
+        return Response({'queued': True, 'task_id': getattr(task, 'id', None)}, status=status.HTTP_202_ACCEPTED)

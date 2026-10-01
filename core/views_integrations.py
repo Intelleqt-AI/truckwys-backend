@@ -38,6 +38,9 @@ from django.utils import timezone
 
 
 from django.core import signing
+import logging
+
+logger = logging.getLogger(__name__)
 
 _XERO_STATE_SALT = 'xero-oauth-state'
 
@@ -618,9 +621,18 @@ class CreditLookupView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        # Tenant isolation (2026-09): only the caller's own customers can be
+        # sent to the bureau. Company-less accounts fail closed; a foreign
+        # customer is indistinguishable from a missing one (404).
+        company = getattr(request.user, 'company', None)
+        if not company:
+            return Response(
+                {'error': 'No company associated with this account'},
+                status=status.HTTP_403_FORBIDDEN
+            )
         try:
-            customer = Customer.objects.get(id=customer_id)
-        except Customer.DoesNotExist:
+            customer = Customer.objects.get(id=customer_id, company=company)
+        except (Customer.DoesNotExist, ValueError, TypeError):
             return Response(
                 {'error': 'Customer not found'},
                 status=status.HTTP_404_NOT_FOUND
@@ -676,19 +688,29 @@ class DashboardInsightsView(APIView):
         else:
             to_date = today
 
-        company = Company.objects.first()
+        # Tenant isolation (2026-09): was Company.objects.first(), which served
+        # the first tenant's invoices/debtors to every caller. Company-less
+        # accounts fail closed.
+        company = getattr(request.user, 'company', None)
         if not company:
             return Response(
-                {'error': 'Company not found'},
-                status=status.HTTP_404_NOT_FOUND
+                {'error': 'No company associated with this account'},
+                status=status.HTTP_403_FORBIDDEN
             )
 
         # Generate intelligence recommendations
         intelligence_service = IntelligenceService(company)
         try:
             recommendations = intelligence_service.generate_recommendations()
-        except Exception as e:
-            recommendations = []
+        except Exception:
+            # Was: 200 with an empty list, indistinguishable from "nothing to
+            # flag" (audit #44). Now an explicit error the UI can show as one.
+            logger.exception('DashboardInsightsView: generate_recommendations failed')
+            return Response(
+                {'error': 'Recommendations are unavailable right now. Please try again.',
+                 'data_status': 'error'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
         # Optionally create notifications
         create_notifications = request.query_params.get('create_notifications', 'false').lower() == 'true'
@@ -764,14 +786,30 @@ class CashFlowForecastView(APIView):
             except ValueError:
                 return Response({'error': 'Invalid to date format. Use YYYY-MM-DD'}, status=400)
 
+        # Tenant isolation (2026-09): the forecast used to aggregate every
+        # tenant's invoices/expenses. Company-less accounts fail closed.
+        company = getattr(request.user, 'company', None)
+        if not company:
+            return Response(
+                {'error': 'No company associated with this account'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
         # Generate forecast
-        cashflow_service = CashFlowForecastService()
+        cashflow_service = CashFlowForecastService(company)
         try:
             forecast = cashflow_service.forecast_cashflow(days=days)
             summary = cashflow_service.get_summary_stats(forecast)
-        except Exception as e:
-            forecast = []
-            summary = {'total_inflow': 0, 'total_outflow': 0, 'net': 0}
+        except Exception:
+            # Was: 200 with a zero summary whose keys differed from the success
+            # shape, so a UI read R 0 either way (audit #45). Now an explicit
+            # error with no figures in it.
+            logger.exception('CashFlowForecastView: forecast failed')
+            return Response(
+                {'error': 'The cash flow forecast is unavailable right now. Please try again.',
+                 'data_status': 'error', 'period_days': days},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
         response_data = {
             'forecast': forecast,

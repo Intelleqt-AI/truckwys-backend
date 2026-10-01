@@ -8,7 +8,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('core', '0122_add_company_fuel_zone'),
+        ('core', '0130_alter_user_role'),
     ]
 
     operations = [
@@ -27,7 +27,7 @@ class Migration(migrations.Migration):
             fields=[
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
                 ('trigger_type', models.CharField(choices=[('auto', 'Auto (first run)'), ('manual', 'Manual re-check')], default='auto', max_length=10)),
-                ('model', models.CharField(default='gpt-5.6-sol', max_length=50)),
+                ('model', models.CharField(default='gpt-4o-mini', max_length=50)),
                 ('reasoning_effort', models.CharField(blank=True, max_length=10)),
                 ('status', models.CharField(choices=[('success', 'Success'), ('failed', 'Failed')], max_length=10)),
                 ('error_message', models.TextField(blank=True)),

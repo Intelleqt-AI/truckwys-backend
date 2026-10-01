@@ -5,7 +5,7 @@ import io
 import socket
 from unittest import mock
 
-from django.core.cache import cache
+from django.core.cache import cache, caches
 from django.test import SimpleTestCase, TestCase
 
 import requests
@@ -94,6 +94,14 @@ class PublicUrlTests(SimpleTestCase):
     def test_public_host_is_allowed(self):
         with mock.patch('socket.getaddrinfo', return_value=_addrinfo('93.184.216.34')):
             self.assertTrue(sv.is_public_url('https://example.com/'))
+
+    def test_only_standard_web_ports(self):
+        with mock.patch('socket.getaddrinfo', return_value=_addrinfo('93.184.216.34')):
+            for url in ('http://1.1.1.1:22/', 'https://example.com:8443/', 'http://example.com:443/',
+                        'https://example.com:80/'):
+                self.assertFalse(sv.is_public_url(url), url)
+            for url in ('https://example.com:443/tariffs', 'http://example.com:80/', 'https://example.com/'):
+                self.assertTrue(sv.is_public_url(url), url)
 
     def test_unresolvable_host_is_blocked(self):
         with mock.patch('socket.getaddrinfo', side_effect=socket.gaierror):
@@ -197,9 +205,30 @@ class FetchTests(SimpleTestCase):
         self.assertEqual(sv._extract_text(buf.getvalue(), 'application/pdf').strip(), '')
 
 
-class FetchBatchCacheTests(TestCase):  # the cache backend is DB-backed
+class FetchBatchCacheTests(TestCase):  # the default cache backend is DB-backed
     def setUp(self):
         cache.clear()
+        caches[sv.SOURCE_CACHE_ALIAS].clear()
+        self.addCleanup(caches[sv.SOURCE_CACHE_ALIAS].clear)
+
+    def test_pages_never_go_into_the_shared_default_cache(self):
+        ok = {'text': 'R29.11 ' * 1000, 'error': None}
+        with mock.patch.object(sv, '_fetch_uncached', return_value=ok):
+            sv.SourceFetchBatch(['https://a.test']).result()
+        self.assertIsNone(cache.get(sv._cache_key('https://a.test')))
+        self.assertEqual(caches[sv.SOURCE_CACHE_ALIAS].get(sv._cache_key('https://a.test')), ok)
+
+    def test_no_source_cache_configured_means_no_caching_not_the_default_cache(self):
+        from django.conf import settings
+        from django.test import override_settings
+        ok = {'text': 'R29.11', 'error': None}
+        only_default = {'default': settings.CACHES['default']}
+        with override_settings(CACHES=only_default), \
+                mock.patch.object(sv, '_fetch_uncached', return_value=ok) as fetch:
+            sv.SourceFetchBatch(['https://b.test']).result()
+            sv.SourceFetchBatch(['https://b.test']).result()
+            self.assertIsNone(cache.get(sv._cache_key('https://b.test')))
+        self.assertEqual(fetch.call_count, 2)
 
     def test_results_are_cached_and_reused(self):
         ok = {'text': 'R29.11', 'error': None}
@@ -226,7 +255,7 @@ class FetchBatchCacheTests(TestCase):  # the cache backend is DB-backed
         finally:
             release.set()
         self.assertEqual(pages['https://slow.test'], {'text': None, 'error': 'timed out'})
-        self.assertIsNone(cache.get(sv._cache_key('https://slow.test')))
+        self.assertIsNone(caches[sv.SOURCE_CACHE_ALIAS].get(sv._cache_key('https://slow.test')))
         self.assertEqual(sv.check_figure(29.11, ['https://slow.test'], pages)[1], sv.REASON_TIMED_OUT)
 
 
