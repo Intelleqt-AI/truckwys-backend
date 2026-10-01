@@ -164,6 +164,22 @@ class ReconciliationImportedCreditNoteTests(XeroFlowBase):
         self.assertEqual(run.difference_count, 0, list(run.differences.values_list('field', 'truckwys_value',
                                                                                     'provider_value')))
 
+    def test_imported_credit_note_survives_later_syncs_of_the_invoice(self):
+        inv = self.issue()
+        xid = self.link('INVOICE', inv.pk).external_id
+        cid = self.xinv(inv)['Contact']['ContactID']
+        cn_id = self.xero.create_credit_note(cid, [{'Description': 'Damaged pallet', 'Quantity': '1',
+                                                     'UnitAmount': '100.00', 'AccountCode': '200',
+                                                     'TaxType': 'OUTPUT2'}], date(2026, 9, 11), 'XCN-1')
+        self.xero.allocate('CREDIT_NOTE', cn_id, xid, D('115.00'), date(2026, 9, 11))
+        self.webhook(xid)
+        self.webhook(xid)   # the invoice is mirrored again (any later change)
+        self.xero.record_payment(xid, D('100.00'), date(2026, 9, 12))
+        self.webhook(xid)
+        self.assertEqual(CreditNote.objects.get(invoice=inv, source='XERO').status, 'ISSUED')
+        inv.refresh_from_db()
+        self.assertEqual((inv.credited_amount, inv.paid_amount), (D('115.00'), D('100.00')))
+
     def test_xero_credit_note_removed_there_is_voided_here(self):
         inv = self.issue()
         xid = self.link('INVOICE', inv.pk).external_id
@@ -238,7 +254,7 @@ class BackoffTests(XeroFlowBase):
             sync.retry_due()
         self.assertEqual(self.link('INVOICE', inv.pk).status, 'DEAD')
         self.assertGreater(waits[-1], waits[0] * 8)
-        self.assertGreater(sum(waits), 3600)   # hours of patience, not minutes
+        self.assertGreater(sum(waits), 3000)   # ~an hour of patience (0.8 x 3810 s with jitter), not minutes
 
 
 class ReconnectTests(XeroFlowBase):

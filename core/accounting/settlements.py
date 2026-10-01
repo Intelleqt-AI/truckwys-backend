@@ -148,7 +148,8 @@ def mirror_invoice(connection, invoice, state, *, adapter=None) -> dict:
     for s in foreign_credit_notes:
         if import_foreign_credit_note(connection, invoice, s, adapter=adapter, invoice_external_id=state.external_id):
             counts['credit_notes'] += 1
-    counts['credit_notes'] += void_withdrawn_imports(connection, invoice, {s.source_id for s in foreign_credit_notes})
+    counts['credit_notes'] += void_withdrawn_imports(
+        connection, invoice, {s.source_id for s in state.settlements if s.kind == 'CREDIT_NOTE'})
     if any(counts.values()):
         log_event(connection, 'pull_payments',
                   f'{invoice.invoice_number}: {counts["created"]} new, {counts["updated"]} changed, '
@@ -230,7 +231,9 @@ def import_foreign_credit_note(connection, invoice, settlement, *, adapter=None,
         defaults={'company_id': connection.company_id, 'provider': connection.provider,
                   'external_id': settlement.source_id, 'external_number': settlement.source_number,
                   'status': 'SYNCED', 'last_synced_at': timezone.now(),
-                  'meta': {'imported': True, 'allocated': str(detail['total'])}})
+                  # 'allocated' as for pushed credit notes, so reconciliation
+                  # counts it as credit (not money) on the invoice.
+                  'meta': {'imported': True, 'allocated': str(allocated_here)}})
     log_event(connection, 'pull_credit_notes', f'Imported {settlement.source_number} as {cn.credit_note_number}',
               object_type='CREDIT_NOTE', local_id=cn.pk, label=cn.credit_note_number)
     return True
