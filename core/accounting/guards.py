@@ -11,8 +11,6 @@ TruckWys, as before.
 """
 from __future__ import annotations
 
-from core.accounting.base import not_pre_cutover
-
 
 def managing_connection(company):
     if company is None:
@@ -29,12 +27,9 @@ def payments_managed_error(company, invoice=None):
     conn = managing_connection(company)
     if conn is None:
         return None
+    # Decided by the date, every time (the cut-over can move earlier).
     if invoice is not None and invoice.issue_date and invoice.issue_date < conn.cutover_date:
-        from core.models import ExternalLink
-        managed = (ExternalLink.objects.filter(connection=conn, object_type='INVOICE', local_id=invoice.pk,
-                                               status='SYNCED').filter(not_pre_cutover()).exists())
-        if not managed:
-            return None
+        return None
     from core.accounting.registry import get_adapter
     name = conn.get_provider_display()
     url = None

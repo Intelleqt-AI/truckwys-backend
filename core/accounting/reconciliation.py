@@ -25,7 +25,6 @@ from decimal import Decimal
 from django.db.models import Sum
 from django.utils import timezone
 
-from core.accounting.base import not_pre_cutover
 from core.accounting.events import log_event
 from core.accounting.registry import get_adapter
 
@@ -103,10 +102,11 @@ def run(connection):
     try:
         # ---- invoices
         links = dict(ExternalLink.objects.filter(connection=connection, object_type='INVOICE', status='SYNCED')
-                     .exclude(external_id='').filter(not_pre_cutover())
-                     .values_list('local_id', 'external_id'))
-        invoices = {i.pk: i for i in Invoice.objects.filter(pk__in=links.keys(), company_id=connection.company_id)
+                     .exclude(external_id='').values_list('local_id', 'external_id'))
+        invoices = {i.pk: i for i in Invoice.objects.filter(pk__in=links.keys(), company_id=connection.company_id,
+                                                            issue_date__gte=connection.cutover_date)
                     .select_related('customer')}
+        links = {k: v for k, v in links.items() if k in invoices}
         states = {s.external_id: s for s in adapter.get_invoice_states(list(links.values()))}
         cn_alloc = {}
         for l in ExternalLink.objects.filter(connection=connection, object_type='CREDIT_NOTE', status='SYNCED'):

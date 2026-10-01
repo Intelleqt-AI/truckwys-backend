@@ -180,7 +180,9 @@ def create_credit_note(invoice, *, user, reason, lines=None, full=False, issue_d
     return cn
 
 
-def void_credit_note(cn, *, user, reason):
+def void_credit_note(cn, *, user, reason, allow_synced=False):
+    """Void an issued credit note. allow_synced: the accounting sync voids a
+    credit note it imported, mirroring the provider (never a user action)."""
     from core.models import CreditNote
     from core.services.ledger import recalculate_invoice
 
@@ -191,9 +193,10 @@ def void_credit_note(cn, *, user, reason):
         cn = CreditNote.objects.select_for_update().get(pk=cn.pk)
         if cn.status == CreditNote.VOID:
             return cn
-        if cn.source != 'MANUAL':
+        if cn.source != 'MANUAL' and not allow_synced:
             raise CreditNoteError(f'This credit note was synced from {cn.get_source_display()}; void it there.')
-        _guard_financed(cn.invoice, user)
+        if not allow_synced:
+            _guard_financed(cn.invoice, user)
         cn.status = CreditNote.VOID
         cn.voided_at = timezone.now()
         cn.void_reason = reason

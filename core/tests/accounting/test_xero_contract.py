@@ -264,6 +264,7 @@ class ParseTests(ContractBase):
         self.assertEqual(Replay.params(self.replay.last('GET')), {'unitdp': '4'})
 
     def test_balance_sheet_debtors(self):
+        self.api('GET', '/Accounts', 'accounts.json')   # finds the DEBTORS system account's name
         self.api('GET', '/Reports/BalanceSheet', 'balance_sheet.json')
         self.assertEqual(self.adapter.debtors_at(date(2025, 7, 31)), D('48250.75'))
         self.assertEqual(Replay.params(self.replay.last('GET')), {'date': '2025-07-31', 'standardLayout': 'true'})

@@ -49,8 +49,12 @@ def settlement_key(s) -> str:
 
 
 def _our_credit_note_ids(connection):
+    """Provider ids of credit notes TruckWys pushed or imported, under ANY
+    connection of this company to this provider (a reconnect starts a new
+    connection before its links are rebuilt)."""
     from core.models import ExternalLink
-    return set(ExternalLink.objects.filter(connection=connection, object_type='CREDIT_NOTE')
+    return set(ExternalLink.objects.filter(company_id=connection.company_id, provider=connection.provider,
+                                           object_type='CREDIT_NOTE')
                .exclude(external_id='').values_list('external_id', flat=True))
 
 
@@ -63,6 +67,15 @@ def mirror_invoice(connection, invoice, state, *, adapter=None) -> dict:
 
     source = connection.provider
     provider = connection.get_provider_display()
+    if Payment.objects.filter(invoice_id=invoice.pk, source__in=('MANUAL', 'BANK')).exists():
+        # Receipts recorded in TruckWys that aren't in the provider yet:
+        # mirroring now would count the money twice. push_receipt adopts them
+        # first (initial sync, or when the invoice syncs late).
+        log_event(connection, 'pull_payments',
+                  f'{invoice.invoice_number}: payments recorded in TruckWys aren\'t in {provider} yet; '
+                  f'not syncing its {provider} payments until they are.', level='WARNING',
+                  object_type='INVOICE', local_id=invoice.pk, label=invoice.invoice_number)
+        return {'created': 0, 'updated': 0, 'removed': 0, 'credit_notes': 0}
     ours = _our_credit_note_ids(connection)
     desired = {}
     foreign_credit_notes = []
@@ -135,6 +148,7 @@ def mirror_invoice(connection, invoice, state, *, adapter=None) -> dict:
     for s in foreign_credit_notes:
         if import_foreign_credit_note(connection, invoice, s, adapter=adapter, invoice_external_id=state.external_id):
             counts['credit_notes'] += 1
+    counts['credit_notes'] += void_withdrawn_imports(connection, invoice, {s.source_id for s in foreign_credit_notes})
     if any(counts.values()):
         log_event(connection, 'pull_payments',
                   f'{invoice.invoice_number}: {counts["created"]} new, {counts["updated"]} changed, '
@@ -155,9 +169,22 @@ def import_foreign_credit_note(connection, invoice, settlement, *, adapter=None,
     from core.services.credit_notes import CreditNoteError, create_credit_note
 
     if CreditNote.objects.filter(company_id=connection.company_id, source=connection.provider,
-                                 external_id=settlement.source_id).exists():
+                                 external_id=settlement.source_id, status=CreditNote.ISSUED).exists():
         return False
     provider = connection.get_provider_display()
+    # One of ours under its own number (e.g. a link lost in a reconnect):
+    # re-link it, never import a second copy.
+    if settlement.source_number:
+        mine = CreditNote.objects.filter(company_id=connection.company_id, invoice=invoice, source='MANUAL',
+                                         credit_note_number=settlement.source_number).first()
+        if mine is not None:
+            ExternalLink.objects.update_or_create(
+                connection=connection, object_type='CREDIT_NOTE', local_id=mine.pk,
+                defaults={'company_id': connection.company_id, 'provider': connection.provider,
+                          'external_id': settlement.source_id, 'external_number': settlement.source_number,
+                          'status': 'SYNCED', 'last_synced_at': timezone.now(),
+                          'meta': {'allocated': str(settlement.amount), 'relinked': True}})
+            return False
     adapter = adapter or get_adapter(connection)
     try:
         detail = adapter.get_credit_note_detail(settlement.source_id)
@@ -202,10 +229,37 @@ def import_foreign_credit_note(connection, invoice, settlement, *, adapter=None,
         connection=connection, object_type='CREDIT_NOTE', local_id=cn.pk,
         defaults={'company_id': connection.company_id, 'provider': connection.provider,
                   'external_id': settlement.source_id, 'external_number': settlement.source_number,
-                  'status': 'SYNCED', 'last_synced_at': timezone.now(), 'meta': {'imported': True}})
+                  'status': 'SYNCED', 'last_synced_at': timezone.now(),
+                  'meta': {'imported': True, 'allocated': str(detail['total'])}})
     log_event(connection, 'pull_credit_notes', f'Imported {settlement.source_number} as {cn.credit_note_number}',
               object_type='CREDIT_NOTE', local_id=cn.pk, label=cn.credit_note_number)
     return True
+
+
+def void_withdrawn_imports(connection, invoice, still_allocated: set) -> int:
+    """Credit notes imported from the provider whose allocation to this
+    invoice is gone (deallocated, voided, deleted there): void them here too."""
+    from core.models import CreditNote, ExternalLink
+    from core.services.credit_notes import CreditNoteError, void_credit_note
+    n = 0
+    for cn in CreditNote.objects.filter(invoice=invoice, source=connection.provider, status=CreditNote.ISSUED):
+        if cn.external_id in still_allocated:
+            continue
+        try:
+            void_credit_note(cn, user=None, reason=f'Removed in {connection.get_provider_display()}',
+                             allow_synced=True)
+        except CreditNoteError as exc:
+            log_event(connection, 'pull_credit_notes', f'{cn.credit_note_number}: {exc}', level='ERROR',
+                      object_type='CREDIT_NOTE', local_id=cn.pk, label=cn.credit_note_number)
+            continue
+        ExternalLink.objects.filter(connection=connection, object_type='CREDIT_NOTE', local_id=cn.pk).update(
+            status='VOIDED', updated_at=timezone.now())
+        log_event(connection, 'pull_credit_notes',
+                  f'{cn.credit_note_number} was removed from {invoice.invoice_number} in '
+                  f'{connection.get_provider_display()}; voided in TruckWys', level='WARNING',
+                  object_type='CREDIT_NOTE', local_id=cn.pk, label=cn.credit_note_number)
+        n += 1
+    return n
 
 
 def refresh_overpayment_remainders(connection, credits=None, adapter=None) -> int:

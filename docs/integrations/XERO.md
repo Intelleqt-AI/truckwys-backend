@@ -19,7 +19,7 @@ QuickBooks Online reuses the same core: see `QUICKBOOKS.md` (QuickBooks PR).
 |---|---|
 | When is a document posted? | **On SENT** (issued). Drafts never leave TruckWys. |
 | What syncs in v1? | Contacts (customers + suppliers), sales invoices, credit notes (+ allocation to their invoice), **supplier bills** for expenses that have a supplier (push), payments / overpayment and prepayment allocations / credit notes raised in Xero (pull), tracking. |
-| Which expenses become bills? | Expenses **with a supplier**, not REJECTED, dated on/after the cut-over. An expense without a supplier stays in TruckWys only. A rejected or deleted expense voids its bill. An edited expense updates its bill while the bill is unpaid. |
+| Which expenses become bills? | Expenses **with a supplier**, not REJECTED, dated on/after the cut-over. An expense without a supplier stays in TruckWys only. A rejected or deleted expense voids its bill. An edited expense never changes a posted bill in place: a replacement is created as a draft, verified, posted, and only then is the old bill voided (a draft is just updated). A bill that is (partly) paid in Xero isn't touched: adjust it there. |
 | Bill numbering | The bill's number (Xero shows it as "Reference" on bills) = the supplier's receipt number, or the TruckWys expense number when there is none; the TruckWys expense number is also in the line description. Duplicates are checked per supplier. Bills are dated and due on the expense date (TruckWys doesn't track supplier terms). |
 | Contact matching | external id → VAT number → CIPC registration number → exact e-mail → normalised legal name. A name-only match is a **suggestion a person confirms**; nothing is guessed. No match → the contact is created in Xero on first push. TruckWys never creates customers from Xero's list (the old prototype did, across tenants: removed). |
 | Account / tax mapping | Per company, in Settings → Integrations → Accounting → Mapping. Revenue types (freight, fuel surcharge, tolls recharged, extra km, waiting time, other) and expense categories → account codes; TruckWys tax codes → the org's tax rates, read live from `/TaxRates`. A tax rate must have the rate of the code it stands for (STANDARD 15 %, others 0 %). **Sync is blocked until everything is mapped.** Suggestions are shown, never applied. |
@@ -76,11 +76,16 @@ Uncertified Xero apps can connect at most **25 organisations**. To go beyond, ap
 
 ### 3.1 Connect
 
-`POST /integrations/accounting/xero/connect/` returns Xero's consent URL with a signed state (company + admin user + provider, 15 minutes). The callback (`/integrations/xero/callback/`):
+`POST /integrations/accounting/xero/connect/` returns `auth_url` = TruckWys' own one-time start page (`/integrations/accounting/xero/start/?ticket=…`, 5 minutes, single use). That page sets an HttpOnly nonce cookie on the admin's browser and redirects to Xero's consent screen with a signed state (company + admin user + provider + nonce, 15 minutes). The callback (`/integrations/xero/callback/`) requires the cookie to match the state (`browser_mismatch` otherwise), so a consent link forwarded to someone else can't attach *their* organisation to this company. Then it:
 1. exchanges the code, stores both tokens **encrypted** (`core.utils.crypto`, fail closed);
-2. lists the organisations authorised **in this consent** (`GET /connections?authEventId=…`) with their base currency (`/Organisation`);
-3. one ZAR org → ACTIVE; several → `PENDING_ORG` and the UI shows a picker; a reconnect keeps the org it was syncing with (`org_mismatch` if it wasn't ticked);
+2. lists the organisations authorised **in this consent** (`GET /connections?authEventId=…`, falling back to all of the grant's connections if a re-consent doesn't count as a new event) with their base currency (`/Organisation`);
+3. one ZAR org → ACTIVE; several → `PENDING_ORG` and the UI shows a picker;
 4. reads accounts, tax rates and tracking categories for the mapping screen.
+
+Reconnecting:
+- **Reconnect required (NEEDS_REAUTH):** the connection keeps its status until the same organisation is ticked again (documents stay queued and payments stay managed in the meantime). A consent without that org (`org_mismatch`) or with no org at all leaves it as it was.
+- **After a disconnect:** connecting the same organisation again **resumes the old connection** (its links, mapping and cut-over), then re-runs the initial sync so payments recorded in TruckWys while disconnected go up to Xero. A different organisation starts afresh.
+- Orgs authorised but not chosen are released at Xero (`DELETE /connections/{id}`), except one that another TruckWys company syncs with. A disconnect revokes the refresh token only when no other live TruckWys connection uses the same Xero user's grant.
 
 An org can feed only one TruckWys company (DB constraint), because webhooks are routed by tenant id.
 
@@ -88,7 +93,7 @@ An org can feed only one TruckWys company (DB constraint), because webhooks are 
 
 Every document is an `ExternalLink` (company, object type, local id ↔ Xero id/number, payload hash, status, error, attempts). Signals queue a push when an invoice is issued or voided, a credit note is issued or voided, an expense is saved or deleted. `core.accounting.sync.run_link` then:
 
-1. claims the link atomically (two workers never push the same document);
+1. claims the link atomically (two workers never push the same document); a void or edit that arrives while a worker holds it sets `requeue`, and the worker runs it again when it finishes;
 2. resolves the contact (match or create, see §1);
 3. builds the payload from the TruckWys lines: `unitdp=4`, Quantity, UnitAmount, DiscountRate or DiscountAmount, AccountCode, TaxType, **TaxAmount = TruckWys' own per-line VAT**, Tracking;
 4. looks for the same number in Xero first (an accountant may have typed it in): equal totals → linked; different totals → DEAD with both figures;
@@ -150,14 +155,15 @@ Documented differences (by design, not rounding):
 
 - Rotating `XERO_CLIENT_SECRET`: generate a second secret in the portal, deploy it, then delete the old one (tokens survive).
 - Rotating `FIELD_ENCRYPTION_KEY`: `manage.py reencrypt_fields` now also covers `AccountingConnection.access_token/refresh_token`.
-- Re-running the initial sync: Cut-over tab → Start again. Every step is idempotent (linked documents are skipped). The cut-over can only move **earlier**.
-- Disconnect: revokes the token and `DELETE /connections/{id}`; links and history are kept, so reconnecting the same org continues where it stopped. Manual payments become possible again immediately.
+- Re-running the initial sync: Cut-over tab → Start again. Every step is idempotent (linked documents and adopted receipts are skipped; a receipt Xero applied but whose answer was lost is found again by its reference "TruckWys PAY-…"). The cut-over can only move **earlier**; documents are in or out of the integration by their date, every time. A rate limit or outage pauses the job and it continues by itself after Xero's Retry-After; a job whose worker died (deploy) can be started again after 2 hours without progress. The sync reports FAILED (not DONE) while any document or receipt still needs attention.
+- An invoice that failed during the initial sync and syncs later takes its TruckWys receipts up with it. Until a receipt recorded in TruckWys is in Xero, TruckWys doesn't mirror that invoice's Xero payments (so nothing is counted twice).
+- Disconnect: `DELETE /connections/{id}` and token revocation (see §3.1); links and history are kept, so reconnecting the same org continues where it stopped. Manual payments become possible again immediately.
 - Data model: `accounting_connections`, `accounting_external_links`, `accounting_sync_events`, `accounting_webhook_events`, `accounting_reconciliation_runs`, `accounting_reconciliation_differences`.
 
 ## 6. Known limits
 
 - 25 connected organisations until certified (§2).
-- Per tenant 60 calls / minute, 5 000 / day, 5 concurrent; app-wide 10 000 / minute. TruckWys keeps a margin (55 / 4 800 / 4). A first sync of N invoices costs about 3–4 calls each (find, create, verify, authorise), so a 1 000-invoice backfill takes ~1 hour and spreads across days beyond ~1 200 documents; it resumes by itself.
+- Per tenant 60 calls / minute, 5 000 / day, 5 concurrent; app-wide 10 000 / minute. TruckWys keeps a margin (55 / 4 800 / 4), enforced by one atomic Redis check (a refused call spends no quota). The minute windows are rolling; the day window is a UTC calendar day (Xero's is rolling 24 h; the margin covers the difference). A 403 from Xero (connection removed or scope withdrawn) is treated like a refused token: Reconnect required. A first sync of N invoices costs about 3–4 calls each (find, create, verify, authorise), so a 1 000-invoice backfill takes ~1 hour and spreads across days beyond ~1 200 documents; it resumes by itself.
 - Tracking: Xero allows 2 active tracking categories and 100 options each. Past 100 vehicles, new plates are pushed without vehicle tracking (logged as a warning).
 - Contact details are pushed when a contact is created; later edits in TruckWys aren't sent (edit in Xero).
 - One payment belongs to one invoice in TruckWys (foundation). Unallocated overpayments/prepayments made in Xero appear only as a per-customer reconciliation difference until allocated.
@@ -172,7 +178,8 @@ All under `/api/v1/integrations/accounting/`; errors are `{"error": "...", "code
 |---|---|---|---|
 | GET | `providers/` | any | Provider cards (`configured`, `availability`) + current connection |
 | GET | `connection/` | any | Connection, readiness, counts, `payments_managed_externally` (or `null`) |
-| POST | `xero/connect/` | admin | `{auth_url}` |
+| POST | `xero/connect/` | admin | `{auth_url}`: TruckWys' one-time start page, which sets the browser nonce and redirects to Xero |
+| GET | `xero/start/?ticket=` | public (signed, single-use ticket) | Sets the nonce cookie, redirects to Xero's consent screen |
 | GET | `/integrations/xero/callback/` | public (signed state) | Redirects to `FRONTEND_URL/settings/integrations/accounting?provider=xero&result=connected\|choose_org\|error&reason=…` |
 | POST | `connection/select-org/` | admin | `{tenant_id}` |
 | POST | `connection/disconnect/` | admin | Revoke + disable |

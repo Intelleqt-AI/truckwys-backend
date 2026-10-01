@@ -158,6 +158,9 @@ class ExternalLink(models.Model):
     last_error = models.TextField(blank=True, default='')
     attempts = models.PositiveIntegerField(default=0)
     next_attempt_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    # Set when the document changed (void, edit) while a worker held the
+    # link: the worker re-queues it when it finishes instead of losing it.
+    requeue = models.BooleanField(default=False)
     # Contact matching: how the link was made, and candidates for the wizard.
     match_method = models.CharField(max_length=20, blank=True, default='')
     candidates = models.JSONField(default=list, blank=True)

@@ -157,12 +157,17 @@ class XeroAdapter(base.AccountingAdapter):
 
     def __init__(self, connection, *, http: ProviderHTTP | None = None):
         self.connection = connection
-        if http is None:
+        self._http = http
+
+    @property
+    def http(self) -> ProviderHTTP:
+        # Built on first use: serialising an invoice only needs web_url().
+        if self._http is None:
             from core.accounting.tokens import token_getter
-            http = ProviderHTTP(provider='XERO', tenant_key=connection.tenant_id or f'conn{connection.pk}',
-                                limiter=limiter_for('XERO'), token_getter=token_getter(connection, self),
-                                error_message=error_message)
-        self.http = http
+            self._http = ProviderHTTP(provider='XERO', tenant_key=self.connection.tenant_id or f'conn{self.connection.pk}',
+                                      limiter=limiter_for('XERO'), token_getter=token_getter(self.connection, self),
+                                      error_message=error_message)
+        return self._http
 
     # ------------------------------------------------------------ helpers
     def _api(self, method, path, *, params=None, body=None, idempotency_key='', ok=(200, 201, 202, 204),
@@ -174,7 +179,7 @@ class XeroAdapter(base.AccountingAdapter):
             hdrs.update(headers)
         return self.http.request(method, f'{API}{path}', params=params, json_body=body, headers=hdrs, ok=ok)
 
-    def _paged(self, path, key, params=None, headers=None, max_pages=200):
+    def _paged(self, path, key, params=None, headers=None, max_pages=500):
         params = dict(params or {})
         for page in range(1, max_pages + 1):
             params['page'] = page
@@ -183,6 +188,9 @@ class XeroAdapter(base.AccountingAdapter):
             yield from rows
             if len(rows) < self.PAGE:
                 return
+        # Never act on a silently truncated list (e.g. remainders would be
+        # removed for credits on page 501).
+        raise PermanentError(f'Xero returned more than {max_pages} pages of {key}; refusing to use a partial list')
 
     @staticmethod
     def _basic():
@@ -238,6 +246,10 @@ class XeroAdapter(base.AccountingAdapter):
         if claims.get('authentication_event_id'):
             params['authEventId'] = claims['authentication_event_id']
         rows = self.http.request('GET', CONNECTIONS_URL, params=params, limited=False)
+        if params and not rows:
+            # A re-consent may not count as a new event for orgs that were
+            # already connected: fall back to every connection of this grant.
+            rows = self.http.request('GET', CONNECTIONS_URL, limited=False)
         orgs = []
         for row in rows if isinstance(rows, list) else []:
             if (row.get('tenantType') or 'ORGANISATION') != 'ORGANISATION':
@@ -263,9 +275,10 @@ class XeroAdapter(base.AccountingAdapter):
             except NotFound:
                 pass
 
-    def revoke(self) -> None:
+    def revoke(self, revoke_token=True) -> None:
         """DELETE the tenant connection, then revoke the refresh token (which
-        ends every connection made with it). Best effort on each step."""
+        ends every connection made with it) unless revoke_token is False.
+        Best effort on each step."""
         from core.utils.crypto import decrypt_secret
         errors = []
         try:
@@ -273,7 +286,7 @@ class XeroAdapter(base.AccountingAdapter):
         except base.AccountingError as exc:
             errors.append(str(exc))
         try:
-            token = decrypt_secret(self.connection.refresh_token)
+            token = decrypt_secret(self.connection.refresh_token) if revoke_token else ''
         except Exception:
             token = ''
         if token:
@@ -488,14 +501,13 @@ class XeroAdapter(base.AccountingAdapter):
         return self._create(doc, external_id=external_id, idempotency_key=idempotency_key)
 
     def push_bill(self, doc, *, external_id='', version='', idempotency_key=''):
-        """Bills can change while unpaid (expenses are editable)."""
+        """Create a bill as DRAFT, or update a DRAFT bill in place. A posted
+        bill is never edited here (the core replaces it: core.accounting.sync)."""
         if external_id:
             current = self.get_document('BILL', external_id)
-            if current.status in ('PAID', 'VOIDED', 'DELETED'):
-                raise PermanentError(f'The bill is {current.status.lower()} in Xero and can\'t be changed; '
-                                     'adjust it in Xero')
-            status = 'AUTHORISED' if current.status == 'AUTHORISED' else 'DRAFT'
-            body = self._doc_body(doc, status=status)
+            if current.status not in ('DRAFT', 'SUBMITTED'):
+                raise PermanentError(f'The bill is {current.status.lower()} in Xero; only a draft is updated in place')
+            body = self._doc_body(doc, status='DRAFT')
             body['InvoiceID'] = external_id
             data = self._api('POST', f'/Invoices/{external_id}', params={'unitdp': 4}, body={'Invoices': [body]})
             return self._result(self._rows(data, 'BILL')[0], 'BILL')
@@ -563,8 +575,9 @@ class XeroAdapter(base.AccountingAdapter):
         if bt.get('ValidationErrors'):
             raise PermanentError('Xero rejected the overpayment: ' +
                                  '; '.join(v.get('Message', '') for v in bt['ValidationErrors']))
-        return PushResult(external_id=bt.get('OverpaymentID') or bt.get('BankTransactionID', ''),
-                          status=bt.get('Status', ''))
+        if not bt.get('OverpaymentID'):
+            raise PermanentError('Xero didn\'t return the OverpaymentID of the receipt')
+        return PushResult(external_id=bt['OverpaymentID'], status=bt.get('Status', ''))
 
     # ------------------------------------------------------------ payments back
     def _allocations(self, kind, doc_id):
@@ -763,14 +776,35 @@ class XeroAdapter(base.AccountingAdapter):
             out[c.contact_id] = out.get(c.contact_id, D0) - c.remaining
         return out
 
+    def _receivables_account_name(self) -> str:
+        """The org's debtors control account (SystemAccount DEBTORS), so a
+        renamed "Accounts Receivable" still matches."""
+        if not hasattr(self, '_ar_name'):
+            name = 'Accounts Receivable'
+            try:
+                for a in self._api('GET', '/Accounts').get('Accounts') or []:
+                    if a.get('SystemAccount') == 'DEBTORS' and a.get('Name'):
+                        name = a['Name']
+                        break
+            except PermanentError:
+                pass
+            self._ar_name = name
+        return self._ar_name
+
     def debtors_at(self, on):
-        """Accounts Receivable from the Balance Sheet report at `on`."""
+        """Accounts Receivable from the Balance Sheet report at `on`. Xero
+        leaves zero-balance accounts out, so a report without the row means
+        R0.00; no report at all means unknown (None)."""
+        want = self._receivables_account_name().strip().lower()
         data = self._api('GET', '/Reports/BalanceSheet', params={'date': on.isoformat(), 'standardLayout': 'true'})
-        for report in data.get('Reports') or []:
+        reports = data.get('Reports') or []
+        if not reports:
+            return None
+        for report in reports:
             for section in report.get('Rows') or []:
                 for row in section.get('Rows') or []:
                     cells = row.get('Cells') or []
-                    if len(cells) >= 2 and (cells[0].get('Value') or '').strip().lower() == 'accounts receivable':
+                    if len(cells) >= 2 and (cells[0].get('Value') or '').strip().lower() == want:
                         try:
                             return dec(cells[1].get('Value'))
                         except Exception:

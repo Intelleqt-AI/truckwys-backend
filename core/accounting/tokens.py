@@ -91,7 +91,14 @@ def token_getter(connection, adapter):
 
 
 def refresh_access_token(connection, adapter, *, stale_token=None) -> str:
+    from django.db import connection as db
     from core.models import AccountingConnection
+    if db.in_atomic_block:
+        # The rotated refresh token is saved in a savepoint of the caller's
+        # transaction: if the caller rolls back, the new token is lost and the
+        # old one is already dead. Callers must not make provider calls inside
+        # a transaction (core.accounting keeps to this); log any that do.
+        logger.warning('accounting token refresh inside a transaction (connection %s)', connection.pk)
     failure = None
     with transaction.atomic():
         locked = AccountingConnection.objects.select_for_update().get(pk=connection.pk)
