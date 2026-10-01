@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('core', '0131_merge_20260930_1334'),
+        ('core', '0134_seed_toll_tariff_verification'),
     ]
 
     operations = [
