@@ -305,7 +305,7 @@ class SignalsHonestyTests(_Base):
         Invoice.objects.filter(invoice_number='INV-DC-S1').update(early_pay_eligible=True)
         bodies = self._bodies()
         fp = next(b for t, b in bodies.items() if t.startswith('Fast Pay'))
-        self.assertIn('R 1,150', fp)  # real figure (subtotal + 15% VAT) is kept
+        self.assertIn('R\u00a01\u00a0150', fp)  # real figure (subtotal + 15% VAT) is kept, en-ZA
         self.assertNotIn('fee', fp.lower())
         self.assertNotIn('4 hours', fp)
 

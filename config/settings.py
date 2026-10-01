@@ -318,6 +318,21 @@ if EMAIL_HOST_USER and EMAIL_HOST_USER != 'resend' or EMAIL_HOST_PASSWORD:
     EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 else:
     EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+
+# Where outgoing email goes (core/services/mail_delivery.py):
+#   resend  (default) send for real. Production.
+#   console print each email in the runserver terminal, send nothing. Local:
+#           EMAIL_DELIVERY=console in .env.
+#   off     drop it. Forced while tests run, so a test run never spends the
+#           Resend quota (100 emails a day on the free plan).
+import sys as _sys
+_RUNNING_TESTS = len(_sys.argv) > 1 and _sys.argv[1] == 'test'
+EMAIL_DELIVERY = 'off' if _RUNNING_TESTS else config('EMAIL_DELIVERY', default='resend').strip().lower()
+if EMAIL_DELIVERY not in ('resend', 'console', 'off'):
+    EMAIL_DELIVERY = 'resend'
+if EMAIL_DELIVERY == 'console':
+    # Django's own mail (invites, password reset) prints too.
+    EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='Truckwys <noreply@truckwys.com>')
 
 # Resend Configuration

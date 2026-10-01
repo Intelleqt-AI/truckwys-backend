@@ -1,3 +1,4 @@
+from core.formatting import format_zar
 """Shared building blocks for notify_company() title/body copy.
 
 Keeps every quote/load notification's customer/route/amount fragments
@@ -23,7 +24,7 @@ def money(amount) -> str:
     """R-formatted amount, or '' if falsy — callers just skip the fragment."""
     if not amount:
         return ''
-    return f'R{float(amount):,.0f}'
+    return format_zar(amount, 0)
 
 
 def quote_route(quote) -> str:

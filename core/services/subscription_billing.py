@@ -23,6 +23,7 @@ import logging
 from datetime import date, timedelta
 
 from django.utils import timezone
+from core.formatting import format_zar
 
 logger = logging.getLogger(__name__)
 
@@ -368,7 +369,7 @@ def charge_monthly_subscription_fee(company) -> dict:
         company.save(update_fields=['next_billing_date', 'next_billing_at', 'updated_at'])
         record_charge_success(company)
         title = 'Subscription fee charged'
-        message = f'{MONTHLY_FEE_ITEM_NAME}: R{MONTHLY_FEE:,.2f} charged successfully.'
+        message = f'{MONTHLY_FEE_ITEM_NAME}: {format_zar(MONTHLY_FEE)} charged successfully.'
         notify_company(company.id, 'SUCCESS', title, message, link='/settings/billing', event='subscription.charged')
         notify_company_billing_email(company.id, title, message, link='/settings/billing')
         return {'charged': True}
@@ -385,7 +386,7 @@ def charge_monthly_subscription_fee(company) -> dict:
         company.save(update_fields=['paystack_authorization_code', 'updated_at'])
         title = 'Your saved card is no longer valid'
         message = (
-            f"We couldn't charge your {MONTHLY_FEE_ITEM_NAME} subscription (R{MONTHLY_FEE:,.2f}) "
+            f"We couldn't charge your {MONTHLY_FEE_ITEM_NAME} subscription ({format_zar(MONTHLY_FEE)}) "
             "because the saved card can no longer be charged. Please add a payment method "
             "again to keep your account active."
         )
@@ -398,7 +399,7 @@ def charge_monthly_subscription_fee(company) -> dict:
         grace_deadline = company.grace_period_expires_at
         title = 'Could not charge subscription fee'
         message = (
-            f"We couldn't charge your {MONTHLY_FEE_ITEM_NAME} subscription (R{MONTHLY_FEE:,.2f}). "
+            f"We couldn't charge your {MONTHLY_FEE_ITEM_NAME} subscription ({format_zar(MONTHLY_FEE)}). "
             f"You have until {grace_deadline.strftime('%d %b %Y')} to update your card before your "
             "account is suspended."
         )

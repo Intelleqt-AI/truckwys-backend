@@ -30,6 +30,7 @@ from .serializers_billing import (
 )
 from .services import paystack
 from .services.paystack import MONTHLY_FEE, MONTHLY_FEE_ITEM_NAME
+from core.formatting import format_zar
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ def _activate_from_verified_charge(company, txn, data: dict) -> bool:
         txn.save(update_fields=['status', 'payment_status', 'raw_gateway_response', 'updated_at'])
         notify_company_billing_email(
             company.id, 'Subscription payment failed',
-            f"We couldn't confirm your {MONTHLY_FEE_ITEM_NAME} payment (R{MONTHLY_FEE:,.2f}). "
+            f"We couldn't confirm your {MONTHLY_FEE_ITEM_NAME} payment ({format_zar(MONTHLY_FEE)}). "
             "Your subscription was not activated — please try again.",
             link='/settings/billing',
         )
@@ -73,7 +74,7 @@ def _activate_from_verified_charge(company, txn, data: dict) -> bool:
         txn.save(update_fields=['status', 'payment_status', 'raw_gateway_response', 'updated_at'])
         notify_company_billing_email(
             company.id, 'Subscription payment failed',
-            f"We couldn't confirm your {MONTHLY_FEE_ITEM_NAME} payment (R{MONTHLY_FEE:,.2f}) — the amount charged "
+            f"We couldn't confirm your {MONTHLY_FEE_ITEM_NAME} payment ({format_zar(MONTHLY_FEE)}) — the amount charged "
             "didn't match. Your subscription was not activated — please try again or contact support.",
             link='/settings/billing',
         )
@@ -135,12 +136,12 @@ def _activate_from_verified_charge(company, txn, data: dict) -> bool:
     subscription_portion = txn.amount - settled_total
     if settled_count:
         detail = (
-            f'R{subscription_portion:,.2f} for {MONTHLY_FEE_ITEM_NAME} plus R{settled_total:,.2f} across '
+            f'{format_zar(subscription_portion)} for {MONTHLY_FEE_ITEM_NAME} plus {format_zar(settled_total)} across '
             f'{settled_count} previously failed delivery fee charge{"s" if settled_count != 1 else ""} — '
-            f'R{txn.amount:,.2f} total. Your subscription is active and every outstanding charge is now clear.'
+            f'{format_zar(txn.amount)} total. Your subscription is active and every outstanding charge is now clear.'
         )
     else:
-        detail = f'{MONTHLY_FEE_ITEM_NAME}: R{txn.amount:,.2f} charged successfully. Your subscription is active.'
+        detail = f'{MONTHLY_FEE_ITEM_NAME}: {format_zar(txn.amount)} charged successfully. Your subscription is active.'
 
     notify_company_billing_email(
         company.id, 'Subscription payment confirmed', detail, link='/settings/billing',

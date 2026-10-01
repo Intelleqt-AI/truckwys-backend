@@ -19,6 +19,7 @@ from rest_framework.views import APIView
 from core.models import AuditLog, Company, User, Quote, Load, TaskRunLog, UserActivityLog, UserSession, AIQuotePriceAnalysis
 from core.services.demo_seed import IDLE_RESET_AFTER, reset_demo_company
 from core.views import IsSuperUser
+from core.formatting import format_zar
 
 
 def _log(request, action, resource_type, resource_id, **details):
@@ -82,7 +83,12 @@ class AdminOverviewView(APIView):
             },
             'total_companies': real_companies.count(),
             'has_demo_company': Company.objects.filter(is_demo=True).exists(),
-            'total_users': User.objects.filter(company__is_demo=False, company__is_deleted=False).count(),
+            # Users with no company are real accounts too (half-finished
+            # signups, platform staff): counted, and reported on their own.
+            'total_users': User.objects.filter(
+                Q(company__isnull=True) | Q(company__is_demo=False, company__is_deleted=False)
+            ).count(),
+            'users_without_company': User.objects.filter(company__isnull=True).count(),
             'total_quotes': Quote.objects.filter(company__is_demo=False, company__is_deleted=False).count(),
             'quotes_this_month': Quote.objects.filter(company__is_demo=False, company__is_deleted=False, created_at__gte=month_start).count(),
             'total_loads': Load.objects.filter(company__is_demo=False, company__is_deleted=False).count(),
@@ -391,7 +397,7 @@ class AdminRecordPaymentView(APIView):
         company.save(update_fields=['next_billing_date', 'next_billing_at', 'subscription_status', 'grace_period_expires_at', 'updated_at'])
 
         title = 'Payment recorded'
-        message = f'{MONTHLY_FEE_ITEM_NAME}: R{amount:,.2f} recorded manually.' + (f' Note: {note}' if note else '')
+        message = f'{MONTHLY_FEE_ITEM_NAME}: {format_zar(amount)} recorded manually.' + (f' Note: {note}' if note else '')
         notify_company(company.id, 'SUCCESS', title, message, link='/settings/billing', event='subscription.charged')
         notify_company_billing_email(company.id, title, message, link='/settings/billing')
 
