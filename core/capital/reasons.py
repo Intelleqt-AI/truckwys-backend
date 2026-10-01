@@ -108,7 +108,7 @@ REASONS: dict[str, tuple[str, str, str | None]] = {
     'L-TOP10': ('-', 'Top-10 debtor concentration {pct}%: {detail}', 'Funding for this customer is near its limit, so we can advance R{amount} now'),
     'L-GRADE-MIX': ('-', 'C/D-grade share headroom R{headroom}', 'Fast Pay funding is in high demand, so we can advance R{amount} now'),
     'L-QUEUED': ('-', 'R{amount} queued until capacity frees', 'The remaining R{amount} is queued and offered when capacity frees up'),
-    'R-BOOK-RED': ('-', 'Book risk index is red ({index}): new advances are referred', None),
+    'R-BOOK-RED': ('-', 'Book risk index is red ({index}): no auto-approval; the funder reviews each advance', None),
     'R-REFER-GRADE': ('-', 'Referred: {party} grade {grade}', 'This request needs a quick manual review'),
     'R-REFER-INVOICE': ('-', 'Referred: invoice grade {grade} (expected loss {el}%)', 'This request needs a quick manual review'),
     'R-REFER-FRAUD': ('-', 'Referred: fraud score {score}', 'This request needs a quick manual review'),

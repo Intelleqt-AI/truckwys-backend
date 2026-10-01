@@ -58,9 +58,15 @@ def _client(user):
     return c
 
 
+@override_settings(CAPITAL_LAUNCHED=True)
 class CapitalFixture(TestCase):
     """Two transporters, each with a facility, a debtor, and a delivered,
-    POD-backed load with a SENT invoice offered for early pay."""
+    POD-backed load with a SENT invoice offered for early pay.
+
+    Fast Pay risk release: every request now goes through the decision engine,
+    so the fixture is made fundable (line under a funder, CIPC-identified
+    debtor, approved application, camera POD) and Fast Pay is switched on.
+    """
 
     @classmethod
     def setUpTestData(cls):
@@ -81,6 +87,11 @@ class CapitalFixture(TestCase):
             setattr(cls, f'load_{tag}', cls.make_load(co, cust, f'L-CAP-{tag}'))
             setattr(cls, f'invoice_{tag}', cls.make_invoice(
                 co, cust, f'INV-CAP-{tag}', load=getattr(cls, f'load_{tag}')))
+        from core.tests.capital_fixtures import make_funder, make_fundable
+        cls.funder = make_funder('cap-safety')
+        for tag, co in (('a', cls.co_a), ('b', cls.co_b)):
+            make_fundable(co, getattr(cls, f'customer_{tag}'), getattr(cls, f'facility_{tag}'),
+                          getattr(cls, f'load_{tag}'), funder=cls.funder)
 
     @staticmethod
     def make_load(company, customer, number, pod=True):
@@ -450,7 +461,10 @@ class FacilityLedgerTests(CapitalFixture):
         adv, _ = open_advance(invoice=self.invoice_a, facility=self.facility_a, amount=Decimal('5000'))
         c = _client(self.staff)
         self.assertEqual(c.post(f'/api/v1/advances/{adv.id}/approve/', {}, format='json').status_code, 200)
-        self.assertEqual(c.post(f'/api/v1/advances/{adv.id}/disburse/', {}, format='json').status_code, 200)
+        # Segregation of duties (Fast Pay risk release): the approver cannot pay out.
+        self.assertEqual(c.post(f'/api/v1/advances/{adv.id}/disburse/', {}, format='json').status_code, 403)
+        payer = _client(_user('cap_staff_payer', None, is_staff=True))
+        self.assertEqual(payer.post(f'/api/v1/advances/{adv.id}/disburse/', {}, format='json').status_code, 200)
         self.refresh(self.facility_a)
         self.assertEqual((self.facility_a.reserved, self.facility_a.outstanding),
                          (Decimal('0.00'), Decimal('5000.00')))

@@ -118,7 +118,10 @@ DEFAULT_POLICY: dict[str, Any] = {
     # --- Book Risk Index (design §3.4) ---
     'risk_index': {'green': 75, 'amber': 60, 'el_norm_pct': '1.0', 'lambda_hhi': 10, 'lambda_top10': 2,
                    'lambda_top1': 2, 'stress_norm': 2},
-    'red_index_refers_all': True,
+    # Red index: auto-approval (Mode B) is off and the reason is shown to the
+    # desk. In Mode A every advance already goes to the funder, so a red book
+    # does not relabel decisions; set True to force REFER on a red book.
+    'red_index_refers_all': False,
 
     # --- Monitoring (design §3.6) ---
     'limit_alert_utilisation': '0.85',
