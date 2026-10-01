@@ -14,7 +14,7 @@ from .views_admin import (
     AdminBorderFeesView, AdminBorderFeeDetailView,
     AdminCountryTransitRatesView, AdminCountryTransitRateDetailView,
     AdminSearchView, AdminJobHealthView, AdminIntegrationsHealthView,
-    AdminModelHealthView, AdminAuditLogView,
+    AdminModelHealthView, AdminAuditLogView, AdminAIUsageView,
 )
 from .views import (
     UserViewSet, CustomerViewSet, DriverViewSet,
@@ -32,8 +32,13 @@ from .views import (
     VapidPublicKeyView, PushSubscriptionView,
     AuthHandoffMintView, AuthHandoffExchangeView,
 )
+from .views_import import (
+    CustomerImportValidateView, CustomerImportCommitView,
+    VehicleImportValidateView, VehicleImportCommitView,
+)
+from .views_bulk_delete import CustomerBulkDeleteView, VehicleBulkDeleteView
 from .views_ai_quote import (
-    AIChatQuoteView, AIQuoteAnalyzeView, AIQuoteSuggestionView, AIVoiceQuoteView,
+    AIChatQuoteView, AIQuoteAnalyzeView, AIQuotePriceAnalysisView, AIQuoteSuggestionView, AIVoiceQuoteView,
     FuelPriceCurrentView, FuelPriceSurchargeCheckView,
     QuoteBenchmarkView, QuoteFuelAlertView, QuoteModelStatsView,
     QuoteOutcomeView, QuoteWinProbabilityView, RevenueGuardView
@@ -166,6 +171,7 @@ urlpatterns = [
     path('admin/job-health/', AdminJobHealthView.as_view(), name='admin-job-health'),
     path('admin/integrations-health/', AdminIntegrationsHealthView.as_view(), name='admin-integrations-health'),
     path('admin/model-health/', AdminModelHealthView.as_view(), name='admin-model-health'),
+    path('admin/ai-usage/', AdminAIUsageView.as_view(), name='admin-ai-usage'),
     path('admin/audit-log/', AdminAuditLogView.as_view(), name='admin-audit-log'),
     path('billing/confirm/', ConfirmPaymentView.as_view(), name='billing-confirm'),
     path('auth/me/', UserProfileView.as_view(), name='user-profile'),
@@ -210,6 +216,16 @@ urlpatterns = [
     
     # Company Settings endpoints
     path('company/profile/', CompanyProfileView.as_view(), name='company-profile'),
+    # Bulk import — validate first so the UI can show what will and will not
+    # land before anything is written.
+    path('import/customers/validate/', CustomerImportValidateView.as_view(), name='import-customers-validate'),
+    path('import/customers/commit/', CustomerImportCommitView.as_view(), name='import-customers-commit'),
+    path('import/vehicles/validate/', VehicleImportValidateView.as_view(), name='import-vehicles-validate'),
+    path('import/vehicles/commit/', VehicleImportCommitView.as_view(), name='import-vehicles-commit'),
+    # Bulk delete — partial success, because quotes and invoices PROTECT the
+    # rows a fleet most wants to tidy up.
+    path('customers/bulk-delete/', CustomerBulkDeleteView.as_view(), name='customers-bulk-delete'),
+    path('vehicles/bulk-delete/', VehicleBulkDeleteView.as_view(), name='vehicles-bulk-delete'),
     path('company/logo/', CompanyLogoUploadView.as_view(), name='company-logo-upload'),
 
     # Finance Dashboard endpoints (NEW - Phase 2)
@@ -226,6 +242,7 @@ urlpatterns = [
     path('agent/memory/', CopilotMemoryView.as_view(), name='agent-memory'),
     path('quotes/optimize/', AIPriceOptimizeView.as_view(), name='quote-optimize'),
     path('quotes/analyze/', AIQuoteAnalyzeView.as_view(), name='quote-analyze'),
+    path('quotes/ai-price-analysis/', AIQuotePriceAnalysisView.as_view(), name='quote-ai-price-analysis'),
     path('risk/underwrite/', RiskUnderwriteView.as_view(), name='risk-underwrite'),
     path('risk/score/<int:pk>/explain/', RiskScoreExplainView.as_view(), name='risk-score-explain'),
     path('dashboard/overview/', DashboardOverviewView.as_view(), name='dashboard-overview'),

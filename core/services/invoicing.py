@@ -81,3 +81,23 @@ def create_invoice_for_load(load, *, company=None, mark_sent: bool = False):
     Load.objects.filter(pk=load.pk).update(status='INVOICED')
 
     return invoice, True
+
+
+def email_invoice_to_customer(invoice, additional_recipients=None) -> bool:
+    """Email the invoice (PDF + view link) to its customer. On success the
+    invoice is SENT with sent_at stamped (InvoiceEmailService). Shared by the
+    Send action and auto-email on delivery. Raises if the PDF can't be built;
+    returns False if the email didn't go out."""
+    import secrets
+    from core.services.email_service import InvoiceEmailService
+    from core.services.pdf_generator import InvoicePDFGenerator
+
+    if not invoice.pdf_file:
+        invoice.pdf_file = InvoicePDFGenerator.generate_pdf(invoice)
+        invoice.save()
+    if not invoice.view_token:
+        invoice.view_token = secrets.token_urlsafe(32)
+        invoice.save(update_fields=['view_token'])
+    return InvoiceEmailService.send_invoice(
+        invoice=invoice, pdf_path=str(invoice.pdf_file), additional_recipients=additional_recipients or [],
+    )

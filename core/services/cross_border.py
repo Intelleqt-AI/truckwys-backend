@@ -17,6 +17,7 @@ Fixes applied vs original:
 import logging
 from decimal import Decimal
 from typing import Any
+from core.formatting import format_zar
 
 logger = logging.getLogger(__name__)
 
@@ -440,7 +441,7 @@ def calculate_cross_border_costs(
                 breakdown.append({
                     'type': 'sa_permit',
                     'description': (f'SA C-BRTA Class {cls} permit '
-                                    f'(R{cbrta_annual_permit(banding_kg):,.0f}/yr over {n} crossings)'),
+                                    f'({format_zar(cbrta_annual_permit(banding_kg), 0)}/yr over {n} crossings)'),
                     'amount': permit,
                 })
 

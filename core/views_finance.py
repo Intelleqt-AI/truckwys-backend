@@ -33,6 +33,54 @@ from core.services.invoice_generator import InvoiceGenerator
 from core.services.pdf_generator import InvoicePDFGenerator
 from core.services.email_service import InvoiceEmailService
 from core.services.aging_service import AgingAnalysisService
+import django_filters
+
+
+# List filters for the three finance collections. Before 2026-09 these
+# viewsets declared no filters, so ?status=, ?invoice= etc. were silently
+# ignored and every row came back (docs/backend-changes/2026-09-api-data-correctness.md).
+# Invalid values (unknown status, non-numeric id, bad date) are a 400.
+# Foreign keys are plain NumberFilters on the *_id column, not ModelChoiceFilters:
+# the queryset is already company-scoped, and a ModelChoiceFilter would answer
+# 400 for a missing id but 200 for another tenant's id (an existence oracle).
+
+class InvoiceFilterSet(django_filters.FilterSet):
+    status = django_filters.ChoiceFilter(choices=Invoice.STATUS_CHOICES)
+    customer = django_filters.NumberFilter(field_name='customer_id')
+    load = django_filters.NumberFilter(field_name='load_id')
+    issue_date__gte = django_filters.DateFilter(field_name='issue_date', lookup_expr='gte')
+    issue_date__lte = django_filters.DateFilter(field_name='issue_date', lookup_expr='lte')
+    due_date__gte = django_filters.DateFilter(field_name='due_date', lookup_expr='gte')
+    due_date__lte = django_filters.DateFilter(field_name='due_date', lookup_expr='lte')
+
+    class Meta:
+        model = Invoice
+        fields = []
+
+
+class PaymentFilterSet(django_filters.FilterSet):
+    invoice = django_filters.NumberFilter(field_name='invoice_id')
+    customer = django_filters.NumberFilter(field_name='customer_id')
+    payment_method = django_filters.ChoiceFilter(choices=Payment.PAYMENT_METHOD_CHOICES)
+    payment_date__gte = django_filters.DateFilter(field_name='payment_date', lookup_expr='gte')
+    payment_date__lte = django_filters.DateFilter(field_name='payment_date', lookup_expr='lte')
+
+    class Meta:
+        model = Payment
+        fields = []
+
+
+class ExpenseFilterSet(django_filters.FilterSet):
+    status = django_filters.ChoiceFilter(choices=Expense.STATUS_CHOICES)
+    category = django_filters.ChoiceFilter(choices=Expense.CATEGORY_CHOICES)
+    vehicle = django_filters.NumberFilter(field_name='vehicle_id')
+    driver = django_filters.NumberFilter(field_name='driver_id')
+    expense_date__gte = django_filters.DateFilter(field_name='expense_date', lookup_expr='gte')
+    expense_date__lte = django_filters.DateFilter(field_name='expense_date', lookup_expr='lte')
+
+    class Meta:
+        model = Expense
+        fields = []
 
 
 class InvoiceFinanceViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
@@ -42,6 +90,7 @@ class InvoiceFinanceViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.Model
     queryset = Invoice.objects.all()
     serializer_class = InvoiceSerializer
     permission_classes = [IsAuthenticated]
+    filterset_class = InvoiceFilterSet
     billing_blocked_message = 'Update your payment method to continue quoting.'
 
     def create(self, request, *args, **kwargs):
@@ -87,35 +136,12 @@ class InvoiceFinanceViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.Model
             "additional_recipients": ["email@example.com"]  // optional
         }
         """
+        from core.services.invoicing import email_invoice_to_customer
         invoice = self.get_object()
-
-        # Ensure PDF exists
-        if not invoice.pdf_file:
-            try:
-                pdf_path = InvoicePDFGenerator.generate_pdf(invoice)
-                invoice.pdf_file = pdf_path
-                invoice.save()
-            except Exception as e:
-                return Response(
-                    {'error': f'Failed to generate PDF: {str(e)}'},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )
-
-        # Ensure view token exists before sending (included in email body)
-        if not invoice.view_token:
-            import secrets
-            invoice.view_token = secrets.token_urlsafe(32)
-            invoice.save(update_fields=['view_token'])
-
-        # Send email
         additional_recipients = request.data.get('additional_recipients', [])
 
         try:
-            success = InvoiceEmailService.send_invoice(
-                invoice=invoice,
-                pdf_path=str(invoice.pdf_file),
-                additional_recipients=additional_recipients
-            )
+            success = email_invoice_to_customer(invoice, additional_recipients)
 
             if success:
                 from django.conf import settings as _s
@@ -160,11 +186,30 @@ class InvoiceFinanceViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.Model
 
     @action(detail=True, methods=['post'])
     def mark_paid(self, request, pk=None):
-        """Mark invoice as fully paid."""
+        """Mark invoice as fully paid by recording a payment for its balance.
+
+        Goes through record_payment like every other payment, so the invoice
+        never shows as paid without a payment behind it (the ledgers and
+        revenue are dated by payments). Optional body: payment_date,
+        payment_method (default BANK_TRANSFER), reference_number.
+        """
+        from core.services.payments import record_payment, PaymentError
         invoice = self.get_object()
-        invoice.mark_as_paid()
-        serializer = self.get_serializer(invoice)
-        return Response(serializer.data)
+        if invoice.status == 'PAID' or invoice.balance <= 0:
+            return Response(self.get_serializer(invoice).data)
+        try:
+            record_payment(invoice.company, request.user, {
+                'invoice': invoice.id,
+                'amount': str(invoice.balance),
+                'payment_date': request.data.get('payment_date') or timezone.localdate().isoformat(),
+                'payment_method': request.data.get('payment_method') or 'BANK_TRANSFER',
+                'reference_number': request.data.get('reference_number', ''),
+                'notes': request.data.get('notes') or 'Marked as paid',
+            })
+        except PaymentError as e:
+            return Response({'error': str(e)}, status=e.status_code)
+        invoice.refresh_from_db()
+        return Response(self.get_serializer(invoice).data)
 
     @action(detail=True, methods=['post'])
     def send_reminder(self, request, pk=None):
@@ -394,16 +439,17 @@ class InvoiceFinanceViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.Model
                 total=Sum('paid_amount')
             )['total'] or Decimal('0')
 
-            # Overdue invoices (due_date < today and not paid)
+            # Overdue: the same rule as the aging report and the finance
+            # dashboard (sent, unpaid balance, past due). Drafts aren't owed.
+            from core.services.aging_service import OUTSTANDING_STATUSES
             today = date.today()
             overdue = base.filter(
                 due_date__lt=today,
-                status__in=['SENT', 'OVERDUE', 'PARTIALLY_PAID', 'DRAFT']
+                balance__gt=0,
+                status__in=OUTSTANDING_STATUSES,
             )
             overdue_count = overdue.count()
-            overdue_amount = overdue.aggregate(
-                total=Sum(F('total_amount') - F('paid_amount'))
-            )['total'] or Decimal('0')
+            overdue_amount = overdue.aggregate(total=Sum('balance'))['total'] or Decimal('0')
 
             # Average days to pay (for paid invoices)
             paid_invoices = base.filter(
@@ -439,6 +485,8 @@ class InvoiceFinanceViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.Model
                 'overdue_count': overdue_count,
                 'overdue_amount': float(overdue_amount),
                 'avg_days_to_pay': round(avg_days, 1),
+                # Same DSO as the aging report; None when not measurable.
+                'dso': AgingAnalysisService(company).calculate_dso(),
                 'collection_rate': round(collection_rate, 2),
                 'by_status': by_status
             })
@@ -457,6 +505,7 @@ class PaymentFinanceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     queryset = Payment.objects.all()
     serializer_class = PaymentSerializer
     permission_classes = [IsAuthenticated]
+    filterset_class = PaymentFilterSet
 
     def create(self, request, *args, **kwargs):
         """
@@ -485,6 +534,7 @@ class ExpenseFinanceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     queryset = Expense.objects.all()
     serializer_class = ExpenseSerializer
     permission_classes = [IsAuthenticated]
+    filterset_class = ExpenseFilterSet
 
     @action(detail=True, methods=['post'])
     def approve(self, request, pk=None):
@@ -665,11 +715,17 @@ class FinanceDashboardView(APIView):
     - from: YYYY-MM-DD (optional, defaults to start of month)
     - to: YYYY-MM-DD (optional, defaults to today)
     - compare: 'previous_period' (optional, returns previous period data for delta calculation)
+    - months: months in monthly_trend, 1 to 24 (optional, default 6)
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         today = date.today()
+
+        try:
+            trend_months = min(max(int(request.query_params.get('months', 6)), 1), 24)
+        except (TypeError, ValueError):
+            return Response({'error': 'months must be a whole number from 1 to 24'}, status=400)
 
         # Parse date range from query params
         from_date_str = request.query_params.get('from')
@@ -802,17 +858,18 @@ class FinanceDashboardView(APIView):
             id__in=active_vehicle_ids
         ).count()
 
-        # Outstanding invoices
+        # Outstanding invoices (the aging report's rule)
+        from core.services.aging_service import OUTSTANDING_STATUSES
         outstanding_total = inv_qs.filter(
             balance__gt=0,
-            status__in=['SENT', 'VIEWED', 'PARTIALLY_PAID', 'OVERDUE']
+            status__in=OUTSTANDING_STATUSES
         ).aggregate(total=Sum('balance'))['total'] or Decimal('0.00')
 
         # Overdue invoices
         overdue_total = inv_qs.filter(
             due_date__lt=today,
             balance__gt=0,
-            status__in=['SENT', 'VIEWED', 'PARTIALLY_PAID', 'OVERDUE']
+            status__in=OUTSTANDING_STATUSES
         ).aggregate(total=Sum('balance'))['total'] or Decimal('0.00')
 
         # DSO (Days Sales Outstanding)
@@ -850,9 +907,9 @@ class FinanceDashboardView(APIView):
             invoice_count=Count('id')
         ).order_by('-revenue')[:10]
 
-        # Monthly trend (last 6 months)
+        # Monthly trend (last `months` months, this month included)
         monthly_trend = []
-        for i in range(5, -1, -1):
+        for i in range(trend_months - 1, -1, -1):
             month_date = today - relativedelta(months=i)
             month_start = month_date.replace(day=1)
             month_end = (month_start + relativedelta(months=1)) - timedelta(days=1)

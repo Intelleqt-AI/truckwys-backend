@@ -21,6 +21,31 @@ class Company(models.Model):
     address = models.JSONField(default=dict)
     contact = models.JSONField(default=dict)
 
+    # Banking details printed in the "How to pay" block of this company's own
+    # invoices (PDF, invoice emails, public invoice page) — only once bank_name
+    # and bank_account_number are both set; otherwise invoices keep the
+    # "contact us for banking details" wording. All nullable: purely additive,
+    # existing companies are untouched. Digit checks live in CompanySerializer
+    # so no existing row can ever fail validation.
+    # See docs/backend-changes/2026-09-company-bank-details.md.
+    BANK_ACCOUNT_TYPE_CHOICES = [
+        ('CHEQUE', 'Cheque / current'),
+        ('SAVINGS', 'Savings'),
+        ('TRANSMISSION', 'Transmission'),
+    ]
+    bank_name = models.CharField(max_length=100, null=True, blank=True)
+    bank_account_holder = models.CharField(max_length=200, null=True, blank=True)
+    bank_account_number = models.CharField(max_length=20, null=True, blank=True)
+    bank_branch_code = models.CharField(max_length=10, null=True, blank=True)
+    bank_account_type = models.CharField(
+        max_length=20, choices=BANK_ACCOUNT_TYPE_CHOICES, null=True, blank=True,
+    )
+    payment_reference_hint = models.CharField(
+        max_length=200, null=True, blank=True,
+        help_text='Optional wording shown to customers about the payment reference to use; '
+                  'defaults to "use the invoice number as your payment reference".',
+    )
+
     # Default fuel prices, one per fuel type — used as the fallback price for
     # a VehicleType of that fuel type that doesn't have its own fuel_price
     # set. Diesel already has a live national-price feed elsewhere in the
@@ -31,6 +56,20 @@ class Company(models.Model):
     # via the "Fetch Now" nudge, and rounding to 2dp before storage would
     # introduce a small but real, compounding error into fuel-cost
     # calculations that fall back to this field.
+    # South Africa gazettes two diesel prices: fuel lands at the coastal ports
+    # and the DMRE adds a transport differential to move it inland, so Gauteng
+    # runs ~R0.87/L above Cape Town or Durban. Both figures are already scraped
+    # into FuelPrice; this says which of them applies to this fleet. It decides
+    # what "Fetch live prices" writes into fuel_price_per_litre below — it does
+    # not override a price a fleet has typed in, since plenty run on a
+    # negotiated fuel-card rate that tracks neither.
+    FUEL_ZONE_CHOICES = [('INLAND', 'Inland'), ('COASTAL', 'Coastal')]
+    fuel_zone = models.CharField(
+        max_length=10, choices=FUEL_ZONE_CHOICES, default='INLAND',
+        help_text='Which gazetted diesel price applies to this fleet. COASTAL for '
+                  'Cape Town, Durban, Gqeberha and East London; INLAND for Gauteng '
+                  'and the interior.'
+    )
     fuel_price_per_litre = models.DecimalField(
         max_digits=8, decimal_places=4, default=23.50,
         help_text='Default Diesel price per litre in ZAR (default: R23.50)'
@@ -64,6 +103,12 @@ class Company(models.Model):
     allow_cross_border = models.BooleanField(
         default=True,
         help_text='Whether cross-border routes are enabled for this company'
+    )
+    # Off by default: an invoice raised on delivery is a draft until someone
+    # sends it, so the customer never gets an invoice nobody reviewed.
+    auto_email_invoices = models.BooleanField(
+        default=False,
+        help_text='Email the invoice to the customer as soon as a load is delivered'
     )
     # A C-BRTA permit is bought per vehicle per country for a period (a 12-month
     # Class 2 permit is R8,761), not per load — so its cost per crossing depends

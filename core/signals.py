@@ -2,6 +2,7 @@
 
 from django.db.models.signals import post_save, post_delete, pre_save
 from django.dispatch import receiver
+from core.formatting import format_zar
 
 
 # ---------------------------------------------------------------------------
@@ -174,6 +175,39 @@ def load_saved(sender, instance, created, **kwargs):
             pass
 
 
+def _deliver_auto_invoice(load, invoice):
+    """Email an auto-raised invoice when the company has auto_email_invoices
+    on, and notify the team either way. Never raises."""
+    import logging
+    from core.services.notify import notify_company
+    log = logging.getLogger(__name__)
+    from core.models import Company
+    # Read fresh: the load's cached company may predate a settings change.
+    auto_email = bool(invoice.company_id and Company.objects.filter(
+        pk=invoice.company_id).values_list('auto_email_invoices', flat=True).first())
+    email = getattr(invoice.customer, 'email', '') or ''
+    amount = format_zar(invoice.total_amount, 0)
+    emailed = False
+    if auto_email and email:
+        try:
+            from core.services.invoicing import email_invoice_to_customer
+            emailed = email_invoice_to_customer(invoice)
+        except Exception as exc:
+            log.warning('auto-email of invoice %s failed: %s', invoice.invoice_number, exc)
+    try:
+        if emailed:
+            title, body = 'Invoice emailed on delivery', f'{invoice.invoice_number} · {amount} · sent to {email}'
+        elif auto_email:
+            reason = 'the customer has no email address' if not email else "the email couldn't be sent"
+            title, body = 'Invoice ready to send', f'{invoice.invoice_number} · {amount} · not emailed: {reason}'
+        else:
+            title, body = 'Invoice ready to send', f'{invoice.invoice_number} · {amount} · review it and send it to the customer'
+        notify_company(getattr(load, 'company_id', None), 'SUCCESS', title, body,
+                       link=f'/finance/invoices/{invoice.id}', event='invoice.auto_created')
+    except Exception as exc:
+        log.warning('auto-invoice notification failed: %s', exc)
+
+
 def _auto_invoice_on_delivery(load):
     """Delivered → raise the invoice automatically and surface fast-pay.
 
@@ -187,22 +221,21 @@ def _auto_invoice_on_delivery(load):
         return
     try:
         from core.services.invoicing import create_invoice_for_load
-        invoice, created = create_invoice_for_load(load, mark_sent=True)
+        # A draft until it's really emailed: marking it SENT here (as before)
+        # said the customer had an invoice nobody sent them, and started the
+        # overdue clock from a date they never saw.
+        invoice, created = create_invoice_for_load(load, mark_sent=False)
         if not (invoice and created):
             return
-        from core.services.notify import notify_company
-        notify_company(
-            getattr(load, 'company_id', None),
-            'SUCCESS',
-            'Invoice auto-raised on delivery',
-            f'{invoice.invoice_number} · R{float(invoice.total_amount):,.0f} · ready for fast-pay',
-            link=f'/finance/invoices/{invoice.id}',
-            event='invoice.auto_created',
-        )
     except Exception as exc:  # never break the delivery save
         import logging
         logging.getLogger(__name__).warning('auto-invoice on delivery failed: %s', exc)
         return
+
+    # After the delivery commits: email it if the company opted in, then tell
+    # the team what happened. Never on the delivery save's own path.
+    from django.db import transaction
+    transaction.on_commit(lambda: _deliver_auto_invoice(load, invoice))
 
     # 0.25% delivery take-rate — charged the same moment the invoice is
     # auto-raised. Its own service never raises, but keep this defensive too:
@@ -538,7 +571,7 @@ def advance_saved(sender, instance, created, **kwargs):
                 company_id,
                 'SUCCESS',
                 'Advance approved',
-                f'R{float(instance.net_amount):,.0f} approved · {inv_num}',
+                f'{format_zar(instance.net_amount, 0)} approved · {inv_num}',
                 link=f'/capital/advances/{instance.id}',
                 event='advance.approved',
                 exclude_user_id=getattr(instance, '_notify_actor_id', None),
@@ -574,7 +607,7 @@ def advance_saved(sender, instance, created, **kwargs):
                 company_id,
                 'SUCCESS',
                 'Funds disbursed',
-                f'R{float(instance.net_amount):,.0f} disbursed · {inv_num}',
+                f'{format_zar(instance.net_amount, 0)} disbursed · {inv_num}',
                 link=f'/capital/advances/{instance.id}',
                 event='advance.disbursed',
                 exclude_user_id=getattr(instance, '_notify_actor_id', None),

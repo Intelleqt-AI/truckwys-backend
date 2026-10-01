@@ -283,15 +283,23 @@ class PartnerAdvanceSerializer(serializers.ModelSerializer):
         return False
 
 
+def _scoped_invoices(serializer):
+    """Tenant isolation (2026-09): the view passes the caller's invoice
+    queryset as context['invoices'] so a foreign invoice id validates exactly
+    like a missing one (no existence / advance-id disclosure). Without that
+    context (internal callers) the old unscoped behaviour is kept."""
+    return serializer.context.get('invoices', Invoice.objects.all())
+
+
 class RiskScoreRequestSerializer(serializers.Serializer):
     """Serializer for risk score calculation request."""
 
     invoice_id = serializers.IntegerField(required=True, help_text='Invoice ID to score')
 
     def validate_invoice_id(self, value: int) -> int:
-        """Validate that invoice exists."""
+        """Validate that invoice exists (within the caller's scope)."""
         try:
-            Invoice.objects.get(id=value)
+            _scoped_invoices(self).get(id=value)
         except Invoice.DoesNotExist:
             raise serializers.ValidationError(f"Invoice with ID {value} does not exist")
         return value
@@ -303,9 +311,9 @@ class AdvanceRequestCreateSerializer(serializers.Serializer):
     invoice_id = serializers.IntegerField(required=True, help_text='Invoice ID to advance')
 
     def validate_invoice_id(self, value: int) -> int:
-        """Validate that invoice exists and is eligible."""
+        """Validate that invoice exists (within the caller's scope) and is eligible."""
         try:
-            invoice = Invoice.objects.get(id=value)
+            invoice = _scoped_invoices(self).get(id=value)
         except Invoice.DoesNotExist:
             raise serializers.ValidationError(f"Invoice with ID {value} does not exist")
 

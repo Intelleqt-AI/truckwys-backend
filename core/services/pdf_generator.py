@@ -22,6 +22,7 @@ from reportlab.platypus import (
 from reportlab.lib.enums import TA_LEFT, TA_RIGHT, TA_CENTER
 
 from core.models import Invoice, Company
+from core.formatting import format_zar
 
 
 class InvoicePDFGenerator:
@@ -282,8 +283,8 @@ class InvoicePDFGenerator:
             data.append([
                 Paragraph(str(item.get('description', '')), desc_style),
                 str(item.get('quantity', 1)),
-                f"R {_num(item.get('unit_price')):,.2f}",
-                f"R {_num(item.get('amount')):,.2f}",
+                format_zar(_num(item.get('unit_price')), minus='-'),
+                format_zar(_num(item.get('amount')), minus='-'),
             ])
 
         # If no line items, show basic freight charge
@@ -295,8 +296,8 @@ class InvoicePDFGenerator:
             data.append([
                 Paragraph(desc_text, desc_style),
                 '1',
-                f"R {self.invoice.subtotal:,.2f}",
-                f"R {self.invoice.subtotal:,.2f}",
+                format_zar(self.invoice.subtotal, minus='-'),
+                format_zar(self.invoice.subtotal, minus='-'),
             ])
 
         table = Table(data, colWidths=[90*mm, 25*mm, 30*mm, 30*mm])
@@ -331,20 +332,20 @@ class InvoicePDFGenerator:
         elements = []
 
         data = [
-            ['Subtotal:', f"R {self.invoice.subtotal:,.2f}"],
-            ['VAT (15%):', f"R {self.invoice.vat_amount:,.2f}"],
+            ['Subtotal:', format_zar(self.invoice.subtotal, minus='-')],
+            ['VAT (15%):', format_zar(self.invoice.vat_amount, minus='-')],
         ]
 
         if self.invoice.discount > 0:
-            data.append(['Discount:', f"R -{self.invoice.discount:,.2f}"])
+            data.append(['Discount:', format_zar(-self.invoice.discount, minus='-')])
 
         total_row = len(data)
-        data.append(['TOTAL:', f"R {self.invoice.total_amount:,.2f}"])
+        data.append(['TOTAL:', format_zar(self.invoice.total_amount, minus='-')])
 
         has_balance = self.invoice.paid_amount > 0
         if has_balance:
-            data.append(['Paid:', f"R {self.invoice.paid_amount:,.2f}"])
-            data.append(['Balance Due:', f"R {self.invoice.balance:,.2f}"])
+            data.append(['Paid:', format_zar(self.invoice.paid_amount, minus='-')])
+            data.append(['Balance Due:', format_zar(self.invoice.balance, minus='-')])
 
         bold_rows = [total_row]
         if has_balance:
@@ -380,19 +381,38 @@ class InvoicePDFGenerator:
             elements.append(Paragraph(self.invoice.notes, self.styles['Normal']))
             elements.append(Spacer(1, 5*mm))
 
-        # Banking details — kept off the document; the customer contacts the
-        # company directly so bank details aren't exposed on the PDF.
+        # How to pay — the company's own bank details when it has set them
+        # (Settings > Company > Banking details); otherwise the old wording
+        # asking the customer to contact the company. Values are escaped:
+        # Paragraph parses its text as markup.
+        from xml.sax.saxutils import escape as _esc
+        from core.services.payment_details import (
+            company_bank_details, bank_detail_rows, reference_text,
+        )
         company = getattr(self.invoice, 'company', None)
         company_name = company.company_name if company else 'the company'
-        elements.append(Paragraph("<b>BANKING DETAILS:</b>", self.styles['SectionHeader']))
-        elements.append(Paragraph(
-            f"Please contact {company_name} for banking details.",
-            self.styles['Normal']
-        ))
+        bank = company_bank_details(company)
+        if bank:
+            elements.append(Paragraph("<b>HOW TO PAY:</b>", self.styles['SectionHeader']))
+            elements.append(Paragraph(
+                "<br/>".join(f"{_esc(label)}: <b>{_esc(value)}</b>"
+                             for label, value in bank_detail_rows(bank)),
+                self.styles['Normal']
+            ))
+            elements.append(Spacer(1, 3*mm))
+            footer_text = (f"Reference: <b>{_esc(self.invoice.invoice_number or '')}</b> — "
+                           f"{_esc(reference_text(bank, self.invoice.invoice_number))} "
+                           "Thank you for your business!")
+        else:
+            elements.append(Paragraph("<b>BANKING DETAILS:</b>", self.styles['SectionHeader']))
+            elements.append(Paragraph(
+                f"Please contact {_esc(company_name)} for banking details.",
+                self.styles['Normal']
+            ))
+            footer_text = "Please use the invoice number as payment reference. Thank you for your business!"
         elements.append(Spacer(1, 5*mm))
 
         # Footer text
-        footer_text = "Please use the invoice number as payment reference. Thank you for your business!"
         elements.append(Paragraph(footer_text, self.styles['Normal']))
 
         # Platform attribution

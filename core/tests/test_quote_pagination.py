@@ -70,15 +70,18 @@ class QuotePaginationTests(TestCase):
         numbers = {r['quote_number'] for r in response.data['results']}
         self.assertEqual(numbers, {'Q-D1'})
 
-    def test_accepted_filter_includes_legacy_it_and_completed(self):
+    def test_legacy_it_and_completed_sit_in_booked_not_accepted(self):
+        # Oct 2026: the board has a Booked column. Legacy IT/COMPLETED quotes
+        # were converted work, so they're booked; Accepted is "still to book".
         make_quote(self.company, self.customer, number='Q-ACC', status='ACCEPTED')
         make_quote(self.company, self.customer, number='Q-IT', status='IT')
         make_quote(self.company, self.customer, number='Q-DONE', status='COMPLETED')
         make_quote(self.company, self.customer, number='Q-DRAFT', status='DRAFT')
-        response = self.client.get('/api/v1/quotes/?status=ACCEPTED&page_size=10')
-        numbers = {r['quote_number'] for r in response.data['results']}
-        self.assertEqual(numbers, {'Q-ACC', 'Q-IT', 'Q-DONE'})
-        self.assertEqual(response.data['count'], 3)
+        accepted = self.client.get('/api/v1/quotes/?status=ACCEPTED&page_size=10')
+        self.assertEqual({r['quote_number'] for r in accepted.data['results']}, {'Q-ACC'})
+        booked = self.client.get('/api/v1/quotes/?status=BOOKED&page_size=10')
+        self.assertEqual({r['quote_number'] for r in booked.data['results']}, {'Q-IT', 'Q-DONE'})
+        self.assertEqual(booked.data['count'], 2)
 
     def test_declined_filter_does_not_pick_up_legacy_statuses(self):
         make_quote(self.company, self.customer, number='Q-IT', status='IT')

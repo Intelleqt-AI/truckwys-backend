@@ -233,16 +233,23 @@ REST_FRAMEWORK = {
     'DEFAULT_FILTER_BACKENDS': [
         'django_filters.rest_framework.DjangoFilterBackend',
     ],
-    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
+    # 20 rows by default (unchanged); callers may ask for ?page_size= up to 100.
+    'DEFAULT_PAGINATION_CLASS': 'core.pagination.StandardResultsPagination',
     'PAGE_SIZE': 20,
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
     'DEFAULT_THROTTLE_CLASSES': [
         'rest_framework.throttling.AnonRateThrottle',
-        'rest_framework.throttling.UserRateThrottle',
+        # Reads and writes are counted separately (core/throttling.py). The old
+        # single 'user' 60/min bucket was hit by normal navigation.
+        'core.throttling.UserReadRateThrottle',
+        'core.throttling.UserWriteRateThrottle',
     ],
     'DEFAULT_THROTTLE_RATES': {
         'anon': '20/minute',
+        # Kept for any view that names UserRateThrottle explicitly (none today).
         'user': '60/minute',
+        'user_read': config('USER_READ_THROTTLE_RATE', default='600/minute'),
+        'user_write': config('USER_WRITE_THROTTLE_RATE', default='120/minute'),
         'login': '5/minute',  # Stricter rate for login/signup
         'otp_verify': '10/minute',  # 2FA code verification (per-challenge cap of 5 also applies)
         'otp_resend': '3/minute',   # 2FA code resend (plus a per-challenge 60s cooldown)
@@ -255,6 +262,10 @@ REST_FRAMEWORK = {
         # Copilot chat is far more expensive than a normal API call (LLM + RAG +
         # snapshot). A tighter per-user cap prevents runaway OpenAI spend.
         'copilot': config('COPILOT_THROTTLE_RATE', default='15/minute'),
+        # AI quote price-analysis panel (web_search + reasoning, real $ cost
+        # per call) — a coarse per-user cap; the fine-grained per-quote
+        # cooldown lives in AI_QUOTE_ANALYSIS_COOLDOWN_SECONDS below.
+        'ai_quote_analysis': config('AI_QUOTE_ANALYSIS_THROTTLE_RATE', default='10/minute'),
     }
 }
 
@@ -307,6 +318,21 @@ if EMAIL_HOST_USER and EMAIL_HOST_USER != 'resend' or EMAIL_HOST_PASSWORD:
     EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 else:
     EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+
+# Where outgoing email goes (core/services/mail_delivery.py):
+#   resend  (default) send for real. Production.
+#   console print each email in the runserver terminal, send nothing. Local:
+#           EMAIL_DELIVERY=console in .env.
+#   off     drop it. Forced while tests run, so a test run never spends the
+#           Resend quota (100 emails a day on the free plan).
+import sys as _sys
+_RUNNING_TESTS = len(_sys.argv) > 1 and _sys.argv[1] == 'test'
+EMAIL_DELIVERY = 'off' if _RUNNING_TESTS else config('EMAIL_DELIVERY', default='resend').strip().lower()
+if EMAIL_DELIVERY not in ('resend', 'console', 'off'):
+    EMAIL_DELIVERY = 'resend'
+if EMAIL_DELIVERY == 'console':
+    # Django's own mail (invites, password reset) prints too.
+    EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='Truckwys <noreply@truckwys.com>')
 
 # Resend Configuration
@@ -328,6 +354,48 @@ EMBEDDING_MODEL = config('EMBEDDING_MODEL', default='text-embedding-3-small')
 # 'openai', or 'anthropic'. With only OPENAI_API_KEY set, 'auto' uses OpenAI.
 OPENAI_CHAT_MODEL = config('OPENAI_CHAT_MODEL', default='gpt-4o')
 COPILOT_LLM_PROVIDER = config('COPILOT_LLM_PROVIDER', default='auto')
+
+# AI quote-price-analysis (QuoteBuilder's "AI price review" panel) — separate
+# from COPILOT_LLM_PROVIDER/OPENAI_CHAT_MODEL above; reuses OPENAI_API_KEY
+# only. See core.services.quote_ai_pricing.
+AI_QUOTE_ANALYSIS_MODEL = config('AI_QUOTE_ANALYSIS_MODEL', default='gpt-4o-mini')
+# The structuring call never touches the web and only extracts figures from
+# the research findings into JSON.
+AI_QUOTE_ANALYSIS_STRUCTURING_MODEL = config('AI_QUOTE_ANALYSIS_STRUCTURING_MODEL', default='gpt-4o-mini')
+# Only sent to reasoning models (gpt-5*/o*); gpt-4o-mini doesn't accept it.
+AI_QUOTE_ANALYSIS_REASONING_EFFORT = config('AI_QUOTE_ANALYSIS_REASONING_EFFORT', default='low')
+# How much of each web_search result's content the research call pulls into
+# context ('low'|'medium'|'high'). For gpt-4o-mini / gpt-4.1-mini OpenAI bills
+# search content as a fixed 8,000-token block whatever this is, so 'medium'
+# buys better grounding (current figures) at the same price. On other models
+# it's a direct lever on input-token cost.
+AI_QUOTE_ANALYSIS_SEARCH_CONTEXT_SIZE = config('AI_QUOTE_ANALYSIS_SEARCH_CONTEXT_SIZE', default='medium')
+# Client default timeout; each call also gets its own, from the run budget.
+AI_QUOTE_ANALYSIS_TIMEOUT_SECONDS = config('AI_QUOTE_ANALYSIS_TIMEOUT_SECONDS', default=60, cast=int)
+# The whole run (2 parallel searches, extraction, source-page checks) must
+# finish inside this: below nginx's default 60s proxy_read_timeout on the
+# host (its config isn't in this repo) and the frontend's 70s wait. A live
+# run with 4 searches took 13.7s.
+AI_QUOTE_ANALYSIS_DEADLINE_SECONDS = config('AI_QUOTE_ANALYSIS_DEADLINE_SECONDS', default=55, cast=float)
+AI_QUOTE_ANALYSIS_RESEARCH_TIMEOUT_SECONDS = config('AI_QUOTE_ANALYSIS_RESEARCH_TIMEOUT_SECONDS', default=30, cast=float)
+# Per-quote (or per-user, when the quote has no id yet) cooldown between AI
+# price-analysis calls — a cost-abuse guard, separate from the coarser
+# per-user 'ai_quote_analysis' throttle scope above.
+AI_QUOTE_ANALYSIS_COOLDOWN_SECONDS = config('AI_QUOTE_ANALYSIS_COOLDOWN_SECONDS', default=20, cast=int)
+AI_QUOTE_ANALYSIS_MAX_REFERENCES = config('AI_QUOTE_ANALYSIS_MAX_REFERENCES', default=8, cast=int)
+# Hard cap on web_search calls PER TOPIC research call (API-enforced via
+# max_tool_calls). There are four topic calls (fuel, tolls, driver, base rate).
+AI_QUOTE_ANALYSIS_MAX_WEB_SEARCH_CALLS = config('AI_QUOTE_ANALYSIS_MAX_WEB_SEARCH_CALLS', default=1, cast=int)
+# Driver-allowance days are estimated from the route's driving time at this
+# many driving hours per day (owner decision) — shown on screen, not hidden.
+DRIVER_DRIVING_HOURS_PER_DAY = config('DRIVER_DRIVING_HOURS_PER_DAY', default=9, cast=float)
+# Source-page verification: every market figure must appear on the page it
+# cites (core.services.source_verification).
+AI_SOURCE_FETCH_TIMEOUT_SECONDS = config('AI_SOURCE_FETCH_TIMEOUT_SECONDS', default=6, cast=float)
+# Whole-download cap per page (the timeout above is per socket read).
+AI_SOURCE_FETCH_TOTAL_SECONDS = config('AI_SOURCE_FETCH_TOTAL_SECONDS', default=15, cast=float)
+AI_SOURCE_FETCH_MAX_BYTES = config('AI_SOURCE_FETCH_MAX_BYTES', default=3_000_000, cast=int)
+AI_SOURCE_CACHE_SECONDS = config('AI_SOURCE_CACHE_SECONDS', default=86400, cast=int)
 
 # Frontend URL for email links
 FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:3701')
@@ -405,6 +473,13 @@ CACHES = {
 # ZAR diesel price used for cost/margin calculations.
 # Update this periodically to match the current pump price.
 FUEL_PRICE_ZAR = 22.50
+
+# Legacy regex daily fuel scraper (`manage.py fetch_fuel_price_daily`,
+# core/services/fuel_price_live.py). Off by default: it writes rows dated
+# today that compete with the monthly FIASA rows. The supported refresh is the
+# `refresh_fuel_price` beat task / `manage.py fetch_fuel_prices`.
+# See docs/backend-changes/2026-09-fuel-pipeline.md (F13).
+FUEL_PRICE_DAILY_SCRAPER_ENABLED = config('FUEL_PRICE_DAILY_SCRAPER_ENABLED', default=False, cast=bool)
 
 # ---------------------------------------------------------------------------
 # Celery

@@ -18,34 +18,93 @@ import logging
 import math as _math
 import re as _re
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# VAT
+# ---------------------------------------------------------------------------
+
+# SANRAL / concessionaire toll tariffs are published INCLUDING VAT (the 2026
+# tariffs seeded by seed_toll_data are the gazetted, VAT-inclusive amounts). A
+# carrier that invoices VAT reclaims the input VAT on each toll slip, so its
+# real toll cost — the amount that belongs in a quote priced excl. VAT — is the
+# tariff divided by 1.15. Invoices then add 15% VAT once on the quote total.
+VAT_RATE = Decimal('0.15')
+_CENT = Decimal('0.01')
+
+
+def tariff_excl_vat(amount_incl_vat) -> Decimal:
+    """VAT-inclusive tariff → VAT-exclusive amount, rounded half-up to the cent.
+
+    Applied per plaza (each toll transaction is its own tax invoice), so a
+    breakdown's excl.-VAT lines always sum exactly to its excl.-VAT total.
+    """
+    return (Decimal(str(amount_incl_vat)) / (Decimal('1') + VAT_RATE)).quantize(_CENT, rounding=ROUND_HALF_UP)
+
+
+# ---------------------------------------------------------------------------
 # Vehicle type → SANRAL class mapping
 # ---------------------------------------------------------------------------
+#
+# SANRAL toll classes (2026 tariff table, "Toll Road Tariffs effective from
+# 1 March 2026"):
+#   Class 1 — light vehicles
+#   Class 2 — 2-axle heavy vehicle
+#   Class 3 — 3 & 4-axle heavy vehicle
+#   Class 4 — heavy vehicle with more than 4 axles
+# Axles are counted over the whole vehicle as it travels (horse + trailers).
+#
+# The class for a quote comes, in order, from:
+#   1. VehicleType.sanral_toll_class, when set (see resolve_toll_class);
+#   2. otherwise a best-effort guess from the vehicle-type NAME
+#      (resolve_toll_class_from_name), reported as source 'name_inferred', or
+#      'default' (Class 4) when the name says nothing usable.
 
 # NOTE on the column offset: TollPlaza tariff columns are named one higher than the
 # SANRAL class they hold. tariff_class_2 = SANRAL Class 1 (light), tariff_class_3 =
-# SANRAL Class 2 (2-axle), tariff_class_4 = SANRAL Class 3 (3-axle), tariff_class_5 =
-# SANRAL Class 4 (4+/combination). get_tariff(n) returns column tariff_class_n, so the
-# int below is the COLUMN index (2–5), i.e. SANRAL class + 1.
+# SANRAL Class 2 (2-axle heavy), tariff_class_4 = SANRAL Class 3 (3 & 4-axle heavy),
+# tariff_class_5 = SANRAL Class 4 (more than 4 axles). get_tariff(n) returns column
+# tariff_class_n, so the int below is the COLUMN index (2–5), i.e. SANRAL class + 1.
 TRUCK_TYPE_TO_CLASS: dict[str, int] = {
-    'light':       2,   # SANRAL Class 1 — LDV / light commercial      → tariff_class_2
-    'medium':      3,   # SANRAL Class 2 — 2-axle rigid truck / bus     → tariff_class_3
-    'heavy':       4,   # SANRAL Class 3 — 3-axle single unit           → tariff_class_4
-    'combination': 5,   # SANRAL Class 4 — truck + trailer / semi / interlink → tariff_class_5
+    'light':       2,   # SANRAL Class 1 — light vehicles (LDV, bakkie)       → tariff_class_2
+    'medium':      3,   # SANRAL Class 2 — 2-axle heavy vehicle               → tariff_class_3
+    'heavy':       4,   # SANRAL Class 3 — 3 & 4-axle heavy vehicle           → tariff_class_4
+    'combination': 5,   # SANRAL Class 4 — more than 4 axles (most horse+trailer,
+                        #                  every interlink)                   → tariff_class_5
     # Aliases
     'rigid':       3,
     'semi':        5,
     'interlink':   5,
 }
 
+# SANRAL class (1–4) ↔ the truck-type keys the calculators take.
+SANRAL_CLASS_TO_TRUCK_TYPE: dict[int, str] = {1: 'light', 2: 'medium', 3: 'heavy', 4: 'combination'}
+TRUCK_TYPE_TO_SANRAL_CLASS: dict[str, int] = {v: k for k, v in SANRAL_CLASS_TO_TRUCK_TYPE.items()}
+
+
+def sanral_class_for_axles(axles: int) -> int:
+    """Total axle count of a HEAVY vehicle → SANRAL class (2, 3 or 4).
+
+    Class 1 (light vehicles) is not decided by axles — a bakkie has 2 axles
+    too — so this only covers heavy vehicles.
+    """
+    axles = int(axles)
+    if axles < 2:
+        raise ValueError(f'A heavy vehicle has at least 2 axles, got {axles}')
+    if axles == 2:
+        return 2
+    if axles <= 4:
+        return 3
+    return 4
+
+
 # Frontend vehicle_type → toll truck type (also used by cross_border service).
-# Single source of truth — core/views.py imports this. Confirmed axle→class table:
-# Box Truck is a 2-axle rigid (SANRAL Class 2); the rest are 4+ combinations (Class 4).
+# Exact-name hits for the fixed frontend list. No axle information in these
+# names, so they keep their long-standing classes; a VehicleType row with
+# sanral_toll_class set overrides all of them.
 VEHICLE_TO_TOLL_TYPE_LOOKUP: dict[str, str] = {
     'Flatbed':      'combination',
     'Tautliner':    'combination',
@@ -53,47 +112,122 @@ VEHICLE_TO_TOLL_TYPE_LOOKUP: dict[str, str] = {
     'Tanker':       'combination',
     'Danger Load':  'combination',
     'Box Truck':    'medium',        # 2-axle rigid → SANRAL Class 2 → tariff_class_3
-    # extra fleet types (map by axle count)
+    # extra fleet types
     'Light Truck':  'light',
     'Van':          'light',
     'Bakkie':       'light',
-    'Rigid':        'heavy',         # 3-axle rigid → SANRAL Class 3
+    'Rigid':        'heavy',         # rigid of unknown axles → SANRAL Class 3 (3 & 4 axles)
     'Interlink':    'combination',
     'Superlink':    'combination',
 }
 
-# Keyword rules for names that don't hit the exact-match dict above. Vehicle-type
-# names come from the VehicleType table and free-form UI values (e.g. "Medium Truck
-# (4–8 tonnes)", "Semi-Truck / Horse & Trailer (30 tonnes)", "Flatbed Truck"), so an
-# exact dict can never cover them. First matching rule wins — ordered most-specific
-# first. Unknown names fall back to 'combination' (safe over-estimate).
-_TOLL_TYPE_KEYWORD_RULES: list[tuple[tuple[str, ...], str]] = [
-    (('interlink', 'b-train', 'superlink', 'super link'), 'combination'),
-    (('semi', 'horse', 'trailer', 'articulated'),         'combination'),
+# Keyword rules for names that don't hit the exact-match dict above, in order.
+# First matching rule wins. Unknown names fall back to 'combination' (safe
+# over-estimate) and are reported as source 'default'.
+#
+# Order matters:
+#   * combination words first — a "6x4 horse" wheel formula describes the
+#     tractor only, not the whole combination;
+#   * light-vehicle words next — a "4x4 bakkie" is Class 1, not Class 2;
+#   * then an explicit axle configuration in the name (see _axles_from_name);
+#   * then body words. A body (flatbed, tautliner, reefer, tanker) says nothing
+#     about axles, so it only applies when the name has no axle information.
+_COMBINATION_KEYWORDS = ('interlink', 'b-train', 'superlink', 'super link',
+                         'semi', 'horse', 'trailer', 'articulated')
+_LIGHT_KEYWORDS = ('ldv', 'light delivery', 'bakkie', 'van ', ' van', 'light')
+_BODY_KEYWORD_RULES: list[tuple[tuple[str, ...], str]] = [
     (('flatbed', 'tautliner', 'refrigerated', 'reefer', 'tanker', 'danger'), 'combination'),
-    (('ldv', 'light delivery', 'bakkie', 'van ', ' van', 'light'), 'light'),
     (('box', 'medium', '4-8', '4–8', '5 ton', '5-ton'),   'medium'),
     (('heavy', 'rigid', '8-16', '8–16'),                  'heavy'),
 ]
+
+# "4x2", "6×4", "8 x 4" (wheel positions x driven) → axles = wheel positions / 2.
+_WHEEL_FORMULA_RE = _re.compile(r'(?<![\d.])(4|6|8|10)\s*[x×]\s*(2|4|6|8)(?![\d.])')
+# "2-axle", "3 axle", "4axle" (an explicit total).
+_AXLE_COUNT_RE = _re.compile(r'(?<![\d.])([2-9])\s*-?\s*axles?\b')
+
+
+def _axles_from_name(name_cf: str) -> Optional[int]:
+    m = _AXLE_COUNT_RE.search(name_cf)
+    if m:
+        return int(m.group(1))
+    m = _WHEEL_FORMULA_RE.search(name_cf)
+    if m:
+        return int(m.group(1)) // 2
+    return None
+
+
+@dataclass
+class TollClassResolution:
+    """Which SANRAL class a quote is tolled at, and why."""
+    sanral_class: int           # 1–4
+    truck_type: str             # key for calculate_tolls*/TRUCK_TYPE_TO_CLASS
+    source: str                 # 'vehicle_type' | 'name_inferred' | 'default'
+    detail: str = ''
+
+
+def resolve_toll_class_from_name(vehicle_type: str) -> TollClassResolution:
+    """Best-effort SANRAL class from a vehicle-type NAME only (the fallback)."""
+    def _res(truck_type, source, detail):
+        return TollClassResolution(TRUCK_TYPE_TO_SANRAL_CLASS[truck_type], truck_type, source, detail)
+
+    if not vehicle_type:
+        return _res('combination', 'default', 'No vehicle type given; tolled as Class 4 (more than 4 axles)')
+    exact = VEHICLE_TO_TOLL_TYPE_LOOKUP.get(vehicle_type)
+    if exact:
+        return _res(exact, 'name_inferred', f'Class guessed from the name {vehicle_type!r}')
+    name = vehicle_type.casefold()
+    if any(k in name for k in _COMBINATION_KEYWORDS):
+        return _res('combination', 'name_inferred', f'{vehicle_type!r} reads as a combination vehicle')
+    if any(k in name for k in _LIGHT_KEYWORDS):
+        return _res('light', 'name_inferred', f'{vehicle_type!r} reads as a light vehicle')
+    axles = _axles_from_name(name)
+    if axles is not None and axles >= 2:
+        return _res(SANRAL_CLASS_TO_TRUCK_TYPE[sanral_class_for_axles(axles)], 'name_inferred',
+                    f'{vehicle_type!r} reads as {axles} axles')
+    for keywords, toll_type in _BODY_KEYWORD_RULES:
+        if any(k in name for k in keywords):
+            return _res(toll_type, 'name_inferred', f'Class guessed from the name {vehicle_type!r}')
+    logger.warning('Unrecognised vehicle_type %r for toll class — defaulting to combination', vehicle_type)
+    return _res('combination', 'default',
+                f'{vehicle_type!r} is not recognised; tolled as Class 4 (more than 4 axles)')
 
 
 def resolve_toll_truck_type(vehicle_type: str) -> str:
     """Vehicle-type name (any source) → toll truck type ('light'/'medium'/'heavy'/'combination').
 
-    Exact dict hit first, then case-insensitive keyword rules, then 'combination'
-    as the safe (highest-tariff) default for unrecognised names.
+    Name-only; kept for existing callers. New code should use
+    :func:`resolve_toll_class`, which honours VehicleType.sanral_toll_class.
     """
-    if not vehicle_type:
-        return 'combination'
-    exact = VEHICLE_TO_TOLL_TYPE_LOOKUP.get(vehicle_type)
-    if exact:
-        return exact
-    name = vehicle_type.casefold()
-    for keywords, toll_type in _TOLL_TYPE_KEYWORD_RULES:
-        if any(k in name for k in keywords):
-            return toll_type
-    logger.warning('Unrecognised vehicle_type %r for toll class — defaulting to combination', vehicle_type)
-    return 'combination'
+    return resolve_toll_class_from_name(vehicle_type).truck_type
+
+
+def resolve_toll_class(vehicle_type: str, company=None) -> TollClassResolution:
+    """SANRAL class for a quote's vehicle type.
+
+    Uses the explicit ``sanral_toll_class`` of the VehicleType row this company
+    can see under that name (its own row first, else the shared default — the
+    same set the quote dropdown offers). Falls back to the name-based guess
+    when there is no such row or its class is not set.
+    """
+    if vehicle_type:
+        try:
+            from django.db.models import F
+            from core.services.vehicle_types import visible_vehicle_types_queryset
+            # A company's own row beats a shared default of the same name.
+            vt = (visible_vehicle_types_queryset(company)
+                  .filter(name__iexact=vehicle_type.strip())
+                  .exclude(sanral_toll_class__isnull=True)
+                  .order_by(F('company_id').desc(nulls_last=True), 'id')
+                  .first())
+        except Exception:
+            logger.exception('VehicleType lookup for toll class failed; using the name')
+            vt = None
+        if vt is not None and vt.sanral_toll_class in SANRAL_CLASS_TO_TRUCK_TYPE:
+            cls = int(vt.sanral_toll_class)
+            return TollClassResolution(cls, SANRAL_CLASS_TO_TRUCK_TYPE[cls], 'vehicle_type',
+                                       f'Class {cls} set on vehicle type {vt.name!r}')
+    return resolve_toll_class_from_name(vehicle_type)
 
 # ---------------------------------------------------------------------------
 # City alias normaliser — maps suburbs/metro areas to their parent city name.
@@ -228,7 +362,12 @@ class TollBreakdownItem:
     plaza_name: str
     route: str
     location_km: Decimal
-    tariff: Decimal
+    tariff: Decimal                         # published tariff, VAT INCLUSIVE
+    tariff_excl_vat: Optional[Decimal] = None
+
+    def __post_init__(self):
+        if self.tariff_excl_vat is None:
+            self.tariff_excl_vat = tariff_excl_vat(self.tariff)
 
 
 @dataclass
@@ -241,6 +380,15 @@ class TollResult:
     total_zar: Decimal
     breakdown: list[TollBreakdownItem] = field(default_factory=list)
     warning: Optional[str] = None
+    # Set when the result is NOT a real toll figure (the R0 is a placeholder):
+    # 'no_geometry' | 'no_toll_data'. None for a genuine result, including a
+    # genuine R0 on a route with no plazas.
+    unavailable_reason: Optional[str] = None
+
+    @property
+    def total_excl_vat(self) -> Decimal:
+        """Sum of the per-plaza VAT-exclusive amounts (total_zar is VAT inclusive)."""
+        return sum((b.tariff_excl_vat for b in self.breakdown), Decimal('0.00'))
 
 
 # ---------------------------------------------------------------------------
@@ -448,6 +596,7 @@ def calculate_tolls_by_geometry(
             vehicle_class=vehicle_class, routes_used=[],
             total_zar=Decimal('0.00'),
             warning='No route geometry provided — cannot geofence tolls',
+            unavailable_reason='no_geometry',
         )
 
     plazas = list(
@@ -462,6 +611,7 @@ def calculate_tolls_by_geometry(
             vehicle_class=vehicle_class, routes_used=[],
             total_zar=Decimal('0.00'),
             warning='No toll plazas with GPS coordinates seeded — run seed_toll_data --force',
+            unavailable_reason='no_toll_data',
         )
 
     # Build the list of consecutive polyline segments once, with each one's

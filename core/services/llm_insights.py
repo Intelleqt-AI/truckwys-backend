@@ -69,8 +69,10 @@ def build_company_metrics(company, from_date=None, to_date=None) -> dict:
     revenue_collected = invoices.filter(
         status='PAID', paid_at__gte=start, paid_at__lte=end
     ).aggregate(s=Sum('total_amount'))['s'] or Decimal('0')
+    # APPROVED only: pending and rejected claims are not spend (audit #43).
     expenses_period = Expense.objects.filter(
-        company=company, expense_date__gte=from_date, expense_date__lte=to_date
+        company=company, status='APPROVED',
+        expense_date__gte=from_date, expense_date__lte=to_date,
     ).aggregate(s=Sum('amount'))['s'] or Decimal('0')
     net_margin = revenue_collected - expenses_period
     net_margin_pct = (

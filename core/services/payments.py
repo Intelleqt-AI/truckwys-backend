@@ -9,6 +9,8 @@ from decimal import Decimal, InvalidOperation
 from django.db import transaction
 from django.utils import timezone
 
+from core.formatting import format_zar
+
 
 class PaymentError(Exception):
     """Validation failure with a user-friendly message."""
@@ -28,6 +30,7 @@ def record_payment(company, user, data):
     Raises PaymentError with a friendly message on any validation failure.
     """
     from core.models import Invoice
+    from core.models.invoice import paid_at_for
     from core.serializers import PaymentSerializer
 
     try:
@@ -48,7 +51,7 @@ def record_payment(company, user, data):
 
         if amount > invoice.balance:
             raise PaymentError(
-                f'Payment amount (R {amount}) exceeds invoice balance (R {invoice.balance})'
+                f'Payment amount ({format_zar(amount)}) exceeds invoice balance ({format_zar(invoice.balance)})'
             )
 
         # Fill in what the caller shouldn't have to: customer (from the
@@ -62,18 +65,26 @@ def record_payment(company, user, data):
         if payload.get('reference') and not payload.get('reference_number'):
             payload['reference_number'] = payload['reference']
 
-        serializer = PaymentSerializer(data=payload)
+        # context company: scopes invoice/customer ids to this tenant (a
+        # caller-supplied customer from another company is rejected); company
+        # itself is read-only on the serializer, so it is set on save.
+        serializer = PaymentSerializer(data=payload, context={
+            'company': company,
+            # The invoice's own customer is server-derived and always valid,
+            # even for a legacy customer row that predates company backfill.
+            'allow_relation_ids': {'customer': invoice.customer_id},
+        })
         if not serializer.is_valid():
             first_field, msgs = next(iter(serializer.errors.items()))
             raise PaymentError(f"{first_field}: {msgs[0] if isinstance(msgs, list) else msgs}")
-        serializer.save()
+        payment = serializer.save(company=company)
 
         invoice.paid_amount += amount
         invoice.balance -= amount
         fully_paid = invoice.balance == 0
         if fully_paid:
             invoice.status = 'PAID'
-            invoice.paid_at = timezone.now()
+            invoice.paid_at = paid_at_for(payment.payment_date)
         elif invoice.paid_amount > 0:
             invoice.status = 'PARTIALLY_PAID'
         # Read by the invoice.paid signal handler to exclude whoever recorded

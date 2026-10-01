@@ -97,6 +97,18 @@ class IsPartnerAuthenticated(BasePermission):
         return False
 
 
+class IsPartnerOrStaff(BasePermission):
+    """Only partner/lender accounts or internal staff may read cross-operator data.
+    A normal carrier (operator) token must NOT be able to enumerate other companies."""
+
+    def has_permission(self, request, view):
+        u = getattr(request, 'user', None)
+        return bool(
+            u and u.is_authenticated
+            and (getattr(u, 'is_staff', False) or getattr(u, 'role', None) == 'PARTNER')
+        )
+
+
 class PartnerAdvanceViewSet(viewsets.ReadOnlyModelViewSet):
     """
     Partner API for reviewing and managing advances.
@@ -109,7 +121,10 @@ class PartnerAdvanceViewSet(viewsets.ReadOnlyModelViewSet):
     """
 
     serializer_class = PartnerAdvanceSerializer
-    permission_classes = [IsAuthenticated]
+    # Tenant isolation (2026-09): was [IsAuthenticated], so ANY operator token
+    # could list every tenant's advances and approve/reject/disburse them.
+    # Same guard as the sibling partner viewsets.
+    permission_classes = [IsPartnerOrStaff]
 
     def get_queryset(self):
         """
@@ -203,18 +218,6 @@ class PartnerAdvanceViewSet(viewsets.ReadOnlyModelViewSet):
                 {'error': str(e)},
                 status=status.HTTP_400_BAD_REQUEST
             )
-
-
-class IsPartnerOrStaff(BasePermission):
-    """Only partner/lender accounts or internal staff may read cross-operator data.
-    A normal carrier (operator) token must NOT be able to enumerate other companies."""
-
-    def has_permission(self, request, view):
-        u = getattr(request, 'user', None)
-        return bool(
-            u and u.is_authenticated
-            and (getattr(u, 'is_staff', False) or getattr(u, 'role', None) == 'PARTNER')
-        )
 
 
 class PartnerOperatorViewSet(viewsets.ViewSet):

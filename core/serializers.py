@@ -1,10 +1,87 @@
+import re
 from rest_framework import serializers
-from django.db.models import Avg  # ADD THIS IMPORT
+from django.db.models import Avg, Q  # ADD THIS IMPORT
 from .models import (
     User, Customer, Driver, Vehicle, VehicleLog, VehicleType, Load,
     Quote, Invoice, Payment, Expense, Settlement, Notification, Company, ActivityEvent
 )
 from .serializers_billing import DeliveryFeeChargeSerializer
+
+class CompanyScopedRelationsMixin:
+    """Tenant isolation for writable relation fields (2026-09).
+
+    `fields='__all__'` gives every FK a PrimaryKeyRelatedField over the model's
+    whole table, so a caller could attach another tenant's customer / load /
+    trip / vehicle / driver / quote / invoice by id (and the response then
+    echoed that tenant's data back). This narrows each listed field's queryset
+    to the record's own company:
+
+      * update  -> the instance's company (falls back to the caller's company
+                   for a legacy row with no company);
+      * create  -> context['company'] if the caller passed one (internal
+                   services), else request.user.company.
+
+    A foreign id then fails validation exactly like a missing one ("Invalid pk
+    ... object does not exist"). An authenticated non-superuser with no company
+    gets an empty queryset (fail closed). A superuser with no company, and
+    internal callers that pass neither request nor company, keep the previous
+    unscoped behaviour.
+
+    Legacy-data safety: the value a relation ALREADY holds on the instance
+    being updated stays valid (so re-saving an unchanged record whose related
+    row predates company backfills never starts failing), as do ids a trusted
+    server-side caller lists in context['allow_relation_ids'].
+    """
+
+    # field name -> ORM lookup from the related model to its Company
+    company_scoped_relations = {}
+
+    _UNSCOPED = object()
+
+    def _relation_company(self):
+        instance = self.instance
+        if instance is not None and not hasattr(instance, '__iter__'):
+            company_id = getattr(instance, 'company_id', None)
+            if company_id is not None:
+                return company_id
+        if 'company' in self.context:
+            company = self.context['company']
+            return getattr(company, 'pk', company)
+        request = self.context.get('request')
+        user = getattr(request, 'user', None)
+        if user is None or not getattr(user, 'is_authenticated', False):
+            return self._UNSCOPED
+        company_id = getattr(user, 'company_id', None)
+        if company_id is None and getattr(user, 'is_superuser', False):
+            return self._UNSCOPED
+        return company_id
+
+    def get_fields(self):
+        fields = super().get_fields()
+        company_id = self._relation_company()
+        if company_id is self._UNSCOPED:
+            return fields
+        instance = self.instance if (
+            self.instance is not None and not hasattr(self.instance, '__iter__')
+        ) else None
+        trusted = self.context.get('allow_relation_ids') or {}
+        for name, lookup in self.company_scoped_relations.items():
+            field = fields.get(name)
+            if field is None or field.read_only:
+                continue
+            queryset = getattr(field, 'queryset', None)
+            if queryset is None:
+                continue
+            allowed = Q(**{lookup: company_id}) if company_id is not None else Q(pk__in=[])
+            keep = [pk for pk in (
+                getattr(instance, f'{name}_id', None) if instance is not None else None,
+                trusted.get(name),
+            ) if pk is not None]
+            if keep:
+                allowed |= Q(pk__in=keep)
+            field.queryset = queryset.filter(allowed)
+        return fields
+
 
 # User Serializer
 class UserSerializer(serializers.ModelSerializer):
@@ -113,6 +190,67 @@ class UserSerializer(serializers.ModelSerializer):
         return user
 
 
+
+class SelfProfileSerializer(UserSerializer):
+    """Serializer for a user editing THEMSELVES via /auth/me/.
+
+    UserSerializer is also the admin user-management serializer, where role,
+    status, is_active and username are legitimately writable (UserViewSet is
+    IsAdmin-only). /auth/me/ is open to every authenticated user, so those
+    authorisation fields must be read-only here — otherwise any DRIVER /
+    DISPATCHER / VIEWER could PATCH {"role": "ADMIN"} and take over the company.
+
+    Sending a protected field with its CURRENT value is accepted (clients that
+    round-trip the GET payload keep working); sending a different value is a
+    400 with a per-field error rather than a silent ignore.
+    """
+    PROTECTED_FIELDS = ('role', 'status', 'is_active', 'username')
+
+    role = serializers.CharField(read_only=True)
+
+    class Meta(UserSerializer.Meta):
+        read_only_fields = UserSerializer.Meta.read_only_fields + [
+            'status', 'is_active', 'username',
+        ]
+
+    @staticmethod
+    def _normalise(field, value):
+        if field == 'is_active':
+            try:
+                return serializers.BooleanField().to_internal_value(value)
+            except serializers.ValidationError:
+                return value
+        if field in ('role', 'status') and isinstance(value, str):
+            return value.strip().upper()
+        return value
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        data = getattr(self, 'initial_data', None) or {}
+        errors = {}
+        for field in self.PROTECTED_FIELDS:
+            if field not in data:
+                continue
+            sent = self._normalise(field, data.get(field))
+            current = self._normalise(field, getattr(self.instance, field))
+            if sent != current:
+                errors[field] = [
+                    f'You cannot change your own {field.replace("_", " ")} here; '
+                    'ask a company admin.'
+                ]
+        # Session-hijack hardening: a stolen access token could otherwise change
+        # the password with no proof of the current one, locking the real user
+        # out permanently. ChangePasswordView (/auth/change-password/) is the one
+        # path that verifies the current password before setting a new one.
+        if 'password' in data:
+            errors['password'] = [
+                'Change your password from Security settings (this verifies your '
+                'current password first), not here.'
+            ]
+        if errors:
+            raise serializers.ValidationError(errors)
+        return attrs
+
 # Customer Serializer
 class CustomerSerializer(serializers.ModelSerializer):
     class Meta:
@@ -135,6 +273,20 @@ class DriverSerializer(serializers.ModelSerializer):
     user_details = UserSerializer(source='user', read_only=True)
     assigned_vehicle = serializers.SerializerMethodField()
     total_trips = serializers.SerializerMethodField()
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # 'user' defaults to an unscoped User.objects.all() PK field, so
+        # without this a driver record could be linked to another company's
+        # user id. Same policy as CompanyFilterMixin: a platform superuser
+        # with no company of their own stays unscoped, everyone else (staff
+        # included) is limited to their own company's users.
+        request = self.context.get('request')
+        user = getattr(request, 'user', None)
+        if user is not None and user.is_authenticated:
+            if user.is_superuser and getattr(user, 'company_id', None) is None:
+                return
+            self.fields['user'].queryset = User.objects.filter(company_id=getattr(user, 'company_id', None))
 
     class Meta:
         model = Driver
@@ -344,16 +496,40 @@ class VehicleLogSerializer(serializers.ModelSerializer):
 
 
 # Load Serializer
-class LoadSerializer(serializers.ModelSerializer):
+class LoadSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
+    company_scoped_relations = {
+        'customer': 'company_id', 'driver': 'company_id',
+        'vehicle': 'company_id', 'quote': 'company_id',
+    }
     customer_name = serializers.CharField(source='customer.name', read_only=True)
     driver_name = serializers.SerializerMethodField()
     vehicle_info = serializers.SerializerMethodField()
     quote_number = serializers.SerializerMethodField()
+    # Estimated fuel: the quote's fuel line, copied to fuel_surcharge by
+    # convert_to_load. Actual fuel: approved FUEL expenses logged against the
+    # load's trips. None when there's no figure, never a misleading 0.
+    fuel_cost_estimated = serializers.SerializerMethodField()
+    fuel_cost_actual = serializers.SerializerMethodField()
 
     class Meta:
         model = Load
         fields = '__all__'
         read_only_fields = ['id', 'created_at', 'updated_at', 'created_by', 'actual_delivered_at', 'company']
+
+    def get_fuel_cost_estimated(self, obj):
+        value = obj.fuel_surcharge
+        return float(value) if value else None
+
+    def get_fuel_cost_actual(self, obj):
+        if hasattr(obj, 'fuel_actual_total'):
+            total = obj.fuel_actual_total
+        else:
+            from django.db.models import Sum
+            from core.models import Expense
+            total = Expense.objects.filter(
+                trip__load=obj, category='FUEL', status='APPROVED',
+            ).aggregate(t=Sum('amount'))['t']
+        return float(total) if total is not None else None
 
     def get_driver_name(self, obj):
         if not obj.driver:
@@ -389,7 +565,10 @@ class LoadSerializer(serializers.ModelSerializer):
 
 
 # Quote Serializer
-class QuoteSerializer(serializers.ModelSerializer):
+class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
+    company_scoped_relations = {
+        'customer': 'company_id', 'vehicle': 'company_id', 'driver': 'company_id',
+    }
     customer_name = serializers.CharField(source='customer.name', read_only=True)
     customer_email = serializers.CharField(source='customer.email', read_only=True)
     customer_phone = serializers.CharField(source='customer.phone', read_only=True)
@@ -399,11 +578,30 @@ class QuoteSerializer(serializers.ModelSerializer):
     quote_number = serializers.CharField(required=False, allow_blank=True)
     vehicle_display = serializers.SerializerMethodField()
     driver_display = serializers.SerializerMethodField()
+    # The load this quote was converted into (convert_to_load). The load is
+    # the source of truth for "converted": the quote itself stays ACCEPTED.
+    booked_load = serializers.SerializerMethodField()
+    converted = serializers.SerializerMethodField()
 
     class Meta:
         model = Quote
         fields = '__all__'
-        read_only_fields = ['id', 'created_at', 'updated_at', 'created_by']
+        # 'company' read-only (2026-09): a PATCH could move a quote into
+        # another tenant. Create paths set it server-side via save(company=).
+        read_only_fields = ['id', 'company', 'created_at', 'updated_at', 'created_by']
+
+    def _first_load(self, obj):
+        # .all() so a prefetch_related('loads') on the viewset serves it.
+        loads = list(obj.loads.all())
+        return min(loads, key=lambda l: l.pk) if loads else None
+
+    def get_booked_load(self, obj):
+        load = self._first_load(obj)
+        return {'id': load.id, 'load_number': load.load_number, 'status': load.status} if load else None
+
+    def get_converted(self, obj):
+        # Legacy IT/COMPLETED rows predate convert_to_load and count as converted.
+        return self._first_load(obj) is not None or obj.status in ('IT', 'COMPLETED')
 
     def validate(self, attrs):
         # Safety net behind the frontend's own capacity check (QuoteBuilder's
@@ -454,7 +652,10 @@ class QuoteSerializer(serializers.ModelSerializer):
 
 
 # Invoice Serializer
-class InvoiceSerializer(serializers.ModelSerializer):
+class InvoiceSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
+    company_scoped_relations = {
+        'customer': 'company_id', 'load': 'company_id', 'trip': 'load__company_id',
+    }
     customer_name = serializers.CharField(source='customer.name', read_only=True)
     # Lets a client offer "share this invoice on WhatsApp" without a second
     # round-trip to the customer endpoint just for the number.
@@ -467,18 +668,66 @@ class InvoiceSerializer(serializers.ModelSerializer):
     # (drafts, pre-this-feature invoices) — getattr's default swallows that.
     delivery_fee_charge = serializers.SerializerMethodField()
 
+    # Statuses a client may create an invoice in ("Save as" on New invoice).
+    # Every later change goes through an action (send, record payment), so a
+    # PATCH can't mark an invoice paid with no payment behind it.
+    CREATE_STATUSES = ('DRAFT', 'SENT')
+    # The due date stays editable until the invoice is settled.
+    DUE_DATE_LOCKED = ('PAID', 'CANCELLED')
+
     class Meta:
         model = Invoice
         fields = '__all__'
-        read_only_fields = ['id', 'company', 'created_at', 'updated_at']
-        # Both are derivable server-side, so a client shouldn't have to send
-        # them. invoice_number especially: it's unique, and letting each client
-        # invent one (the web app used the last 6 digits of Date.now()) risks a
-        # collision that surfaces as an opaque 400.
+        # Money and payment state are server-derived: paid_amount/balance/
+        # paid_at move only through record_payment (services.payments), so the
+        # payment ledger and every revenue figure stay in step.
+        read_only_fields = ['id', 'company', 'created_at', 'updated_at',
+                            'paid_amount', 'balance', 'paid_at', 'sent_at', 'viewed_at']
+        # invoice_number is derivable server-side, so a client shouldn't have
+        # to send it: it's unique, and letting each client invent one (the web
+        # app used the last 6 digits of Date.now()) risks a collision that
+        # surfaces as an opaque 400.
         extra_kwargs = {
             'invoice_number': {'required': False},
-            'balance': {'required': False},
         }
+
+    def validate_status(self, value):
+        if self.instance is None:
+            if value not in self.CREATE_STATUSES:
+                raise serializers.ValidationError('A new invoice is saved as a draft or sent.')
+        elif value != self.instance.status:
+            raise serializers.ValidationError(
+                'Change an invoice\'s status with its actions (send, record payment), not by editing it.')
+        return value
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        due = attrs.get('due_date')
+        if due is not None:
+            inst = self.instance
+            if inst is not None and due != inst.due_date and inst.status in self.DUE_DATE_LOCKED:
+                raise serializers.ValidationError(
+                    {'due_date': f'The due date of a {inst.get_status_display().lower()} invoice can\'t be changed.'})
+            issue = attrs.get('issue_date') or (inst.issue_date if inst is not None else None)
+            if issue and due < issue:
+                raise serializers.ValidationError({'due_date': 'The due date can\'t be before the issue date.'})
+        return attrs
+
+    def update(self, instance, validated_data):
+        old_due = instance.due_date
+        instance = super().update(instance, validated_data)
+        if instance.due_date != old_due:
+            # The due date drives overdue status, reminders and fast-pay, so a
+            # change is recorded with both dates (the save signal only notes
+            # that the invoice changed).
+            from core.models import AuditLog
+            request = self.context.get('request')
+            try:
+                AuditLog.log_update(instance, user=getattr(request, 'user', None),
+                                    changes={'due_date': [old_due.isoformat(), instance.due_date.isoformat()]})
+            except Exception:
+                pass
+        return instance
 
     def create(self, validated_data):
         if not validated_data.get('invoice_number'):
@@ -488,6 +737,10 @@ class InvoiceSerializer(serializers.ModelSerializer):
         # this only has to satisfy the not-null column.
         if validated_data.get('balance') is None:
             validated_data['balance'] = validated_data.get('total_amount') or 0
+        # Created as sent: stamp when, as mark_as_sent() does.
+        if validated_data.get('status') == 'SENT' and not validated_data.get('sent_at'):
+            from django.utils import timezone
+            validated_data['sent_at'] = timezone.now()
         return super().create(validated_data)
 
     def get_delivery_fee_charge(self, obj):
@@ -496,14 +749,18 @@ class InvoiceSerializer(serializers.ModelSerializer):
 
 
 # Payment Serializer
-class PaymentSerializer(serializers.ModelSerializer):
+class PaymentSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
+    company_scoped_relations = {'invoice': 'company_id', 'customer': 'company_id'}
     customer_name = serializers.CharField(source='customer.name', read_only=True)
     invoice_number = serializers.CharField(source='invoice.invoice_number', read_only=True)
     
     class Meta:
         model = Payment
         fields = '__all__'
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        # 'company' read-only (2026-09): it was writable on PATCH. Create
+        # paths (services.payments.record_payment, CompanyFilterMixin) set it
+        # server-side via save(company=).
+        read_only_fields = ['id', 'company', 'created_at', 'updated_at']
 
 
 # Expense Serializer
@@ -559,6 +816,12 @@ class NotificationSerializer(serializers.ModelSerializer):
 
 
 # Company Serializer
+BANK_FIELDS = (
+    'bank_name', 'bank_account_holder', 'bank_account_number',
+    'bank_branch_code', 'bank_account_type', 'payment_reference_hint',
+)
+
+
 class CompanySerializer(serializers.ModelSerializer):
     logo_url = serializers.SerializerMethodField()
     
@@ -569,16 +832,72 @@ class CompanySerializer(serializers.ModelSerializer):
             'industry', 'website', 'description', 'logo_url',
             'address', 'contact',
             'default_base_rate_per_km', 'default_sla_hours',
-            'default_quote_validity_days', 'allow_cross_border',
+            'default_quote_validity_days', 'allow_cross_border', 'auto_email_invoices',
             'cross_border_crossings_per_year',
+            'fuel_zone',
             'fuel_price_per_litre', 'fuel_price_petrol', 'fuel_price_electric', 'fuel_price_hybrid',
             'margin_at_risk_pct', 'margin_caution_pct', 'margin_target_pct',
             'ai_optimizer_min_margin_pct', 'ai_optimizer_min_win_probability_pct',
             'ai_optimizer_max_market_deviation_pct',
             'default_toll_rate_per_km',
             'onboarding_completed_at',
-        ]
-    
+        ] + list(BANK_FIELDS)
+
+    def get_fields(self):
+        # Banking details follow the company-edit permission: only a company
+        # ADMIN (the role CompanyProfileView itself requires) may change them.
+        # Defence in depth — if this serializer is ever reached by anyone else
+        # the bank fields come back read-only instead of silently writable.
+        fields = super().get_fields()
+        request = self.context.get('request')
+        user = getattr(request, 'user', None)
+        can_edit = bool(user and getattr(user, 'is_authenticated', False) and (
+            getattr(user, 'role', None) == 'ADMIN' or getattr(user, 'is_superuser', False)
+        ))
+        if not can_edit:
+            for name in BANK_FIELDS:
+                if name in fields:
+                    fields[name].read_only = True
+        return fields
+
+    # Light validation: spaces/hyphens people paste from banking apps are
+    # stripped, then the value must be digits of a sane length. Blank/null
+    # clears the field. Existing rows are never re-validated.
+    @staticmethod
+    def _digits(value, label, min_len, max_len):
+        if value in (None, ''):
+            return None
+        cleaned = re.sub(r'[\s-]', '', str(value))
+        if not cleaned:
+            return None
+        if not cleaned.isdigit():
+            raise serializers.ValidationError(f'{label} may contain digits only.')
+        if not (min_len <= len(cleaned) <= max_len):
+            raise serializers.ValidationError(f'{label} must be {min_len}–{max_len} digits.')
+        return cleaned
+
+    def validate_bank_account_number(self, value):
+        return self._digits(value, 'Account number', 6, 20)
+
+    def validate_bank_branch_code(self, value):
+        return self._digits(value, 'Branch code', 4, 10)
+
+    def _blank_to_none(self, value):
+        value = (value or '').strip()
+        return value or None
+
+    def validate_bank_name(self, value):
+        return self._blank_to_none(value)
+
+    def validate_bank_account_holder(self, value):
+        return self._blank_to_none(value)
+
+    def validate_payment_reference_hint(self, value):
+        return self._blank_to_none(value)
+
+    def validate_bank_account_type(self, value):
+        return value or None
+
     def get_logo_url(self, obj):
         if obj.logo:
             return obj.logo.url
@@ -667,7 +986,15 @@ class WebhookSerializer(serializers.ModelSerializer):
 
 
 class IntegrationAPIKeySerializer(serializers.ModelSerializer):
-    """Serializer for IntegrationAPIKey model."""
+    """Serializer for IntegrationAPIKey model.
+
+    The full key is only ever shown once, in the response to the request that
+    generated it (IntegrationAPIKeyViewSet sets show_full_key=True only for
+    'create') — every other read (list/retrieve/update) gets a masked value.
+    Losing the full value after that point is the point: it lives in the
+    operator's password manager from here on, not in a browser tab they can
+    leave open, and not in every future API response.
+    """
 
     class Meta:
         from core.models import IntegrationAPIKey
@@ -679,6 +1006,13 @@ class IntegrationAPIKeySerializer(serializers.ModelSerializer):
             'allowed_ips', 'webhook_url',
         ]
         read_only_fields = ['id', 'key', 'created_at', 'last_used_at', 'usage_count', 'quota_used']
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if not self.context.get('show_full_key'):
+            full = data.get('key') or ''
+            data['key'] = ('•' * 8 + full[-4:]) if len(full) >= 4 else '•' * 8
+        return data
 
 
 class APICallLogSerializer(serializers.ModelSerializer):

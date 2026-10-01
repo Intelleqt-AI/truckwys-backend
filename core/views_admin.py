@@ -9,15 +9,17 @@ Impersonation ("log in as") was explicitly dropped from scope.
 """
 from datetime import timedelta
 
-from django.db.models import Count, Max, Q
+from django.db.models import Count, Max, Q, Sum
+from django.db.models.functions import TruncMonth
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from core.models import AuditLog, Company, User, Quote, Load, TaskRunLog, UserActivityLog, UserSession
+from core.models import AuditLog, Company, User, Quote, Load, TaskRunLog, UserActivityLog, UserSession, AIQuotePriceAnalysis
 from core.services.demo_seed import IDLE_RESET_AFTER, reset_demo_company
 from core.views import IsSuperUser
+from core.formatting import format_zar
 
 
 def _log(request, action, resource_type, resource_id, **details):
@@ -81,7 +83,12 @@ class AdminOverviewView(APIView):
             },
             'total_companies': real_companies.count(),
             'has_demo_company': Company.objects.filter(is_demo=True).exists(),
-            'total_users': User.objects.filter(company__is_demo=False, company__is_deleted=False).count(),
+            # Users with no company are real accounts too (half-finished
+            # signups, platform staff): counted, and reported on their own.
+            'total_users': User.objects.filter(
+                Q(company__isnull=True) | Q(company__is_demo=False, company__is_deleted=False)
+            ).count(),
+            'users_without_company': User.objects.filter(company__isnull=True).count(),
             'total_quotes': Quote.objects.filter(company__is_demo=False, company__is_deleted=False).count(),
             'quotes_this_month': Quote.objects.filter(company__is_demo=False, company__is_deleted=False, created_at__gte=month_start).count(),
             'total_loads': Load.objects.filter(company__is_demo=False, company__is_deleted=False).count(),
@@ -390,7 +397,7 @@ class AdminRecordPaymentView(APIView):
         company.save(update_fields=['next_billing_date', 'next_billing_at', 'subscription_status', 'grace_period_expires_at', 'updated_at'])
 
         title = 'Payment recorded'
-        message = f'{MONTHLY_FEE_ITEM_NAME}: R{amount:,.2f} recorded manually.' + (f' Note: {note}' if note else '')
+        message = f'{MONTHLY_FEE_ITEM_NAME}: {format_zar(amount)} recorded manually.' + (f' Note: {note}' if note else '')
         notify_company(company.id, 'SUCCESS', title, message, link='/settings/billing', event='subscription.charged')
         notify_company_billing_email(company.id, title, message, link='/settings/billing')
 
@@ -634,7 +641,18 @@ def _serialize_vehicle_type(vt):
         'fuel_consumption_l_per_100km': vt.fuel_consumption_l_per_100km,
         'fuel_consumption_sensitivity_pct': vt.fuel_consumption_sensitivity_pct,
         'fuel_type': vt.fuel_type, 'active': vt.active,
+        'sanral_toll_class': vt.sanral_toll_class,
     }
+
+
+def _clean_sanral_toll_class(raw):
+    """None/'' → None; 1–4 → int; anything else → ValueError."""
+    if raw in (None, ''):
+        return None
+    value = int(raw)
+    if value not in (1, 2, 3, 4):
+        raise ValueError(value)
+    return value
 
 
 class AdminVehicleTypesView(APIView):
@@ -661,6 +679,10 @@ class AdminVehicleTypesView(APIView):
             return Response({'error': 'name is required'}, status=status.HTTP_400_BAD_REQUEST)
         if VehicleType.objects.filter(company__isnull=True, name=name).exists():
             return Response({'error': f'A shared vehicle type named "{name}" already exists.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            toll_class = _clean_sanral_toll_class(request.data.get('sanral_toll_class'))
+        except (TypeError, ValueError):
+            return Response({'error': 'sanral_toll_class must be 1, 2, 3, 4 or blank'}, status=status.HTTP_400_BAD_REQUEST)
 
         vt = VehicleType.objects.create(
             company=None, name=name,
@@ -672,6 +694,7 @@ class AdminVehicleTypesView(APIView):
             fuel_consumption_sensitivity_pct=request.data.get('fuel_consumption_sensitivity_pct') or 2,
             fuel_type=request.data.get('fuel_type') or 'Diesel',
             active=request.data.get('active', True),
+            sanral_toll_class=toll_class,
         )
         _log(request, 'CREATE', 'VehicleType', vt.pk, admin_action='create_shared_vehicle_type', name=name)
         return Response(_serialize_vehicle_type(vt), status=status.HTTP_201_CREATED)
@@ -685,6 +708,7 @@ class AdminVehicleTypeDetailView(APIView):
     EDITABLE_FIELDS = [
         'name', 'description', 'capacity', 'max_distance', 'base_rate',
         'fuel_consumption_l_per_100km', 'fuel_consumption_sensitivity_pct', 'fuel_type', 'active',
+        'sanral_toll_class',
     ]
 
     def patch(self, request, type_id):
@@ -693,12 +717,19 @@ class AdminVehicleTypeDetailView(APIView):
             vt = VehicleType.objects.get(pk=type_id, company__isnull=True)
         except VehicleType.DoesNotExist:
             return Response({'error': 'Shared vehicle type not found'}, status=status.HTTP_404_NOT_FOUND)
+        if 'sanral_toll_class' in request.data:
+            try:
+                _clean_sanral_toll_class(request.data['sanral_toll_class'])
+            except (TypeError, ValueError):
+                return Response({'error': 'sanral_toll_class must be 1, 2, 3, 4 or blank'}, status=status.HTTP_400_BAD_REQUEST)
 
         changes = {}
         for field in self.EDITABLE_FIELDS:
             if field not in request.data:
                 continue
             old, new = getattr(vt, field), request.data[field]
+            if field == 'sanral_toll_class':
+                new = _clean_sanral_toll_class(new)
             if str(old) != str(new):
                 changes[field] = {'old': str(old), 'new': str(new)}
             setattr(vt, field, new)
@@ -1022,6 +1053,87 @@ class AdminModelHealthView(APIView):
             'blockers': blockers,
             'can_train': not blockers,
             'active_models': active,
+            'recent_failures': recent_failures,
+        })
+
+
+class AdminAIUsageView(APIView):
+    """Platform-wide OpenAI spend for the quote price-analysis feature only
+    (AIQuotePriceAnalysis) — not the other LLM call sites in the app (Copilot
+    chat, CFO insights, etc), which don't track usage/cost yet. All-time +
+    this-month totals, a 12-month trend, and a per-user cost breakdown."""
+    permission_classes = [IsSuperUser]
+
+    def get(self, request):
+        qs = AIQuotePriceAnalysis.objects.all()
+        month_start = timezone.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+        # Sum every token column explicitly and combine in Python — Django's
+        # aggregate() sums each named field independently, it doesn't add
+        # fields together for you.
+        token_fields = [
+            'research_input_tokens', 'research_output_tokens',
+            'structuring_input_tokens', 'structuring_output_tokens',
+        ]
+
+        def _totals(queryset):
+            agg = queryset.aggregate(
+                calls=Count('id'),
+                success_calls=Count('id', filter=Q(status='success')),
+                failed_calls=Count('id', filter=Q(status='failed')),
+                total_cost_usd=Sum('total_cost_usd'),
+                **{f: Sum(f) for f in token_fields},
+            )
+            total_tokens = sum((agg.get(f) or 0) for f in token_fields)
+            return {
+                'calls': agg['calls'] or 0,
+                'success_calls': agg['success_calls'] or 0,
+                'failed_calls': agg['failed_calls'] or 0,
+                'total_cost_usd': float(agg['total_cost_usd'] or 0),
+                'total_tokens': total_tokens,
+            }
+
+        by_month_qs = (
+            qs.annotate(month=TruncMonth('created_at'))
+            .values('month')
+            .annotate(total_calls=Count('id'), total_cost_usd=Sum('total_cost_usd'))
+            .order_by('-month')[:12]
+        )
+        by_month = [{
+            'month': row['month'].strftime('%Y-%m') if row['month'] else None,
+            'total_calls': row['total_calls'],
+            'total_cost_usd': float(row['total_cost_usd'] or 0),
+        } for row in by_month_qs][::-1]
+
+        user_rows = (
+            qs.exclude(triggered_by__isnull=True)
+            .values('triggered_by_id', 'triggered_by__first_name', 'triggered_by__last_name',
+                    'triggered_by__username', 'triggered_by__email',
+                    'triggered_by__company_id', 'triggered_by__company__company_name')
+            .annotate(total_calls=Count('id'), total_cost_usd=Sum('total_cost_usd'))
+        )
+        by_user = sorted([{
+            'user_id': row['triggered_by_id'],
+            'name': f"{row['triggered_by__first_name']} {row['triggered_by__last_name']}".strip()
+                    or row['triggered_by__username'],
+            'email': row['triggered_by__email'],
+            'company_id': row['triggered_by__company_id'],
+            'company_name': row['triggered_by__company__company_name'],
+            'calls': row['total_calls'],
+            'total_cost_usd': float(row['total_cost_usd'] or 0),
+        } for row in user_rows], key=lambda r: r['total_cost_usd'], reverse=True)
+
+        recent_failures = list(
+            qs.filter(status='failed').order_by('-created_at')[:10]
+            .values('id', 'created_at', 'quote_id', 'failed_at_call', 'error_message',
+                    'triggered_by__username')
+        )
+
+        return Response({
+            'all_time': _totals(qs),
+            'this_month': _totals(qs.filter(created_at__gte=month_start)),
+            'by_month': by_month,
+            'by_user': by_user,
             'recent_failures': recent_failures,
         })
 

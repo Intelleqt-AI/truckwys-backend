@@ -1,5 +1,6 @@
 # TENANCY AUDIT: 2026-03-15 — Risk API views properly scoped
-# - RiskAssessmentView: Checks request.user.company against invoice.company ✓
+# - RiskAssessmentView: Checks request.user.company against invoice.company
+#   (2026-09: previously skipped for company-less users — now fails closed)
 # - RiskPortfolioView: Scoped to request.user.company via RiskMonitor ✓
 # - RiskRetrainView: Admin-only, operates on all data (appropriate for ML training) ✓
 # - RiskModelInfoView: Returns model metadata (no data leak) ✓
@@ -34,8 +35,11 @@ class RiskAssessmentView(APIView):
         try:
             invoice = get_object_or_404(Invoice, id=invoice_id)
 
-            # Check user has access to this invoice
-            if request.user.company and invoice.company != request.user.company:
+            # Check user has access to this invoice. Tenant isolation (2026-09):
+            # this was skipped entirely for company-less users; now it fails
+            # closed for them too (no staff exemption — none existed before).
+            user_company = getattr(request.user, 'company', None)
+            if user_company is None or invoice.company_id != user_company.id:
                 return Response(
                     {'error': 'Access denied'},
                     status=status.HTTP_403_FORBIDDEN

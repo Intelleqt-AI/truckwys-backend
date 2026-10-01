@@ -7,12 +7,15 @@ import logging
 import re
 from datetime import date, timedelta
 from decimal import Decimal
+from django.core.cache import cache
+from django.conf import settings
 from django.utils import timezone
 from django.db.models import Avg, Count, Q, Min, Max, F
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
+from rest_framework.throttling import ScopedRateThrottle
 
 from core.models import Quote, QuoteOutcome, FuelPrice, Customer, Invoice
 from core.services.fuel_price import fetch_fuel_prices
@@ -64,6 +67,32 @@ class FuelPriceCurrentView(APIView):
     once-per-hour live-retry gate and re-check the live sources immediately."""
     permission_classes = [IsAuthenticated]
 
+    @staticmethod
+    def _provenance(request, fuel_price, is_fallback):
+        """Fields added 2026-09 (all additive; existing keys unchanged): the
+        price for the caller's company fuel zone plus where it came from."""
+        company = getattr(request.user, 'company', None)
+        zone = getattr(company, 'fuel_zone', None) or 'INLAND'
+
+        def num(v):
+            return float(v) if v is not None else None
+
+        effective_from = getattr(fuel_price, 'effective_from', None)
+        failed_at = getattr(fuel_price, 'fetch_failed_at', None)
+        zone_price = None
+        if not is_fallback:
+            zone_price = num(fuel_price.diesel_coastal if zone == 'COASTAL' else fuel_price.diesel_inland)
+        return {
+            'zone': zone,
+            'zone_price': zone_price,
+            'diesel_grade': getattr(fuel_price, 'diesel_grade', None),
+            'price_basis': 'WHOLESALE_LIST',
+            'effective_from': timezone.localtime(effective_from).isoformat() if effective_from else None,
+            'diesel_500ppm_inland': None if is_fallback else num(getattr(fuel_price, 'diesel_500ppm_inland', None)),
+            'diesel_500ppm_coastal': None if is_fallback else num(getattr(fuel_price, 'diesel_500ppm_coastal', None)),
+            'last_failed_check_at': timezone.localtime(failed_at).isoformat() if failed_at else None,
+        }
+
     def get(self, request):
         try:
             force = request.query_params.get('force', '').lower() == 'true'
@@ -72,7 +101,12 @@ class FuelPriceCurrentView(APIView):
             # Stale if: source is a fallback (live scrape failed), or data is >35 days old
             days_old = (timezone.now().date() - fuel_price.date).days
             is_fallback = fuel_price.source in ('FALLBACK', 'FALLBACK_LATEST')
-            is_stale = is_fallback or days_old > 35
+            # A refresh that failed after this price was stored leaves the
+            # last good price in place (never overwritten by a fallback) —
+            # still usable, but flagged.
+            refresh_failed_at = getattr(fuel_price, 'fetch_failed_at', None)
+            is_stale = is_fallback or days_old > 35 or refresh_failed_at is not None
+            provenance = self._provenance(request, fuel_price, is_fallback)
 
             if is_fallback:
                 # Don't hand over a substituted number dressed up as current —
@@ -101,9 +135,18 @@ class FuelPriceCurrentView(APIView):
                     'diesel_coastal': None,
                     'petrol_95': None,
                     'petrol_93': None,
+                    **provenance,
                 })
 
-            stale_warning = f"Last update {days_old} days ago; consider manual refresh" if is_stale else None
+            if refresh_failed_at is not None:
+                stale_warning = (
+                    f"The latest price check failed ({timezone.localtime(refresh_failed_at):%Y-%m-%d %H:%M} SAST); "
+                    f"showing the last confirmed {fuel_price.source} price."
+                )
+            elif is_stale:
+                stale_warning = f"Last update {days_old} days ago; consider manual refresh"
+            else:
+                stale_warning = None
 
             return Response({
                 'success': True,
@@ -120,6 +163,7 @@ class FuelPriceCurrentView(APIView):
                 'diesel_coastal': float(fuel_price.diesel_coastal),
                 'petrol_95': float(fuel_price.petrol_95) if fuel_price.petrol_95 else 0,
                 'petrol_93': float(fuel_price.petrol_93) if fuel_price.petrol_93 else 0,
+                **provenance,
             })
         except Exception as e:
             return Response({
@@ -142,12 +186,24 @@ class FuelPriceCurrentView(APIView):
         from core.models.fuel_price import FuelPrice
 
         today = date.today().replace(day=1)
+        now = timezone.now()
+        # A staff override is the price in force from now until a person
+        # replaces it: automated refreshes never overwrite a MANUAL row (see
+        # fetch_fuel_prices). Every provenance field is reset so nothing from
+        # the scraped row it replaces (grade, 500ppm figures, failure flag)
+        # is left behind looking as if it described the typed price.
         FuelPrice.objects.update_or_create(
             date=today,
             defaults={
                 'diesel_inland': Decimal(str(diesel_inland)),
                 'diesel_coastal': Decimal(str(diesel_coastal or diesel_inland)),
                 'source': 'MANUAL',
+                'fetched_at': now,
+                'effective_from': now,
+                'fetch_failed_at': None,
+                'diesel_grade': None,
+                'diesel_500ppm_inland': None,
+                'diesel_500ppm_coastal': None,
             }
         )
         return Response({'success': True, 'date': today.isoformat(), 'diesel_inland': float(diesel_inland)})
@@ -391,6 +447,12 @@ class RevenueGuardView(APIView):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+# UNREACHABLE FROM LIVE UI — QuoteBuilder.tsx's AI panel now calls
+# AIQuotePriceAnalysisView (POST /quotes/ai-price-analysis/) below instead.
+# Left in place (not deleted): the underlying win-probability ML system is
+# only paused, not removed, pending more accept/reject data (see PLAN doc
+# Part 8) — this endpoint and analyze_quote() keep working for anyone who
+# still calls them directly.
 class AIQuoteAnalyzeView(APIView):
     """POST /api/v1/quotes/analyze/ — one comprehensive AI analysis of a quote.
 
@@ -478,6 +540,122 @@ class AIQuoteAnalyzeView(APIView):
                 'success': False,
                 'error': str(e),
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class AIQuotePriceAnalysisView(APIView):
+    """POST /api/v1/quotes/ai-price-analysis/ — OpenAI web-search-grounded
+    verification of fuel/toll/driver-allowance/base-rate + a suggested price.
+
+    Called by QuoteBuilder's AI panel for both the automatic first run and
+    the manual "Re-check" button (trigger_type is accepted purely for
+    admin-usage labelling — the "runs once automatically" behaviour is a
+    frontend concern, gated on unsaved draft form state this endpoint never
+    sees). What IS enforced here: a per-quote cooldown + a per-user rate cap,
+    as cost-abuse guards, since every call spends real OpenAI dollars.
+    """
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'ai_quote_analysis'
+
+    def post(self, request):
+        from core.views import resolve_user_company
+        from core.services import quote_ai_pricing
+
+        data = request.data
+        company = resolve_user_company(request.user)
+
+        quote_id = self._int(data.get('quote_id'))
+        quote = None
+        if quote_id:
+            quote = Quote.objects.filter(id=quote_id, company=company).first()
+
+        cooldown_key = f'ai_quote_analysis_cooldown:quote:{quote.id}' if quote \
+            else f'ai_quote_analysis_cooldown:user:{request.user.id}'
+        cooldown_seconds = getattr(settings, 'AI_QUOTE_ANALYSIS_COOLDOWN_SECONDS', 20)
+        # Set BEFORE calling OpenAI (not after success) so two near-simultaneous
+        # requests (a double-click) both see the cooldown immediately.
+        if not cache.add(cooldown_key, True, timeout=cooldown_seconds):
+            return Response({
+                'success': False, 'error': 'cooldown',
+                'message': 'An AI analysis was just run for this quote — please wait a few seconds before re-checking again.',
+                'retry_after_seconds': cooldown_seconds,
+            }, status=status.HTTP_429_TOO_MANY_REQUESTS)
+
+        payload = {
+            'quote_id': quote_id,
+            'trigger_type': data.get('trigger_type'),
+            'origin': self._text(data.get('origin')),
+            'destination': self._text(data.get('destination')),
+            'vehicle_type': self._text(data.get('vehicle_type')),
+            'fuel_type': self._text(data.get('fuel_type')),
+            'fuel_zone': self._text(data.get('fuel_zone')),
+            'trip_type': self._text(data.get('trip_type')),
+            'legs': 2 if str(data.get('legs')) == '2' else 1,
+            'pickup_date': self._text(data.get('pickup_date'), 10),
+            # Only used for win probability (never sent to OpenAI), and only
+            # if the customer belongs to the requesting company.
+            'customer_id': self._own_customer_id(data.get('customer_id'), company),
+            'route': self._route(data.get('route')),
+            **{key: self._number(data.get(key), cap) for key, cap in self.NUMBER_CAPS.items()},
+        }
+        result = quote_ai_pricing.analyze_quote_price(
+            payload=payload, user=request.user, company=company, quote=quote,
+        )
+        return Response(result)
+
+    # Generous real-world ceilings. Anything outside is treated as missing:
+    # the item comes back "not verified" instead of overflowing the maths
+    # after the paid OpenAI calls.
+    NUMBER_CAPS = {
+        'distance_km': 40_000, 'one_way_distance_km': 20_000, 'duration_minutes': 30_000,
+        'weight': 200_000, 'fuel_cost': 5_000_000, 'toll_cost': 1_000_000, 'driver_cost': 1_000_000,
+        'cross_border_cost': 1_000_000, 'fuel_usage_litres': 100_000, 'fuel_price_used': 1_000,
+        'fuel_consumption_l_per_100km': 500, 'base_rate_per_km': 1_000, 'market_rate': 10_000_000,
+    }
+
+    @staticmethod
+    def _number(value, cap):
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return None
+        return v if 0 <= v <= cap else None
+
+    @staticmethod
+    def _text(value, max_len=100):
+        return value.strip()[:max_len] if isinstance(value, str) else None
+
+    @staticmethod
+    def _int(value):
+        try:
+            out = int(value)
+        except (TypeError, ValueError, OverflowError):  # 'abc', None, JSON 1e400 -> inf
+            return None
+        return out if 0 < out < 2 ** 63 else None
+
+    @classmethod
+    def _own_customer_id(cls, value, company):
+        from core.models import Customer
+        cid = cls._int(value)
+        return cid if cid and company and Customer.objects.filter(id=cid, company=company).exists() else None
+
+    @classmethod
+    def _route(cls, route):
+        if not isinstance(route, dict):
+            return {}
+        plazas = []
+        for p in (route.get('toll_breakdown') or [])[:60] if isinstance(route.get('toll_breakdown'), list) else []:
+            if isinstance(p, dict) and isinstance(p.get('plaza'), str):
+                plazas.append({'plaza': p['plaza'].strip()[:80], 'tariff': cls._number(p.get('tariff'), 5_000)})
+        codes = route.get('country_codes')
+        return {
+            'road_type': cls._text(route.get('road_type')),
+            'terrain': [t[:40] for t in route.get('terrain') if isinstance(t, str)][:10]
+            if isinstance(route.get('terrain'), list) else None,
+            'toll_breakdown': plazas,
+            'country_codes': [c[:3] for c in codes if isinstance(c, str)][:10] if isinstance(codes, list) else None,
+            'cross_border': bool(route.get('cross_border')),
+        }
 
 
 class AIChatQuoteView(APIView):

@@ -25,6 +25,7 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.utils import timezone
+from core.formatting import format_zar
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +90,7 @@ def charge_delivery_fee_for_invoice(invoice):
         charge.save()
         record_charge_success(company)
         title = 'Delivery fee charged'
-        message = f'R{float(charge.amount):,.2f} (0.25% of {invoice.invoice_number}) charged successfully.'
+        message = f'{format_zar(charge.amount)} (0.25% of {invoice.invoice_number}) charged successfully.'
         link = f'/finance/invoices/{invoice.id}'
         notify_company(company.id, 'SUCCESS', title, message, link=link, event='delivery_fee.charged')
         notify_company_billing_email(company.id, title, message, link=link)
@@ -104,7 +105,7 @@ def charge_delivery_fee_for_invoice(invoice):
         grace_deadline = company.grace_period_expires_at
         title = 'Could not charge delivery fee'
         message = (
-            f"We couldn't charge R{float(charge.amount):,.2f} (0.25% of {invoice.invoice_number}) to your "
+            f"We couldn't charge {format_zar(charge.amount)} (0.25% of {invoice.invoice_number}) to your "
             f"card on file. You have until {grace_deadline.strftime('%d %b %Y')} to resolve this before your "
             "account is suspended."
         )
@@ -163,7 +164,7 @@ def retry_failed_delivery_fee_charges() -> dict:
             record_charge_success(company)
             summary['charged'] += 1
             title = 'Delivery fee charged'
-            message = f'R{float(charge.amount):,.2f} (0.25% of {charge.invoice.invoice_number}) charged successfully after retry.'
+            message = f'{format_zar(charge.amount)} (0.25% of {charge.invoice.invoice_number}) charged successfully after retry.'
             link = f'/finance/invoices/{charge.invoice_id}'
             notify_company(company.id, 'SUCCESS', title, message, link=link, event='delivery_fee.charged')
             notify_company_billing_email(company.id, title, message, link=link)
@@ -183,7 +184,7 @@ def retry_failed_delivery_fee_charges() -> dict:
             summary['dead_authorization'] += 1
             title = 'Your saved card is no longer valid'
             message = (
-                f"We couldn't charge R{float(charge.amount):,.2f} (0.25% of "
+                f"We couldn't charge {format_zar(charge.amount)} (0.25% of "
                 f"{charge.invoice.invoice_number}) because the saved card can no longer be "
                 "charged. Please add a payment method again to keep your account active."
             )
@@ -197,7 +198,7 @@ def retry_failed_delivery_fee_charges() -> dict:
             grace_deadline = company.grace_period_expires_at
             title = 'Could not charge delivery fee'
             message = (
-                f"We couldn't charge R{float(charge.amount):,.2f} (0.25% of {charge.invoice.invoice_number}) to "
+                f"We couldn't charge {format_zar(charge.amount)} (0.25% of {charge.invoice.invoice_number}) to "
                 f"your card on file. You have until {grace_deadline.strftime('%d %b %Y')} to resolve this before "
                 "your account is suspended."
             )

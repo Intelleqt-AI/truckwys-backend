@@ -34,8 +34,8 @@ class VehicleAdmin(admin.ModelAdmin):
 
 @admin.register(VehicleType)
 class VehicleTypeAdmin(admin.ModelAdmin):
-    list_display = ['name', 'capacity', 'max_distance', 'base_rate', 'active']
-    list_filter = ['active']
+    list_display = ['name', 'capacity', 'max_distance', 'base_rate', 'sanral_toll_class', 'active']
+    list_filter = ['active', 'sanral_toll_class']
     search_fields = ['name', 'description']
 
 @admin.register(VehicleLog)
@@ -159,8 +159,11 @@ class AuditLogAdmin(admin.ModelAdmin):
 
 @admin.register(FuelPrice)
 class FuelPriceAdmin(admin.ModelAdmin):
-    list_display = ['date', 'diesel_inland', 'diesel_coastal', 'petrol_95', 'petrol_93', 'source']
-    list_filter = ['source']
+    # To override a price by hand, set source to MANUAL: automated refreshes
+    # never overwrite a MANUAL row (they do overwrite any other live source).
+    list_display = ['date', 'diesel_inland', 'diesel_coastal', 'diesel_grade', 'effective_from',
+                    'petrol_95', 'petrol_93', 'source', 'fetched_at', 'fetch_failed_at']
+    list_filter = ['source', 'diesel_grade']
     search_fields = ['date']
     readonly_fields = ['created_at', 'updated_at']
 

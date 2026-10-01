@@ -5,6 +5,7 @@ Handles invoice generation with automatic calculation of line items,
 VAT, and payment terms.
 """
 
+import re
 from decimal import Decimal
 from datetime import date, timedelta
 from typing import Optional
@@ -253,19 +254,22 @@ class InvoiceGenerator:
         """
         Calculate invoice due date based on payment terms.
 
+        Reads the number out of NET<n> rather than looking it up in a fixed
+        table. The table only listed 30, 60 and 90 and fell back to 30 for
+        anything else — so a customer on NET45 was invoiced at 30 days and
+        chased a fortnight early, and NET14 was billed 16 days late. Both
+        values were already in use before they were offered as choices.
+
         Args:
-            payment_terms: Payment terms (NET30, NET60, NET90)
+            payment_terms: Payment terms, e.g. NET30, NET45
 
         Returns:
             date: Due date
         """
-        terms_days = {
-            'NET30': 30,
-            'NET60': 60,
-            'NET90': 90,
-        }
-
-        days = terms_days.get(payment_terms, 30)
+        match = re.search(r'(\d+)', payment_terms or '')
+        days = int(match.group(1)) if match else 30
+        if not 0 < days <= 365:
+            days = 30           # a nonsense value must not push a due date out years
         return date.today() + timedelta(days=days)
 
     def _generate_invoice_number(self) -> str:
