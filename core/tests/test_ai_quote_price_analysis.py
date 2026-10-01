@@ -543,11 +543,18 @@ class ComputePricingTests(SimpleTestCase):
             self.assertEqual(d['detail']['market_total_zar'], round(243.63 * nights, 2), minutes)
             self.assertEqual(d['detail']['allowance_basis'], 'per_night_away')
 
-    def test_driver_days_from_driving_time_and_yours_at_or_above_market_is_kept(self):
+    def test_driver_above_the_approved_allowance_is_flagged(self):
         d = self._price(duration_minutes=1500)['cost_breakdown']['driver_allowance']  # 25 h -> 3 days, 2 nights
         self.assertEqual((d['detail']['days'], d['detail']['nights'], d['ai_value_zar']), (3, 2, round(243.63 * 2, 2)))
-        kept = self._price(driver_cost=1000)['cost_breakdown']['driver_allowance']
-        self.assertEqual((kept['verdict'], kept['ai_value_zar']), ('accurate', 1000.0))
+        # An allowance above the approved figure overstates the night-out
+        # allowance, so it is flagged (adjust down to the approved figure),
+        # not silently kept as it was before.
+        high = self._price(driver_cost=1000)['cost_breakdown']['driver_allowance']  # 960 min -> 2 days, 1 night
+        self.assertEqual((high['verdict'], high['ai_value_zar']), ('needs_adjustment', 243.63))
+        self.assertIn('above it', high['reason'])
+        # An allowance matching the approved figure is at market.
+        exact = self._price(driver_cost=243.63)['cost_breakdown']['driver_allowance']
+        self.assertEqual((exact['verdict'], exact['ai_value_zar']), ('accurate', 243.63))
 
     def test_driver_without_driving_time_is_not_verified(self):
         self.assertEqual(self._price(duration_minutes=None)['cost_breakdown']['driver_allowance']['verdict'],

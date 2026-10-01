@@ -71,6 +71,7 @@ SANRAL_CLASS_LABELS = {1: 'Class 1 (light vehicle)', 2: 'Class 2 (2-axle heavy v
 
 FUEL_TOLERANCE = 0.01            # fuel within 1% of the published price = at market
 TOLL_TOLERANCE = 0.01            # route toll total within 1% = at market
+DRIVER_TOLERANCE = 0.01          # driver allowance within 1% of the approved figure = at market
 FUEL_PRICE_BOUNDS = (10.0, 60.0)         # R per litre
 PLAZA_TARIFF_MAX = 5000.0                # R per plaza, one way
 DRIVER_RATE_MAX_PER_DAY = 5000.0         # R per day
@@ -662,18 +663,30 @@ def _driver_item(allowance, payload, today):
         return not_verified('Trip driving time is missing, so nights away can’t be worked out.', 'missing driving time')
     market_total = round(rate * nights, 2)
     detail['market_total_zar'] = market_total
+    # The approved allowance is THE market figure, so the line is flagged in
+    # either direction beyond a small tolerance: below understates the night-out
+    # allowance the driver is owed, above overstates it and inflates the quote.
+    # (Previously only "below" was flagged — an allowance well above the approved
+    # figure wrongly read as "at market".)
+    tol = max(market_total * DRIVER_TOLERANCE, 0.01)
     if nights == 0:
         basis = (f'no night away (about {driving_hours:.1f} driving hours fits in one '
                  f'{DRIVER_DRIVING_HOURS_PER_DAY:g}-hour driving day)')
-        return _item('accurate', yours_total, None, f'The {label} does not apply: {basis}.',
+        if yours_total <= tol:
+            return _item('accurate', yours_total, None, f'The {label} does not apply: {basis}.',
+                         note, sources, detail, 'source', **provenance)
+        return _item('needs_adjustment', yours_total, market_total,
+                     f'The {label} does not apply ({basis}), so it should be {_fmt_rand(0)} '
+                     f'vs your {_fmt_rand(yours_total)} (above it).',
                      note, sources, detail, 'source', **provenance)
     basis = (f'{_fmt_rand(rate)}/night × {nights} night{"s" if nights != 1 else ""} away '
              f'({days} driving days at about {DRIVER_DRIVING_HOURS_PER_DAY:g} h/day)')
-    if yours_total >= market_total:
-        return _item('accurate', yours_total, None, f'Your allowance covers the {label}: {basis}.',
+    if abs(yours_total - market_total) <= tol:
+        return _item('accurate', yours_total, None, f'Your allowance matches the {label}: {basis}.',
                      note, sources, detail, 'source', **provenance)
+    direction = 'above' if yours_total > market_total else 'below'
     return _item('needs_adjustment', yours_total, market_total,
-                 f'{label}: {basis} = {_fmt_rand(market_total)} vs your {_fmt_rand(yours_total)}.',
+                 f'{label}: {basis} = {_fmt_rand(market_total)} vs your {_fmt_rand(yours_total)} ({direction} it).',
                  note, sources, detail, 'source', **provenance)
 
 
