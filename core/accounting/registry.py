@@ -45,6 +45,12 @@ def get_adapter(connection):
     return adapter_class(connection.provider)(connection)
 
 
+def redirect_uri(code: str) -> str:
+    from django.conf import settings
+    return {'XERO': getattr(settings, 'XERO_REDIRECT_URI', ''),
+            'QBO': getattr(settings, 'QBO_REDIRECT_URI', '')}.get(code, '')
+
+
 def provider_name(code: str) -> str:
     info = BY_CODE.get(code)
     return info.name if info else code

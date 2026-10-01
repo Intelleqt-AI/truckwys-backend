@@ -110,6 +110,10 @@ def enqueue(connection, object_type, local_id, *, force=False):
     transaction commits. Safe to call repeatedly."""
     from core.models import ExternalLink
     link = get_or_create_link(connection, object_type, local_id)
+    # A worker holds it: tell that worker to run it again when it finishes,
+    # so a void / edit made meanwhile is never lost.
+    if ExternalLink.objects.filter(pk=link.pk, status='RUNNING').update(requeue=True):
+        return link
     if link.status in ('SYNCED', 'VOIDED', 'DEAD', 'BLOCKED', 'ERROR') or force:
         ExternalLink.objects.filter(pk=link.pk).exclude(status='RUNNING').update(
             status='PENDING', next_attempt_at=None, updated_at=timezone.now())
@@ -152,17 +156,23 @@ def _claim(link_id):
     from core.models import ExternalLink
     now = timezone.now()
     claimed = ExternalLink.objects.filter(pk=link_id, status__in=('PENDING', 'ERROR', 'BLOCKED')).update(
-        status='RUNNING', updated_at=now)
+        status='RUNNING', requeue=False, updated_at=now)
     if not claimed:
         # A RUNNING link whose worker died is re-claimable after STALE_RUNNING.
         claimed = ExternalLink.objects.filter(pk=link_id, status='RUNNING',
-                                              updated_at__lt=now - STALE_RUNNING).update(updated_at=now)
+                                              updated_at__lt=now - STALE_RUNNING).update(requeue=False, updated_at=now)
     if not claimed:
         return None
     return ExternalLink.objects.select_related('connection', 'connection__company').get(pk=link_id)
 
 
+FINISH_FIELDS = ['status', 'last_error', 'attempts', 'next_attempt_at', 'external_id', 'external_number',
+                 'external_version', 'last_hash', 'last_synced_at', 'meta', 'updated_at']
+
+
 def _finish(link, status, *, error='', attempts=None, next_at=None, **fields):
+    """Save the outcome. Never writes `requeue` (a concurrent enqueue may
+    have just set it; run_link reads it after this)."""
     link.status = status
     link.last_error = (error or '')[:4000]
     if attempts is not None:
@@ -170,7 +180,7 @@ def _finish(link, status, *, error='', attempts=None, next_at=None, **fields):
     link.next_attempt_at = next_at
     for k, v in fields.items():
         setattr(link, k, v)
-    link.save()
+    link.save(update_fields=FINISH_FIELDS)
 
 
 HANDLERS = {}
@@ -216,13 +226,15 @@ def run_link(link_id) -> str | None:
     except RateLimited as exc:
         _finish(link, 'ERROR', error=str(exc), next_at=timezone.now() + timedelta(seconds=exc.retry_after))
     except TransientError as exc:
-        attempts = link.attempts + 1
+        attempts = link.attempts + (1 if getattr(exc, 'counts', True) else 0)
         if attempts >= MAX_ATTEMPTS:
             _finish(link, 'DEAD', error=f'Gave up after {attempts} attempts: {exc}', attempts=attempts)
             log_event(connection, f'push_{link.object_type.lower()}', f'Gave up: {exc}', level='ERROR',
                       object_type=link.object_type, local_id=link.local_id, label=_label(link))
         else:
-            wait = exc.retry_after or backoff_seconds(attempts)
+            # Never shorter than the backoff: a timeout's own hint (30 s)
+            # must not turn eight attempts into four minutes.
+            wait = max(exc.retry_after or 0, backoff_seconds(max(attempts, 1)))
             _finish(link, 'ERROR', error=str(exc), attempts=attempts,
                     next_at=timezone.now() + timedelta(seconds=wait))
     except PermanentError as exc:
@@ -237,6 +249,11 @@ def run_link(link_id) -> str | None:
                 next_at=None if status == 'DEAD' else timezone.now() + timedelta(seconds=backoff_seconds(attempts)))
         log_event(connection, f'push_{link.object_type.lower()}', f'Unexpected error: {exc}', level='ERROR',
                   object_type=link.object_type, local_id=link.local_id, label=_label(link))
+    from core.models import ExternalLink
+    if ExternalLink.objects.filter(pk=link.pk, requeue=True).update(
+            requeue=False, status='PENDING', next_attempt_at=None, updated_at=timezone.now()):
+        _schedule(link.pk)
+        return 'PENDING'
     return link.status
 
 
@@ -389,6 +406,12 @@ def push_invoice(connection, adapter, link):
     doc = documents.build_invoice(connection, inv, contact_id, tracker)
     res, h = push_document(connection, adapter, link, doc, kind='INVOICE')
     _synced(link, res, h, connection, 'push_invoice', inv.invoice_number)
+    # Receipts TruckWys recorded before payments moved to the provider (the
+    # initial sync couldn't push them while this invoice was failing).
+    from core.models import Payment
+    if Payment.objects.filter(invoice=inv, source__in=('MANUAL', 'BANK')).exists():
+        from core.accounting.backfill import push_receipts_for_invoice
+        push_receipts_for_invoice(connection, adapter, inv)
     for w in tracker.warnings:
         log_event(connection, 'push_invoice', w, level='WARNING', object_type='INVOICE', local_id=inv.pk,
                   label=inv.invoice_number)
@@ -407,11 +430,17 @@ def _invoice_external(connection, adapter, invoice):
     found = adapter.find_document('INVOICE', invoice.invoice_number)
     if found is None:
         return ''
+    if found.total is not None and found.total != invoice.total_amount:
+        log_event(connection, 'push_credit_note',
+                  f'{connection.get_provider_display()} has an invoice numbered {invoice.invoice_number} but for '
+                  f'{found.total} (TruckWys: {invoice.total_amount}); the credit note is left unallocated.',
+                  level='WARNING', object_type='INVOICE', local_id=invoice.pk, label=invoice.invoice_number)
+        return ''
     link = get_or_create_link(connection, 'INVOICE', invoice.pk)
     link.external_id, link.external_number = found.external_id, found.external_number
     link.status, link.last_synced_at = 'SYNCED', timezone.now()
     link.meta = {**(link.meta or {}), 'pre_cutover': True, 'matched_existing': True}
-    link.save()
+    link.save(update_fields=['external_id', 'external_number', 'status', 'last_synced_at', 'meta', 'updated_at'])
     return found.external_id
 
 
@@ -442,11 +471,20 @@ def push_credit_note(connection, adapter, link):
     res, h = push_document(connection, adapter, link, doc, kind='CREDIT_NOTE')
     meta = {}
     if inv_ext and not (link.meta or {}).get('allocated'):
-        state = adapter.get_invoice_state(inv_ext)
-        amount = min(cn.total_amount, max(Decimal('0.00'), state.amount_due))
-        if amount > 0:
-            adapter.allocate_credit_note(res.external_id, inv_ext, amount, cn.issue_date)
+        # Idempotent: an allocation the provider applied but whose answer was
+        # lost is found on the credit note, never sent twice.
+        detail = adapter.get_credit_note_detail(res.external_id)
+        already = sum((a['amount'] for a in detail['allocations'] if a['invoice_id'] == inv_ext), Decimal('0.00'))
+        if already > 0:
+            amount = already
+        else:
+            state = adapter.get_invoice_state(inv_ext)
+            amount = min(cn.total_amount, detail['remaining'], max(Decimal('0.00'), state.amount_due))
+            if amount > 0:
+                adapter.allocate_credit_note(res.external_id, inv_ext, amount, cn.issue_date)
         meta['allocated'] = str(amount)
+        link.meta = {**(link.meta or {}), 'allocated': str(amount)}
+        link.save(update_fields=['meta', 'updated_at'])
         if amount < cn.total_amount:
             meta['unallocated'] = str(cn.total_amount - amount)
             log_event(connection, 'push_credit_note',
@@ -484,16 +522,45 @@ def push_bill(connection, adapter, link):
         _finish(link, 'SYNCED')
         return
     if link.external_id:
-        # An edited expense: update the bill while it is unpaid.
-        res = adapter.push_bill(doc, external_id=link.external_id, version=link.external_version,
-                                idempotency_key=_key(link, h))
-        _save_external(link, res)
-        diff = totals_diff(doc, res)
-        if diff:
-            raise PermanentError(f'{connection.get_provider_display()} calculated different totals for the '
-                                 'updated bill: ' + '; '.join(diff))
-        if res.status in ('DRAFT', 'SUBMITTED'):
-            res = adapter.finalise_document('BILL', res.external_id)
+        res = _replace_bill(connection, adapter, link, doc, h, exp)
     else:
         res, h = push_document(connection, adapter, link, doc, kind='BILL')
     _synced(link, res, h, connection, 'push_bill', exp.expense_number)
+
+
+def _replace_bill(connection, adapter, link, doc, h, exp):
+    """An edited expense. Never changes a posted bill in place (the new
+    figures would post before they are verified): a draft is updated in
+    place; a posted, unpaid bill is replaced by a new one that is created
+    unposted, verified, posted, and only then is the old one voided."""
+    provider = connection.get_provider_display()
+    state = adapter.get_bill_state(link.external_id)
+    if state.status in ('PAID',) or state.amount_paid > 0:
+        raise PermanentError(f'The bill for {exp.expense_number} is (partly) paid in {provider}; '
+                             f'adjust it there.')
+    if state.status in ('VOIDED', 'DELETED'):
+        raise PermanentError(f'The bill for {exp.expense_number} was voided in {provider}.')
+    if state.status in ('DRAFT', 'SUBMITTED'):
+        res = adapter.push_bill(doc, external_id=link.external_id, version=link.external_version,
+                                idempotency_key=_key(link, h))
+        diff = totals_diff(doc, res)
+        if diff:
+            raise PermanentError(f'{provider} calculated different totals for the updated bill: ' + '; '.join(diff))
+        return adapter.finalise_document('BILL', res.external_id)
+    old_id, old_version = link.external_id, link.external_version
+    res = adapter.push_bill(doc, idempotency_key=_key(link, h))
+    diff = totals_diff(doc, res)
+    if diff:
+        try:
+            adapter.discard_document('BILL', res.external_id)
+        except Exception:
+            logger.exception('could not discard unverified bill %s', res.external_id)
+        raise PermanentError(f'{provider} calculated different totals for the updated bill, so it was not '
+                             'changed: ' + '; '.join(diff))
+    if res.status in ('DRAFT', 'SUBMITTED', ''):
+        res = adapter.finalise_document('BILL', res.external_id)
+    _save_external(link, res)
+    adapter.void_bill(old_id, version=old_version)
+    log_event(connection, 'push_bill', f'{exp.expense_number} changed: bill replaced in {provider}',
+              object_type='BILL', local_id=exp.pk, label=exp.expense_number)
+    return res

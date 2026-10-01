@@ -15,7 +15,6 @@ from datetime import datetime, time, timedelta
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
-from core.accounting.base import not_pre_cutover
 from core.accounting.base import AuthError, NotFound, RateLimited, TransientError
 from core.accounting.events import log_event
 from core.accounting.registry import get_adapter
@@ -60,13 +59,14 @@ def invoices_for_changes(connection, changes):
             local_ids |= set(Payment.objects.filter(company_id=connection.company_id, source=connection.provider)
                              .filter(Q(external_id=c.external_id) | Q(external_id__startswith=f'{c.external_id}:'))
                              .values_list('invoice_id', flat=True))
-    # Invoices from before the cut-over (linked only so a credit note could be
-    # allocated) stay managed in TruckWys: never mirrored.
-    links = ExternalLink.objects.filter(connection=connection, object_type='INVOICE').filter(not_pre_cutover())
+    links = ExternalLink.objects.filter(connection=connection, object_type='INVOICE')
     by_ext = dict(links.filter(external_id__in=ext_ids).values_list('local_id', 'external_id'))
     by_local = dict(links.filter(local_id__in=local_ids).values_list('local_id', 'external_id'))
     pairs = {**by_ext, **by_local}
-    invoices = Invoice.objects.filter(pk__in=pairs.keys(), company_id=connection.company_id)
+    # Invoices from before the cut-over (linked only so a credit note could be
+    # allocated) stay managed in TruckWys: never mirrored. By date, always.
+    invoices = Invoice.objects.filter(pk__in=pairs.keys(), company_id=connection.company_id,
+                                      issue_date__gte=connection.cutover_date)
     return [(inv, pairs[inv.pk]) for inv in invoices if pairs.get(inv.pk)]
 
 
@@ -78,7 +78,12 @@ def mirror_external_invoice(connection, invoice, external_id, adapter):
                   f'{invoice.invoice_number} no longer exists in {connection.get_provider_display()}',
                   level='ERROR', object_type='INVOICE', local_id=invoice.pk, label=invoice.invoice_number)
         return None
-    return mirror_invoice(connection, invoice, state, adapter=adapter)
+    counts = mirror_invoice(connection, invoice, state, adapter=adapter)
+    if counts and (counts['created'] or counts['removed'] or counts['updated']):
+        # An allocation moved money off an overpayment we hold as a remainder
+        # on another invoice: settle that now, not at the next hourly poll.
+        refresh_overpayment_remainders(connection, adapter=adapter)
+    return counts
 
 
 def poll_payments(connection) -> dict:
@@ -206,9 +211,10 @@ def _handle_event(conn, ev) -> bool:
     if not invoice_ext_ids:
         return False
     links = dict(ExternalLink.objects.filter(connection=conn, object_type='INVOICE', external_id__in=invoice_ext_ids)
-                 .filter(not_pre_cutover()).values_list('local_id', 'external_id'))
+                 .values_list('local_id', 'external_id'))
     if not links:
         return False   # a bill, or an invoice TruckWys didn't issue
-    for inv in Invoice.objects.filter(pk__in=links.keys(), company_id=conn.company_id):
+    for inv in Invoice.objects.filter(pk__in=links.keys(), company_id=conn.company_id,
+                                      issue_date__gte=conn.cutover_date):
         mirror_external_invoice(conn, inv, links[inv.pk], adapter)
     return True

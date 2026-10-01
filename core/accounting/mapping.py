@@ -303,8 +303,22 @@ def update(connection, payload: dict) -> dict:
 
     if errors:
         raise MappingError(errors)
-    connection.settings = s
-    connection.save(update_fields=['settings', 'updated_at'])
+    # Write only the mapping keys, merged into the stored settings under a
+    # lock, so a cut-over date or option cache saved meanwhile survives.
+    from django.db import transaction
+    from core.models import AccountingConnection
+    keys = SECTIONS + ('tracking', 'receipts_account')
+    with transaction.atomic():
+        fresh = AccountingConnection.objects.select_for_update().get(pk=connection.pk)
+        merged = dict(fresh.settings or {})
+        for k in keys:
+            if k in s:
+                merged[k] = s[k]
+            else:
+                merged.pop(k, None)
+        fresh.settings = merged
+        fresh.save(update_fields=['settings', 'updated_at'])
+    connection.settings = merged
     from core.accounting.events import log_event
     log_event(connection, 'mapping', 'Mapping saved' + ('' if is_complete(connection) else
                                                          f' ({len(missing(connection))} still to map)'))

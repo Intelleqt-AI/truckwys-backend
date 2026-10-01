@@ -21,5 +21,6 @@ urlpatterns = [
     path('connection/reconciliation/', v.ReconciliationView.as_view(), name='accounting-reconciliation'),
     path('connection/reconciliation/run/', v.ReconciliationRunView.as_view(), name='accounting-reconciliation-run'),
     path('<slug:slug>/connect/', v.ConnectView.as_view(), name='accounting-connect'),
+    path('<slug:slug>/start/', v.StartView.as_view(), name='accounting-start'),
     path('<slug:slug>/callback/', v.OAuthCallbackView.as_view(), name='accounting-callback'),
 ]

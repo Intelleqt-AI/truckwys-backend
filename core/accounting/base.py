@@ -46,9 +46,12 @@ class RateLimited(AccountingError):
 class TransientError(AccountingError):
     retryable = True
 
-    def __init__(self, message: str, *, retry_after: float | None = None, **kw):
+    def __init__(self, message: str, *, retry_after: float | None = None, counts: bool = True, **kw):
         super().__init__(message, **kw)
         self.retry_after = retry_after
+        # False: our own infrastructure (e.g. Redis) was unavailable, not the
+        # provider; don't spend one of the document's attempts on it.
+        self.counts = counts
 
 
 class PermanentError(AccountingError):
@@ -288,7 +291,9 @@ class AccountingAdapter(abc.ABC):
     def list_orgs(self, callback_params: dict | None = None) -> list[Org]: ...
 
     @abc.abstractmethod
-    def revoke(self) -> None: ...
+    def revoke(self, revoke_token: bool = True) -> None:
+        """Disconnect this org at the provider; revoke_token=False keeps the
+        provider grant alive (another TruckWys connection uses it)."""
 
     # --- settings
     @abc.abstractmethod
@@ -373,6 +378,11 @@ class AccountingAdapter(abc.ABC):
     @abc.abstractmethod
     def get_invoice_state(self, external_id: str) -> RemoteInvoiceState: ...
 
+    def get_bill_state(self, external_id: str) -> RemoteInvoiceState:
+        """Status / amount paid of a supplier bill (default: providers that
+        keep bills with invoices, like Xero)."""
+        return self.get_invoice_state(external_id)
+
     @abc.abstractmethod
     def list_payments_since(self, since: datetime | None) -> list[RemotePaymentChange]: ...
 
@@ -416,11 +426,3 @@ class AccountingAdapter(abc.ABC):
     def org_url(self) -> str:
         return ''
 
-
-def not_pre_cutover():
-    """ExternalLink filter: not an invoice from before the cut-over (linked
-    only so a credit note could be allocated). Written as isnull-or-false
-    because `exclude(meta__key=True)` drops rows where the key is missing on
-    SQLite (NULL comparison)."""
-    from django.db.models import Q
-    return Q(meta__pre_cutover__isnull=True) | Q(meta__pre_cutover=False)

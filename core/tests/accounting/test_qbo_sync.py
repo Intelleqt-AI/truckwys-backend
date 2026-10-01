@@ -169,14 +169,19 @@ class ConnectTests(QBOFlowBase):
         self.assertTrue(self.qbo.calls_to('POST', r'/tokens/revoke$'))
 
     def test_full_callback_through_the_view(self):
-        start = self.api().post('/api/v1/integrations/accounting/quickbooks/connect/').json()
-        self.assertTrue(start['auth_url'].startswith('https://appcenter.intuit.com/connect/oauth2?'))
-        self.assertIn('scope=com.intuit.quickbooks.accounting%20openid%20profile%20email', start['auth_url'])
         from urllib.parse import parse_qs, urlparse
-        state = parse_qs(urlparse(start['auth_url']).query)['state'][0]
+        start = self.api().post('/api/v1/integrations/accounting/quickbooks/connect/').json()
+        self.assertIn('/api/v1/integrations/accounting/quickbooks/start/?ticket=', start['auth_url'])
+        browser = APIClient(HTTP_HOST='localhost')
+        u = urlparse(start['auth_url'])
+        hop = browser.get(f'{u.path}?{u.query}')
+        self.assertEqual(hop.status_code, 302)
+        self.assertTrue(hop['Location'].startswith('https://appcenter.intuit.com/connect/oauth2?'))
+        self.assertIn('scope=com.intuit.quickbooks.accounting%20openid%20profile%20email', hop['Location'])
+        state = parse_qs(urlparse(hop['Location']).query)['state'][0]
         code = self.qbo.authorize(redirect_uri=QBO_REDIRECT)
-        resp = APIClient(HTTP_HOST='localhost').get('/api/v1/integrations/quickbooks/callback/',
-                                                    {'code': code, 'state': state, 'realmId': self.qbo.realm})
+        resp = browser.get('/api/v1/integrations/quickbooks/callback/',
+                           {'code': code, 'state': state, 'realmId': self.qbo.realm})
         self.assertEqual(resp.status_code, 302)
         self.assertIn('provider=quickbooks&result=connected', resp['Location'])
         conn = AccountingConnection.objects.get(company=self.co, status='ACTIVE')
@@ -430,10 +435,16 @@ class PushTests(QBOFlowBase):
         self.assertEqual(line['AccountBasedExpenseLineDetail']['ClassRef']['value'], cls['ND 123-456'])
         self.assertEqual(bill['DepartmentRef']['value'], '1')
         self.assertEqual(bill['VendorRef']['value'], self.link('CONTACT_SUPPLIER', sup.pk).external_id)
+        old_id = link.external_id
         with no_commit_delay(self):
             exp.amount = D('1265.00')
             exp.vat_amount = D('165.00')
             exp.save()
+        # A posted bill is never changed in place: a verified replacement is
+        # posted, then the old one is deleted (QBO bills can't be voided).
+        link.refresh_from_db()
+        self.assertNotEqual(link.external_id, old_id)
+        self.assertTrue(self.qbo.is_deleted('Bill', old_id))
         bill = self.qbo.bill(link.external_id)
         self.assertEqual((D(bill['TotalAmt']), D(bill['TxnTaxDetail']['TotalTax'])), (D('1265.00'), D('165.00')))
         with no_commit_delay(self):

@@ -173,13 +173,31 @@ class ConnectTests(XeroFlowBase):
         self.assertIn('reason=denied', resp['Location'])
 
     def test_full_callback_through_the_view(self):
-        start = self.api().post('/api/v1/integrations/accounting/xero/connect/').json()
-        self.assertIn('scope=openid%20profile', start['auth_url'])
         from urllib.parse import parse_qs, urlparse
-        state = parse_qs(urlparse(start['auth_url']).query)['state'][0]
+        start = self.api().post('/api/v1/integrations/accounting/xero/connect/').json()
+        # Our own start page first (sets the browser nonce), then Xero.
+        self.assertTrue(start['auth_url'].startswith(
+            'https://api.truckwys.test/api/v1/integrations/accounting/xero/start/?ticket='), start['auth_url'])
+        browser = APIClient(HTTP_HOST='localhost')
+        hop = browser.get(urlparse(start['auth_url']).path + '?' + urlparse(start['auth_url']).query)
+        self.assertEqual(hop.status_code, 302)
+        self.assertTrue(hop['Location'].startswith('https://login.xero.com/identity/connect/authorize?'))
+        self.assertIn('scope=openid%20profile', hop['Location'])
+        self.assertIn('tw_acct_oauth', hop.cookies)
+        # The ticket is single use.
+        again = APIClient(HTTP_HOST='localhost').get(urlparse(start['auth_url']).path + '?' +
+                                                     urlparse(start['auth_url']).query)
+        self.assertIn('reason=state_invalid', again['Location'])
+        state = parse_qs(urlparse(hop['Location']).query)['state'][0]
         code = self.xero.authorize(redirect_uri='https://api.truckwys.test/api/v1/integrations/xero/callback/')
-        resp = APIClient(HTTP_HOST='localhost').get('/api/v1/integrations/xero/callback/',
-                                                    {'code': code, 'state': state})
+        # Someone else's browser (no cookie) can't complete it...
+        stranger = APIClient(HTTP_HOST='localhost').get('/api/v1/integrations/xero/callback/',
+                                                        {'code': code, 'state': state})
+        self.assertIn('reason=browser_mismatch', stranger['Location'])
+        self.assertFalse(AccountingConnection.objects.filter(company=self.co).exists())
+        # ... the admin's browser can.
+        code = self.xero.authorize(redirect_uri='https://api.truckwys.test/api/v1/integrations/xero/callback/')
+        resp = browser.get('/api/v1/integrations/xero/callback/', {'code': code, 'state': state})
         self.assertEqual(resp.status_code, 302)
         self.assertTrue(resp['Location'].startswith('https://app.truckwys.test/settings/integrations/accounting?'))
         self.assertIn('result=connected', resp['Location'])
@@ -375,12 +393,19 @@ class PushTests(XeroFlowBase):
         self.assertEqual((D(bill['Total']), D(bill['TotalTax'])), (D('1150.00'), D('150.00')))
         self.assertEqual(bill['LineItems'][0]['AccountCode'], '450')
         self.assertEqual(bill['InvoiceNumber'], 'TOLL-778')
+        old_id = link.external_id
         with no_commit_delay(self):
             exp.amount = D('1265.00')
             exp.vat_amount = D('165.00')
             exp.save()
+        # A posted bill isn't edited in place: a verified replacement is
+        # posted, then the old one is voided.
+        link.refresh_from_db()
+        self.assertNotEqual(link.external_id, old_id)
         bill = self.xero.org()['invoices'][link.external_id]
-        self.assertEqual((D(bill['Total']), D(bill['TotalTax'])), (D('1265.00'), D('165.00')))
+        self.assertEqual((bill['Status'], D(bill['Total']), D(bill['TotalTax'])),
+                         ('AUTHORISED', D('1265.00'), D('165.00')))
+        self.assertEqual(self.xero.org()['invoices'][old_id]['Status'], 'VOIDED')
         with no_commit_delay(self):
             exp.status = 'PENDING'
             exp.save()

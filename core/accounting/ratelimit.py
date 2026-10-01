@@ -36,46 +36,56 @@ class Limits:
     app_per_minute: int | None = None
 
 
-_SLIDING = """
-local key = KEYS[1]
+# One atomic acquire: every limit is checked first and only then is every
+# slot taken, so a refused call spends nothing (no minute/day budget burnt
+# by concurrency refusals).
+#   KEYS: 1 app minute zset, 2 tenant minute zset, 3 day counter, 4 concurrency zset, 5 blocked flag
+#   ARGV: now, member, app_limit (0 = none), minute_limit, day_limit (0 = none), conc_limit, lease, day_ttl
+# Returns {1, '', '0'} or {0, scope, wait_seconds}.
+_ACQUIRE = """
 local now = tonumber(ARGV[1])
-local window = tonumber(ARGV[2])
-local limit = tonumber(ARGV[3])
-local member = ARGV[4]
-redis.call('ZREMRANGEBYSCORE', key, '-inf', now - window)
-local count = redis.call('ZCARD', key)
-if count >= limit then
-  local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
-  local wait = window
-  if oldest[2] then wait = (tonumber(oldest[2]) + window) - now end
-  return {0, tostring(wait)}
+local member = ARGV[2]
+local app_limit = tonumber(ARGV[3])
+local minute_limit = tonumber(ARGV[4])
+local day_limit = tonumber(ARGV[5])
+local conc_limit = tonumber(ARGV[6])
+local lease = tonumber(ARGV[7])
+local day_ttl = tonumber(ARGV[8])
+local blocked = redis.call('PTTL', KEYS[5])
+if blocked and blocked > 0 then return {0, 'blocked', tostring(blocked / 1000)} end
+local function window_wait(key, limit)
+  redis.call('ZREMRANGEBYSCORE', key, '-inf', now - 60)
+  if redis.call('ZCARD', key) >= limit then
+    local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
+    if oldest[2] then return (tonumber(oldest[2]) + 60) - now end
+    return 60
+  end
+  return nil
 end
-redis.call('ZADD', key, now, member)
-redis.call('EXPIRE', key, math.ceil(window) + 5)
-return {1, '0'}
-"""
-
-_SEMAPHORE = """
-local key = KEYS[1]
-local now = tonumber(ARGV[1])
-local lease = tonumber(ARGV[2])
-local limit = tonumber(ARGV[3])
-local member = ARGV[4]
-redis.call('ZREMRANGEBYSCORE', key, '-inf', now - lease)
-if redis.call('ZCARD', key) >= limit then return 0 end
-redis.call('ZADD', key, now, member)
-redis.call('EXPIRE', key, lease + 5)
-return 1
-"""
-
-_DAY = """
-local key = KEYS[1]
-local limit = tonumber(ARGV[1])
-local ttl = tonumber(ARGV[2])
-local n = redis.call('INCR', key)
-if n == 1 then redis.call('EXPIRE', key, ttl) end
-if n > limit then redis.call('DECR', key) return 0 end
-return 1
+if app_limit > 0 then
+  local w = window_wait(KEYS[1], app_limit)
+  if w then return {0, 'app minute', tostring(w)} end
+end
+local w = window_wait(KEYS[2], minute_limit)
+if w then return {0, 'minute', tostring(w)} end
+if day_limit > 0 then
+  local used = tonumber(redis.call('GET', KEYS[3]) or '0')
+  if used >= day_limit then return {0, 'day', '-1'} end
+end
+redis.call('ZREMRANGEBYSCORE', KEYS[4], '-inf', now - lease)
+if redis.call('ZCARD', KEYS[4]) >= conc_limit then return {0, 'concurrent', '2'} end
+if app_limit > 0 then
+  redis.call('ZADD', KEYS[1], now, member)
+  redis.call('EXPIRE', KEYS[1], 65)
+end
+redis.call('ZADD', KEYS[2], now, member)
+redis.call('EXPIRE', KEYS[2], 65)
+if day_limit > 0 then
+  if redis.call('INCR', KEYS[3]) == 1 then redis.call('EXPIRE', KEYS[3], day_ttl) end
+end
+redis.call('ZADD', KEYS[4], now, member)
+redis.call('EXPIRE', KEYS[4], lease + 5)
+return {1, '', '0'}
 """
 
 _client = None
@@ -108,7 +118,7 @@ class RateLimiter:
         try:
             ttl = self.r.pttl(self._k(tenant, 'blocked'))
         except Exception as exc:  # redis down: fail closed, retry later
-            raise TransientError(f'Rate limiter unavailable: {exc}', retry_after=30)
+            raise TransientError(f'Rate limiter unavailable: {exc}', retry_after=30, counts=False)
         return max(0.0, ttl / 1000.0) if ttl and ttl > 0 else 0.0
 
     def block(self, tenant: str, seconds: float, scope: str = '') -> None:
@@ -119,39 +129,31 @@ class RateLimiter:
         except Exception:
             pass
 
-    def _take_window(self, key, window, limit, member, now, scope):
-        ok, wait = self.r.eval(_SLIDING, 1, key, now, window, limit, member)
-        if int(ok) != 1:
-            raise RateLimited(f'{self.provider} {scope} limit reached', retry_after=float(wait) + 0.5, scope=scope)
-
     @contextmanager
     def acquire(self, tenant: str):
         """Take one call's worth of every limit for `tenant`, or raise
-        RateLimited(retry_after). Releases the concurrency slot on exit."""
+        RateLimited(retry_after) having taken nothing. Releases the
+        concurrency slot on exit."""
         lim = self.limits
-        wait = self.blocked_for(tenant)
-        if wait > 0:
-            raise RateLimited(f'{self.provider} asked us to wait', retry_after=wait, scope='blocked')
         member = uuid.uuid4().hex
         now = time.time()
+        day = time.strftime('%Y%m%d', time.gmtime(now))
         try:
-            if lim.app_per_minute:
-                self._take_window(f'{self.ns}:app:minute', 60, lim.app_per_minute, member, now, 'app minute')
-            self._take_window(self._k(tenant, 'minute'), 60, lim.per_minute, member, now, 'minute')
-            if lim.per_day:
-                day = time.strftime('%Y%m%d', time.gmtime(now))
-                ok = self.r.eval(_DAY, 1, self._k(tenant, f'day:{day}'), lim.per_day, 90000)
-                if int(ok) != 1:
-                    tomorrow = (int(now // 86400) + 1) * 86400
-                    raise RateLimited(f'{self.provider} daily limit reached', retry_after=tomorrow - now, scope='day')
-            got = self.r.eval(_SEMAPHORE, 1, self._k(tenant, 'concurrent'), now, LEASE_SECONDS,
-                              lim.concurrent, member)
-            if int(got) != 1:
-                raise RateLimited(f'{self.provider} concurrency limit reached', retry_after=2, scope='concurrent')
-        except RateLimited:
-            raise
+            ok, scope, wait = self.r.eval(
+                _ACQUIRE, 5, f'{self.ns}:app:minute', self._k(tenant, 'minute'), self._k(tenant, f'day:{day}'),
+                self._k(tenant, 'concurrent'), self._k(tenant, 'blocked'),
+                now, member, lim.app_per_minute or 0, lim.per_minute, lim.per_day or 0, lim.concurrent,
+                LEASE_SECONDS, 90000)
         except Exception as exc:
-            raise TransientError(f'Rate limiter unavailable: {exc}', retry_after=30)
+            raise TransientError(f'Rate limiter unavailable: {exc}', retry_after=30, counts=False)
+        if int(ok) != 1:
+            scope = scope.decode() if isinstance(scope, bytes) else str(scope)
+            wait = float(wait.decode() if isinstance(wait, bytes) else wait)
+            if scope == 'day':
+                wait = (int(now // 86400) + 1) * 86400 - now
+            raise RateLimited(f'{self.provider} {scope} limit reached' if scope != 'blocked'
+                              else f'{self.provider} asked us to wait', retry_after=wait + (0.5 if scope in (
+                                  'minute', 'app minute') else 0), scope=scope)
         try:
             yield
         finally:

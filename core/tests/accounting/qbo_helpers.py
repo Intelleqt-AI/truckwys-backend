@@ -47,11 +47,12 @@ def connect(company, user, qbo, realm=None):
     """The real OAuth path against the fake: consent URL -> the user picks a
     company in Intuit (qbo.authorize) -> callback with code + realmId."""
     from core.accounting import connection as conn_svc
-    url = conn_svc.begin_connect(company, user, 'QBO')
-    state = parse_qs(urlparse(url).query)['state'][0]
+    state, nonce = conn_svc.begin_connect(company, user, 'QBO')
+    url = conn_svc.consent_url('QBO', state)
+    assert parse_qs(urlparse(url).query)['state'][0] == state
     realm = realm or qbo.realm
     code = qbo.authorize(realm, redirect_uri=QBO_REDIRECT)
-    return conn_svc.complete_connect('QBO', code, state, realmId=realm)
+    return conn_svc.complete_connect('QBO', code, state, browser_nonce=nonce, realmId=realm)
 
 
 def map_everything(conn, **overrides):

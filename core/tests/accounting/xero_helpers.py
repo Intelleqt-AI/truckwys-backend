@@ -44,10 +44,11 @@ def connect(company, user, xero, tenant_ids=None):
     in Xero (xero.authorize) -> callback with the code."""
     from django.conf import settings
     from core.accounting import connection as conn_svc
-    url = conn_svc.begin_connect(company, user, 'XERO')
-    state = parse_qs(urlparse(url).query)['state'][0]
+    state, nonce = conn_svc.begin_connect(company, user, 'XERO')
+    url = conn_svc.consent_url('XERO', state)
+    assert parse_qs(urlparse(url).query)['state'][0] == state
     code = xero.authorize(tenant_ids, redirect_uri=settings.XERO_REDIRECT_URI)
-    conn, outcome = conn_svc.complete_connect('XERO', code, state)
+    conn, outcome = conn_svc.complete_connect('XERO', code, state, browser_nonce=nonce)
     return conn, outcome
 
 

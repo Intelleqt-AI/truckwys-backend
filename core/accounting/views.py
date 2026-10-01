@@ -125,20 +125,65 @@ class ConnectionView(APIView):
         return Response(serialize_connection(_live(request)))
 
 
+OAUTH_COOKIE = 'tw_acct_oauth'
+TICKET_SALT = 'accounting-oauth-ticket'
+TICKET_MAX_AGE = 300
+
+
+def _start_url(request, info, ticket):
+    """Absolute URL of StartView on the API host (the host the provider
+    redirects back to), so its cookie is there for the callback."""
+    from urllib.parse import urlsplit
+    from django.urls import reverse
+    path = reverse('accounting-start', kwargs={'slug': info.slug})
+    parts = urlsplit(registry.redirect_uri(info.code) or '')
+    base = f'{parts.scheme}://{parts.netloc}' if parts.scheme and parts.netloc else request.build_absolute_uri('/')[:-1]
+    return f'{base}{path}?ticket={ticket}'
+
+
 class ConnectView(APIView):
+    """Returns auth_url = our own StartView with a one-time ticket; the
+    browser goes there, gets a nonce cookie, and is sent on to the provider."""
     permission_classes = [IsIntegrationAdmin]
 
     def post(self, request, slug):
+        from django.core import signing
         info = registry.BY_SLUG.get(slug)
         if info is None or info.availability != 'available':
             return err('That accounting system isn\'t available yet.', 'not_available', 404)
         try:
-            url = conn_svc.begin_connect(_company(request), request.user, info.code)
+            state, nonce = conn_svc.begin_connect(_company(request), request.user, info.code)
         except conn_svc.ConnectError as exc:
             return err(str(exc), exc.code, exc.status)
-        return Response({'auth_url': url})
+        ticket = signing.dumps({'s': state, 'n': nonce}, salt=TICKET_SALT)
+        return Response({'auth_url': _start_url(request, info, ticket)})
 
     get = post   # the old Xero page used GET
+
+
+class StartView(APIView):
+    """Public, one-time: set the nonce cookie on this browser, then go to the
+    provider's consent screen."""
+    permission_classes = []
+    authentication_classes = []
+
+    def get(self, request, slug):
+        import hashlib
+        from django.core import signing
+        from django.core.cache import cache
+        info = registry.BY_SLUG.get(slug)
+        raw = request.GET.get('ticket', '')
+        try:
+            data = signing.loads(raw, salt=TICKET_SALT, max_age=TICKET_MAX_AGE)
+        except (signing.BadSignature, signing.SignatureExpired):
+            return _frontend(slug, 'error', 'state_invalid')
+        key = 'acct-oauth-ticket:' + hashlib.sha256(raw.encode()).hexdigest()
+        if info is None or not cache.add(key, 1, TICKET_MAX_AGE * 2):
+            return _frontend(slug, 'error', 'state_invalid')
+        resp = redirect(conn_svc.consent_url(info.code, data['s']))
+        resp.set_cookie(OAUTH_COOKIE, data['n'], max_age=conn_svc.STATE_MAX_AGE, httponly=True,
+                        secure=not settings.DEBUG, samesite='Lax', path='/api/v1/integrations/')
+        return resp
 
 
 def _frontend(slug, result, reason=''):
@@ -163,14 +208,18 @@ class OAuthCallbackView(APIView):
             return _frontend(slug, 'error', 'denied')
         params = {k: v for k, v in request.GET.items() if k not in ('code', 'state')}
         try:
-            _conn, outcome = conn_svc.complete_connect(info.code, request.GET['code'], request.GET.get('state', ''),
-                                                       **params)
+            _conn, outcome = conn_svc.complete_connect(
+                info.code, request.GET['code'], request.GET.get('state', ''),
+                browser_nonce=request.COOKIES.get(OAUTH_COOKIE), **params)
         except conn_svc.ConnectError as exc:
-            return _frontend(slug, 'error', exc.code)
+            resp = _frontend(slug, 'error', exc.code)
         except Exception:
             logger.exception('%s OAuth callback failed', slug)
-            return _frontend(slug, 'error', 'token_exchange_failed')
-        return _frontend(slug, outcome)
+            resp = _frontend(slug, 'error', 'token_exchange_failed')
+        else:
+            resp = _frontend(slug, outcome)
+        resp.delete_cookie(OAUTH_COOKIE, path='/api/v1/integrations/')
+        return resp
 
 
 class SelectOrgView(APIView):
@@ -183,7 +232,7 @@ class SelectOrgView(APIView):
         if conn.status != 'PENDING_ORG':
             return err('There is no organisation choice waiting.', 'invalid_state', 409)
         try:
-            conn_svc.select_org(conn, str(request.data.get('tenant_id') or ''), user=request.user)
+            conn = conn_svc.select_org(conn, str(request.data.get('tenant_id') or ''), user=request.user)
         except conn_svc.ConnectError as exc:
             return err(str(exc), exc.code, exc.status)
         conn.refresh_from_db()

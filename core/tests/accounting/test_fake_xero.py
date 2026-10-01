@@ -360,10 +360,13 @@ class AdapterAgainstFakeTests(AdapterAgainstFakeBase):
                                            ('Tolls', '1', '115.00', '15.00', '450', 'INPUT2', [])],
                         sid, inclusive=True, due=date(2025, 7, 31))
         res = a.push_bill(bill, idempotency_key='bill-77')
-        a.finalise_document('BILL', res.external_id)
         bill.lines[0].unit_price = D('2400.00')
-        res2 = a.push_bill(bill, external_id=res.external_id)   # AUTHORISED, unpaid: editable
-        self.assertEqual((res2.status, res2.total, res2.total_tax), ('AUTHORISED', D('2515.00'), D('15.00')))
+        res2 = a.push_bill(bill, external_id=res.external_id)   # a DRAFT is updated in place
+        self.assertEqual((res2.status, res2.total, res2.total_tax), ('DRAFT', D('2515.00'), D('15.00')))
+        a.finalise_document('BILL', res.external_id)
+        # A posted bill is never edited in place (the core replaces it after verifying).
+        with self.assertRaisesRegex(PermanentError, 'only a draft is updated in place'):
+            a.push_bill(bill, external_id=res.external_id)
         self.assertTrue(xero.invoice(res.external_id).contact_id == sid and xero.contact(sid).is_supplier)
         a.void_bill(res.external_id)
         self.assertEqual(xero.invoice(res.external_id).status, 'VOIDED')

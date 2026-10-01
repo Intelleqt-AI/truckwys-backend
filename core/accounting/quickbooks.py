@@ -423,8 +423,11 @@ class QuickBooksAdapter(base.AccountingAdapter):
         return [Org(tenant_id=realm, name=info.get('CompanyName') or info.get('LegalName') or realm,
                     base_currency=currency.upper(), country=country[:2].upper())]
 
-    def revoke(self) -> None:
-        """Revoking the refresh token ends the app's access to the company."""
+    def revoke(self, revoke_token=True) -> None:
+        """Revoking the refresh token ends the app's access to the company.
+        QBO tokens are issued per company (realm), so this never affects
+        another TruckWys connection; revoke_token is accepted for the
+        interface and the token is always revoked."""
         from core.utils.crypto import decrypt_secret
         token = ''
         for field in ('refresh_token', 'access_token'):
@@ -753,6 +756,16 @@ class QuickBooksAdapter(base.AccountingAdapter):
             return self.get_document('CREDIT_NOTE', external_id)
         return self._create(doc, idempotency_key)
 
+    def get_bill_state(self, external_id) -> RemoteInvoiceState:
+        b = self._read('Bill', external_id)
+        total = dec(b.get('TotalAmt'))
+        tax = dec((b.get('TxnTaxDetail') or {}).get('TotalTax'))
+        balance = dec(b.get('Balance'))
+        return RemoteInvoiceState(external_id=str(b.get('Id', '')), number=b.get('DocNumber') or '',
+                                  status=_status(b), sub_total=total - tax, total_tax=tax, total=total,
+                                  amount_due=balance, amount_paid=total - balance, amount_credited=D0,
+                                  contact_id=_ref(b, 'VendorRef'), issue_date=parse_date(b.get('TxnDate')))
+
     def push_bill(self, doc, *, external_id='', version='', idempotency_key=''):
         """Bills can change while unpaid (expenses are editable): full update
         with the current SyncToken."""
@@ -899,8 +912,11 @@ class QuickBooksAdapter(base.AccountingAdapter):
             if inv != str(invoice_id):
                 continue
             if kind == 'PAYMENT':
+                # PrivateNote carries the full reference (PaymentRefNum is
+                # cut at 21 characters); the initial sync finds its own
+                # receipts by it.
                 out.append(Settlement(kind='PAYMENT', external_id=f'{pid}:{inv}', amount=amount, date=when,
-                                      source_id=pid, reference=p.get('PaymentRefNum') or ''))
+                                      source_id=pid, reference=p.get('PrivateNote') or p.get('PaymentRefNum') or ''))
             else:
                 number = ''
                 if not self._ours('CREDIT_NOTE', source):
@@ -1064,7 +1080,8 @@ class QuickBooksAdapter(base.AccountingAdapter):
             if left > 0:
                 out.append(RemoteCredit(kind='OVERPAYMENT', external_id=str(p['Id']),
                                         contact_id=_ref(p, 'CustomerRef'), remaining=left,
-                                        date=parse_date(p.get('TxnDate')), number=p.get('PaymentRefNum') or ''))
+                                        date=parse_date(p.get('TxnDate')),
+                                        number=p.get('PrivateNote') or p.get('PaymentRefNum') or ''))
         for cm in self._query_all('CreditMemo'):
             left = dec(cm.get('RemainingCredit', cm.get('Balance')))
             if left > 0 and _status(cm) != 'VOIDED':
