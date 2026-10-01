@@ -120,14 +120,16 @@ Cold start caps the grade at C, and a new transporter without a hard stop is D (
 - **Order:** risk-adjusted margin per rand-day, then age.
 - **Fair share:** after its first item, a transporter takes at most 15% of the freed headroom per run while others wait.
 - **Expiry:** 5 business days.
-- **Re-checks:** items are re-evaluated before promotion, and one that now fails a hard rule is declined with the reason.
+- **Re-checks:** items are re-evaluated before promotion. One that now fails an invoice, debtor or transporter rule is declined, with the reason in transporter wording. A paused funder keeps its queue, and an item whose line changed is closed with a request to apply again. Each item is processed in its own savepoint, so one failure never blocks the rest.
+- **Top-ups:** these are re-evaluated first, and dropped if the invoice no longer qualifies.
 - **Top-ups:** a part-funded advance is topped up only while it awaits approval. Once approved, the remainder lapses; a second tranche is Phase 2.
 - **Triggers:** the queue runs after anything frees capacity (settle, decline, cancel, write-off, buy-back) and every 15 minutes.
 
 **Roles and segregation of duties** (`access.py`):
 - Transporters see only their own offers and advances, in transporter wording. Other parties' scores are never shown.
 - Staff run the desk: limits, policy proposals, payout, settlement and write-off. They approve only with a delegation, or if they also hold an APPROVER membership.
-- Funder members and funder API keys see only their funder.
+- Funder members and funder API keys see only their funder. A key bound to only some of the funder's transporters sees those transporters' advances and ledger rows, but not the whole-book views (book, data room).
+- One guard (`access.check_advance_action`) covers approve, decline and payout on every endpoint: the desk, the funder API, legacy `/advances/` and `/partner/advances/`.
 - The approver cannot pay out the same advance.
 - The maker of a policy version cannot approve it.
 - A decline requires a reason.
@@ -174,6 +176,8 @@ Each pack carries a content hash, and generating one writes an audit EXPORT row.
 - `POST capital/fast-pay/requests/`;
 - `capital/fast-pay/advances/`, `…/<id>/`, `…/<id>/cancel/`.
 
+Transporters only ever receive reason text in transporter wording. Desk text can name other tenants' invoices (duplicates) or the desk's hold notes. A change to an approved application (for example a new GIT insurance date) moves it back to SUBMITTED for review.
+
 **Capital desk** (staff or funder member; `?funder=`):
 - `capital/desk/` + `funders/`, `book/`, `approvals/`, `queue/`, `advances/` (+ `<id>/`);
 - `advances/<id>/approve|decline|disburse|settle|write-off|buy-back/`;
@@ -214,6 +218,7 @@ Each pack carries a content hash, and generating one writes an audit EXPORT row.
 | `test_capital_api` | Launch switch, tenant isolation, desk roles, funder scoping (members and API keys), Mode A, segregation of duties, maker/checker, limits, the lender API on the engine. |
 | `test_capital_concurrency` (Postgres) | Two requests at a debtor cap, many requests against the pot, the same invoice ×4, and the DB trigger. |
 | `test_capital_monitoring`, `_dataroom`, `_ai`, `_jobs` | Alerts, snapshots, data room files and hash, AI guardrails and budget, jobs. |
+| `test_capital_review_fixes` | Regression tests from the independent review: partner and legacy actions gated, no desk text to transporters, paused funder, top-up re-check, line change, narrow funder keys, application change, expired limit rows. |
 | `test_capital_golden` | Fast Pay over the golden ledger leaves every accounting figure unchanged to the cent. |
 
 Legacy tests changed where behaviour changed on purpose:

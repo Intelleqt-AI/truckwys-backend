@@ -63,7 +63,12 @@ def process_queue(funder, *, actor=None, now=None) -> dict:
     from core.services import facility_ledger
 
     stats = {'expired': expire(funder, now=now), 'promoted': 0, 'declined': 0, 'still_queued': 0,
-             'skipped_fair_share': 0, 'topped_up': 0, 'topped_up_amount': ZERO}
+             'skipped_fair_share': 0, 'topped_up': 0, 'topped_up_amount': ZERO, 'errors': 0, 'paused': False}
+    funder.refresh_from_db()
+    if not funder.accepts_new_advances:
+        # A paused funder keeps its queue: nobody is declined for the pause.
+        stats['paused'] = True
+        return stats
     queued_ids = list(AdvanceRequest.objects.filter(funder=funder, status='QUEUED')
                       .order_by('-queue_priority', 'queued_at', 'id').values_list('pk', flat=True))
     if queued_ids:
@@ -79,48 +84,84 @@ def process_queue(funder, *, actor=None, now=None) -> dict:
                 adv = AdvanceRequest.objects.select_related('invoice', 'facility').get(pk=adv_id)
                 if adv.status != 'QUEUED':
                     continue
-                ev = engine.evaluate(adv.invoice, state=st, ignore_advance=adv)
-                if ev.decision == 'DECLINE':
-                    assessment = engine.record(ev, purpose='QUEUE', actor=actor, actor_label='queue job')
-                    why = '; '.join(r['text'] for r in ev.reasons if r['direction'] == '!') or 'No longer eligible'
-                    facility_ledger.deny_advance(adv, f'No longer eligible: {why}'[:1000])
-                    stats['declined'] += 1
-                    _notify(adv, 'WARNING', 'Fast Pay request closed', why[:300])
+                try:
+                    with transaction.atomic():  # one item failing never undoes the others
+                        outcome = _process_one(adv, st, engine, facility_ledger, actor, waiting_companies,
+                                               allocated, fair_share)
+                except (facility_ledger.CapacityError, ValueError):
+                    logger.exception('queue item %s could not be processed', adv_id)
+                    stats['errors'] += 1
                     continue
-                if ev.decision == 'QUEUE':
-                    stats['still_queued'] += 1
-                    continue
-                company_id = adv.facility.company_id
-                # Fair share: once a transporter has had something this run, it
-                # takes no more than its share while others are waiting.
-                if (len(waiting_companies) > 1 and allocated[company_id] > 0
-                        and allocated[company_id] + ev.fundable_amount > fair_share):
-                    stats['skipped_fair_share'] += 1
-                    continue
-                assessment = engine.record(ev, purpose='QUEUE', actor=actor, actor_label='queue job')
-                facility_ledger.promote_queued(
-                    adv, amount=ev.fundable_amount, actor=actor, assessment=assessment,
-                    fee_percent=ev.fee_pct, fee_amount=ev.fee_amount, net_amount=ev.net_payout,
-                    holdback_amount=ev.holdback_amount, topup_pending=ev.queued_amount)
-                allocated[company_id] += ev.fundable_amount
-                stats['promoted'] += 1
-                if ev.auto_approve:
-                    facility_ledger.approve_advance(adv, actor_label='auto-approval (Mode B envelope)')
-                _notify(adv, 'SUCCESS', 'Fast Pay capacity freed up',
-                        f'{adv.invoice.invoice_number}: R{ev.fundable_amount:,.2f} is now with the finance '
-                        'provider for approval.')
-                st = bookmod.load_state(locked)  # the book just changed
+                stats[outcome] += 1
+                if outcome == 'promoted':
+                    st = bookmod.load_state(locked)  # the book just changed
     t = top_up_pending(funder, actor=actor)
     stats['topped_up'], stats['topped_up_amount'] = t['count'], t['amount']
     return stats
 
 
+# Hard rules about the line or funder are not the transporter's invoice
+# failing: the item waits instead of being declined.
+_WAIT_RULES = {'line', 'funder'}
+
+
+def _safe_why(ev) -> str:
+    from core.capital.reasons import for_transporter
+    texts = [r['text'] for r in for_transporter(ev.reasons) if r['direction'] == '!']
+    return '; '.join(dict.fromkeys(texts)) or 'This invoice can no longer be funded'
+
+
+def _process_one(adv, st, engine, facility_ledger, actor, waiting_companies, allocated, fair_share) -> str:
+    ev = engine.evaluate(adv.invoice, state=st, ignore_advance=adv)
+    failed = {r['rule'] for r in ev.eligibility if not r['passed']}
+    if ev.decision == 'DECLINE' and failed and failed <= _WAIT_RULES:
+        return 'still_queued'
+    line = engine.line_for(adv.facility.company)
+    if ev.decision != 'DECLINE' and (line is None or line.pk != adv.facility_id):
+        engine.record(ev, purpose='QUEUE', actor=actor, actor_label='queue job')
+        facility_ledger.deny_advance(adv, 'Your Fast Pay line changed. Please request again.')
+        _notify(adv, 'WARNING', 'Fast Pay request closed', 'Your Fast Pay line changed. Please request again.')
+        return 'declined'
+    if ev.decision == 'DECLINE':
+        engine.record(ev, purpose='QUEUE', actor=actor, actor_label='queue job')
+        why = _safe_why(ev)  # transporter wording only: it is stored and shown to them
+        facility_ledger.deny_advance(adv, f'No longer eligible: {why}'[:1000])
+        _notify(adv, 'WARNING', 'Fast Pay request closed', why[:300])
+        return 'declined'
+    if ev.decision == 'QUEUE':
+        return 'still_queued'
+    company_id = adv.facility.company_id
+    # Fair share: once a transporter has had something this run, it takes no
+    # more than its share while others are waiting.
+    if (len(waiting_companies) > 1 and allocated[company_id] > 0
+            and allocated[company_id] + ev.fundable_amount > fair_share):
+        return 'skipped_fair_share'
+    assessment = engine.record(ev, purpose='QUEUE', actor=actor, actor_label='queue job')
+    facility_ledger.promote_queued(
+        adv, amount=ev.fundable_amount, actor=actor, assessment=assessment,
+        fee_percent=ev.fee_pct, fee_amount=ev.fee_amount, net_amount=ev.net_payout,
+        holdback_amount=ev.holdback_amount, topup_pending=ev.queued_amount)
+    allocated[company_id] += ev.fundable_amount
+    if ev.auto_approve:
+        facility_ledger.approve_advance(adv, actor_label='auto-approval (Mode B envelope)')
+    _notify(adv, 'SUCCESS', 'Fast Pay capacity freed up',
+            f'{adv.invoice.invoice_number}: R{ev.fundable_amount:,.2f} is now with the finance '
+            'provider for approval.')
+    return 'promoted'
+
+
 def top_up_pending(funder, *, actor=None) -> dict:
+    """Grow part-funded advances still awaiting approval. Each one is
+    re-evaluated first: if the invoice or parties no longer qualify, the
+    pending top-up is dropped, and the extra never exceeds what the invoice
+    itself still supports."""
     from core.capital import book as bookmod
-    from core.capital.scoring import current_debtor_score, current_transporter_score
+    from core.capital import engine
     from core.models import AdvanceRequest, Funder
     from core.services import facility_ledger
     out = {'count': 0, 'amount': ZERO}
+    if not funder.accepts_new_advances:
+        return out
     ids = list(AdvanceRequest.objects.filter(funder=funder, status__in=('REQUESTED', 'SCORING'),
                                              topup_pending__gt=0).order_by('requested_at', 'id')
                .values_list('pk', flat=True))
@@ -131,24 +172,32 @@ def top_up_pending(funder, *, actor=None) -> dict:
         for adv_id in ids:
             adv = AdvanceRequest.objects.select_related('facility', 'invoice', 'debtor').get(pk=adv_id)
             st = bookmod.load_state(locked)
-            dscore = current_debtor_score(adv.debtor, st.policy) if adv.debtor else None
-            tscore = current_transporter_score(adv.facility.company, st.policy)
-            hr = bookmod.headroom(
-                st, company_id=adv.facility.company_id, line_limit=adv.facility.limit,
-                debtor_id=adv.debtor_id, debtor_grade=getattr(dscore, 'grade', None),
-                debtor_cold_start=bool(getattr(dscore, 'cold_start', True)),
-                transporter_grade=getattr(tscore, 'grade', None),
-                sector=getattr(adv.debtor, 'sector', 'UNKNOWN'))
-            hr.pop('advance_brake_pp', None)
-            ticket = hr.pop('ticket_cap', None)
-            extra, _scope = bookmod.binding(hr, adv.topup_pending)
+            ev = engine.evaluate(adv.invoice, state=st, ignore_advance=adv)
+            if not ev.eligible or ev.decision == 'DECLINE':
+                AdvanceRequest.objects.filter(pk=adv.pk).update(topup_pending=ZERO)
+                continue
+            # ev.headroom counts this advance's own reservation as used, so its
+            # binding headroom is the room for the extra; the invoice caps it too.
+            room, _scope = bookmod.binding(ev.headroom, adv.topup_pending)
+            extra = min(room, max(ZERO, ev.eligible_amount - adv.amount))
+            ticket = bookmod.headroom(
+                st, company_id=adv.facility.company_id, line_limit=adv.facility.limit, debtor_id=adv.debtor_id,
+                debtor_grade=getattr(ev.debtor_score, 'grade', None),
+                debtor_cold_start=bool(getattr(ev.debtor_score, 'cold_start', True)),
+                transporter_grade=getattr(ev.transporter_score, 'grade', None),
+                sector=getattr(adv.debtor, 'sector', 'UNKNOWN')).get('ticket_cap')
             if ticket is not None:
                 extra = min(extra, max(ZERO, ticket - adv.amount))
             if extra <= 0:
                 continue
             vat_fraction = st.policy.dec('platform_fee_pct') / 100 * st.policy.dec('platform_fee_vat_rate')
-            added = facility_ledger.top_up(adv, extra=extra, fee_percent=adv.fee_percent,
-                                           vat_fraction=vat_fraction, actor=actor)
+            try:
+                with transaction.atomic():
+                    added = facility_ledger.top_up(adv, extra=extra, fee_percent=adv.fee_percent,
+                                                   vat_fraction=vat_fraction, actor=actor)
+            except (facility_ledger.CapacityError, ValueError):
+                logger.exception('top-up of advance %s failed', adv_id)
+                continue
             if added > 0:
                 out['count'] += 1
                 out['amount'] += added

@@ -69,13 +69,17 @@ class BookState:
 
 
 def _latest_limits(funder) -> dict:
+    """Newest *still valid* row per scope. Expired rows are skipped before
+    choosing, so a temporary raise over a hold falls back to the hold when it
+    expires, not to the policy default."""
+    from django.db.models import Q
     from core.models import CapitalLimit
     today = timezone.localdate()
     out = {}
-    for row in CapitalLimit.objects.filter(funder=funder).order_by('created_at', 'id'):
-        key = (row.scope, row.debtor_id, row.company_id, row.sector or '')
-        out[key] = row  # newest wins (ordered ascending)
-    return {k: v for k, v in out.items() if v.valid_until is None or v.valid_until >= today}
+    for row in (CapitalLimit.objects.filter(funder=funder)
+                .filter(Q(valid_until__isnull=True) | Q(valid_until__gte=today)).order_by('created_at', 'id')):
+        out[(row.scope, row.debtor_id, row.company_id, row.sector or '')] = row  # newest wins
+    return out
 
 
 def _debtor_meta(debtor_ids) -> dict:

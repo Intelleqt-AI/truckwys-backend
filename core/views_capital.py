@@ -296,11 +296,20 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
                 {'error': 'No active facility found for this company'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        advance_request, assessment, ev, created = fp_engine.request(
-            invoice, actor=request.user, actor_label=request.user.username)
+        from core.services.facility_ledger import CapacityError
+        try:
+            advance_request, assessment, ev, created = fp_engine.request(
+                invoice, actor=request.user, actor_label=request.user.username)
+        except CapacityError:
+            return Response({'code': 'capacity', 'error': 'Fast Pay capacity changed while we were checking. '
+                                                          'Please try again.'}, status=status.HTTP_409_CONFLICT)
         if advance_request is None:
-            hard = [r['text'] for r in ev.reasons if r['direction'] == '!'] or \
-                   [r['text'] for r in ev.reasons if r['direction'] == '-'] or ['Not fundable']
+            # Transporter wording only: desk text can name other tenants'
+            # invoices or loads (duplicates) and the desk's hold notes.
+            from core.capital.reasons import for_transporter
+            safe = for_transporter(ev.reasons)
+            hard = [r['text'] for r in safe if r['direction'] == '!'] or \
+                   [r['text'] for r in safe if r['direction'] == '-'] or ['Not fundable']
             return Response(
                 {
                     'error': 'Invoice is not eligible for advance',
@@ -344,12 +353,8 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
             )
         # Mode A: the funder approves every advance; the capital desk only with
         # a written delegation (Funder.staff_may_approve; the sandbox has it).
-        funder = advance.funder or getattr(advance.facility, 'funder', None)
-        if funder is not None:
-            from core.capital.access import can_approve
-            allowed, why = can_approve(request.user, funder)
-            if not allowed:
-                return Response({'error': why}, status=status.HTTP_403_FORBIDDEN)
+        from core.capital.access import check_advance_action
+        check_advance_action(request.user, advance, 'approve')
 
         serializer = ApproveAdvanceSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -397,8 +402,12 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
 
         try:
             reason = serializer.validated_data['reason']
+            from core.capital.access import check_advance_action
+            from core.capital.queue import capacity_freed
             from core.services.facility_ledger import deny_advance
+            check_advance_action(request.user, advance, 'decline')
             deny_advance(advance, reason, actor=request.user)
+            capacity_freed(advance.funder or advance.facility.funder)
 
             if serializer.validated_data.get('notes'):
                 advance.notes = serializer.validated_data['notes']
@@ -436,9 +445,8 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
             # otherwise also send "Funds disbursed" for this transition.
             advance._notify_handled = True
             advance._notify_actor_id = request.user.id
-            if advance.approved_by_id and advance.approved_by_id == request.user.id:
-                return Response({'error': 'Segregation of duties: the approver cannot also pay out this advance.'},
-                                status=status.HTTP_403_FORBIDDEN)
+            from core.capital.access import check_advance_action
+            check_advance_action(request.user, advance, 'disburse')
             from core.services.facility_ledger import disburse_advance
             disburse_advance(advance, actor=request.user,
                              reference=serializer.validated_data.get('notes', '') or '')

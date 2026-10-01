@@ -416,8 +416,12 @@ def settle_advance(advance, *, payment_reference: str, settled_by=None, payment=
         _post('COLLECTION', advance, actor=settled_by, amount=amt, outstanding_delta=-amt,
               reference=reference, memo='Debtor payment received; advance recovered')
         inv = advance.invoice
+        # Invoice less credit notes (dilution) less the advance, and never more
+        # than the holdback the engine set (balance at request less the advance).
         holdback = (Decimal(str(inv.total_amount or 0)) - Decimal(str(getattr(inv, 'credited_amount', 0) or 0))
                     - amt).quantize(Decimal('0.01'))
+        if advance.holdback_amount and advance.holdback_amount > 0:
+            holdback = min(holdback, advance.holdback_amount)
         if holdback > 0:
             _post('RELEASE_HOLDBACK', advance, actor=settled_by, amount=holdback, reference=reference,
                   memo='Holdback owed to the transporter (invoice collected less the advance)')

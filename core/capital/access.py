@@ -116,3 +116,41 @@ def require_desk(user, funder):
     if role is None:
         raise PermissionDenied('Capital desk access is limited to TruckWys staff and funder members.')
     return role
+
+
+def check_advance_action(user, advance, action: str) -> None:
+    """The one gate for approve / decline / disburse on any endpoint (desk,
+    funder API, legacy /advances/ and /partner/advances/). Raises
+    PermissionDenied with the reason."""
+    funder = getattr(advance, 'funder', None) or getattr(getattr(advance, 'facility', None), 'funder', None)
+    if action in ('approve', 'decline'):
+        if funder is None:
+            if not getattr(user, 'is_staff', False):
+                raise PermissionDenied('Only the capital desk can approve or decline this advance.')
+            return
+        ok, why = can_approve(user, funder)
+        if not ok:
+            raise PermissionDenied(why)
+    elif action == 'disburse':
+        require_staff(user)
+        if advance.approved_by_id and advance.approved_by_id == getattr(user, 'pk', None):
+            raise PermissionDenied('Segregation of duties: the approver cannot also pay out this advance.')
+    else:
+        raise PermissionDenied('Unknown action')
+
+
+def key_covers_funder(user, funder) -> bool:
+    """A funder API key sees whole-book views (book, data room) only if it is
+    bound to every transporter on the funder's lines; a narrower key sees only
+    its own transporters' advances and ledger rows."""
+    if not is_lender(user):
+        return True
+    from core.models import Facility
+    line_companies = set(Facility.objects.filter(funder=funder).values_list('company_id', flat=True))
+    return line_companies <= set(getattr(user, 'company_ids', ()) or ())
+
+
+def require_whole_book(user, funder):
+    if not key_covers_funder(user, funder):
+        raise PermissionDenied('This API key is bound to some of the funder\'s transporters only; '
+                               'whole-book views need a key bound to all of them.')

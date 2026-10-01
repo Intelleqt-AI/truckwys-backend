@@ -154,9 +154,7 @@ class CapitalApplicationView(APIView):
         if not _is_company_manager(request.user):
             raise PermissionDenied('Only a company admin or manager can edit the Fast Pay application.')
         app, _ = CapitalApplication.objects.get_or_create(company=company)
-        if app.status == 'APPROVED':
-            # A material change after approval goes back to the funder.
-            pass
+        before = (app.juristic_person, app.declared_annual_turnover, app.git_insurer, app.git_insurance_expiry)
         data = request.data
         if 'juristic_person' in data:
             app.juristic_person = bool(data['juristic_person'])
@@ -171,6 +169,12 @@ class CapitalApplicationView(APIView):
             app.git_insurance_expiry = parse_date(v) if v else None
             if v and app.git_insurance_expiry is None:
                 raise ValidationError({'git_insurance_expiry': 'Use YYYY-MM-DD'})
+        after = (app.juristic_person, app.declared_annual_turnover, app.git_insurer, app.git_insurance_expiry)
+        if app.status == 'APPROVED' and after != before:
+            # A change after approval (e.g. a new insurance date) is checked by
+            # the capital desk again before any further advance.
+            app.status = 'SUBMITTED'
+            app.notes = f'{app.notes}\nChanged after approval by {request.user.username}; needs review.'.strip()
         app.save()
         return Response(application_payload(app, company))
 
@@ -243,6 +247,9 @@ class FastPayInvoicesView(APIView):
         })
 
 
+NO_FAST_PAY_ROLES = ('VIEWER', 'DRIVER', 'CUSTOMER')
+
+
 class FastPayOfferView(APIView):
     """GET capital/fast-pay/invoices/<id>/offer/ — persisted offer (valid 48 h)."""
     permission_classes = [IsAuthenticated]
@@ -250,6 +257,8 @@ class FastPayOfferView(APIView):
     def get(self, request, invoice_id):
         from core.models import Invoice
         company = _company(request)
+        if getattr(request.user, 'role', '') in NO_FAST_PAY_ROLES:
+            raise PermissionDenied('Your role cannot request Fast Pay.')
         inv = Invoice.objects.filter(company=company, pk=invoice_id).select_related('customer', 'load').first()
         if inv is None:
             return Response({'error': 'Invoice not found'}, status=status.HTTP_404_NOT_FOUND)
@@ -270,14 +279,19 @@ class FastPayRequestView(APIView):
         if getattr(company, 'is_demo', False):
             return Response({'code': 'demo', 'error': 'This is a demo account, so no money is advanced.'},
                             status=status.HTTP_403_FORBIDDEN)
-        if getattr(request.user, 'role', '') in ('VIEWER', 'DRIVER', 'CUSTOMER'):
+        if getattr(request.user, 'role', '') in NO_FAST_PAY_ROLES:
             raise PermissionDenied('Your role cannot request Fast Pay.')
         inv = Invoice.objects.filter(company=company, pk=request.data.get('invoice_id')).first() \
             if str(request.data.get('invoice_id') or '').isdigit() else None
         if inv is None:
             return Response({'error': 'Invoice not found'}, status=status.HTTP_404_NOT_FOUND)
-        advance, assessment, ev, created = engine.request(inv, actor=request.user,
-                                                          actor_label=request.user.username)
+        from core.services.facility_ledger import CapacityError
+        try:
+            advance, assessment, ev, created = engine.request(inv, actor=request.user,
+                                                              actor_label=request.user.username)
+        except CapacityError:
+            return Response({'code': 'capacity', 'error': 'Fast Pay capacity changed while we were checking. '
+                                                          'Please try again.'}, status=status.HTTP_409_CONFLICT)
         offer = present.offer(ev, persisted=assessment, advance=advance)
         if advance is None:
             return Response({'code': 'not_fundable', 'error': 'This invoice cannot be funded right now.',
@@ -323,10 +337,16 @@ class FastPayAdvanceCancelView(APIView):
         adv = _own_advances(request).filter(pk=pk).first()
         if adv is None:
             return Response({'error': 'Not found'}, status=status.HTTP_404_NOT_FOUND)
+        if getattr(request.user, 'role', '') in NO_FAST_PAY_ROLES:
+            raise PermissionDenied('Your role cannot cancel Fast Pay requests.')
         if adv.status not in ('QUEUED', 'REQUESTED', 'SCORING'):
             return Response({'error': 'Only a request that is waiting can be cancelled.'},
                             status=status.HTTP_400_BAD_REQUEST)
-        facility_ledger.cancel_advance(adv, note=f'Cancelled by {request.user.username}', actor=request.user)
+        try:
+            facility_ledger.cancel_advance(adv, note=f'Cancelled by {request.user.username}', actor=request.user)
+        except ValueError:
+            return Response({'error': 'This request has just moved on (for example it was approved) and can no '
+                                      'longer be cancelled.'}, status=status.HTTP_409_CONFLICT)
         from core.capital.queue import capacity_freed
         capacity_freed(adv.funder)
         return Response(present.advance_row(adv))
@@ -379,7 +399,9 @@ class DeskFundersView(DeskBase):
 class DeskBookView(DeskBase):
     def get(self, request):
         from core.capital import book as bookmod
-        return Response(jsonable(bookmod.overview(self.funder(request))))
+        f = self.funder(request)
+        access.require_whole_book(request.user, f)
+        return Response(jsonable(bookmod.overview(f)))
 
 
 class DeskApprovalsView(DeskBase):
@@ -547,6 +569,15 @@ class DeskLedgerView(DeskBase):
         except ValueError:
             limit = 200
         rows = list(qs.order_by('-id')[:limit])
+        if access.is_lender(request.user) and not access.key_covers_funder(request.user, f):
+            # A narrow key: balances of its own transporters, no other lines' detail.
+            ids = list(request.user.company_ids)
+            rec = ledger.reconcile(f)
+            return Response(jsonable({
+                'balances': ledger.balances(funder=f, company_id__in=ids),
+                'reconciliation': {'ok': rec['ok'], 'breaks': []},
+                'entries': [present.ledger_entry(e) for e in rows],
+            }))
         return Response(jsonable({
             'balances': ledger.balances(funder=f),
             'reconciliation': ledger.reconcile(f),
@@ -575,7 +606,8 @@ class DeskDebtorsView(DeskBase):
         st = bookmod.load_state(f)
         ids = {d for d in st.by_debtor if d} | set(
             CapitalScore.objects.filter(kind='DEBTOR').values_list('debtor_id', flat=True)[:500])
-        if access.is_lender(request.user):
+        if not getattr(request.user, 'is_staff', False) or access.is_lender(request.user):
+            # Funder members and keys see the debtors in their own book only.
             ids = {d for d in st.by_debtor if d}
         debtors = DebtorIdentity.objects.filter(pk__in=ids)
         rows = [_debtor_card(d, st) for d in debtors]
@@ -680,7 +712,12 @@ class DeskPolicyView(DeskBase):
             raise ValidationError({'params': f'Unknown parameters: {", ".join(unknown)}'})
         with transaction.atomic():
             last = CreditPolicy.objects.select_for_update().filter(funder=f).order_by('-version').first()
-            base = dict(last.params) if last else {}
+            # Build on the version in force, not on unapproved proposals, so an
+            # approval never carries changes the checker did not see listed.
+            from core.capital.policy import policy_for_funder
+            in_force = policy_for_funder(f).version
+            base_row = CreditPolicy.objects.filter(funder=f, version=in_force).first() if in_force else None
+            base = dict(base_row.params) if base_row else {}
             base.update(params)
             row = CreditPolicy.objects.create(funder=f, version=(last.version + 1) if last else 1, params=base,
                                               notes=str(request.data.get('notes', ''))[:2000],
@@ -762,6 +799,7 @@ class DeskDataRoomView(DeskBase):
     def get(self, request):
         from core.models import DataRoomExport
         f = self.funder(request)
+        access.require_whole_book(request.user, f)
         return Response([{'id': x.pk, 'period': x.period, 'created_at': present.iso(x.created_at),
                           'files': sorted(x.files.keys()), 'summary': x.summary, 'content_hash': x.content_hash}
                          for x in DataRoomExport.objects.filter(funder=f).order_by('-period', '-created_at')[:60]])
@@ -769,6 +807,7 @@ class DeskDataRoomView(DeskBase):
     def post(self, request):
         from core.capital import dataroom
         f = self.funder(request)
+        access.require_whole_book(request.user, f)
         if access.desk_role(request.user, f) == access.VIEWER:
             raise PermissionDenied('Viewers cannot generate exports.')
         period = str(request.data.get('period') or '')
@@ -786,6 +825,7 @@ class DeskDataRoomDownloadView(DeskBase):
         from django.core.files.storage import default_storage
         from core.models import DataRoomExport
         f = self.funder(request)
+        access.require_whole_book(request.user, f)
         x = DataRoomExport.objects.filter(funder=f, pk=pk).first()
         name = request.query_params.get('file', '')
         if x is None or name not in x.files:
