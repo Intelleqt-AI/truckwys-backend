@@ -7,6 +7,7 @@ from decimal import Decimal
 from .invoice import Invoice
 from .facility import Facility
 from .risk_score import RiskScore
+from core.formatting import format_zar
 
 
 class AdvanceRequest(models.Model):
@@ -137,7 +138,7 @@ class AdvanceRequest(models.Model):
         ]
 
     def __str__(self) -> str:
-        return f"AdvanceRequest {self.id} - {self.invoice.invoice_number} (ZAR {self.amount:,.2f})"
+        return f"AdvanceRequest {self.id} - {self.invoice.invoice_number} (ZA{format_zar(self.amount)})"
 
     @property
     def is_active(self) -> bool:

@@ -104,6 +104,12 @@ class Company(models.Model):
         default=True,
         help_text='Whether cross-border routes are enabled for this company'
     )
+    # Off by default: an invoice raised on delivery is a draft until someone
+    # sends it, so the customer never gets an invoice nobody reviewed.
+    auto_email_invoices = models.BooleanField(
+        default=False,
+        help_text='Email the invoice to the customer as soon as a load is delivered'
+    )
     # A C-BRTA permit is bought per vehicle per country for a period (a 12-month
     # Class 2 permit is R8,761), not per load — so its cost per crossing depends
     # entirely on how often this fleet actually crosses. At 24 crossings a year

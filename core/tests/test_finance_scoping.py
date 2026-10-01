@@ -198,7 +198,8 @@ class FinanceScopingTests(TestCase):
         body_b = r_b.json()
         self.assertEqual(body_b['summary']['total_outstanding'], 0.0)
         self.assertEqual(body_b['customers'], [])
-        self.assertEqual(body_b['summary']['dso'], 0.0)
+        # Nothing invoiced: DSO isn't measurable (None), never a misleading 0.
+        self.assertIsNone(body_b['summary']['dso'])
         self.assertEqual(sum(b['total_amount'] for b in body_b['buckets']), 0.0)
 
         body_a = self._client(self.user_a).get('/api/v1/invoices/aging/').json()
@@ -248,7 +249,7 @@ class FinanceScopingTests(TestCase):
         body_b = self._client(self.user_b).get('/api/v1/dashboard/kpi/').json()
         self.assertEqual(body_b['revenue_mtd'], 0.0)
         self.assertEqual(body_b['outstanding_invoices'], 0.0)
-        self.assertEqual(body_b['dso'], 0.0)
+        self.assertIsNone(body_b['dso'])
 
         body_a = self._client(self.user_a).get('/api/v1/dashboard/kpi/').json()
         self.assertEqual(body_a['revenue_mtd'], float(self.inv_paid.total_amount))

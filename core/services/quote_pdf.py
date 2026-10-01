@@ -11,6 +11,7 @@ from reportlab.lib import colors
 from reportlab.lib.units import mm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from core.formatting import format_zar
 
 
 def generate_quote_pdf_bytes(quote) -> bytes:
@@ -145,8 +146,8 @@ def generate_quote_pdf_bytes(quote) -> bytes:
     # Total price — the customer only ever sees the single all-in amount, never
     # the internal cost breakdown (fuel, tolls, driver allowance, margin).
     def zar(v):
-        try: return f'R {float(v):,.2f}'
-        except: return 'R 0.00'
+        try: return format_zar(v, minus='-')
+        except: return format_zar(0, minus='-')
 
     total_data = [
         ['TOTAL AMOUNT', zar(quote.total_amount)],

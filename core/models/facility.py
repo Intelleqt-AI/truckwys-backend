@@ -4,6 +4,7 @@ from django.db import models
 from django.core.validators import MinValueValidator
 from decimal import Decimal
 from .company import Company
+from core.formatting import format_zar
 
 
 class Facility(models.Model):
@@ -66,7 +67,7 @@ class Facility(models.Model):
         ]
 
     def __str__(self) -> str:
-        return f"Facility {self.id} - {self.company.company_name} (ZAR {self.limit:,.2f})"
+        return f"Facility {self.id} - {self.company.company_name} (ZA{format_zar(self.limit)})"
 
     @property
     def available(self) -> Decimal:
@@ -114,7 +115,7 @@ class Facility(models.Model):
             return False, "Amount must be positive"
 
         if self.available < amount:
-            return False, f"Insufficient available capacity (ZAR {self.available:,.2f} available)"
+            return False, f"Insufficient available capacity (ZA{format_zar(self.available)} available)"
 
         return True, ""
 
@@ -149,7 +150,7 @@ class Facility(models.Model):
             raise ValueError("Amount must be positive")
 
         if amount > self.outstanding:
-            raise ValueError(f"Cannot release more than outstanding (ZAR {self.outstanding:,.2f})")
+            raise ValueError(f"Cannot release more than outstanding (ZA{format_zar(self.outstanding)})")
 
         self.outstanding -= amount
         self.save()

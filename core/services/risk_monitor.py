@@ -12,6 +12,7 @@ from core.models import (
 )
 from core.services.risk_engine import RiskEngine
 from core.services.feature_engineering import FeatureExtractor
+from core.formatting import format_zar
 
 
 class RiskMonitor:
@@ -164,7 +165,7 @@ class RiskMonitor:
                             anomalies.append({
                                 'type': 'amount_outlier',
                                 'severity': 'high' if z_score > 4 else 'medium',
-                                'description': f'Invoice amount (R{invoice.total_amount:,.2f}) is {z_score:.1f}σ from customer average',
+                                'description': f'Invoice amount ({format_zar(invoice.total_amount)}) is {z_score:.1f}σ from customer average',
                                 'z_score': z_score,
                                 'customer_avg': mean,
                             })
@@ -196,7 +197,7 @@ class RiskMonitor:
             anomalies.append({
                 'type': 'credit_limit_proximity',
                 'severity': 'medium',
-                'description': f'Invoice amount approaches customer credit limit (R{customer.credit_limit:,.2f})',
+                'description': f'Invoice amount approaches customer credit limit ({format_zar(customer.credit_limit)})',
                 'utilization_percent': float((invoice.total_amount / customer.credit_limit) * 100),
             })
 

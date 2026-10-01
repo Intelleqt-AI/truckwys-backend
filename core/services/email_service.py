@@ -35,6 +35,7 @@ def _send_html_email(subject: str, html_content: str, to_email: str) -> bool:
         return False
 
 from core.models import Invoice, Company
+from core.formatting import format_number, format_zar
 
 
 def send_verification_email(email: str, code: str, first_name: str) -> bool:
@@ -490,14 +491,14 @@ def send_invite_email(invite_email: str, invited_by_name: str, company_name: str
 
 def _zar(v) -> str:
     try:
-        return f'R {float(v):,.2f}'
+        return format_zar(v)
     except Exception:
-        return 'R 0.00'
+        return format_zar(0)
 
 
 def _fmt_weight(v) -> str:
     try:
-        return f'{float(v):,.0f} kg'
+        return f'{format_number(v)} kg'
     except Exception:
         return f'{v} kg' if v else '—'
 
@@ -1055,7 +1056,7 @@ class InvoiceEmailService:
         </div>
 
         <div class="amount">
-            R {self.invoice.total_amount:,.2f}
+            {format_zar(self.invoice.total_amount)}
         </div>
 
         {f'<div class="warning"><strong>Due in {days_until_due} days</strong> - Payment is due by {self.invoice.due_date.strftime("%d %B %Y")}</div>' if days_until_due <= 7 else ''}
@@ -1262,8 +1263,8 @@ def send_weekly_summary_email(user, company, stats: dict) -> bool:
         _row('Bookings delivered', stats['bookings_delivered']) +
         _row('Quotes sent', stats['quotes_sent']) +
         _row('Quotes accepted', stats['quotes_accepted']) +
-        _row('Invoiced', f"R{stats['invoiced_total']:,.2f}") +
-        _row('Payments collected', f"R{stats['collected_total']:,.2f}")
+        _row('Invoiced', format_zar(stats['invoiced_total'])) +
+        _row('Payments collected', format_zar(stats['collected_total']))
     )
     subject = f"Your weekly TruckWys summary — {stats['week_start']} to {stats['week_end']}"
     html_content = f"""<!DOCTYPE html>

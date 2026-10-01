@@ -8,6 +8,7 @@ from decimal import Decimal
 from django.db.models import Avg, Sum, Count, Q, F
 from django.utils import timezone
 from core.models import Company, Customer, Invoice, Trip, Vehicle, Notification
+from core.formatting import format_zar
 
 
 class IntelligenceService:
@@ -239,7 +240,7 @@ class IntelligenceService:
                 'type': 'OVERDUE_ALERT',
                 'severity': 'HIGH' if days_overdue > 60 else 'MEDIUM',
                 'title': f'Invoice Overdue: {invoice.invoice_number}',
-                'message': f'Invoice {invoice.invoice_number} for {invoice.customer.name} is {days_overdue} days overdue (R{invoice.balance:,.2f})',
+                'message': f'Invoice {invoice.invoice_number} for {invoice.customer.name} is {days_overdue} days overdue ({format_zar(invoice.balance)})',
                 'invoice_id': invoice.id,
                 'invoice_number': invoice.invoice_number,
                 'customer_name': invoice.customer.name,
@@ -281,7 +282,7 @@ class IntelligenceService:
                 'type': 'CASH_ALERT',
                 'severity': 'HIGH' if net_position < 0 else 'MEDIUM',
                 'title': 'Low Cash Flow Alert',
-                'message': f'Projected cash position in next 30 days: R{net_position:,.2f}',
+                'message': f'Projected cash position in next 30 days: {format_zar(net_position)}',
                 'net_position': float(net_position),
                 'expected_in': float(expected_in),
                 'expected_out': float(expected_out),

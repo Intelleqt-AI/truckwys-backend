@@ -43,6 +43,7 @@ import django_filters
 from django.utils import timezone
 from django.conf import settings
 from decouple import config
+from core.formatting import format_zar
 
 
 class CompanyFilterMixin:
@@ -135,7 +136,7 @@ def _demo_settings_locked(user):
     return bool(company and company.is_demo)
 
 
-from django.db.models import Sum, Count, Q, Avg, F, ExpressionWrapper, DecimalField
+from django.db.models import Sum, Count, Q, Avg, F, ExpressionWrapper, DecimalField, OuterRef, Subquery
 from django.db.models.functions import TruncMonth
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -378,7 +379,7 @@ class CompleteSignupView(APIView):
         from core.services.email_service import send_billing_email
         send_billing_email(
             user.email, user.first_name or user.username, 'Welcome to TruckWys — payment confirmed',
-            f'Your subscription is active: R{MONTHLY_FEE:,.2f}/month charged to your card ending '
+            f'Your subscription is active: {format_zar(MONTHLY_FEE)}/month charged to your card ending '
             f'{authorization.get("last4", "")}. Your next charge is due {company.next_billing_date.strftime("%d %b %Y")}.',
             link='/settings/billing',
         )
@@ -1404,7 +1405,7 @@ class FleetOverviewView(APIView):
                 {
                     'id': 'avg_margin_per_vehicle',
                     'title': 'Avg Margin per Vehicle (MTD)',
-                    'value': f"R {avg_margin_per_vehicle:,.2f}" if avg_margin_per_vehicle is not None else None,
+                    'value': format_zar(avg_margin_per_vehicle) if avg_margin_per_vehicle is not None else None,
                     'raw_value': avg_margin_per_vehicle,
                     'data_status': 'ok' if avg_margin_per_vehicle is not None else 'insufficient_data',
                     'trend': {
@@ -1514,7 +1515,7 @@ class VehicleInsightsView(APIView):
                 'driver_name': driver_name,
                 'status': status_label,
                 'status_color': status_color,
-                'margin_per_trip': f'R {margin:,.2f}',
+                'margin_per_trip': format_zar(margin),
                 'margin_per_trip_raw': margin,
                 'cost_per_km': f'R {cost:.1f}',
                 'cost_per_km_raw': cost,
@@ -1802,7 +1803,7 @@ class DriverOverviewView(APIView):
                 {
                     'id': 'fleet_margin',
                     'title': 'Fleet Avg. Margin',
-                    'value': f'R {fleet_margin:,.2f}',
+                    'value': format_zar(fleet_margin),
                     'raw_value': fleet_margin,
                     'icon': 'dollar-sign',
                     'description': 'per trip'
@@ -1928,7 +1929,7 @@ class QuotesPipelineOverviewView(APIView):
                 'label': status_labels[status_key],
                 'count': count,
                 'total_value': float(total_value),
-                'formatted_value': f"~R {float(total_value):,.0f}"
+                'formatted_value': f"~{format_zar(total_value, 0)}"
             }
         
         # Get quotes for each column
@@ -2352,7 +2353,14 @@ class VehicleLogViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
 
 
 class LoadViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
-    queryset = Load.objects.all()
+    # Actual fuel: approved FUEL expenses on the load's trips (one subquery,
+    # not a query per row). Read by LoadSerializer.fuel_cost_actual.
+    queryset = Load.objects.all().annotate(
+        fuel_actual_total=Subquery(
+            Expense.objects.filter(trip__load=OuterRef('pk'), category='FUEL', status='APPROVED')
+            .values('trip__load').annotate(t=Sum('amount')).values('t')[:1]
+        ),
+    )
     serializer_class = LoadSerializer
     permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
@@ -2588,13 +2596,19 @@ class QuoteFilterSet(django_filters.FilterSet):
         fields = ['status', 'customer']
 
     def filter_status(self, queryset, name, value):
+        # Board columns: ACCEPTED is "won, still to book"; BOOKED is a quote
+        # converted into a load (the load is the source of truth; legacy
+        # IT/COMPLETED quotes count as booked too). Not a stored status.
+        booked = Q(loads__isnull=False) | Q(status__in=['IT', 'COMPLETED'])
+        if value == 'BOOKED':
+            return queryset.filter(booked).distinct()
         if value == 'ACCEPTED':
-            return queryset.filter(status__in=['ACCEPTED', 'IT', 'COMPLETED'])
+            return queryset.filter(status='ACCEPTED').exclude(booked)
         return queryset.filter(status=value)
 
 
 class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
-    queryset = Quote.objects.all()
+    queryset = Quote.objects.all().prefetch_related('loads')
     serializer_class = QuoteSerializer
     permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
@@ -4199,7 +4213,7 @@ class DashboardSignalsView(APIView):
                 'type': 'CRITICAL',
                 'category': 'Cash Alerts',
                 'title': f'Invoice Overdue — {inv.invoice_number}',
-                'body': f'{inv.customer.name} owes R {inv.total_amount:,.2f}. Due {inv.due_date}. Chase now.',
+                'body': f'{inv.customer.name} owes {format_zar(inv.total_amount)}. Due {inv.due_date}. Chase now.',
                 'action': 'CHASE',
                 'action_url': f'/finance/invoices/{inv.id}',
                 'severity': 'high',
@@ -4234,7 +4248,7 @@ class DashboardSignalsView(APIView):
                 'title': f'Fast Pay — {eligible.count()} Invoices Ready',
                 # Fee and payout time are not promised here: the fee is priced
                 # per invoice by the risk engine and payout time is not measured.
-                'body': f'R {float(total):,.0f} in eligible invoices.',
+                'body': f'{format_zar(total, 0)} in eligible invoices.',
                 'action': 'FAST PAY',
                 'action_url': '/capital',
                 'severity': 'low',
@@ -4251,7 +4265,7 @@ class DashboardSignalsView(APIView):
                     'title': f'Fast Pay — {sent.count()} Invoices Sent',
                     # These invoices are NOT flagged early_pay_eligible, so no
                     # eligibility or fee claim is made.
-                    'body': f'R {float(total):,.0f} awaiting payment.',
+                    'body': f'{format_zar(total, 0)} awaiting payment.',
                     'action': 'FAST PAY',
                     'action_url': '/capital',
                     'severity': 'low',

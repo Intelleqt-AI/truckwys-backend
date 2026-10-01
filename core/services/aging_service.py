@@ -13,6 +13,10 @@ from dataclasses import dataclass
 from django.db.models import Sum, Count, Q
 from core.models import Invoice, Customer
 
+# Sent and unpaid: what a customer actually owes. Drafts aren't owed yet and
+# cancelled invoices never will be. Every receivable figure uses this.
+OUTSTANDING_STATUSES = ['SENT', 'VIEWED', 'PARTIALLY_PAID', 'OVERDUE']
+
 
 @dataclass
 class AgingBucket:
@@ -76,7 +80,7 @@ class AgingAnalysisService:
             company=self.company,
             customer=customer,
             balance__gt=0,
-            status__in=['SENT', 'VIEWED', 'PARTIALLY_PAID', 'OVERDUE']
+            status__in=OUTSTANDING_STATUSES
         )
 
         current = Decimal('0.00')
@@ -89,8 +93,8 @@ class AgingAnalysisService:
             days_overdue = self._calculate_days_overdue(invoice)
             balance = invoice.balance
 
-            if days_overdue < 0:
-                # Not yet due
+            if days_overdue <= 0:
+                # Not yet due (due today counts as current)
                 current += balance
             elif days_overdue <= 30:
                 days_1_30 += balance
@@ -126,7 +130,7 @@ class AgingAnalysisService:
         invoices = Invoice.objects.filter(
             company=self.company,
             balance__gt=0,
-            status__in=['SENT', 'VIEWED', 'PARTIALLY_PAID', 'OVERDUE']
+            status__in=OUTSTANDING_STATUSES
         )
 
         current = Decimal('0.00')
@@ -139,8 +143,8 @@ class AgingAnalysisService:
             days_overdue = self._calculate_days_overdue(invoice)
             balance = invoice.balance
 
-            if days_overdue < 0:
-                # Not yet due
+            if days_overdue <= 0:
+                # Not yet due (due today counts as current)
                 current += balance
             elif days_overdue <= 30:
                 days_1_30 += balance
@@ -182,7 +186,7 @@ class AgingAnalysisService:
         customers = Customer.objects.filter(
             invoices__company=self.company,
             invoices__balance__gt=0,
-            invoices__status__in=['SENT', 'VIEWED', 'PARTIALLY_PAID', 'OVERDUE']
+            invoices__status__in=OUTSTANDING_STATUSES
         ).distinct()
 
         aging_list = []
@@ -206,7 +210,7 @@ class AgingAnalysisService:
         invoices = Invoice.objects.filter(
             company=self.company,
             balance__gt=0,
-            status__in=['SENT', 'VIEWED', 'PARTIALLY_PAID', 'OVERDUE']
+            status__in=OUTSTANDING_STATUSES
         )
 
         buckets = {
@@ -221,7 +225,7 @@ class AgingAnalysisService:
             days_overdue = self._calculate_days_overdue(invoice)
             balance = invoice.balance
 
-            if days_overdue < 0:
+            if days_overdue <= 0:
                 bucket_key = 'current'
             elif days_overdue <= 30:
                 bucket_key = '1-30'
@@ -276,7 +280,7 @@ class AgingAnalysisService:
         query = Invoice.objects.filter(
             company=self.company,
             balance__gt=0,
-            status__in=['SENT', 'VIEWED', 'PARTIALLY_PAID', 'OVERDUE'],
+            status__in=OUTSTANDING_STATUSES,
             due_date__lt=self.today
         )
 
@@ -291,17 +295,22 @@ class AgingAnalysisService:
 
         return list(query.order_by('due_date'))
 
-    def calculate_dso(self, days: int = 90) -> float:
+    def calculate_dso(self, days: int = 90):
         """
         Calculate Days Sales Outstanding (DSO).
 
-        DSO = (Average Accounts Receivable / Total Credit Sales) × Number of Days
+        DSO = (Accounts Receivable / Total Credit Sales) × Number of Days
+
+        Receivable is the outstanding balance (same rule as the aging buckets),
+        sales are sent invoices issued in the window (drafts and cancelled
+        excluded). Returns None when nothing was invoiced in the window: DSO
+        isn't measurable then, and 0 would read as "customers pay instantly".
 
         Args:
             days: Number of days to calculate over (default: 90)
 
         Returns:
-            float: DSO value
+            float | None: DSO value
         """
         from datetime import timedelta
 
@@ -309,21 +318,22 @@ class AgingAnalysisService:
         end_date = self.today
         start_date = end_date - timedelta(days=days)
 
-        # Get total credit sales (all invoices issued in period)
+        # Total credit sales (invoices issued in the period)
         total_sales = Invoice.objects.filter(
             company=self.company,
             issue_date__gte=start_date,
-            issue_date__lte=end_date
-        ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
+            issue_date__lte=end_date,
+        ).exclude(status__in=['DRAFT', 'CANCELLED']).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
 
-        # Get average AR (current outstanding)
+        # Current receivable
         current_ar = Invoice.objects.filter(
             company=self.company,
-            balance__gt=0
+            balance__gt=0,
+            status__in=OUTSTANDING_STATUSES,
         ).aggregate(total=Sum('balance'))['total'] or Decimal('0.00')
 
         if total_sales == 0:
-            return 0.0
+            return None
 
         # DSO = (AR / Sales) × Days
         dso = float((current_ar / total_sales) * Decimal(str(days)))
