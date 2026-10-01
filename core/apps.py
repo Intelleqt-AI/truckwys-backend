@@ -7,3 +7,5 @@ class CoreConfig(AppConfig):
     def ready(self):
         """Import signals when app is ready."""
         import core.signals  # noqa
+        from core.ws import data_changes
+        data_changes.connect()
