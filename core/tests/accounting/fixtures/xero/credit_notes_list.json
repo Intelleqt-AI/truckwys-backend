@@ -1,0 +1,115 @@
+{
+  "Id": "e3f5b7d9-1a2c-4e6f-8b0d-2c4e6a8b0d1f",
+  "Status": "OK",
+  "ProviderName": "TruckWys",
+  "DateTimeUTC": "/Date(1753002903517+0000)/",
+  "pagination": {
+    "page": 1,
+    "pageSize": 100,
+    "pageCount": 1,
+    "itemCount": 1
+  },
+  "CreditNotes": [
+    {
+      "Type": "ACCRECCREDIT",
+      "CreditNoteID": "0032e4a6-1f2c-4a5b-9c7d-8e9f0a1b2c3d",
+      "ID": "0032e4a6-1f2c-4a5b-9c7d-8e9f0a1b2c3d",
+      "CreditNoteNumber": "CN-0007",
+      "Reference": "Short delivery LOAD-2207",
+      "Contact": {
+        "ContactID": "9b9ba9e5-e907-4b4e-8210-54d82b0aa479",
+        "Name": "Acme Mining (Pty) Ltd"
+      },
+      "DateString": "2025-07-12T00:00:00",
+      "Date": "/Date(1752278400000+0000)/",
+      "Status": "AUTHORISED",
+      "LineAmountTypes": "Exclusive",
+      "LineItems": [
+        {
+          "LineItemID": "a1b2c3d4-0000-4000-8000-000000000001",
+          "Description": "Freight credit",
+          "Quantity": 1.0,
+          "UnitAmount": 1000.0,
+          "AccountCode": "200",
+          "TaxType": "OUTPUT2",
+          "TaxAmount": 150.0,
+          "LineAmount": 1000.0,
+          "Tracking": []
+        },
+        {
+          "LineItemID": "a1b2c3d4-0000-4000-8000-000000000002",
+          "Description": "Fuel surcharge credit",
+          "Quantity": 2.0,
+          "UnitAmount": 500.0,
+          "AccountCode": "201",
+          "TaxType": "OUTPUT2",
+          "TaxAmount": 150.0,
+          "LineAmount": 1000.0,
+          "Tracking": []
+        }
+      ],
+      "SubTotal": 2000.0,
+      "TotalTax": 300.0,
+      "Total": 2300.0,
+      "UpdatedDateUTC": "/Date(1752652867333+0000)/",
+      "CurrencyCode": "ZAR",
+      "CurrencyRate": 1.0,
+      "RemainingCredit": 650.0,
+      "Allocations": [
+        {
+          "AllocationID": "c7ba3c1b-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+          "Amount": 1150.0,
+          "Date": "/Date(1752278400000+0000)/",
+          "Invoice": {
+            "InvoiceID": "243216c5-369e-4056-ac67-05388f86dc81",
+            "InvoiceNumber": "INV-0042",
+            "Payments": [],
+            "CreditNotes": [],
+            "Prepayments": [],
+            "Overpayments": [],
+            "HasErrors": false,
+            "IsDiscounted": false,
+            "LineItems": []
+          }
+        },
+        {
+          "AllocationID": "d8cb4d2c-2b3c-4d4e-9f5a-6b7c8d9e0f1a",
+          "Amount": 500.0,
+          "Date": "/Date(1752364800000+0000)/",
+          "Invoice": {
+            "InvoiceID": "4f7a9c2e-8b1d-4e3f-a5c6-7d8e9f0a1b2c",
+            "InvoiceNumber": "INV-0045",
+            "Payments": [],
+            "CreditNotes": [],
+            "Prepayments": [],
+            "Overpayments": [],
+            "HasErrors": false,
+            "IsDiscounted": false,
+            "LineItems": []
+          }
+        },
+        {
+          "AllocationID": "e9dc5e3d-3c4d-4e5f-a06b-7c8d9e0f1a2b",
+          "Amount": 100.0,
+          "Date": "/Date(1752451200000+0000)/",
+          "Invoice": {
+            "InvoiceID": "4f7a9c2e-8b1d-4e3f-a5c6-7d8e9f0a1b2c",
+            "InvoiceNumber": "INV-0045",
+            "Payments": [],
+            "CreditNotes": [],
+            "Prepayments": [],
+            "Overpayments": [],
+            "HasErrors": false,
+            "IsDiscounted": false,
+            "LineItems": []
+          },
+          "IsDeleted": true
+        }
+      ],
+      "Payments": [],
+      "HasAttachments": false,
+      "HasErrors": false,
+      "SentToContact": false
+    }
+  ]
+}

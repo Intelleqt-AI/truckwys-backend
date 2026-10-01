@@ -958,18 +958,27 @@ class AdminJobHealthView(APIView):
 
 
 class AdminIntegrationsHealthView(APIView):
-    """Which companies have Xero/CtrlFleet actually connected — reuses the
-    connection-timestamp fields already on Company (core/models/company.py),
-    no new tracking needed."""
+    """Which companies have Xero / QuickBooks (AccountingConnection) and
+    CtrlFleet (Company.ctrlfleet_connected_at) actually connected."""
     permission_classes = [IsSuperUser]
 
     def get(self, request):
+        from core.models import AccountingConnection
         base = Company.objects.filter(is_demo=False, is_deleted=False)
-        xero = base.filter(xero_connected_at__isnull=False)
+        live = AccountingConnection.objects.filter(company__in=base, status__in=('ACTIVE', 'NEEDS_REAUTH'))
+        xero = live.filter(provider='XERO')
+        qbo = live.filter(provider='QBO')
         ctrlfleet = base.filter(ctrlfleet_connected_at__isnull=False)
+
+        def rows(qs):
+            return [{'id': c.company_id, 'company_name': c.company.company_name, 'status': c.status,
+                     'tenant_name': c.tenant_name, 'xero_connected_at': c.connected_at,
+                     'connected_at': c.connected_at} for c in qs.select_related('company')]
         return Response({
             'xero_connected_count': xero.count(),
-            'xero_connected_companies': list(xero.values('id', 'company_name', 'xero_connected_at')),
+            'xero_connected_companies': rows(xero),
+            'qbo_connected_count': qbo.count(),
+            'qbo_connected_companies': rows(qbo),
             'ctrlfleet_connected_count': ctrlfleet.count(),
             'ctrlfleet_connected_companies': list(ctrlfleet.values('id', 'company_name', 'ctrlfleet_connected_at')),
         })

@@ -135,19 +135,36 @@ class UndecryptableCredentialsTests(TestCase):
             with self.assertRaises(CtrlFleetAPIError):
                 CtrlFleetClient.for_company(self.company)
 
+    def _xero_connection(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from core.models import AccountingConnection
+        with override_settings(FIELD_ENCRYPTION_KEY=KEY_2):
+            token = encrypt_secret('access-token')
+        return AccountingConnection.objects.create(
+            company=self.company, provider='XERO', status='ACTIVE', tenant_id='t-1',
+            access_token=token, refresh_token=self.company.xero_refresh_token,
+            access_token_expires_at=timezone.now() + timedelta(minutes=20))
+
     @override_settings(FIELD_ENCRYPTION_KEY=KEY_1)
     def test_xero_reports_disconnected(self):
-        from core.integrations.xero import XeroClient, XeroCredentialsError
-        client = XeroClient(self.company)
-        with self.assertLogs('core.integrations.xero', level='ERROR'):
-            self.assertFalse(client.is_connected)
-        with self.assertRaises(XeroCredentialsError):
-            client._get_valid_token()
+        """Tokens the current key can't open: the connection needs re-auth
+        (never '' silently), and no call is made with garbage."""
+        from core.accounting.base import AuthError
+        from core.accounting.tokens import token_getter
+        from core.accounting.xero import XeroAdapter
+        conn = self._xero_connection()
+        with self.assertRaises(AuthError):
+            token_getter(conn, XeroAdapter(conn, http=object()))(False)
+        conn.refresh_from_db()
+        self.assertEqual(conn.status, 'NEEDS_REAUTH')
 
     @override_settings(FIELD_ENCRYPTION_KEY=KEY_2)
     def test_readable_credentials_still_work(self):
-        from core.integrations.xero import XeroClient
-        self.assertTrue(XeroClient(self.company).is_connected)
+        from core.accounting.tokens import token_getter
+        from core.accounting.xero import XeroAdapter
+        conn = self._xero_connection()
+        self.assertEqual(token_getter(conn, XeroAdapter(conn, http=object()))(False), 'access-token')
 
 
 # ---------------------------------------------------------------------------
@@ -242,10 +259,14 @@ class IntegrationPermissionTests(TestCase):
         return c
 
     ACTIONS = [
-        ('get', '/api/v1/integrations/xero/connect/'),
-        ('post', '/api/v1/integrations/xero/disconnect/'),
-        ('post', '/api/v1/integrations/xero/sync-invoices/'),
-        ('post', '/api/v1/integrations/xero/sync-payments/'),
+        ('post', '/api/v1/integrations/accounting/xero/connect/'),
+        ('post', '/api/v1/integrations/accounting/connection/disconnect/'),
+        ('post', '/api/v1/integrations/accounting/connection/select-org/'),
+        ('put', '/api/v1/integrations/accounting/connection/mapping/'),
+        ('post', '/api/v1/integrations/accounting/connection/contacts/run-matching/'),
+        ('post', '/api/v1/integrations/accounting/connection/backfill/'),
+        ('post', '/api/v1/integrations/accounting/connection/sync-now/'),
+        ('post', '/api/v1/integrations/accounting/connection/reconciliation/run/'),
         ('post', '/api/v1/integrations/cartrack/connect/'),
         ('post', '/api/v1/integrations/ctrlfleet/connect/'),
         ('post', '/api/v1/integrations/ctrlfleet/disconnect/'),
@@ -270,8 +291,8 @@ class IntegrationPermissionTests(TestCase):
 
     def test_status_reads_stay_open(self):
         c = self.client_for(self.dispatcher)
-        for url in ('/api/v1/integrations/xero/status/', '/api/v1/integrations/cartrack/status/',
-                    '/api/v1/integrations/ctrlfleet/status/', '/api/v1/integrations/xero/sync-log/'):
+        for url in ('/api/v1/integrations/accounting/providers/', '/api/v1/integrations/cartrack/status/',
+                    '/api/v1/integrations/ctrlfleet/status/', '/api/v1/integrations/accounting/connection/'):
             with self.subTest(url=url):
                 self.assertEqual(c.get(url).status_code, 200)
 
@@ -282,8 +303,9 @@ class IntegrationPermissionTests(TestCase):
                 # Local-only actions (no external API call) succeed outright.
                 self.assertEqual(c.post('/api/v1/integrations/ctrlfleet/disconnect/', {},
                                         format='json').status_code, 200)
-                self.assertEqual(c.post('/api/v1/integrations/xero/disconnect/', {},
-                                        format='json').status_code, 200)
+                # Nothing connected: a 404, not a permission error.
+                self.assertEqual(c.post('/api/v1/integrations/accounting/connection/disconnect/', {},
+                                        format='json').status_code, 404)
                 self.assertEqual(c.get('/api/v1/integrations/api-keys/').status_code, 200)
                 self.assertEqual(c.get('/api/v1/webhooks/').status_code, 200)
                 # Validation errors, not permission errors, for the rest.

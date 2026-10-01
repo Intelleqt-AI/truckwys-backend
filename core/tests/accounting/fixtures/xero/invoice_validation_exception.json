@@ -1,0 +1,33 @@
+{
+  "status": 400,
+  "headers": {},
+  "body": {
+    "ErrorNumber": 10,
+    "Type": "ValidationException",
+    "Message": "A validation exception occurred",
+    "Elements": [
+      {
+        "Type": "ACCREC",
+        "InvoiceID": "00000000-0000-0000-0000-000000000000",
+        "Status": "VOIDED",
+        "LineAmountTypes": "Exclusive",
+        "HasErrors": true,
+        "ValidationErrors": [
+          {
+            "Message": "This document cannot be edited as it has a payment or credit note allocated to it."
+          }
+        ],
+        "LineItems": [
+          {
+            "Description": "Freight",
+            "ValidationErrors": [
+              {
+                "Message": "Account code '999' is not a valid code for this document."
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

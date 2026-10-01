@@ -4,6 +4,7 @@ from decimal import Decimal
 from django.conf import settings
 from django.db import models
 
+from core.revenue_types import REVENUE_TYPE_CHOICES, FREIGHT
 from core.tax_codes import TAX_CODE_CHOICES, STANDARD
 
 
@@ -69,6 +70,8 @@ class CreditNoteLine(models.Model):
     quantity = models.DecimalField(max_digits=12, decimal_places=3, default=Decimal('1'))
     unit_price = models.DecimalField(max_digits=14, decimal_places=4)
     tax_code = models.CharField(max_length=20, choices=TAX_CODE_CHOICES, default=STANDARD)
+    # Mirrors the credited invoice line's type (same income account).
+    revenue_type = models.CharField(max_length=20, choices=REVENUE_TYPE_CHOICES, default=FREIGHT)
     tax_rate = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal('15.00'))
     net_amount = models.DecimalField(max_digits=12, decimal_places=2)
     vat_amount = models.DecimalField(max_digits=12, decimal_places=2)

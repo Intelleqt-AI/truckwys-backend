@@ -1,0 +1,77 @@
+{
+  "Id": "e3f5b7d9-1a2c-4e6f-8b0d-2c4e6a8b0d1f",
+  "Status": "OK",
+  "ProviderName": "TruckWys",
+  "DateTimeUTC": "/Date(1753002903517+0000)/",
+  "Invoices": [
+    {
+      "Type": "ACCREC",
+      "InvoiceID": "00000000-0000-0000-0000-000000000000",
+      "InvoiceNumber": "INV-0042",
+      "Reference": "PO-889 / LOAD-2207",
+      "Payments": [],
+      "CreditNotes": [],
+      "Prepayments": [],
+      "Overpayments": [],
+      "AmountDue": 11500.0,
+      "AmountPaid": 0.0,
+      "AmountCredited": 0.0,
+      "CurrencyRate": 1.0,
+      "IsDiscounted": false,
+      "HasAttachments": false,
+      "HasErrors": true,
+      "Contact": {
+        "ContactID": "9b9ba9e5-e907-4b4e-8210-54d82b0aa479",
+        "Name": "Acme Mining (Pty) Ltd"
+      },
+      "DateString": "2025-07-01T00:00:00",
+      "Date": "/Date(1751328000000+0000)/",
+      "DueDateString": "2025-07-31T00:00:00",
+      "DueDate": "/Date(1753920000000+0000)/",
+      "Status": "DRAFT",
+      "LineAmountTypes": "Exclusive",
+      "SubTotal": 10000.0,
+      "TotalTax": 1500.0,
+      "Total": 11500.0,
+      "UpdatedDateUTC": "/Date(1753002903000+0000)/",
+      "CurrencyCode": "ZAR",
+      "LineItems": [
+        {
+          "LineItemID": "52208ff9-528a-4985-a9ad-b2b1d4210e38",
+          "Description": "Freight JHB-DBN 34t",
+          "Quantity": 1.0,
+          "UnitAmount": 8695.6522,
+          "AccountCode": "200",
+          "TaxType": "OUTPUT2",
+          "TaxAmount": 1304.35,
+          "LineAmount": 8695.65,
+          "Tracking": [
+            {
+              "TrackingCategoryID": "351953c4-8127-4009-88c3-f9cd8c9cbe9f",
+              "TrackingOptionID": "ae777a87-5ef3-4fa0-a4f0-d10e1f13073a",
+              "Name": "Region",
+              "Option": "Gauteng"
+            }
+          ]
+        },
+        {
+          "LineItemID": "87ea6b0a-3d0b-4f1d-9e86-1d2a5e7c4b3f",
+          "Description": "Fuel surcharge",
+          "Quantity": 1.0,
+          "UnitAmount": 1304.35,
+          "AccountCode": "201",
+          "TaxType": "OUTPUT2",
+          "TaxAmount": 195.65,
+          "LineAmount": 1304.35,
+          "Tracking": []
+        }
+      ],
+      "StatusAttributeString": "ERROR",
+      "ValidationErrors": [
+        {
+          "Message": "Invoice # must be unique."
+        }
+      ]
+    }
+  ]
+}

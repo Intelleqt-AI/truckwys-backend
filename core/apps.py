@@ -11,6 +11,7 @@ class CoreConfig(AppConfig):
         from core.utils.crypto import validate_encryption_config
         validate_encryption_config()
         import core.signals  # noqa
+        import core.accounting.signals  # noqa
         from core.ws import data_changes
         data_changes.connect()
         from core.services import mail_delivery

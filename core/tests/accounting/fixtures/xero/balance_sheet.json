@@ -1,0 +1,287 @@
+{
+  "Id": "f1a3c5e7-9b2d-4f6a-8c0e-2a4c6e8a0c2e",
+  "Status": "OK",
+  "ProviderName": "TruckWys",
+  "DateTimeUTC": "/Date(1754028001250+0000)/",
+  "Reports": [
+    {
+      "ReportID": "BalanceSheet",
+      "ReportName": "Balance Sheet",
+      "ReportType": "BalanceSheet",
+      "ReportTitles": [
+        "Balance Sheet",
+        "Golden Haulage (Pty) Ltd",
+        "As at 31 July 2025"
+      ],
+      "ReportDate": "1 August 2025",
+      "UpdatedDateUTC": "/Date(1754028001250+0000)/",
+      "Fields": [],
+      "Rows": [
+        {
+          "RowType": "Header",
+          "Cells": [
+            {
+              "Value": ""
+            },
+            {
+              "Value": "31 Jul 2025"
+            },
+            {
+              "Value": "31 Jul 2024"
+            }
+          ]
+        },
+        {
+          "RowType": "Section",
+          "Title": "Assets",
+          "Rows": []
+        },
+        {
+          "RowType": "Section",
+          "Title": "Bank",
+          "Rows": [
+            {
+              "RowType": "Row",
+              "Cells": [
+                {
+                  "Value": "Business Bank Account",
+                  "Attributes": [
+                    {
+                      "Value": "13918178-849a-4823-9a31-57b7eac713d7",
+                      "Id": "account"
+                    }
+                  ]
+                },
+                {
+                  "Value": "152340.18",
+                  "Attributes": [
+                    {
+                      "Value": "13918178-849a-4823-9a31-57b7eac713d7",
+                      "Id": "account"
+                    }
+                  ]
+                },
+                {
+                  "Value": "98112.40",
+                  "Attributes": [
+                    {
+                      "Value": "13918178-849a-4823-9a31-57b7eac713d7",
+                      "Id": "account"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "RowType": "SummaryRow",
+              "Cells": [
+                {
+                  "Value": "Total Bank"
+                },
+                {
+                  "Value": "152340.18"
+                },
+                {
+                  "Value": "98112.40"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "RowType": "Section",
+          "Title": "Current Assets",
+          "Rows": [
+            {
+              "RowType": "Row",
+              "Cells": [
+                {
+                  "Value": "Accounts Receivable",
+                  "Attributes": [
+                    {
+                      "Value": "6e0a2c4e-8b1d-4f3a-a5c7-9e1b3d5f7a9c",
+                      "Id": "account"
+                    }
+                  ]
+                },
+                {
+                  "Value": "48250.75",
+                  "Attributes": [
+                    {
+                      "Value": "6e0a2c4e-8b1d-4f3a-a5c7-9e1b3d5f7a9c",
+                      "Id": "account"
+                    }
+                  ]
+                },
+                {
+                  "Value": "31877.00",
+                  "Attributes": [
+                    {
+                      "Value": "6e0a2c4e-8b1d-4f3a-a5c7-9e1b3d5f7a9c",
+                      "Id": "account"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "RowType": "SummaryRow",
+              "Cells": [
+                {
+                  "Value": "Total Current Assets"
+                },
+                {
+                  "Value": "48250.75"
+                },
+                {
+                  "Value": "31877.00"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "RowType": "Section",
+          "Title": "",
+          "Rows": [
+            {
+              "RowType": "SummaryRow",
+              "Cells": [
+                {
+                  "Value": "Total Assets"
+                },
+                {
+                  "Value": "200590.93"
+                },
+                {
+                  "Value": "129989.40"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "RowType": "Section",
+          "Title": "Liabilities",
+          "Rows": []
+        },
+        {
+          "RowType": "Section",
+          "Title": "Current Liabilities",
+          "Rows": [
+            {
+              "RowType": "Row",
+              "Cells": [
+                {
+                  "Value": "Accounts Payable"
+                },
+                {
+                  "Value": "22105.10"
+                },
+                {
+                  "Value": "18400.00"
+                }
+              ]
+            },
+            {
+              "RowType": "Row",
+              "Cells": [
+                {
+                  "Value": "VAT"
+                },
+                {
+                  "Value": "9615.48"
+                },
+                {
+                  "Value": "7231.10"
+                }
+              ]
+            },
+            {
+              "RowType": "SummaryRow",
+              "Cells": [
+                {
+                  "Value": "Total Current Liabilities"
+                },
+                {
+                  "Value": "31720.58"
+                },
+                {
+                  "Value": "25631.10"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "RowType": "Section",
+          "Title": "",
+          "Rows": [
+            {
+              "RowType": "Row",
+              "Cells": [
+                {
+                  "Value": "Net Assets"
+                },
+                {
+                  "Value": "168870.35"
+                },
+                {
+                  "Value": "104358.30"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "RowType": "Section",
+          "Title": "Equity",
+          "Rows": [
+            {
+              "RowType": "Row",
+              "Cells": [
+                {
+                  "Value": "Current Year Earnings"
+                },
+                {
+                  "Value": "64512.05"
+                },
+                {
+                  "Value": "40110.30"
+                }
+              ]
+            },
+            {
+              "RowType": "Row",
+              "Cells": [
+                {
+                  "Value": "Retained Earnings"
+                },
+                {
+                  "Value": "104358.30"
+                },
+                {
+                  "Value": "64248.00"
+                }
+              ]
+            },
+            {
+              "RowType": "SummaryRow",
+              "Cells": [
+                {
+                  "Value": "Total Equity"
+                },
+                {
+                  "Value": "168870.35"
+                },
+                {
+                  "Value": "104358.30"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

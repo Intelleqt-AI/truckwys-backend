@@ -11,7 +11,7 @@ from decimal import Decimal
 
 from django.db import transaction
 
-from core import tax_codes
+from core import revenue_types, tax_codes
 from core.tax_codes import ZERO, compute_line, rate_percent, to_decimal
 
 
@@ -72,6 +72,9 @@ def build_lines(raw_lines, *, company, on_date):
             raise LineError(f'Line {i + 1}: unknown tax code {code!r}.')
         if code not in allowed:
             raise LineError(f'Line {i + 1}: {code} is not available — this company is not VAT registered.')
+        revenue_type = raw.get('revenue_type') or revenue_types.FREIGHT
+        if revenue_type not in revenue_types.REVENUE_TYPES:
+            raise LineError(f'Line {i + 1}: unknown revenue type {revenue_type!r}.')
         try:
             qty = to_decimal(raw.get('quantity'), Decimal('1'))
             price = to_decimal(raw.get('unit_price', raw.get('rate')))
@@ -99,6 +102,7 @@ def build_lines(raw_lines, *, company, on_date):
             'discount_amount': calc['discount'],
             'discount_percent': to_decimal(disc_pct) if use_pct else None,
             'tax_code': code,
+            'revenue_type': revenue_type,
             'tax_rate': rate_percent(code, on_date),
             'net_amount': calc['net'],
             'vat_amount': calc['vat'],
@@ -164,6 +168,7 @@ def apply_lines(invoice, raw_lines, *, save=True):
                 discount_amount=l['discount_amount'], discount_percent=l['discount_percent'],
                 tax_code=l['tax_code'], tax_rate=l['tax_rate'], net_amount=l['net_amount'],
                 vat_amount=l['vat_amount'], total_amount=l['total_amount'], load_id=load_id,
+                revenue_type=l.get('revenue_type') or revenue_types.FREIGHT,
             ))
         InvoiceLine.objects.bulk_create(rows)
     return lines

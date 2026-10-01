@@ -49,6 +49,19 @@ ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,*.ngrok.io,
 XERO_CLIENT_ID = config('XERO_CLIENT_ID', default='')
 XERO_CLIENT_SECRET = config('XERO_CLIENT_SECRET', default='')
 XERO_REDIRECT_URI = config('XERO_REDIRECT_URI', default='http://localhost:8000/api/v1/integrations/xero/callback/')
+# Webhook signing key from the Xero app's Webhooks tab (x-xero-signature).
+XERO_WEBHOOK_KEY = config('XERO_WEBHOOK_KEY', default='')
+# Space-separated; leave unset to use core.accounting.xero.DEFAULT_SCOPES.
+XERO_SCOPES = config('XERO_SCOPES', default='')
+
+# Accounting integrations (core.accounting; docs/integrations/). Every
+# provider HTTP call has a (connect, read) timeout; nothing waits forever.
+ACCOUNTING_HTTP_TIMEOUT = (
+    config('ACCOUNTING_HTTP_CONNECT_TIMEOUT', default=5, cast=float),
+    config('ACCOUNTING_HTTP_READ_TIMEOUT', default=30, cast=float),
+)
+# Tests only: run pushes inline after commit instead of through Celery.
+ACCOUNTING_SYNC_EAGER = config('ACCOUNTING_SYNC_EAGER', default=False, cast=bool)
 FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:3701')
 
 # Encryption key for secrets at rest (Xero tokens, Cartrack/CtrlFleet credentials).
@@ -694,6 +707,23 @@ CELERY_BEAT_SCHEDULE = {
     # for a superuser to approve. Monthly, 05:30 SAST on the 2nd: the
     # figures change about once a year (1 March), so this is plenty. A few
     # US cents a run, capped by AI_PRICE_ANALYSIS_GLOBAL_DAILY_BUDGET_USD.
+    # Accounting integrations (core.accounting). Webhooks are the fast path;
+    # the hourly poll catches anything a webhook missed. The sweeper retries
+    # failed pushes when their backoff / Retry-After has passed and processes
+    # stored webhook events. Reconciliation runs after midnight, off-peak for
+    # Xero's per-tenant daily limit (resets on a rolling 24 h window).
+    'accounting-retry-due': {
+        'task': 'core.tasks.accounting_retry_due',
+        'schedule': timedelta(minutes=2),
+    },
+    'accounting-poll-payments': {
+        'task': 'core.tasks.accounting_poll_payments',
+        'schedule': crontab(minute='17'),
+    },
+    'accounting-reconcile-all': {
+        'task': 'core.tasks.accounting_reconcile_all',
+        'schedule': crontab(hour='2', minute='30'),
+    },
     'refresh-verified-rates': {
         'task': 'core.tasks.refresh_verified_rates',
         'schedule': crontab(day_of_month='2', hour='5', minute='30'),
