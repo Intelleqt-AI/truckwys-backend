@@ -30,12 +30,24 @@ class Facility(models.Model):
         help_text='Company that owns this facility'
     )
 
+    # Fast Pay (0139): a facility is now a transporter's *line* under a
+    # funder's pot. Null only for facilities created outside the capital
+    # flow (old tests, admin); such a line has no funder-level limits.
+    funder = models.ForeignKey(
+        'Funder',
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name='lines',
+        help_text='Funder whose pot this transporter line draws on'
+    )
+
     # Facility limits
     limit = models.DecimalField(
         max_digits=12,
         decimal_places=2,
         validators=[MinValueValidator(Decimal('0.00'))],
-        help_text='Total facility limit in ZAR'
+        help_text='Transporter line limit in ZAR'
     )
     outstanding = models.DecimalField(
         max_digits=12,

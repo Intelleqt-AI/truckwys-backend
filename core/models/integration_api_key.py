@@ -57,6 +57,13 @@ class IntegrationAPIKey(models.Model):
         help_text="Transporters this LENDER key may see and fund. Empty = none."
     )
 
+    # Fast Pay (0139): a LENDER key acts for one funder. Its view of the book
+    # is that funder's lines, still narrowed to allowed_companies.
+    funder = models.ForeignKey(
+        'Funder', on_delete=models.PROTECT, null=True, blank=True, related_name='api_keys',
+        help_text="Funder this LENDER key acts for (book, approvals, ledger, data room)."
+    )
+
     class Meta:
         db_table = 'integration_api_keys'
         ordering = ['-created_at']

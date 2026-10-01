@@ -39,7 +39,7 @@ from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
-ACTIVE_STATUSES = ('REQUESTED', 'SCORING', 'APPROVED', 'DISBURSED')
+ACTIVE_STATUSES = ('QUEUED', 'REQUESTED', 'SCORING', 'APPROVED', 'DISBURSED')
 UNDISBURSED_STATUSES = ('REQUESTED', 'SCORING', 'APPROVED')
 
 

@@ -22,6 +22,8 @@ class AdvanceRequest(models.Model):
 
     STATUS_CHOICES = [
         ('ELIGIBLE', 'Eligible'),
+        # Fast Pay (0139): waiting for book capacity; holds no reservation.
+        ('QUEUED', 'Queued'),
         ('REQUESTED', 'Requested'),
         ('SCORING', 'Scoring'),
         ('APPROVED', 'Approved'),
@@ -29,6 +31,8 @@ class AdvanceRequest(models.Model):
         ('DISBURSED', 'Disbursed'),
         ('SETTLED', 'Settled'),
         ('CANCELLED', 'Cancelled'),
+        ('BOUGHT_BACK', 'Bought back by the transporter'),
+        ('WRITTEN_OFF', 'Written off'),
     ]
 
     # Relationships
@@ -160,6 +164,37 @@ class AdvanceRequest(models.Model):
         help_text='Staff user who settled the advance (null = system)'
     )
 
+    # --- Fast Pay book (0139) ---
+    # The decision record this advance was opened from (and re-evaluated by,
+    # for queue releases: the newest one wins).
+    assessment = models.ForeignKey(
+        'InvoiceAssessment', on_delete=models.PROTECT, null=True, blank=True,
+        related_name='advances', help_text='Decision record behind this advance')
+    funder = models.ForeignKey(
+        'Funder', on_delete=models.PROTECT, null=True, blank=True,
+        related_name='advances', help_text='Funder whose pot this advance draws on')
+    debtor = models.ForeignKey(
+        'DebtorIdentity', on_delete=models.PROTECT, null=True, blank=True,
+        related_name='advances', help_text='Global debtor identity of the invoice customer')
+    queued_at = models.DateTimeField(null=True, blank=True)
+    queue_priority = models.DecimalField(max_digits=10, decimal_places=4, default=Decimal('0'))
+    # Part-funded remainder still wanted; topped up by the queue job while
+    # the advance awaits approval (see core.capital.queue).
+    topup_pending = models.DecimalField(
+        max_digits=12, decimal_places=2, default=Decimal('0.00'),
+        validators=[MinValueValidator(Decimal('0.00'))])
+    holdback_amount = models.DecimalField(
+        max_digits=12, decimal_places=2, default=Decimal('0.00'),
+        validators=[MinValueValidator(Decimal('0.00'))])
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='approved_advances')
+    approver_label = models.CharField(max_length=120, blank=True, default='')
+    disbursed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='disbursed_advances')
+    disbursement_reference = models.CharField(max_length=200, blank=True, default='')
+
     # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -180,7 +215,7 @@ class AdvanceRequest(models.Model):
         constraints = [
             models.UniqueConstraint(
                 fields=['invoice'],
-                condition=Q(status__in=['REQUESTED', 'SCORING', 'APPROVED', 'DISBURSED']),
+                condition=Q(status__in=['QUEUED', 'REQUESTED', 'SCORING', 'APPROVED', 'DISBURSED']),
                 name='uniq_active_advance_per_invoice',
             ),
         ]
@@ -191,7 +226,7 @@ class AdvanceRequest(models.Model):
     @property
     def is_active(self) -> bool:
         """Check if advance is in an active state."""
-        active_statuses = ['REQUESTED', 'SCORING', 'APPROVED', 'DISBURSED']
+        active_statuses = ['QUEUED', 'REQUESTED', 'SCORING', 'APPROVED', 'DISBURSED']
         return self.status in active_statuses
 
     @property
