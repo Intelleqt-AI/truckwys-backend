@@ -46,6 +46,11 @@ from .credit_note import CreditNote, CreditNoteLine
 from .document_sequence import DocumentSequence
 from .supplier import Supplier
 from .debtor_identity import DebtorIdentity
+from .capital import (
+    Funder, FunderMembership, CreditPolicy, CapitalLimit, CapitalApplication, CapitalScore,
+    InvoiceAssessment, ExternalCheck, CapitalLedgerEntry, CapitalAlert, BookSnapshot,
+    DataRoomExport, CapitalAIUsage, ImmutableRowError,
+)
 
 __all__ = [
     'InvoiceLine', 'CreditNote', 'CreditNoteLine', 'DocumentSequence', 'Supplier', 'DebtorIdentity',
@@ -98,4 +103,18 @@ __all__ = [
     'MLUserRetrainQueue',
     'AIQuotePriceAnalysis',
     'VerifiedRate',
+    'Funder',
+    'FunderMembership',
+    'CreditPolicy',
+    'CapitalLimit',
+    'CapitalApplication',
+    'CapitalScore',
+    'InvoiceAssessment',
+    'ExternalCheck',
+    'CapitalLedgerEntry',
+    'CapitalAlert',
+    'BookSnapshot',
+    'DataRoomExport',
+    'CapitalAIUsage',
+    'ImmutableRowError',
 ]

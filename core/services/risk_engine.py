@@ -1,3 +1,11 @@
+# LEGACY 7-pillar risk breakdown: explanatory only, never a Fast Pay decision.
+#
+# Since the Fast Pay risk release (docs/capital/IMPLEMENTATION.md) every decision,
+# fee and advance amount comes from core.capital.engine. This engine still powers
+# the legacy ``/risk/score/calculate/`` breakdown page and the partner underwrite
+# API; about a third of its points are constants and its top tier cannot be
+# reached (docs/capital-risk/01-audit.md §3.2), so nothing may gate or price an
+# advance on it.
 """
 TruckWys Institutional-Grade 7-Pillar Risk Scoring Engine
 

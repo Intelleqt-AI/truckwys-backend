@@ -1,5 +1,6 @@
 """Agentic risk monitoring service for automated portfolio management."""
 
+import logging
 from datetime import date, timedelta
 from typing import Dict, List, Any, Optional
 from decimal import Decimal
@@ -13,6 +14,8 @@ from core.models import (
 from core.services.risk_engine import RiskEngine
 from core.services.feature_engineering import FeatureExtractor
 from core.formatting import format_zar
+
+logger = logging.getLogger(__name__)
 
 
 class RiskMonitor:
@@ -91,8 +94,10 @@ class RiskMonitor:
                 engine = RiskEngine(invoice, facility)
                 new_result = engine.calculate_risk_score()
 
-                # Save new risk score
-                engine.save_risk_score(new_result)
+                # Save new risk score (RiskEngine has no save_risk_score: the
+                # old call raised AttributeError, swallowed below, so nothing
+                # was ever saved).
+                engine.create_risk_score_record(new_result)
 
                 # Track changes
                 if old_score is not None:
@@ -118,11 +123,30 @@ class RiskMonitor:
 
                 results['invoices_rescored'] += 1
 
-            except Exception as e:
-                print(f"Error re-scoring invoice {invoice.id}: {e}")
+            except Exception:
+                logger.exception('Error re-scoring invoice %s', invoice.id)
                 continue
 
+        self._refresh_capital_debtor_score(customer)
         return results
+
+    @staticmethod
+    def _refresh_capital_debtor_score(customer) -> None:
+        """Also refresh the Fast Pay debtor score (core.capital.scoring) when the
+        customer is linked to a debtor identity. Best-effort: never changes the
+        legacy result."""
+        if not getattr(customer, 'debtor_identity_id', None):
+            return
+        try:
+            from core.capital.policy import default_policy, policy_for_funder
+            from core.capital.scoring import persist
+            from core.capital.scoring.debtor import score_debtor
+            facility = (customer.company.facilities.filter(status='ACTIVE', funder__isnull=False)
+                        .select_related('funder').first() if customer.company_id else None)
+            policy = policy_for_funder(facility.funder) if facility else default_policy()
+            persist(score_debtor(customer.debtor_identity, policy), debtor=customer.debtor_identity)
+        except Exception:
+            logger.exception('Capital debtor rescore failed for customer %s', customer.pk)
 
     def detect_anomalies(self, invoice) -> List[Dict[str, Any]]:
         """

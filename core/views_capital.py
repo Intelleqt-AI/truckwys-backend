@@ -278,115 +278,58 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
         if not invoice:
             return Response({'error': 'Invoice not found'}, status=status.HTTP_404_NOT_FOUND)
 
-        facility = _facility_for_invoice(invoice)
-
-        if not facility:
+        # Fast Pay (2026-10): one decision path. The old flow (customer-risk
+        # gate, 7-pillar RiskEngine, proportional deduction, own fee) is gone;
+        # core.capital.engine evaluates, records the decision and opens the
+        # advance under the funder lock.
+        from core.capital import engine as fp_engine
+        from core.capital import present as fp_present
+        if not request.user.is_staff:
+            if not fp_engine.can_request(invoice.company):
+                return Response({'code': 'not_launched', 'error': 'Fast Pay is not live yet.'},
+                                status=status.HTTP_403_FORBIDDEN)
+            if getattr(invoice.company, 'is_demo', False):
+                return Response({'code': 'demo', 'error': 'This is a demo account, so no money is advanced.'},
+                                status=status.HTTP_403_FORBIDDEN)
+        if _facility_for_invoice(invoice) is None:
             return Response(
                 {'error': 'No active facility found for this company'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-
-
-        # IDEMPOTENCY: if an active advance already exists for this invoice,
-        # return it instead of creating a duplicate (handles retries/double-clicks).
-        existing = AdvanceRequest.objects.filter(
-            invoice=invoice,
-            status__in=['REQUESTED', 'SCORING', 'APPROVED', 'DISBURSED'],
-        ).order_by('-requested_at').first()
-        if existing:
-            return Response(AdvanceRequestSerializer(existing).data, status=status.HTTP_200_OK)
-
-        # AI customer risk (overdue behavior): >70% blocks fast pay entirely;
-        # otherwise the advance amount is proportionally deducted below.
-        from core.services.customer_risk import compute_customer_risk, fundable_amount, BLOCK_THRESHOLD
-        crisk = compute_customer_risk(invoice.customer, facility.company)
-        if crisk['blocked']:
-            return Response(
-                {'error': f"Customer risk too high for fast pay ({crisk['risk_pct']}%)",
-                 'customer_risk_pct': crisk['risk_pct'],
-                 'customer_risk_band': crisk['band'],
-                 'block_threshold': BLOCK_THRESHOLD},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        # Structural rules shared with the lender path: collectable status,
-        # linked load, POD evidence. The risk engine re-checks load/POD, but
-        # failing early gives a precise reason and skips a wasted score.
-        from core.services.capital_guard import financing_block_reason
-        block = financing_block_reason(invoice)
-        if block:
-            return Response(
-                {'error': 'Invoice is not eligible for advance', 'reason': block, 'reasons': [block]},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        advance_amount = fundable_amount(invoice.total_amount, crisk['risk_pct'] or 0)
-        # Never advance more than is still collectable on a part-paid invoice.
-        if invoice.balance is not None and invoice.balance < advance_amount:
-            advance_amount = Decimal(str(invoice.balance)).quantize(Decimal('0.01'))
-        if advance_amount <= 0:
-            return Response({'error': 'Invoice has no outstanding balance to advance against'},
-                            status=status.HTTP_400_BAD_REQUEST)
-
-        # Calculate risk score
-        engine = RiskEngine(invoice=invoice, facility=facility)
-        result = engine.calculate_risk_score()
-
-        # Check eligibility
-        if not result.is_eligible:
-            reasons = [r.description for r in result.ineligibility_reasons] if result.ineligibility_reasons else ['Score below minimum']
+        from core.services.facility_ledger import CapacityError
+        try:
+            advance_request, assessment, ev, created = fp_engine.request(
+                invoice, actor=request.user, actor_label=request.user.username)
+        except CapacityError:
+            return Response({'code': 'capacity', 'error': 'Fast Pay capacity changed while we were checking. '
+                                                          'Please try again.'}, status=status.HTTP_409_CONFLICT)
+        if advance_request is None:
+            # Transporter wording only: desk text can name other tenants'
+            # invoices or loads (duplicates) and the desk's hold notes.
+            from core.capital.reasons import for_transporter
+            safe = for_transporter(ev.reasons)
+            hard = [r['text'] for r in safe if r['direction'] == '!'] or \
+                   [r['text'] for r in safe if r['direction'] == '-'] or ['Not fundable']
             return Response(
                 {
                     'error': 'Invoice is not eligible for advance',
-                    'reason': reasons[0] if reasons else 'Ineligible',
-                    'reasons': reasons,
-                    'total_score': result.final_score,
-                    'tier': result.risk_tier,
+                    'reason': hard[0],
+                    'reasons': hard,
+                    'decision': ev.decision,
+                    'offer': fp_present.offer(ev, persisted=assessment),
                 },
                 status=status.HTTP_400_BAD_REQUEST
             )
-
-        # Create risk score record
-        risk_score = engine.create_risk_score_record(result)
-
-        # Create + reserve capacity in one locked transaction (facility_ledger).
-        # A racing duplicate for the same invoice is caught by the
-        # uniq_active_advance_per_invoice constraint and handed back as-is.
-        from core.services.facility_ledger import open_advance, CapacityError
-        # Fee applies to the risk-deducted amount, not the face value.
-        fee_amount = (advance_amount * Decimal(str(result.final_fee_percent)) / Decimal('100')
-                      ).quantize(Decimal('0.01'))
-        try:
-            advance_request, created = open_advance(
-                invoice=invoice,
-                facility=facility,
-                amount=advance_amount,
-                risk_score=risk_score,
-                fee_percent=result.final_fee_percent,
-                fee_amount=fee_amount,
-                net_amount=advance_amount - fee_amount,
-            )
-        except CapacityError as exc:
-            facility.refresh_from_db()
-            return Response(
-                {'error': 'Advance would exceed available facility limit',
-                 'detail': str(exc),
-                 'available': float(facility.available)},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        except Exception as exc:
-            return Response({'error': f'Could not create advance: {exc}'}, status=status.HTTP_400_BAD_REQUEST)
         if not created:
             return Response(AdvanceRequestSerializer(advance_request).data, status=status.HTTP_200_OK)
 
-        # Persist a notification + live-push to the operator's open sessions.
         try:
             from core.services.notify import notify_company
             notify_company(
-                getattr(facility, 'company_id', None),
+                getattr(advance_request.facility, 'company_id', None),
                 'SUCCESS',
-                'Advance requested',
-                f'{invoice.invoice_number} — {format_zar(advance_request.net_amount, 0)} net ({result.risk_tier} tier)',
+                'Fast Pay requested',
+                f'{invoice.invoice_number}: {fp_present.STATUS_LABELS.get(advance_request.status)}',
                 link=f'/capital/advances/{advance_request.id}',
                 event='advance.created',
                 exclude_user_id=request.user.id,
@@ -408,6 +351,10 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
                 {'error': 'Only administrators can approve advances'},
                 status=status.HTTP_403_FORBIDDEN
             )
+        # Mode A: the funder approves every advance; the capital desk only with
+        # a written delegation (Funder.staff_may_approve; the sandbox has it).
+        from core.capital.access import check_advance_action
+        check_advance_action(request.user, advance, 'approve')
 
         serializer = ApproveAdvanceSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -420,7 +367,8 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
             # set (defence in depth, matches the same pattern used for quotes).
             advance._notify_handled = True
             advance._notify_actor_id = request.user.id
-            advance.approve()
+            from core.services.facility_ledger import approve_advance
+            approve_advance(advance, actor=request.user, actor_label=request.user.username)
             if serializer.validated_data.get('notes'):
                 advance.notes = serializer.validated_data['notes']
                 advance.save()
@@ -454,7 +402,12 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
 
         try:
             reason = serializer.validated_data['reason']
-            advance.deny(reason)
+            from core.capital.access import check_advance_action
+            from core.capital.queue import capacity_freed
+            from core.services.facility_ledger import deny_advance
+            check_advance_action(request.user, advance, 'decline')
+            deny_advance(advance, reason, actor=request.user)
+            capacity_freed(advance.funder or advance.facility.funder)
 
             if serializer.validated_data.get('notes'):
                 advance.notes = serializer.validated_data['notes']
@@ -492,7 +445,11 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
             # otherwise also send "Funds disbursed" for this transition.
             advance._notify_handled = True
             advance._notify_actor_id = request.user.id
-            advance.disburse()
+            from core.capital.access import check_advance_action
+            check_advance_action(request.user, advance, 'disburse')
+            from core.services.facility_ledger import disburse_advance
+            disburse_advance(advance, actor=request.user,
+                             reference=serializer.validated_data.get('notes', '') or '')
 
             if serializer.validated_data.get('notes'):
                 advance.notes = serializer.validated_data['notes']
@@ -774,84 +731,57 @@ class CapitalEligibleInvoicesView(APIView):
                 'invoices': [], 'ineligible_count': 0, 'ineligible_invoices': [],
             })
 
-        # Candidate invoices: this company's SENT/VIEWED/OVERDUE invoices with no active advance.
-        # VIEWED is included because viewing the public link auto-transitions SENT → VIEWED.
-        eligible_statuses = ['SENT', 'VIEWED', 'OVERDUE']
+        # Fast Pay (2026-10): rows come from core.capital.engine, the same
+        # decision path as a request, so this list shows exactly what a request
+        # would get. Field names kept for the existing app pages.
+        from core.capital import engine as fp_engine
+        from core.capital import book as fp_book
+        from core.capital.reasons import for_transporter
         candidates = Invoice.objects.filter(
-            status__in=eligible_statuses,
-        ).select_related('customer', 'load', 'trip').exclude(
-            advance_requests__status__in=['REQUESTED', 'SCORING', 'APPROVED', 'DISBURSED']
+            status__in=list(fp_engine.FUNDABLE_INVOICE_STATUSES),
+        ).select_related('customer', 'customer__debtor_identity', 'load', 'company').exclude(
+            advance_requests__status__in=list(fp_engine.LIVE_STATUSES)
         )
         if company is not None:
             candidates = candidates.filter(company=company)
         candidates = candidates.order_by('-issue_date')[:50]
 
-        facilities = {}
-
-        def facility_for(inv):
-            if inv.company_id not in facilities:
-                facilities[inv.company_id] = _facility_for_invoice(inv)
-            return facilities[inv.company_id]
-
-        # AI customer risk (overdue-behavior based): one bulk pass for every
-        # customer in the candidate list — drives the badge, the proportional
-        # fundable amount, and the >70% block on the Capital page.
-        from core.services.customer_risk import compute_customer_risk_bulk, fundable_amount
+        # The customer-risk badge stays informational on the page; it no longer
+        # gates or sizes an advance (the debtor score does).
+        from core.services.customer_risk import compute_customer_risk_bulk
         customer_risk = compute_customer_risk_bulk(
             company, [inv.customer_id for inv in candidates if inv.customer_id]
         ) if company is not None else {}
 
-        result = []
-        ineligible_result = []
+        states = {}
+        result, ineligible_result = [], []
         total_face_value = Decimal('0.00')
         total_net_payout = Decimal('0.00')
-
         for inv in candidates:
-            facility = facility_for(inv)
-            if not facility:
-                ineligible_result.append({
-                    'id': inv.id,
-                    'invoice_number': inv.invoice_number,
-                    'customer': inv.customer.name,
-                    'amount': float(inv.total_amount),
-                    'reason': 'No active facility on file',
-                    'rule': 'NO_FACILITY',
-                })
-                continue
-            # Run the SAME risk engine used at advance creation so this list only
-            # contains invoices that will actually be accepted (POD on file, score OK).
+            line = fp_engine.line_for(inv.company)
+            if line is not None and line.funder_id and line.funder_id not in states:
+                states[line.funder_id] = fp_book.load_state(line.funder)
             try:
-                engine = RiskEngine(invoice=inv, facility=facility)
-                res = engine.calculate_risk_score()
+                ev = fp_engine.evaluate(inv, state=states.get(getattr(line, 'funder_id', None)))
             except Exception:
                 continue
-            if not res.is_eligible:
-                primary = res.ineligibility_reasons[0] if res.ineligibility_reasons else None
+            visible = for_transporter(ev.reasons)
+            if not ev.eligible or ev.decision == 'DECLINE':
+                blockers = [r['text'] for r in visible if r['direction'] == '!'] or ['Not eligible']
                 ineligible_result.append({
                     'id': inv.id,
                     'invoice_number': inv.invoice_number,
                     'customer': inv.customer.name,
                     'amount': float(inv.total_amount),
-                    'reason': primary.description if primary else 'Ineligible',
-                    'rule': primary.rule if primary else 'UNKNOWN',
-                    'all_reasons': [r.description for r in res.ineligibility_reasons],
+                    'reason': blockers[0],
+                    'rule': next((r['code'] for r in visible if r['direction'] == '!'), 'NOT_ELIGIBLE'),
+                    'all_reasons': blockers,
                 })
                 continue
-
             amount = Decimal(str(inv.total_amount))
-            fee_amount = Decimal(str(res.fee_amount))
-            net_payout = Decimal(str(res.net_advance))
-            fee_rate = float(res.final_fee_percent)
-            tier = res.risk_tier
-
             total_face_value += amount
-            total_net_payout += net_payout
-
-            age_days = (date.today() - inv.issue_date).days if inv.issue_date else 0
-
+            total_net_payout += ev.net_payout
             crisk = customer_risk.get(inv.customer_id, {'risk_pct': None, 'band': None, 'blocked': False})
-            fundable = fundable_amount(amount, crisk['risk_pct']) if crisk['risk_pct'] is not None else amount
-
             result.append({
                 'id': inv.id,
                 'invoice_number': inv.invoice_number,
@@ -859,8 +789,10 @@ class CapitalEligibleInvoicesView(APIView):
                 'customer_id': inv.customer.id,
                 'customer_risk_pct': crisk['risk_pct'],
                 'customer_risk_band': crisk['band'],
-                'risk_blocked': crisk['blocked'],
-                'fundable_amount_zar': float(fundable),
+                'risk_blocked': False,
+                'decision': ev.decision,
+                'fundable_amount_zar': float(ev.fundable_amount),
+                'queued_amount_zar': float(ev.queued_amount),
                 'amount_zar': float(amount),
                 'amount': float(amount),  # Frontend compatibility
                 'total_amount': float(amount),  # Frontend compatibility
@@ -868,14 +800,17 @@ class CapitalEligibleInvoicesView(APIView):
                 'vat_zar': float(inv.vat_amount),
                 'issue_date': inv.issue_date.isoformat() if inv.issue_date else None,
                 'due_date': inv.due_date.isoformat() if inv.due_date else None,
-                'age_days': age_days,
-                'risk_score': float(res.final_score),
-                'risk_tier': tier,
-                'tier': str(tier).lower(),  # Frontend compatibility
-                'fee_rate_pct': fee_rate,
-                'fee_amount_zar': float(fee_amount),
-                'net_payout_zar': float(net_payout),
-                'max_advance_percent': res.max_advance_percent,
+                'age_days': (date.today() - inv.issue_date).days if inv.issue_date else 0,
+                'risk_tier': ev.invoice_grade,
+                'tier': ev.invoice_grade.lower(),  # Frontend compatibility
+                'fee_rate_pct': float(ev.fee_pct),
+                'fee_amount_zar': float(ev.fee_amount),
+                'fee_vat_zar': float(ev.fee_vat_amount),
+                'net_payout_zar': float(ev.net_payout),
+                'holdback_zar': float(ev.holdback_amount),
+                'max_advance_percent': float(ev.advance_rate_pct),
+                'expected_payment_date': ev.expected_payment_date.isoformat() if ev.expected_payment_date else None,
+                'reasons': visible,
                 'load_reference': inv.load.load_number if inv.load else None,
                 'route': f'{inv.load.pickup_city} → {inv.load.delivery_city}' if inv.load else None,
             })

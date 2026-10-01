@@ -883,3 +883,47 @@ def alert_stale_scheduled_tasks():
             # line above is already on record either way.
             logger.exception('alert_stale_scheduled_tasks: could not email %s', user.pk)
     return {'stale': len(problems), 'notified': sent, 'tasks': [n for n, _ in problems]}
+
+
+# ---------------------------------------------------------------------------
+# Fast Pay (Capital) book automation — job bodies in core.capital.jobs
+# ---------------------------------------------------------------------------
+
+@shared_task(name='core.tasks.capital_process_queue')
+def capital_process_queue(funder_id=None):
+    """Release queued advances / top up part-funded ones. With ``funder_id``
+    (fired by core.capital.queue.capacity_freed after a commit) only that
+    funder runs and no TaskRunLog row is written (it fires often); the beat
+    run (no argument) covers every funder and is tracked."""
+    from core.capital import jobs
+    if funder_id is not None:
+        return jobs.process_queue_for(int(funder_id))
+    return track_task_run('capital_process_queue')(jobs.process_queues)()
+
+
+@shared_task(name='core.tasks.capital_monitor')
+@track_task_run('capital_monitor')
+def capital_monitor():
+    from core.capital import jobs
+    return jobs.monitor()
+
+
+@shared_task(name='core.tasks.capital_nightly_rescore')
+@track_task_run('capital_nightly_rescore')
+def capital_nightly_rescore():
+    from core.capital import jobs
+    return jobs.nightly_rescore()
+
+
+@shared_task(name='core.tasks.capital_reconcile')
+@track_task_run('capital_reconcile')
+def capital_reconcile():
+    from core.capital import jobs
+    return jobs.reconcile_all()
+
+
+@shared_task(name='core.tasks.capital_monthly_data_room')
+@track_task_run('capital_monthly_data_room')
+def capital_monthly_data_room(period=None):
+    from core.capital import jobs
+    return jobs.monthly_data_room(period)
