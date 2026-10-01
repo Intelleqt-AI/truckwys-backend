@@ -303,6 +303,7 @@ class QuickBooksAdapter(base.AccountingAdapter):
     name = 'QuickBooks Online'
     shared_contact_list = False
     sales_lines_need_item = True
+    max_number_length = 21   # DocNumber
 
     def __init__(self, connection, *, http: ProviderHTTP | None = None):
         self.connection = connection
@@ -452,12 +453,35 @@ class QuickBooksAdapter(base.AccountingAdapter):
         return self._prefs
 
     def sync_blockers(self) -> list[str]:
-        prefs = self._preferences()
+        # Always a fresh read once connected: the user may change it any time.
+        prefs = self._preferences(realm=self.connection.tenant_id or None)
+        sales = prefs.get('SalesFormsPrefs') or {}
         out = []
-        if not (prefs.get('SalesFormsPrefs') or {}).get('CustomTxnNumbers'):
+        if not sales.get('CustomTxnNumbers'):
             out.append('Turn on "Custom transaction numbers" in QuickBooks (Settings → Account and settings → '
                        'Sales → Sales form content), then press Refresh: without it QuickBooks renumbers '
                        'TruckWys invoices and credit notes.')
+        if sales.get('AutoApplyCredit'):
+            out.append('Turn off "Automatically apply credits" in QuickBooks (Settings → Account and settings → '
+                       'Advanced → Automation), then press Refresh: with it on, QuickBooks applies TruckWys credit '
+                       'notes to whichever invoice it picks.')
+        out += self._number_length_blockers()
+        return out
+
+    def _number_length_blockers(self) -> list[str]:
+        """QBO keeps 21 characters of a DocNumber: TruckWys numbers must fit."""
+        from core.services.numbering import get_sequence
+        out = []
+        company = self.connection.company
+        for doc_type, label in (('INVOICE', 'invoice'), ('CREDIT_NOTE', 'credit note')):
+            try:
+                seq = get_sequence(company, doc_type)
+            except Exception:
+                continue
+            longest = len(seq.prefix or '') + max(int(seq.padding or 0), len(str(seq.next_number or 0)) + 1)
+            if longest > self.max_number_length:
+                out.append(f'TruckWys {label} numbers ({seq.prefix}…) can be longer than the 21 characters '
+                           'QuickBooks keeps; shorten the prefix in Settings → Invoice numbering.')
         return out
 
     def _tax_codes(self) -> dict:
@@ -880,7 +904,15 @@ class QuickBooksAdapter(base.AccountingAdapter):
         used in it). Credit memo lines are consumed by the invoice lines in
         order; the rest of each invoice line is money."""
         lines = self._payment_lines(p)
-        credits = [[t, a] for kind, t, a in lines if kind == 'CreditMemo']
+        # Every linked line that isn't an invoice is CREDIT used in the
+        # payment, never money: a credit memo (CREDIT_NOTE), or anything else
+        # QBO lets a Receive Payment consume, e.g. a journal entry used as a
+        # write-off / discount (OTHER_CREDIT, reported, never imported).
+        credits = [['CREDIT_NOTE' if kind == 'CreditMemo' else 'OTHER_CREDIT',
+                    t if kind == 'CreditMemo' else f'{kind}:{t}', a]
+                   for kind, t, a in lines if kind != 'Invoice']
+        # Money can never exceed what the payment actually brought in.
+        money_cap = max(D0, dec(p.get('TotalAmt')) - dec(p.get('UnappliedAmt')))
         out = []
         for kind, inv, amount in lines:
             if kind != 'Invoice':
@@ -889,14 +921,19 @@ class QuickBooksAdapter(base.AccountingAdapter):
             for c in credits:
                 if left <= 0:
                     break
-                if c[1] <= 0:
+                if c[2] <= 0:
                     continue
-                use = min(c[1], left)
-                c[1] -= use
+                use = min(c[2], left)
+                c[2] -= use
                 left -= use
-                out.append(('CREDIT_NOTE', inv, use, c[0]))
+                out.append((c[0], inv, use, c[1]))
             if left > 0:
-                out.append(('PAYMENT', inv, left, str(p.get('Id', ''))))
+                money = min(left, money_cap)
+                money_cap -= money
+                if money > 0:
+                    out.append(('PAYMENT', inv, money, str(p.get('Id', ''))))
+                if left - money > 0:
+                    out.append(('OTHER_CREDIT', inv, left - money, f'Payment:{p.get("Id", "")}'))
         return out
 
     def _ours(self, object_type, external_id) -> bool:
@@ -917,6 +954,9 @@ class QuickBooksAdapter(base.AccountingAdapter):
                 # receipts by it.
                 out.append(Settlement(kind='PAYMENT', external_id=f'{pid}:{inv}', amount=amount, date=when,
                                       source_id=pid, reference=p.get('PrivateNote') or p.get('PaymentRefNum') or ''))
+            elif kind == 'OTHER_CREDIT':
+                out.append(Settlement(kind='OTHER_CREDIT', external_id=f'{pid}:{source}:{inv}', amount=amount,
+                                      date=when, source_id=source))
             else:
                 number = ''
                 if not self._ours('CREDIT_NOTE', source):
@@ -1069,6 +1109,22 @@ class QuickBooksAdapter(base.AccountingAdapter):
             for inv in self._truckwys_invoices_for(credit_memo_id=cid):
                 out.append(RemotePaymentChange(external_id=f'{cid}:{inv}', invoice_external_id=inv, status=status,
                                                kind='CREDIT_NOTE', source_id=cid))
+        return out
+
+    def unallocated_credits_for(self, external_ids):
+        """Remaining unapplied money of specific payments: one targeted query
+        instead of reading every payment (CorePlus reads are metered)."""
+        out = []
+        ids = [str(i) for i in external_ids if i]
+        for chunk in (ids[i:i + 100] for i in range(0, len(ids), 100)):
+            in_list = ','.join(f"'{_q(i)}'" for i in chunk)
+            for p in self._query_all('Payment', where=f'Id IN ({in_list})'):
+                left = dec(p.get('UnappliedAmt'))
+                if left > 0:
+                    out.append(RemoteCredit(kind='OVERPAYMENT', external_id=str(p['Id']),
+                                            contact_id=_ref(p, 'CustomerRef'), remaining=left,
+                                            date=parse_date(p.get('TxnDate')),
+                                            number=p.get('PrivateNote') or p.get('PaymentRefNum') or ''))
         return out
 
     def list_unallocated_credits(self):

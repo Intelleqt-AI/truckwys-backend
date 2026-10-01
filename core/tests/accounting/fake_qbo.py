@@ -956,7 +956,8 @@ class FakeQBO(BaseAdapter):
         return self.company().realm
 
     def set_preference(self, realm=None, **prefs):
-        """set_preference(custom_txn_numbers=False, class_tracking=False, track_departments=False)."""
+        """set_preference(custom_txn_numbers=False, class_tracking=False, track_departments=False,
+        auto_apply_credit=True)."""
         c = self.company(realm)
         if 'custom_txn_numbers' in prefs:
             c.prefs['SalesFormsPrefs']['CustomTxnNumbers'] = prefs['custom_txn_numbers']
@@ -964,6 +965,8 @@ class FakeQBO(BaseAdapter):
             c.prefs['AccountingInfoPrefs']['ClassTrackingPerTxnLine'] = prefs['class_tracking']
         if 'track_departments' in prefs:
             c.prefs['AccountingInfoPrefs']['TrackDepartments'] = prefs['track_departments']
+        if 'auto_apply_credit' in prefs:
+            c.prefs['SalesFormsPrefs']['AutoApplyCredit'] = prefs['auto_apply_credit']
 
     def _rendered(self, entity, entity_id, realm=None):
         c = self.company(realm)

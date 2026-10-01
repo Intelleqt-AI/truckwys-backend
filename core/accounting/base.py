@@ -264,6 +264,8 @@ class AccountingAdapter(abc.ABC):
     name: str = ''
     # One contact list for customers and suppliers (Xero) vs separate (QBO).
     shared_contact_list: bool = False
+    # Longest document number the provider keeps (QBO DocNumber: 21).
+    max_number_length: int | None = None
     # Sales lines post to products/services (QBO Items, account type 'ITEM')
     # rather than straight to income accounts (Xero).
     sales_lines_need_item: bool = False
@@ -392,6 +394,12 @@ class AccountingAdapter(abc.ABC):
 
     @abc.abstractmethod
     def list_unallocated_credits(self) -> list[RemoteCredit]: ...
+
+    def unallocated_credits_for(self, external_ids) -> list[RemoteCredit]:
+        """Remaining credit of specific overpayments (providers with metered
+        reads override this with a targeted query)."""
+        ids = set(external_ids)
+        return [c for c in self.list_unallocated_credits() if c.external_id in ids]
 
     @abc.abstractmethod
     def get_credit_note_detail(self, external_id: str) -> dict:
