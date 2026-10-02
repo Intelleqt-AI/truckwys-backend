@@ -1,0 +1,47 @@
+{
+  "Id": "e3f5b7d9-1a2c-4e6f-8b0d-2c4e6a8b0d1f",
+  "Status": "OK",
+  "ProviderName": "TruckWys",
+  "DateTimeUTC": "/Date(1753002903517+0000)/",
+  "BankTransactions": [
+    {
+      "BankTransactionID": "1e3a5c7e-9b0d-4f2a-8c4e-6a8c0e2a4c61",
+      "Type": "RECEIVE-OVERPAYMENT",
+      "Status": "AUTHORISED",
+      "Contact": {
+        "ContactID": "9b9ba9e5-e907-4b4e-8210-54d82b0aa479",
+        "Name": "Acme Mining (Pty) Ltd"
+      },
+      "BankAccount": {
+        "AccountID": "13918178-849a-4823-9a31-57b7eac713d7",
+        "Code": "090",
+        "Name": "Business Bank Account"
+      },
+      "Date": "/Date(1751500800000+0000)/",
+      "DateString": "2025-07-03T00:00:00",
+      "Reference": "TW receipt RCPT-0001 excess",
+      "LineAmountTypes": "NoTax",
+      "LineItems": [
+        {
+          "Description": "TW receipt RCPT-0001 excess",
+          "UnitAmount": 350.0,
+          "TaxType": "NONE",
+          "TaxAmount": 0.0,
+          "LineAmount": 350.0,
+          "Tracking": [],
+          "Quantity": 1.0,
+          "LineItemID": "d4e5f6a7-0000-4000-8000-000000000005"
+        }
+      ],
+      "SubTotal": 350.0,
+      "TotalTax": 0.0,
+      "Total": 350.0,
+      "IsReconciled": false,
+      "CurrencyCode": "ZAR",
+      "UpdatedDateUTC": "/Date(1753002903900+0000)/",
+      "HasAttachments": false,
+      "OverpaymentID": "ed7f6a49-8a1c-4c3e-b3d2-6f5e4d3c2b1a",
+      "StatusAttributeString": "OK"
+    }
+  ]
+}

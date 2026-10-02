@@ -1,0 +1,17 @@
+{
+  "Id": "e3f5b7d9-1a2c-4e6f-8b0d-2c4e6a8b0d1f",
+  "Status": "OK",
+  "ProviderName": "TruckWys",
+  "DateTimeUTC": "/Date(1753002903517+0000)/",
+  "Options": [
+    {
+      "TrackingOptionID": "0c2e4a6c-8e0a-4c2e-a4c6-e8a0c2e4a6c8",
+      "Name": "CA 123-456",
+      "Status": "ACTIVE",
+      "HasValidationErrors": false,
+      "IsDeleted": false,
+      "IsArchived": false,
+      "IsActive": true
+    }
+  ]
+}

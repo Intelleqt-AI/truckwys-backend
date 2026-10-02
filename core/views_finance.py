@@ -249,7 +249,7 @@ class InvoiceFinanceViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.Model
                 'notes': request.data.get('notes') or 'Marked as paid',
             })
         except PaymentError as e:
-            return Response({'error': str(e)}, status=e.status_code)
+            return Response(e.as_response_body(), status=e.status_code)
         invoice.refresh_from_db()
         return Response(self.get_serializer(invoice).data)
 
@@ -557,7 +557,7 @@ class PaymentFinanceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         try:
             serializer = record_payment(resolve_user_company(request.user), request.user, data)
         except PaymentError as e:
-            return Response({'error': str(e)}, status=e.status_code)
+            return Response(e.as_response_body(), status=e.status_code)
 
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
@@ -567,7 +567,7 @@ class PaymentFinanceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         try:
             serializer = update_payment(payment.company, request.user, payment, dict(request.data.items()))
         except PaymentError as e:
-            return Response({'error': str(e)}, status=e.status_code)
+            return Response(e.as_response_body(), status=e.status_code)
         return Response(PaymentSerializer(serializer.instance, context={'request': request}).data)
 
     def partial_update(self, request, *args, **kwargs):
@@ -579,7 +579,7 @@ class PaymentFinanceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         try:
             reverse_payment(payment.company, payment, request.user)
         except PaymentError as e:
-            return Response({'error': str(e)}, status=e.status_code)
+            return Response(e.as_response_body(), status=e.status_code)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 

@@ -927,3 +927,11 @@ def capital_reconcile():
 def capital_monthly_data_room(period=None):
     from core.capital import jobs
     return jobs.monthly_data_room(period)
+
+
+# Accounting integrations (Xero, QuickBooks Online): registered here so
+# autodiscovery and the beat schedule find them.
+from core.accounting.tasks import (  # noqa: E402,F401
+    poll_all_payments, poll_connection, process_webhooks, push_link, reconcile_all,
+    reconcile_connection, retry_due, run_backfill,
+)

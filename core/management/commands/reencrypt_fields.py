@@ -1,8 +1,9 @@
 """Re-encrypt stored integration secrets onto the current FIELD_ENCRYPTION_KEY.
 
 Covers every encrypted-at-rest field (core.utils.crypto):
-    Company.xero_access_token, xero_refresh_token, cartrack_password,
-    cartrack_webhook_secret, ctrlfleet_api_key
+    Company.xero_access_token, xero_refresh_token (legacy prototype columns),
+    cartrack_password, cartrack_webhook_secret, ctrlfleet_api_key,
+    AccountingConnection.access_token, refresh_token (Xero / QuickBooks)
 
 For each non-empty value:
 * already decryptable with the current primary key -> left alone (idempotent)
@@ -35,6 +36,10 @@ ENCRYPTED_FIELDS = {
         'cartrack_password',
         'cartrack_webhook_secret',
         'ctrlfleet_api_key',
+    ],
+    'core.AccountingConnection': [
+        'access_token',
+        'refresh_token',
     ],
 }
 

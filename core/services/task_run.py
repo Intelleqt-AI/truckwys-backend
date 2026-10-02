@@ -45,6 +45,9 @@ TRACKED_TASKS = {
     'capital_monitor': timedelta(hours=3),
     'capital_nightly_rescore': timedelta(hours=36),
     'capital_reconcile': timedelta(hours=36),
+    # Accounting integrations: hourly payment catch-up, nightly reconciliation.
+    'accounting_poll_payments': timedelta(hours=3),
+    'accounting_reconcile_all': timedelta(hours=36),
 }
 
 

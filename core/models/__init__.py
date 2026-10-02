@@ -51,8 +51,12 @@ from .capital import (
     InvoiceAssessment, ExternalCheck, CapitalLedgerEntry, CapitalAlert, BookSnapshot,
     DataRoomExport, CapitalAIUsage, ImmutableRowError,
 )
+from .accounting import (AccountingConnection, ExternalLink, AccountingSyncEvent, AccountingWebhookEvent,
+                         ReconciliationRun, ReconciliationDifference)
 
 __all__ = [
+    'AccountingConnection', 'ExternalLink', 'AccountingSyncEvent', 'AccountingWebhookEvent',
+    'ReconciliationRun', 'ReconciliationDifference',
     'InvoiceLine', 'CreditNote', 'CreditNoteLine', 'DocumentSequence', 'Supplier', 'DebtorIdentity',
     'User',
     'UserSession',

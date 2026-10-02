@@ -1,0 +1,12 @@
+{
+  "status": 429,
+  "headers": {
+    "Retry-After": "45",
+    "X-Rate-Limit-Problem": "minute",
+    "X-MinLimit-Remaining": "0",
+    "X-DayLimit-Remaining": "4210",
+    "X-AppMinLimit-Remaining": "9875",
+    "Content-Type": "text/html; charset=utf-8"
+  },
+  "body": "oauth_problem=rate%20limit%20exceeded&oauth_problem_advice=please%20wait%20before%20retrying%20the%20xero%20api"
+}

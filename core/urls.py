@@ -1,4 +1,5 @@
 from django.urls import path, include
+from core.accounting import views as accounting_views
 from rest_framework.routers import DefaultRouter
 from .views_billing import (
     SubscribeView, CancelSubscriptionView, UndoCancelSubscriptionView, BillingStatusView,
@@ -59,8 +60,7 @@ from .views_partner import (
     PartnerAdvanceViewSet, PartnerOperatorViewSet, PartnerRiskScoreViewSet
 )
 from .views_integrations import (
-    XeroConnectView, XeroCallbackView, XeroDisconnectView, XeroStatusView,
-    XeroSyncInvoicesView, XeroSyncPaymentsView, XeroSyncLogView, FleetImportTripsView,
+    FleetImportTripsView,
     CreditLookupView, DashboardInsightsView, CashFlowForecastView,
     FleetTripSyncView, FleetTripBulkSyncView, TripSyncView,
     CartrackStatusView, CartrackConnectView,
@@ -274,14 +274,12 @@ urlpatterns = [
     path('intelligence/', DashboardInsightsView.as_view(), name='intelligence'),
     path('intelligence/recommendations/', DashboardInsightsView.as_view(), name='intelligence-recommendations'),
 
-    # Xero Integration endpoints (NEW - Phase 4)
-    path('integrations/xero/connect/', XeroConnectView.as_view(), name='xero-connect'),
-    path('integrations/xero/callback/', XeroCallbackView.as_view(), name='xero-callback'),
-    path('integrations/xero/disconnect/', XeroDisconnectView.as_view(), name='xero-disconnect'),
-    path('integrations/xero/status/', XeroStatusView.as_view(), name='xero-status'),
-    path('integrations/xero/sync-invoices/', XeroSyncInvoicesView.as_view(), name='xero-sync-invoices'),
-    path('integrations/xero/sync-payments/', XeroSyncPaymentsView.as_view(), name='xero-sync-payments'),
-    path('integrations/xero/sync-log/', XeroSyncLogView.as_view(), name='xero-sync-log'),
+    # Accounting integrations (Xero, QuickBooks Online): core.accounting.
+    # The OAuth callback and webhook paths are registered with the providers;
+    # keep them stable (docs/integrations/XERO.md).
+    path('integrations/xero/callback/', accounting_views.OAuthCallbackView.as_view(slug='xero'), name='xero-callback'),
+    path('integrations/xero/webhooks/', accounting_views.XeroWebhookView.as_view(), name='xero-webhooks'),
+    path('integrations/accounting/', include('core.accounting.urls')),
 
     # Cartrack Fleet API integration endpoints
     path('integrations/cartrack/status/', CartrackStatusView.as_view(), name='cartrack-status'),

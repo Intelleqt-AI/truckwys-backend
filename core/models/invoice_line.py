@@ -3,6 +3,7 @@ from decimal import Decimal
 
 from django.db import models
 
+from core.revenue_types import REVENUE_TYPE_CHOICES, FREIGHT
 from core.tax_codes import TAX_CODE_CHOICES, STANDARD
 
 
@@ -20,6 +21,8 @@ class InvoiceLine(models.Model):
     # The percent the user entered, if any (discount_amount is derived from it).
     discount_percent = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     tax_code = models.CharField(max_length=20, choices=TAX_CODE_CHOICES, default=STANDARD)
+    # What the line charges for; decides the income account in Xero/QBO.
+    revenue_type = models.CharField(max_length=20, choices=REVENUE_TYPE_CHOICES, default=FREIGHT)
     # Rate actually applied, as a percent (15.00), frozen at write time.
     tax_rate = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal('15.00'))
     net_amount = models.DecimalField(max_digits=12, decimal_places=2)

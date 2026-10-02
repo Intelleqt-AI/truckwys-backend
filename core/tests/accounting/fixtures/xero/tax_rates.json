@@ -1,0 +1,134 @@
+{
+  "Id": "e3f5b7d9-1a2c-4e6f-8b0d-2c4e6a8b0d1f",
+  "Status": "OK",
+  "ProviderName": "TruckWys",
+  "DateTimeUTC": "/Date(1753002903517+0000)/",
+  "TaxRates": [
+    {
+      "Name": "Standard Rate Sales",
+      "TaxType": "OUTPUT2",
+      "ReportTaxType": "OUTPUT",
+      "CanApplyToAssets": true,
+      "CanApplyToEquity": false,
+      "CanApplyToExpenses": false,
+      "CanApplyToLiabilities": true,
+      "CanApplyToRevenue": true,
+      "DisplayTaxRate": 15.0,
+      "EffectiveRate": 15.0,
+      "Status": "ACTIVE",
+      "TaxComponents": [
+        {
+          "Name": "VAT",
+          "Rate": 15.0,
+          "IsCompound": false,
+          "IsNonRecoverable": false
+        }
+      ]
+    },
+    {
+      "Name": "Standard Rate Purchases",
+      "TaxType": "INPUT2",
+      "ReportTaxType": "INPUT",
+      "CanApplyToAssets": true,
+      "CanApplyToEquity": true,
+      "CanApplyToExpenses": true,
+      "CanApplyToLiabilities": true,
+      "CanApplyToRevenue": false,
+      "DisplayTaxRate": 15.0,
+      "EffectiveRate": 15.0,
+      "Status": "ACTIVE",
+      "TaxComponents": [
+        {
+          "Name": "VAT",
+          "Rate": 15.0,
+          "IsCompound": false,
+          "IsNonRecoverable": false
+        }
+      ]
+    },
+    {
+      "Name": "Zero Rated Sales",
+      "TaxType": "ZERORATEDOUTPUT",
+      "ReportTaxType": "ZERORATEDOUTPUT",
+      "CanApplyToAssets": true,
+      "CanApplyToEquity": false,
+      "CanApplyToExpenses": false,
+      "CanApplyToLiabilities": true,
+      "CanApplyToRevenue": true,
+      "DisplayTaxRate": 0.0,
+      "EffectiveRate": 0.0,
+      "Status": "ACTIVE",
+      "TaxComponents": [
+        {
+          "Name": "VAT",
+          "Rate": 0.0,
+          "IsCompound": false,
+          "IsNonRecoverable": false
+        }
+      ]
+    },
+    {
+      "Name": "Exempt Purchases",
+      "TaxType": "EXEMPTINPUT",
+      "ReportTaxType": "EXEMPTINPUT",
+      "CanApplyToAssets": true,
+      "CanApplyToEquity": true,
+      "CanApplyToExpenses": true,
+      "CanApplyToLiabilities": true,
+      "CanApplyToRevenue": false,
+      "DisplayTaxRate": 0.0,
+      "EffectiveRate": 0.0,
+      "Status": "ACTIVE",
+      "TaxComponents": [
+        {
+          "Name": "VAT",
+          "Rate": 0.0,
+          "IsCompound": false,
+          "IsNonRecoverable": false
+        }
+      ]
+    },
+    {
+      "Name": "No VAT",
+      "TaxType": "NONE",
+      "ReportTaxType": "NONE",
+      "CanApplyToAssets": true,
+      "CanApplyToEquity": true,
+      "CanApplyToExpenses": true,
+      "CanApplyToLiabilities": true,
+      "CanApplyToRevenue": true,
+      "DisplayTaxRate": 0.0,
+      "EffectiveRate": 0.0,
+      "Status": "ACTIVE",
+      "TaxComponents": [
+        {
+          "Name": "VAT",
+          "Rate": 0.0,
+          "IsCompound": false,
+          "IsNonRecoverable": false
+        }
+      ]
+    },
+    {
+      "Name": "Standard Rate Sales (14%)",
+      "TaxType": "OUTPUT3",
+      "ReportTaxType": "OUTPUT",
+      "CanApplyToAssets": true,
+      "CanApplyToEquity": false,
+      "CanApplyToExpenses": false,
+      "CanApplyToLiabilities": true,
+      "CanApplyToRevenue": true,
+      "DisplayTaxRate": 14.0,
+      "EffectiveRate": 14.0,
+      "Status": "ARCHIVED",
+      "TaxComponents": [
+        {
+          "Name": "VAT",
+          "Rate": 14.0,
+          "IsCompound": false,
+          "IsNonRecoverable": false
+        }
+      ]
+    }
+  ]
+}
