@@ -1,0 +1,44 @@
+{
+  "Payment": {
+    "CustomerRef": {
+      "value": "58"
+    },
+    "DepositToAccountRef": {
+      "value": "4"
+    },
+    "TotalAmt": 0,
+    "UnappliedAmt": 0,
+    "ProcessPayment": false,
+    "domain": "QBO",
+    "sparse": false,
+    "Id": "202",
+    "SyncToken": "0",
+    "MetaData": {
+      "CreateTime": "2026-09-20T11:30:00-07:00",
+      "LastUpdatedTime": "2026-09-20T11:30:00-07:00"
+    },
+    "TxnDate": "2026-09-20",
+    "PrivateNote": "TruckWys: credit note CN-00001 applied",
+    "Line": [
+      {
+        "Amount": 1000.0,
+        "LinkedTxn": [
+          {
+            "TxnId": "130",
+            "TxnType": "Invoice"
+          }
+        ]
+      },
+      {
+        "Amount": 1000.0,
+        "LinkedTxn": [
+          {
+            "TxnId": "150",
+            "TxnType": "CreditMemo"
+          }
+        ]
+      }
+    ]
+  },
+  "time": "2026-09-30T08:14:31.112-07:00"
+}

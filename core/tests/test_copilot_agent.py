@@ -410,10 +410,11 @@ class EntityHookTests(TestCase):
             company=self.company, name='Pay2 Ltd', email='pay2@h.test',
             phone='', address='', city='', state='', zip_code='',
         )
+        # SENT: a payment can't be recorded against a draft (foundation).
         invoice = Invoice.objects.create(
             company=self.company, customer=customer, invoice_number='INV-H-2',
             due_date=date.today(), subtotal=Decimal('100'),
-            total_amount=Decimal('100'), balance=Decimal('100'),
+            total_amount=Decimal('100'), balance=Decimal('100'), status='SENT',
         )
         invoice.refresh_from_db()
         out = tools.propose_create(

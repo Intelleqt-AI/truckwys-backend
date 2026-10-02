@@ -93,7 +93,9 @@ class InvoiceApiTests(Base):
 
 class DueDateTests(Base):
     def test_due_date_editable_and_audited(self):
-        inv = self.invoice('INV-G-4')
+        # Editable while the invoice is a draft (foundation: issued invoices
+        # are locked), and every change is audited.
+        inv = self.invoice('INV-G-4', status='DRAFT')
         new_due = TODAY + timedelta(days=45)
         r = self.client.patch(f'/api/v1/invoices/{inv.id}/', {'due_date': new_due.isoformat()}, format='json')
         self.assertEqual(r.status_code, 200, r.content)
@@ -103,13 +105,17 @@ class DueDateTests(Base):
                                       details__changes__due_date__isnull=False).first()
         self.assertIsNotNone(log)
 
-    def test_moving_due_date_out_clears_overdue(self):
+    def test_issued_invoice_due_date_locked(self):
+        # Foundation: an issued invoice's dates are immutable (was: editable
+        # until paid). An overdue invoice stays overdue; a credit note or a
+        # new invoice is the correction.
         inv = self.invoice('INV-G-5', due=TODAY - timedelta(days=5))
         inv.refresh_from_db()
         self.assertEqual(inv.status, 'OVERDUE')
-        self.client.patch(f'/api/v1/invoices/{inv.id}/', {'due_date': (TODAY + timedelta(days=10)).isoformat()}, format='json')
+        r = self.client.patch(f'/api/v1/invoices/{inv.id}/', {'due_date': (TODAY + timedelta(days=10)).isoformat()}, format='json')
+        self.assertEqual(r.status_code, 400)
         inv.refresh_from_db()
-        self.assertEqual(inv.status, 'SENT')
+        self.assertEqual(inv.status, 'OVERDUE')
 
     def test_paid_invoice_due_date_locked(self):
         inv = self.invoice('INV-G-6')
@@ -118,7 +124,7 @@ class DueDateTests(Base):
         self.assertEqual(r.status_code, 400)
 
     def test_due_date_not_before_issue_date(self):
-        inv = self.invoice('INV-G-7')
+        inv = self.invoice('INV-G-7', status='DRAFT')
         r = self.client.patch(f'/api/v1/invoices/{inv.id}/', {'due_date': (inv.issue_date - timedelta(days=1)).isoformat()}, format='json')
         self.assertEqual(r.status_code, 400)
 

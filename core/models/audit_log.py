@@ -29,6 +29,8 @@ class AuditLog(models.Model):
         ('EXPORT', 'Export'),
         ('IMPORT', 'Import'),
         ('EMAIL', 'Email'),
+        ('DECIDE', 'Decision recorded'),
+        ('OVERRIDE', 'Override'),
         ('OTHER', 'Other'),
     ]
 

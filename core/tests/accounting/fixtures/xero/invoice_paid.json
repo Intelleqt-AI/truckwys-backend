@@ -1,0 +1,114 @@
+{
+  "Id": "e3f5b7d9-1a2c-4e6f-8b0d-2c4e6a8b0d1f",
+  "Status": "OK",
+  "ProviderName": "TruckWys",
+  "DateTimeUTC": "/Date(1753002903517+0000)/",
+  "Invoices": [
+    {
+      "Type": "ACCREC",
+      "InvoiceID": "243216c5-369e-4056-ac67-05388f86dc81",
+      "InvoiceNumber": "INV-0042",
+      "Reference": "PO-889 / LOAD-2207",
+      "Payments": [
+        {
+          "PaymentID": "b26fd49a-cbae-470a-a8f8-bcbc119e0379",
+          "Date": "/Date(1752105600000+0000)/",
+          "Amount": 8000.0,
+          "Reference": "EFT ACME 0710",
+          "CurrencyRate": 1.0,
+          "HasAccount": false,
+          "HasValidationErrors": false
+        }
+      ],
+      "CreditNotes": [
+        {
+          "CreditNoteID": "0032e4a6-1f2c-4a5b-9c7d-8e9f0a1b2c3d",
+          "CreditNoteNumber": "CN-0007",
+          "ID": "0032e4a6-1f2c-4a5b-9c7d-8e9f0a1b2c3d",
+          "AppliedAmount": 1150.0,
+          "DateString": "2025-07-12T00:00:00",
+          "Date": "/Date(1752278400000+0000)/",
+          "LineItems": [],
+          "Total": 2300.0,
+          "HasErrors": false
+        }
+      ],
+      "Prepayments": [
+        {
+          "PrepaymentID": "b1a2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+          "ID": "b1a2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+          "AppliedAmount": 850.0,
+          "DateString": "2025-07-15T00:00:00",
+          "Date": "/Date(1752537600000+0000)/",
+          "Total": 850.0,
+          "LineItems": []
+        }
+      ],
+      "Overpayments": [
+        {
+          "OverpaymentID": "ed7f6a49-8a1c-4c3e-b3d2-6f5e4d3c2b1a",
+          "ID": "ed7f6a49-8a1c-4c3e-b3d2-6f5e4d3c2b1a",
+          "AppliedAmount": 1500.0,
+          "DateString": "2025-07-14T00:00:00",
+          "Date": "/Date(1752451200000+0000)/",
+          "Total": 2000.0,
+          "LineItems": []
+        }
+      ],
+      "AmountDue": 0.0,
+      "AmountPaid": 8000.0,
+      "AmountCredited": 3500.0,
+      "CurrencyRate": 1.0,
+      "IsDiscounted": false,
+      "HasAttachments": false,
+      "HasErrors": false,
+      "Contact": {
+        "ContactID": "9b9ba9e5-e907-4b4e-8210-54d82b0aa479",
+        "Name": "Acme Mining (Pty) Ltd"
+      },
+      "DateString": "2025-07-01T00:00:00",
+      "Date": "/Date(1751328000000+0000)/",
+      "DueDateString": "2025-07-31T00:00:00",
+      "DueDate": "/Date(1753920000000+0000)/",
+      "Status": "PAID",
+      "LineAmountTypes": "Exclusive",
+      "SubTotal": 10000.0,
+      "TotalTax": 1500.0,
+      "Total": 11500.0,
+      "UpdatedDateUTC": "/Date(1752584695610+0000)/",
+      "CurrencyCode": "ZAR",
+      "LineItems": [
+        {
+          "LineItemID": "52208ff9-528a-4985-a9ad-b2b1d4210e38",
+          "Description": "Freight JHB-DBN 34t",
+          "Quantity": 1.0,
+          "UnitAmount": 8695.6522,
+          "AccountCode": "200",
+          "TaxType": "OUTPUT2",
+          "TaxAmount": 1304.35,
+          "LineAmount": 8695.65,
+          "Tracking": [
+            {
+              "TrackingCategoryID": "351953c4-8127-4009-88c3-f9cd8c9cbe9f",
+              "TrackingOptionID": "ae777a87-5ef3-4fa0-a4f0-d10e1f13073a",
+              "Name": "Region",
+              "Option": "Gauteng"
+            }
+          ]
+        },
+        {
+          "LineItemID": "87ea6b0a-3d0b-4f1d-9e86-1d2a5e7c4b3f",
+          "Description": "Fuel surcharge",
+          "Quantity": 1.0,
+          "UnitAmount": 1304.35,
+          "AccountCode": "201",
+          "TaxType": "OUTPUT2",
+          "TaxAmount": 195.65,
+          "LineAmount": 1304.35,
+          "Tracking": []
+        }
+      ],
+      "FullyPaidOnDate": "/Date(1752537600000+0000)/"
+    }
+  ]
+}

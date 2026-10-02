@@ -1,0 +1,14 @@
+{
+  "status": 401,
+  "headers": {
+    "WWW-Authenticate": "Bearer error=\"invalid_token\""
+  },
+  "body": {
+    "Type": null,
+    "Title": "Unauthorized",
+    "Status": 401,
+    "Detail": "TokenExpired: token expired at 07/20/2025 09:45:03",
+    "Instance": "0e2a4c6e-8a0c-4e2a-a4c6-e8a0c2e4a6c8",
+    "Extensions": {}
+  }
+}

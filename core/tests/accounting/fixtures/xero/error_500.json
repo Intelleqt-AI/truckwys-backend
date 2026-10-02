@@ -1,0 +1,9 @@
+{
+  "status": 500,
+  "headers": {},
+  "body": {
+    "Title": "An error occurred",
+    "Status": 500,
+    "Detail": "An error occurred in Xero. Check the API Status page http://status.developer.xero.com for current service status."
+  }
+}

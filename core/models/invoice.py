@@ -28,19 +28,40 @@ class Invoice(models.Model):
         ('PAID', 'Paid'),
         ('PARTIALLY_PAID', 'Partially Paid'),
         ('OVERDUE', 'Overdue'),
-        ('CANCELLED', 'Cancelled'),
+        # Shown as "Void": an issued invoice is never deleted, it is voided
+        # (only when nothing has been paid or credited against it).
+        ('CANCELLED', 'Void'),
         ('DISPUTED', 'Disputed'),
+        # Fully reversed by credit notes with nothing paid.
+        ('CREDITED', 'Credited'),
     ]
 
-    PAYMENT_TERMS_CHOICES = [
-        ('NET30', 'Net 30 Days'),
-        ('NET60', 'Net 60 Days'),
-        ('NET90', 'Net 90 Days'),
+    # Statuses in which the invoice is a issued document (counts as revenue
+    # on the accrual basis and appears in debtors). Draft and void do not.
+    ISSUED_STATUSES = ('SENT', 'VIEWED', 'PAID', 'PARTIALLY_PAID', 'OVERDUE', 'DISPUTED', 'CREDITED')
+
+    # Same list the customer record offers (NET7..NET90). The invoice used to
+    # accept only 30/60/90, so a NET45 customer was invoiced at NET30.
+    PAYMENT_TERMS_CHOICES = Customer.PAYMENT_TERMS_CHOICES
+
+    TOTALS_SOURCE_CHOICES = [
+        # Totals are the sum of typed InvoiceLine rows (tax per line,
+        # discount before VAT). Every invoice created after the foundation
+        # release.
+        ('LINES', 'Calculated from lines'),
+        # Pre-foundation invoice: its stored subtotal/VAT/total are the
+        # issued figures and are never recalculated (lines were backfilled
+        # from the old JSON for display only).
+        ('LEGACY', 'Legacy stored totals'),
     ]
 
     # Core fields
     company = models.ForeignKey("Company", on_delete=models.CASCADE, null=True, blank=True, related_name="invoices")
-    invoice_number = models.CharField(max_length=100, unique=True, db_index=True)
+    # Unique per company (constraint below), not globally: every company's
+    # sequence starts at {prefix}00001. Drafts carry a provisional
+    # DRAFT-xxxx number; the sequential number is allocated when the invoice
+    # is issued, so issued numbers are gap-free (core.services.numbering).
+    invoice_number = models.CharField(max_length=100, db_index=True)
     customer = models.ForeignKey(Customer, on_delete=models.PROTECT, related_name='invoices')
     load = models.ForeignKey(Load, on_delete=models.PROTECT, null=True, blank=True, related_name='invoices')
 
@@ -66,7 +87,15 @@ class Invoice(models.Model):
         help_text='Payment terms for this invoice'
     )
 
-    # Financial amounts
+    terms_days = models.PositiveIntegerField(
+        default=30, help_text='Days from issue date to due date, from the payment terms')
+
+    # Financial amounts. All EXCLUDING VAT unless named otherwise:
+    #   subtotal      = sum of line net amounts (after discount, excl. VAT)
+    #   discount      = sum of line discounts (excl. VAT) - informational
+    #   vat_amount    = sum of line VAT
+    #   total_amount  = subtotal + vat_amount (incl. VAT)
+    #   balance       = total - paid - credited (server-derived ledger)
     subtotal = models.DecimalField(max_digits=10, decimal_places=2)
 
     # NEW: Explicit VAT amount (15% for South Africa)
@@ -84,7 +113,16 @@ class Invoice(models.Model):
     discount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     total_amount = models.DecimalField(max_digits=10, decimal_places=2)
     paid_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    credited_amount = models.DecimalField(
+        max_digits=10, decimal_places=2, default=Decimal('0.00'),
+        help_text='Sum of issued credit notes against this invoice (incl. VAT)')
     balance = models.DecimalField(max_digits=10, decimal_places=2)
+
+    totals_source = models.CharField(
+        max_length=10, choices=TOTALS_SOURCE_CHOICES, default='LINES')
+
+    voided_at = models.DateTimeField(null=True, blank=True)
+    void_reason = models.TextField(blank=True, default='')
 
     # Status
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='DRAFT', db_index=True)
@@ -107,11 +145,13 @@ class Invoice(models.Model):
         help_text='Generated invoice PDF'
     )
 
-    # NEW: Line items JSON storage
+    # DEPRECATED read mirror of the typed InvoiceLine rows (written by
+    # core.services.invoice_lines.apply_lines). Kept so older readers (PDF,
+    # Xero push, mobile app) keep working; never read it to compute money.
     line_items = models.JSONField(
         default=list,
         blank=True,
-        help_text='Invoice line items with descriptions, quantities, and amounts'
+        help_text='Deprecated mirror of InvoiceLine rows'
     )
 
     # Notes
@@ -153,6 +193,10 @@ class Invoice(models.Model):
     class Meta:
         db_table = 'invoices'
         ordering = ['-created_at']
+        constraints = [
+            models.UniqueConstraint(fields=['company', 'invoice_number'],
+                                    name='uniq_invoice_number_per_company'),
+        ]
         indexes = [
             models.Index(fields=['invoice_number']),
             models.Index(fields=['status']),
@@ -181,17 +225,31 @@ class Invoice(models.Model):
 
     # company FK is now a real field (migration 0023) — removed old property
 
-    def calculate_vat(self) -> Decimal:
-        """Calculate VAT amount (15% for South Africa)."""
-        vat_rate = Decimal('0.15')  # 15% VAT
-        return (self.subtotal * vat_rate).quantize(Decimal('0.01'))
+    @property
+    def has_provisional_number(self) -> bool:
+        from core.services.numbering import is_provisional_number
+        return is_provisional_number(self.invoice_number)
+
+    @property
+    def is_locked(self) -> bool:
+        """Issued (sent or later) invoices are immutable documents: their
+        financial fields change only through credit notes or void."""
+        return self.status != 'DRAFT'
+
+    @property
+    def is_financed(self) -> bool:
+        if not self.pk:
+            return False
+        from core.services.capital_guard import is_invoice_financed
+        return is_invoice_financed(self)
 
     def calculate_total(self) -> Decimal:
-        """Calculate total amount including VAT and discount."""
+        """LEGACY totals only: the pre-foundation formula (discount taken
+        after VAT). LINES invoices take their totals from the lines."""
         return (self.subtotal + self.vat_amount - self.discount).quantize(Decimal('0.01'))
 
     def mark_as_sent(self) -> None:
-        """Mark invoice as sent."""
+        """Mark invoice as sent (issues it: allocates the sequential number)."""
         if self.status == 'DRAFT':
             self.status = 'SENT'
             self.sent_at = timezone.now()
@@ -205,44 +263,53 @@ class Invoice(models.Model):
             self.save()
 
     def mark_as_paid(self) -> None:
-        """Mark invoice as fully paid."""
-        if self.status not in ['PAID', 'CANCELLED']:
-            self.status = 'PAID'
-            self.paid_at = timezone.now()
-            self.paid_amount = self.total_amount
-            self.balance = Decimal('0.00')
-            self.save()
+        """Settle the outstanding balance by recording a payment for it (today,
+        bank transfer), so a PAID status always has a payment behind it.
+        Prefer core.services.payments.record_payment, which validates input."""
+        if self.status in ('PAID', 'CANCELLED', 'DRAFT') or self.balance <= 0:
+            return
+        from core.models import Payment
+        from core.services.ledger import recalculate_invoice
+        from core.services.payments import _payment_number
+        Payment.objects.create(
+            company=self.company, invoice=self, customer=self.customer, amount=self.balance,
+            payment_date=timezone.localdate(), payment_method='BANK_TRANSFER',
+            payment_number=_payment_number(), notes='Marked as paid',
+        )
+        fresh = recalculate_invoice(self)
+        for f in ('paid_amount', 'credited_amount', 'balance', 'status', 'paid_at', 'updated_at'):
+            setattr(self, f, getattr(fresh, f))
 
     def save(self, *args, **kwargs) -> None:
-        """Override save to auto-calculate amounts."""
-        # Auto-calculate VAT if not set
-        if self.vat_amount == 0 and self.subtotal > 0:
-            self.vat_amount = self.calculate_vat()
-
-        # Keep tax_amount in sync with vat_amount for backward compatibility
+        """Keep the derived fields consistent. No VAT is ever invented here:
+        VAT comes from the lines (tax code per line) or, for LEGACY rows, is
+        whatever was stored when the invoice was issued."""
+        if self.subtotal is None:
+            self.subtotal = Decimal('0.00')
+        if self.vat_amount is None:
+            self.vat_amount = Decimal('0.00')
         self.tax_amount = self.vat_amount
+        if self.totals_source == 'LINES':
+            self.total_amount = (self.subtotal + self.vat_amount).quantize(Decimal('0.01'))
+        else:
+            self.total_amount = self.calculate_total()
 
-        # Auto-calculate total
-        self.total_amount = self.calculate_total()
+        from core.services.ledger import apply_ledger_status
+        apply_ledger_status(self)
 
-        # Auto-calculate balance
-        self.balance = self.total_amount - self.paid_amount
-
-        # Auto-update status based on payment
-        if self.balance == 0 and self.paid_amount > 0:
-            self.status = 'PAID'
-            # Revenue is dated by paid_at: a PAID invoice without one dropped
-            # out of every revenue window (e.g. INV-20260615-96400).
-            if self.paid_at is None:
-                last = (self.payments.order_by('-payment_date').values_list('payment_date', flat=True).first()
-                        if self.pk else None)
-                self.paid_at = paid_at_for(last)
-        elif self.paid_amount > 0 and self.balance > 0:
-            self.status = 'PARTIALLY_PAID'
-        elif self.is_overdue and self.status not in ['PAID', 'CANCELLED', 'DISPUTED']:
-            self.status = 'OVERDUE'
-        elif self.status == 'OVERDUE' and not self.is_overdue:
-            # Due date moved into the future: no longer overdue.
-            self.status = 'VIEWED' if self.viewed_at else 'SENT'
-
+        # Issuing a draft allocates its gap-free sequential number. Allocation
+        # and the save share one transaction, so a failed save rolls the
+        # counter back instead of burning a number.
+        if self.status != 'DRAFT' and self.has_provisional_number and self.company_id:
+            from django.db import transaction
+            from core.services.numbering import allocate_invoice_number
+            with transaction.atomic():
+                self.invoice_number = allocate_invoice_number(self.company)
+                # A PDF rendered while it was a draft shows the provisional number.
+                self.pdf_file = None
+                update_fields = kwargs.get('update_fields')
+                if update_fields is not None:
+                    kwargs['update_fields'] = set(update_fields) | {'invoice_number', 'pdf_file'}
+                super().save(*args, **kwargs)
+            return
         super().save(*args, **kwargs)

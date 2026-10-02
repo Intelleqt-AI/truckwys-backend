@@ -49,13 +49,43 @@ ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,*.ngrok.io,
 XERO_CLIENT_ID = config('XERO_CLIENT_ID', default='')
 XERO_CLIENT_SECRET = config('XERO_CLIENT_SECRET', default='')
 XERO_REDIRECT_URI = config('XERO_REDIRECT_URI', default='http://localhost:8000/api/v1/integrations/xero/callback/')
+# Webhook signing key from the Xero app's Webhooks tab (x-xero-signature).
+XERO_WEBHOOK_KEY = config('XERO_WEBHOOK_KEY', default='')
+# Space-separated; leave unset to use core.accounting.xero.DEFAULT_SCOPES.
+XERO_SCOPES = config('XERO_SCOPES', default='')
+
+# QuickBooks Online (docs/integrations/QUICKBOOKS.md). Keys from the Intuit
+# developer portal: Development keys go with QBO_ENVIRONMENT=sandbox,
+# Production keys with production.
+QBO_CLIENT_ID = config('QBO_CLIENT_ID', default='')
+QBO_CLIENT_SECRET = config('QBO_CLIENT_SECRET', default='')
+QBO_REDIRECT_URI = config('QBO_REDIRECT_URI', default='http://localhost:8000/api/v1/integrations/quickbooks/callback/')
+QBO_ENVIRONMENT = config('QBO_ENVIRONMENT', default='sandbox')   # sandbox | production
+# Webhooks "Verifier Token" (intuit-signature header).
+QBO_WEBHOOK_VERIFIER_TOKEN = config('QBO_WEBHOOK_VERIFIER_TOKEN', default='')
+QBO_MINOR_VERSION = config('QBO_MINOR_VERSION', default='75')
+
+# Accounting integrations (core.accounting; docs/integrations/). Every
+# provider HTTP call has a (connect, read) timeout; nothing waits forever.
+ACCOUNTING_HTTP_TIMEOUT = (
+    config('ACCOUNTING_HTTP_CONNECT_TIMEOUT', default=5, cast=float),
+    config('ACCOUNTING_HTTP_READ_TIMEOUT', default=30, cast=float),
+)
+# Tests only: run pushes inline after commit instead of through Celery.
+ACCOUNTING_SYNC_EAGER = config('ACCOUNTING_SYNC_EAGER', default=False, cast=bool)
 FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:3701')
 
-# Encryption key for secrets at rest (Xero OAuth tokens). A urlsafe-base64 32-byte
-# Fernet key (python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())").
-# If unset, a stable key is derived from SECRET_KEY. Set a dedicated key in production
-# so rotating SECRET_KEY doesn't invalidate stored tokens.
+# Encryption key for secrets at rest (Xero tokens, Cartrack/CtrlFleet credentials).
+# A urlsafe-base64 32-byte Fernet key
+# (python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"),
+# or several comma-separated during a rotation (the first encrypts).
+# REQUIRED in production: with DEBUG off the app refuses to start without it
+# (core.utils.crypto.validate_encryption_config). Only DEBUG/test runs derive a
+# key from SECRET_KEY.
 FIELD_ENCRYPTION_KEY = config('FIELD_ENCRYPTION_KEY', default='')
+# Previous key(s), comma-separated, read only by `manage.py reencrypt_fields`
+# to move stored secrets onto FIELD_ENCRYPTION_KEY.
+FIELD_ENCRYPTION_KEY_OLD = config('FIELD_ENCRYPTION_KEY_OLD', default='')
 
 # Carrier-finance spine: when a load is delivered, auto-raise its invoice (SENT)
 # so the receivable exists and becomes fast-pay eligible with no manual step.
@@ -537,6 +567,40 @@ CELERY_BEAT_SCHEDULE_FILENAME = config(
 # which is cheap and makes the signal genuinely tick-by-tick.
 CELERY_BEAT_SYNC_EVERY = 1
 
+# ---------------------------------------------------------------------------
+# Fast Pay (Capital): docs/capital/IMPLEMENTATION.md and RUNBOOK.md
+# ---------------------------------------------------------------------------
+# Launch switch. False: transporters can see nothing new and cannot request
+# Fast Pay (the request endpoints answer 403 {'code': 'not_launched'}); the
+# capital desk (staff / funder members) still works so the book can be set up.
+# The frontend has its own CAPITAL_LAUNCHED constant; flip both together.
+CAPITAL_LAUNCHED = config('CAPITAL_LAUNCHED', default=False, cast=bool)
+# Company ids allowed to request while not launched (a closed pilot). Empty = none.
+CAPITAL_PILOT_COMPANY_IDS = tuple(
+    int(c) for c in config('CAPITAL_PILOT_COMPANY_IDS', default='').split(',') if c.strip())
+# Mode B (limited auto-approval) needs this AND Funder.auto_approve_enabled
+# AND the request inside the policy's auto_approve envelope. Default off:
+# Mode A, the funder approves every advance.
+CAPITAL_AUTO_APPROVE_ENABLED = config('CAPITAL_AUTO_APPROVE_ENABLED', default=False, cast=bool)
+# Enrichment adapters: 'fake' (deterministic, recorded fixtures; tests and
+# local dev), 'null' (honest no-data) or 'live'. 'live' CIPC is not built
+# yet (no contract); 'live' bureau uses core.integrations.bureau_adapter and
+# its CREDIT_BUREAU_* settings. Never point tests at live.
+CAPITAL_CIPC_ADAPTER = config('CAPITAL_CIPC_ADAPTER', default='null')
+CAPITAL_BUREAU_ADAPTER = config('CAPITAL_BUREAU_ADAPTER', default='null')
+# How long a debtor / transporter score is reused before it is recomputed.
+CAPITAL_SCORE_TTL_HOURS = config('CAPITAL_SCORE_TTL_HOURS', default=24, cast=int)
+# LLM use in Fast Pay is limited to (1) extracting fields from POD / invoice
+# documents and (2) rewording a decision's reason codes in plain language.
+# It never decides. Off by default; with it off (or over budget, or on any
+# error) the deterministic template text is used.
+CAPITAL_AI_ENABLED = config('CAPITAL_AI_ENABLED', default=False, cast=bool)
+CAPITAL_AI_MODEL = config('CAPITAL_AI_MODEL', default='claude-haiku-4-5')
+CAPITAL_AI_DAILY_BUDGET_USD = config('CAPITAL_AI_DAILY_BUDGET_USD', default=2, cast=float)
+CAPITAL_AI_TIMEOUT_SECONDS = config('CAPITAL_AI_TIMEOUT_SECONDS', default=8, cast=int)
+# Where monthly data-room packs are written (default storage, under this prefix).
+CAPITAL_DATA_ROOM_PREFIX = config('CAPITAL_DATA_ROOM_PREFIX', default='capital/data-room')
+
 from celery.schedules import crontab  # noqa: E402
 from datetime import timedelta  # noqa: E402
 # In SUBSCRIPTION_TEST_MODE, run every billing sweep every minute instead of
@@ -688,9 +752,54 @@ CELERY_BEAT_SCHEDULE = {
     # for a superuser to approve. Monthly, 05:30 SAST on the 2nd: the
     # figures change about once a year (1 March), so this is plenty. A few
     # US cents a run, capped by AI_PRICE_ANALYSIS_GLOBAL_DAILY_BUDGET_USD.
+    # Accounting integrations (core.accounting). Webhooks are the fast path;
+    # the hourly poll catches anything a webhook missed. The sweeper retries
+    # failed pushes when their backoff / Retry-After has passed and processes
+    # stored webhook events. Reconciliation runs after midnight, off-peak for
+    # Xero's per-tenant daily limit (resets on a rolling 24 h window).
+    'accounting-retry-due': {
+        'task': 'core.tasks.accounting_retry_due',
+        'schedule': timedelta(minutes=2),
+    },
+    'accounting-poll-payments': {
+        'task': 'core.tasks.accounting_poll_payments',
+        'schedule': crontab(minute='17'),
+    },
+    'accounting-reconcile-all': {
+        'task': 'core.tasks.accounting_reconcile_all',
+        'schedule': crontab(hour='2', minute='30'),
+    },
     'refresh-verified-rates': {
         'task': 'core.tasks.refresh_verified_rates',
         'schedule': crontab(day_of_month='2', hour='5', minute='30'),
+    },
+    # Fast Pay (Capital) book automation (core.capital.jobs). Each is a fast
+    # no-op until a funder has lines or ledger rows.
+    # Release queued advances into freed headroom; expire stale queue items.
+    'capital-process-queue': {
+        'task': 'core.tasks.capital_process_queue',
+        'schedule': crontab(minute='*/15'),
+    },
+    # Limits, concentration, risk index, reconciliation, early warnings,
+    # overdue / paid-awaiting-settlement alerts and the daily book snapshot.
+    'capital-monitor': {
+        'task': 'core.tasks.capital_monitor',
+        'schedule': crontab(minute='20'),
+    },
+    # Rescore debtors with exposure and transporters with a line.
+    'capital-nightly-rescore': {
+        'task': 'core.tasks.capital_nightly_rescore',
+        'schedule': crontab(hour='2', minute='30'),
+    },
+    # Ledger vs cached facility / advance balances; RED alert on any break.
+    'capital-reconcile': {
+        'task': 'core.tasks.capital_reconcile',
+        'schedule': crontab(hour='2', minute='50'),
+    },
+    # Previous month's funder data room (skipped when it already exists).
+    'capital-monthly-data-room': {
+        'task': 'core.tasks.capital_monthly_data_room',
+        'schedule': crontab(day_of_month='1', hour='6', minute='30'),
     },
 }
 

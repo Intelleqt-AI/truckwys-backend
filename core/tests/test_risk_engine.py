@@ -12,6 +12,18 @@ from core.services.risk_engine import RiskEngine, RiskScoreResult
 User = get_user_model()
 
 
+
+def _pay_as_of(invoice, paid_at):
+    """A paid history invoice: PAID is derived from a payment by the ledger
+    (foundation), so record the payment on the day it was paid."""
+    from core.services.ledger import recalculate_invoice
+    Payment.objects.create(
+        payment_number=f'PAY-{invoice.invoice_number}', invoice=invoice, customer=invoice.customer,
+        company=invoice.company, amount=invoice.total_amount, payment_date=paid_at.date(),
+        payment_method='EFT',
+    )
+    recalculate_invoice(invoice)
+
 class RiskEngineTestCase(TestCase):
     """Test suite for Risk Engine calculations."""
 
@@ -178,9 +190,9 @@ class RiskEngineTestCase(TestCase):
                 subtotal=Decimal('5000.00'),
                 vat_amount=Decimal('750.00'),
                 total_amount=Decimal('5750.00'),
-                status='PAID',
-                paid_at=timezone.now() - timedelta(days=31 + i),
+                status='SENT',
             )
+            _pay_as_of(past_invoice, timezone.now() - timedelta(days=31 + i))
 
         engine = RiskEngine(self.invoice, self.facility)
         result = engine.calculate_risk_score()
@@ -204,10 +216,10 @@ class RiskEngineTestCase(TestCase):
                 subtotal=Decimal('5000.00'),
                 vat_amount=Decimal('750.00'),
                 total_amount=Decimal('5750.00'),
-                status='PAID',
-                # 8 on time, 2 late
-                paid_at=timezone.now() - timedelta(days=31 + i if i < 8 else 25 + i),
+                status='SENT',
             )
+            # 8 on time, 2 late
+            _pay_as_of(past_invoice, timezone.now() - timedelta(days=31 + i if i < 8 else 25 + i))
 
         # Lower credit score
         self.customer.credit_score = 75
@@ -233,10 +245,10 @@ class RiskEngineTestCase(TestCase):
                 subtotal=Decimal('5000.00'),
                 vat_amount=Decimal('750.00'),
                 total_amount=Decimal('5750.00'),
-                status='PAID',
-                # 6 on time, 4 late
-                paid_at=timezone.now() - timedelta(days=31 + i if i < 6 else 25 + i),
+                status='SENT',
             )
+            # 6 on time, 4 late
+            _pay_as_of(past_invoice, timezone.now() - timedelta(days=31 + i if i < 6 else 25 + i))
 
         # Lower credit score and use PHOTO POD
         self.customer.credit_score = 65
@@ -266,10 +278,10 @@ class RiskEngineTestCase(TestCase):
                 subtotal=Decimal('5000.00'),
                 vat_amount=Decimal('750.00'),
                 total_amount=Decimal('5750.00'),
-                status='PAID',
-                # 4 on time, 6 late
-                paid_at=timezone.now() - timedelta(days=31 + i if i < 4 else 25 + i),
+                status='SENT',
             )
+            # 4 on time, 6 late
+            _pay_as_of(past_invoice, timezone.now() - timedelta(days=31 + i if i < 4 else 25 + i))
 
         # Lower credit score, manual POD, short relationship
         self.customer.credit_score = 50
@@ -358,9 +370,9 @@ class RiskEngineTestCase(TestCase):
                 subtotal=Decimal('5000.00'),
                 vat_amount=Decimal('750.00'),
                 total_amount=Decimal('5750.00'),
-                status='PAID',
-                paid_at=timezone.now() - timedelta(days=31 + i),
+                status='SENT',
             )
+            _pay_as_of(past_invoice, timezone.now() - timedelta(days=31 + i))
 
         engine = RiskEngine(self.invoice, self.facility)
         result = engine.calculate_risk_score()
@@ -386,9 +398,9 @@ class RiskEngineTestCase(TestCase):
                 subtotal=Decimal('5000.00'),
                 vat_amount=Decimal('750.00'),
                 total_amount=Decimal('5750.00'),
-                status='PAID',
-                paid_at=timezone.now() - timedelta(days=31 + i),
+                status='SENT',
             )
+            _pay_as_of(past_invoice, timezone.now() - timedelta(days=31 + i))
 
         # Fresh invoice (today)
         self.invoice.issue_date = timezone.now().date()
@@ -414,9 +426,9 @@ class RiskEngineTestCase(TestCase):
                 subtotal=Decimal('5000.00'),
                 vat_amount=Decimal('750.00'),
                 total_amount=Decimal('5750.00'),
-                status='PAID',
-                paid_at=timezone.now() - timedelta(days=61 + i),
+                status='SENT',
             )
+            _pay_as_of(past_invoice, timezone.now() - timedelta(days=61 + i))
 
         # Aged invoice (50 days old)
         self.invoice.issue_date = timezone.now().date() - timedelta(days=50)
@@ -486,9 +498,9 @@ class RiskEngineTestCase(TestCase):
                 subtotal=Decimal('5000.00'),
                 vat_amount=Decimal('750.00'),
                 total_amount=Decimal('5750.00'),
-                status='PAID',
-                paid_at=timezone.now() - timedelta(days=61 + i),
+                status='SENT',
             )
+            _pay_as_of(past_invoice, timezone.now() - timedelta(days=61 + i))
 
         # Excellent credit score
         self.customer.credit_score = 100
@@ -521,9 +533,9 @@ class RiskEngineTestCase(TestCase):
                 subtotal=Decimal('5000.00'),
                 vat_amount=Decimal('750.00'),
                 total_amount=Decimal('5750.00'),
-                status='PAID',
-                paid_at=timezone.now() - timedelta(days=31 + i),
+                status='SENT',
             )
+            _pay_as_of(past_invoice, timezone.now() - timedelta(days=31 + i))
 
         # Test low utilization (<20%) - should reduce fee
         self.facility.outstanding = Decimal('100000.00')  # 10% utilization

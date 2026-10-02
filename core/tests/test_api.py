@@ -195,10 +195,10 @@ class APIIntegrationTestCase(TestCase):
             reference_number='REF-001',
         )
 
-        # Update invoice status manually (in real app this would be via signal or API)
-        invoice.status = 'PAID'
-        invoice.paid_at = timezone.now()
-        invoice.save()
+        # Status is derived from the payment rows by the ledger (foundation);
+        # it can no longer be set by hand.
+        from core.services.ledger import recalculate_invoice
+        recalculate_invoice(invoice)
 
         # Verify payment recorded
         self.assertIsNotNone(payment.id)
@@ -295,7 +295,7 @@ class APIIntegrationTestCase(TestCase):
             subtotal=Decimal('5000.00'),
             vat_amount=Decimal('750.00'),
             total_amount=Decimal('5750.00'),
-            status='PAID',
+            status='SENT',
         )
 
         Payment.objects.create(
@@ -307,6 +307,9 @@ class APIIntegrationTestCase(TestCase):
             payment_date=timezone.now().date(),
             reference_number='REF-DASH-001',
         )
+        # PAID comes from the payment via the ledger, not a hand-set status.
+        from core.services.ledger import recalculate_invoice
+        recalculate_invoice(invoice1)
 
         invoice2 = Invoice.objects.create(
             customer=self.customer,

@@ -1,0 +1,62 @@
+{
+  "Id": "e3f5b7d9-1a2c-4e6f-8b0d-2c4e6a8b0d1f",
+  "Status": "OK",
+  "ProviderName": "TruckWys",
+  "DateTimeUTC": "/Date(1753002903517+0000)/",
+  "Prepayments": [
+    {
+      "Type": "RECEIVE-PREPAYMENT",
+      "PrepaymentID": "b1a2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+      "ID": "b1a2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+      "Reference": "Deposit PO-889",
+      "Contact": {
+        "ContactID": "9b9ba9e5-e907-4b4e-8210-54d82b0aa479",
+        "Name": "Acme Mining (Pty) Ltd"
+      },
+      "DateString": "2025-06-28T00:00:00",
+      "Date": "/Date(1751068800000+0000)/",
+      "Status": "PAID",
+      "LineAmountTypes": "NoTax",
+      "LineItems": [
+        {
+          "Description": "Deposit PO-889",
+          "UnitAmount": 850.0,
+          "TaxType": "NONE",
+          "TaxAmount": 0.0,
+          "LineAmount": 850.0,
+          "AccountCode": "835",
+          "Tracking": [],
+          "Quantity": 1.0,
+          "LineItemID": "c3d4e5f6-0000-4000-8000-000000000004"
+        }
+      ],
+      "SubTotal": 850.0,
+      "TotalTax": 0.0,
+      "Total": 850.0,
+      "UpdatedDateUTC": "/Date(1752565512900+0000)/",
+      "CurrencyCode": "ZAR",
+      "CurrencyRate": 1.0,
+      "RemainingCredit": 0.0,
+      "Allocations": [
+        {
+          "AllocationID": "0b1f7a5f-5e6f-4a7b-c28d-9e0f1a2b3c4d",
+          "Amount": 850.0,
+          "Date": "/Date(1752537600000+0000)/",
+          "Invoice": {
+            "InvoiceID": "243216c5-369e-4056-ac67-05388f86dc81",
+            "InvoiceNumber": "INV-0042",
+            "Payments": [],
+            "CreditNotes": [],
+            "Prepayments": [],
+            "Overpayments": [],
+            "HasErrors": false,
+            "IsDiscounted": false,
+            "LineItems": []
+          }
+        }
+      ],
+      "Payments": [],
+      "HasAttachments": false
+    }
+  ]
+}

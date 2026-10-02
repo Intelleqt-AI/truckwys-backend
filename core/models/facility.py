@@ -1,6 +1,7 @@
 """Capital Facility model for managing credit facilities."""
 
 from django.db import models
+from django.db.models import F, Q
 from django.core.validators import MinValueValidator
 from decimal import Decimal
 from .company import Company
@@ -29,12 +30,24 @@ class Facility(models.Model):
         help_text='Company that owns this facility'
     )
 
+    # Fast Pay (0139): a facility is now a transporter's *line* under a
+    # funder's pot. Null only for facilities created outside the capital
+    # flow (old tests, admin); such a line has no funder-level limits.
+    funder = models.ForeignKey(
+        'Funder',
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name='lines',
+        help_text='Funder whose pot this transporter line draws on'
+    )
+
     # Facility limits
     limit = models.DecimalField(
         max_digits=12,
         decimal_places=2,
         validators=[MinValueValidator(Decimal('0.00'))],
-        help_text='Total facility limit in ZAR'
+        help_text='Transporter line limit in ZAR'
     )
     outstanding = models.DecimalField(
         max_digits=12,
@@ -42,6 +55,17 @@ class Facility(models.Model):
         default=Decimal('0.00'),
         validators=[MinValueValidator(Decimal('0.00'))],
         help_text='Current outstanding advances in ZAR'
+    )
+    # Capacity held by advances that are requested/approved but not yet paid
+    # out. Without this, any number of approvals could each pass the
+    # "available" check and then all be disbursed beyond the limit. Only
+    # core.services.facility_ledger writes outstanding/reserved.
+    reserved = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=Decimal('0.00'),
+        validators=[MinValueValidator(Decimal('0.00'))],
+        help_text='Capacity reserved by requested/approved (undisbursed) advances in ZAR'
     )
 
     # Status
@@ -65,14 +89,25 @@ class Facility(models.Model):
             models.Index(fields=['company', 'status']),
             models.Index(fields=['-created_at']),
         ]
+        # Last line of defence under the ledger's conditional updates: even a
+        # buggy caller or a raw .update() cannot over-commit a facility.
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(outstanding__gte=0), name='facility_outstanding_non_negative'),
+            models.CheckConstraint(
+                condition=Q(reserved__gte=0), name='facility_reserved_non_negative'),
+            models.CheckConstraint(
+                condition=Q(limit__gte=F('outstanding') + F('reserved')),
+                name='facility_committed_within_limit'),
+        ]
 
     def __str__(self) -> str:
         return f"Facility {self.id} - {self.company.company_name} (ZA{format_zar(self.limit)})"
 
     @property
     def available(self) -> Decimal:
-        """Calculate available facility amount."""
-        return self.limit - self.outstanding
+        """Capacity not yet paid out or held by a pending advance."""
+        return self.limit - self.outstanding - self.reserved
 
     @property
     def utilization_percent(self) -> Decimal:
@@ -85,7 +120,7 @@ class Facility(models.Model):
         if self.limit == 0:
             return Decimal('0.00')
 
-        utilization = (self.outstanding / self.limit) * Decimal('100')
+        utilization = ((self.outstanding + self.reserved) / self.limit) * Decimal('100')
         return round(utilization, 2)
 
     @property
@@ -120,48 +155,26 @@ class Facility(models.Model):
         return True, ""
 
     def reserve_amount(self, amount: Decimal) -> None:
+        """Add a disbursed amount to outstanding (locked, conditional update).
+
+        Kept for callers outside the advance lifecycle; advances go through
+        core.services.facility_ledger directly.
         """
-        Reserve an amount from the facility.
-
-        Args:
-            amount: Amount to reserve
-
-        Raises:
-            ValueError: If amount cannot be reserved
-        """
-        can_reserve, reason = self.can_advance(amount)
-        if not can_reserve:
-            raise ValueError(f"Cannot reserve amount: {reason}")
-
-        self.outstanding += amount
-        self.save()
+        from core.services.facility_ledger import add_outstanding
+        add_outstanding(self, amount)
 
     def release_amount(self, amount: Decimal) -> None:
-        """
-        Release a reserved amount back to the facility.
-
-        Args:
-            amount: Amount to release
-
-        Raises:
-            ValueError: If amount is invalid
-        """
-        if amount <= 0:
-            raise ValueError("Amount must be positive")
-
-        if amount > self.outstanding:
-            raise ValueError(f"Cannot release more than outstanding (ZA{format_zar(self.outstanding)})")
-
-        self.outstanding -= amount
-        self.save()
+        """Remove a repaid amount from outstanding (locked, conditional update)."""
+        from core.services.facility_ledger import release_outstanding
+        release_outstanding(self, amount)
 
     def clean(self) -> None:
         """Validate model fields."""
         from django.core.exceptions import ValidationError
 
-        if self.outstanding > self.limit:
+        if self.outstanding + self.reserved > self.limit:
             raise ValidationError({
-                'outstanding': 'Outstanding amount cannot exceed facility limit'
+                'limit': 'Facility limit cannot be below outstanding plus reserved'
             })
 
     def save(self, *args, **kwargs) -> None:

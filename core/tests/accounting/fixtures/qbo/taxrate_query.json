@@ -1,0 +1,234 @@
+{
+  "QueryResponse": {
+    "TaxRate": [
+      {
+        "Name": "15.0% S (sales)",
+        "Description": "15.0% S (sales)",
+        "Active": true,
+        "RateValue": 15,
+        "AgencyRef": {
+          "value": "1"
+        },
+        "SpecialTaxType": "NONE",
+        "DisplayType": "ReadOnly",
+        "EffectiveTaxRate": [
+          {
+            "RateValue": 15,
+            "EffectiveDate": "2018-04-01T00:00:00-07:00"
+          }
+        ],
+        "domain": "QBO",
+        "sparse": false,
+        "Id": "1",
+        "SyncToken": "0",
+        "MetaData": {
+          "CreateTime": "2019-03-01T02:12:45-07:00",
+          "LastUpdatedTime": "2019-03-01T02:12:45-07:00"
+        }
+      },
+      {
+        "Name": "15.0% S (purchases)",
+        "Description": "15.0% S (purchases)",
+        "Active": true,
+        "RateValue": 15,
+        "AgencyRef": {
+          "value": "1"
+        },
+        "SpecialTaxType": "NONE",
+        "DisplayType": "ReadOnly",
+        "EffectiveTaxRate": [
+          {
+            "RateValue": 15,
+            "EffectiveDate": "2018-04-01T00:00:00-07:00"
+          }
+        ],
+        "domain": "QBO",
+        "sparse": false,
+        "Id": "2",
+        "SyncToken": "0",
+        "MetaData": {
+          "CreateTime": "2019-03-01T02:12:45-07:00",
+          "LastUpdatedTime": "2019-03-01T02:12:45-07:00"
+        }
+      },
+      {
+        "Name": "0.0% Z (sales)",
+        "Description": "0.0% Z (sales)",
+        "Active": true,
+        "RateValue": 0,
+        "AgencyRef": {
+          "value": "1"
+        },
+        "SpecialTaxType": "NONE",
+        "DisplayType": "ReadOnly",
+        "EffectiveTaxRate": [
+          {
+            "RateValue": 0,
+            "EffectiveDate": "2018-04-01T00:00:00-07:00"
+          }
+        ],
+        "domain": "QBO",
+        "sparse": false,
+        "Id": "3",
+        "SyncToken": "0",
+        "MetaData": {
+          "CreateTime": "2019-03-01T02:12:45-07:00",
+          "LastUpdatedTime": "2019-03-01T02:12:45-07:00"
+        }
+      },
+      {
+        "Name": "0.0% Z (purchases)",
+        "Description": "0.0% Z (purchases)",
+        "Active": true,
+        "RateValue": 0,
+        "AgencyRef": {
+          "value": "1"
+        },
+        "SpecialTaxType": "NONE",
+        "DisplayType": "ReadOnly",
+        "EffectiveTaxRate": [
+          {
+            "RateValue": 0,
+            "EffectiveDate": "2018-04-01T00:00:00-07:00"
+          }
+        ],
+        "domain": "QBO",
+        "sparse": false,
+        "Id": "4",
+        "SyncToken": "0",
+        "MetaData": {
+          "CreateTime": "2019-03-01T02:12:45-07:00",
+          "LastUpdatedTime": "2019-03-01T02:12:45-07:00"
+        }
+      },
+      {
+        "Name": "Exempt (sales)",
+        "Description": "Exempt (sales)",
+        "Active": true,
+        "RateValue": 0,
+        "AgencyRef": {
+          "value": "1"
+        },
+        "SpecialTaxType": "NONE",
+        "DisplayType": "ReadOnly",
+        "EffectiveTaxRate": [
+          {
+            "RateValue": 0,
+            "EffectiveDate": "2018-04-01T00:00:00-07:00"
+          }
+        ],
+        "domain": "QBO",
+        "sparse": false,
+        "Id": "5",
+        "SyncToken": "0",
+        "MetaData": {
+          "CreateTime": "2019-03-01T02:12:45-07:00",
+          "LastUpdatedTime": "2019-03-01T02:12:45-07:00"
+        }
+      },
+      {
+        "Name": "Exempt (purchases)",
+        "Description": "Exempt (purchases)",
+        "Active": true,
+        "RateValue": 0,
+        "AgencyRef": {
+          "value": "1"
+        },
+        "SpecialTaxType": "NONE",
+        "DisplayType": "ReadOnly",
+        "EffectiveTaxRate": [
+          {
+            "RateValue": 0,
+            "EffectiveDate": "2018-04-01T00:00:00-07:00"
+          }
+        ],
+        "domain": "QBO",
+        "sparse": false,
+        "Id": "6",
+        "SyncToken": "0",
+        "MetaData": {
+          "CreateTime": "2019-03-01T02:12:45-07:00",
+          "LastUpdatedTime": "2019-03-01T02:12:45-07:00"
+        }
+      },
+      {
+        "Name": "15.0% CG (capital goods)",
+        "Description": "15.0% CG (capital goods)",
+        "Active": true,
+        "RateValue": 15,
+        "AgencyRef": {
+          "value": "1"
+        },
+        "SpecialTaxType": "NONE",
+        "DisplayType": "ReadOnly",
+        "EffectiveTaxRate": [
+          {
+            "RateValue": 15,
+            "EffectiveDate": "2018-04-01T00:00:00-07:00"
+          }
+        ],
+        "domain": "QBO",
+        "sparse": false,
+        "Id": "9",
+        "SyncToken": "0",
+        "MetaData": {
+          "CreateTime": "2019-03-01T02:12:45-07:00",
+          "LastUpdatedTime": "2019-03-01T02:12:45-07:00"
+        }
+      },
+      {
+        "Name": "Group part A",
+        "Description": "Group part A",
+        "Active": true,
+        "RateValue": 10,
+        "AgencyRef": {
+          "value": "1"
+        },
+        "SpecialTaxType": "NONE",
+        "DisplayType": "ReadOnly",
+        "EffectiveTaxRate": [
+          {
+            "RateValue": 10,
+            "EffectiveDate": "2018-04-01T00:00:00-07:00"
+          }
+        ],
+        "domain": "QBO",
+        "sparse": false,
+        "Id": "10",
+        "SyncToken": "0",
+        "MetaData": {
+          "CreateTime": "2019-03-01T02:12:45-07:00",
+          "LastUpdatedTime": "2019-03-01T02:12:45-07:00"
+        }
+      },
+      {
+        "Name": "Group part B",
+        "Description": "Group part B",
+        "Active": true,
+        "RateValue": 5,
+        "AgencyRef": {
+          "value": "1"
+        },
+        "SpecialTaxType": "NONE",
+        "DisplayType": "ReadOnly",
+        "EffectiveTaxRate": [
+          {
+            "RateValue": 5,
+            "EffectiveDate": "2018-04-01T00:00:00-07:00"
+          }
+        ],
+        "domain": "QBO",
+        "sparse": false,
+        "Id": "11",
+        "SyncToken": "0",
+        "MetaData": {
+          "CreateTime": "2019-03-01T02:12:45-07:00",
+          "LastUpdatedTime": "2019-03-01T02:12:45-07:00"
+        }
+      }
+    ],
+    "startPosition": 1,
+    "maxResults": 9
+  },
+  "time": "2026-09-30T08:14:31.112-07:00"
+}

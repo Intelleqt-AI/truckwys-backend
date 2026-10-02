@@ -1,0 +1,8 @@
+{
+  "_comment": "Recorded FAKE commercial bureau results for tests and demos. Keyed by normalised CIPC number. score is normalised 0-100 (higher = better). Fictional companies; never real data.",
+  "2004/111111/07": {"score": 78, "judgments": 0, "rating": "B1", "risk_class": "LOW"},
+  "2011/222222/07": {"score": 31, "judgments": 1, "rating": "D2", "risk_class": "HIGH"},
+  "2009/333333/07": {"score": 12, "judgments": 4, "rating": "E", "risk_class": "VERY_HIGH"},
+  "2025/444444/07": {"score": 45, "judgments": 2, "rating": "C3", "risk_class": "MEDIUM"},
+  "2015/555555/07": {"score": null, "judgments": 0, "rating": "", "risk_class": ""}
+}

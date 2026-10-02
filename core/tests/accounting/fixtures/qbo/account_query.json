@@ -1,0 +1,105 @@
+{
+  "QueryResponse": {
+    "Account": [
+      {
+        "Name": "FNB Business Cheque",
+        "SubAccount": false,
+        "FullyQualifiedName": "FNB Business Cheque",
+        "Active": true,
+        "Classification": "Asset",
+        "AccountType": "Bank",
+        "AccountSubType": "Checking",
+        "AcctNum": "1000",
+        "CurrentBalance": 0,
+        "CurrentBalanceWithSubAccounts": 0,
+        "CurrencyRef": {
+          "value": "ZAR",
+          "name": "South African Rand"
+        },
+        "domain": "QBO",
+        "sparse": false,
+        "Id": "35",
+        "SyncToken": "0",
+        "MetaData": {
+          "CreateTime": "2019-03-01T02:13:00-07:00",
+          "LastUpdatedTime": "2019-03-01T02:13:00-07:00"
+        }
+      },
+      {
+        "Name": "Accounts Receivable (A/R)",
+        "SubAccount": false,
+        "FullyQualifiedName": "Accounts Receivable (A/R)",
+        "Active": true,
+        "Classification": "Asset",
+        "AccountType": "Accounts Receivable",
+        "AccountSubType": "AccountsReceivable",
+        "AcctNum": "1100",
+        "CurrentBalance": 0,
+        "CurrentBalanceWithSubAccounts": 0,
+        "CurrencyRef": {
+          "value": "ZAR",
+          "name": "South African Rand"
+        },
+        "domain": "QBO",
+        "sparse": false,
+        "Id": "84",
+        "SyncToken": "0",
+        "MetaData": {
+          "CreateTime": "2019-03-01T02:13:00-07:00",
+          "LastUpdatedTime": "2019-03-01T02:13:00-07:00"
+        }
+      },
+      {
+        "Name": "Freight Income",
+        "SubAccount": false,
+        "FullyQualifiedName": "Freight Income",
+        "Active": true,
+        "Classification": "Revenue",
+        "AccountType": "Income",
+        "AccountSubType": "ServiceFeeIncome",
+        "AcctNum": "",
+        "CurrentBalance": 0,
+        "CurrentBalanceWithSubAccounts": 0,
+        "CurrencyRef": {
+          "value": "ZAR",
+          "name": "South African Rand"
+        },
+        "domain": "QBO",
+        "sparse": false,
+        "Id": "79",
+        "SyncToken": "0",
+        "MetaData": {
+          "CreateTime": "2019-03-01T02:13:00-07:00",
+          "LastUpdatedTime": "2019-03-01T02:13:00-07:00"
+        }
+      },
+      {
+        "Name": "Tolls",
+        "SubAccount": false,
+        "FullyQualifiedName": "Tolls",
+        "Active": true,
+        "Classification": "Expense",
+        "AccountType": "Cost of Goods Sold",
+        "AccountSubType": "SuppliesMaterialsCogs",
+        "AcctNum": "5010",
+        "CurrentBalance": 0,
+        "CurrentBalanceWithSubAccounts": 0,
+        "CurrencyRef": {
+          "value": "ZAR",
+          "name": "South African Rand"
+        },
+        "domain": "QBO",
+        "sparse": false,
+        "Id": "80",
+        "SyncToken": "0",
+        "MetaData": {
+          "CreateTime": "2019-03-01T02:13:00-07:00",
+          "LastUpdatedTime": "2019-03-01T02:13:00-07:00"
+        }
+      }
+    ],
+    "startPosition": 1,
+    "maxResults": 4
+  },
+  "time": "2026-09-30T08:14:31.112-07:00"
+}

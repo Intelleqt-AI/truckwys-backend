@@ -1,0 +1,29 @@
+{
+  "eventNotifications": [
+    {
+      "realmId": "9341455130166501",
+      "dataChangeEvent": {
+        "entities": [
+          {
+            "name": "Payment",
+            "id": "201",
+            "operation": "Create",
+            "lastUpdated": "2026-09-12T15:00:01.000Z"
+          },
+          {
+            "name": "Invoice",
+            "id": "130",
+            "operation": "Update",
+            "lastUpdated": "2026-09-12T15:00:01.000Z"
+          },
+          {
+            "name": "CreditMemo",
+            "id": "77",
+            "operation": "Delete",
+            "lastUpdated": "2026-09-12T15:02:00.000Z"
+          }
+        ]
+      }
+    }
+  ]
+}

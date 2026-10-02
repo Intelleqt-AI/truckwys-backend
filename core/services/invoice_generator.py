@@ -17,7 +17,6 @@ from core.models import Invoice, Trip, Customer
 class InvoiceGenerator:
     """Service for generating invoices from completed trips."""
 
-    VAT_RATE = Decimal('0.15')  # 15% VAT for South Africa
 
     def __init__(self, trip: Trip):
         """
@@ -66,49 +65,44 @@ class InvoiceGenerator:
             include_driver_premium=include_driver_premium,
         )
 
-        # Calculate subtotal from line items
-        subtotal = sum(Decimal(str(item['amount'])) for item in line_items)
-        subtotal = subtotal.quantize(Decimal('0.01'))
-
-        # Calculate VAT
-        vat_amount = (subtotal * self.VAT_RATE).quantize(Decimal('0.01'))
-
-        # Calculate total
-        total_amount = subtotal + vat_amount
+        # Totals come from typed lines (tax per line, discount before VAT):
+        # core.services.invoice_lines is the only place they are computed.
+        from core.services.invoice_lines import apply_lines, default_tax_code, terms_days_for
+        company = self.trip.load.company
+        code = default_tax_code(company)
+        raw_lines = [{
+            'description': item['description'],
+            'quantity': str(item.get('quantity') or 1),
+            'unit_price': str(item.get('unit_price', item.get('amount'))),
+            'tax_code': code,
+            'revenue_type': item.get('revenue_type', 'FREIGHT'),
+            'load': self.trip.load_id if i == 0 else None,
+        } for i, item in enumerate(line_items)]
 
         # Get payment terms
         payment_terms = self.customer.payment_terms_default or 'NET30'
         due_date = self._calculate_due_date(payment_terms)
 
-        # Generate invoice number
-        invoice_number = self._generate_invoice_number()
-
-        # Check early pay eligibility
-        early_pay_eligible = self._check_early_pay_eligibility(total_amount)
-
         # Create invoice — stamped with the load's company: without it the
         # invoice lands with company=NULL and is invisible to every tenant-scoped
         # surface (invoice list, stats, copilot), a silent black hole.
         invoice = Invoice(
-            company=self.trip.load.company,
-            invoice_number=invoice_number,
+            company=company,
+            invoice_number=self._generate_invoice_number(),
             customer=self.customer,
             load=self.trip.load,
             trip=self.trip,
             issue_date=date.today(),
             due_date=due_date,
             payment_terms=payment_terms,
-            subtotal=subtotal,
-            vat_amount=vat_amount,
-            tax_rate=Decimal('15.00'),
-            tax_amount=vat_amount,  # Backward compatibility
-            total_amount=total_amount,
-            balance=total_amount,
+            terms_days=terms_days_for(payment_terms),
+            subtotal=Decimal('0'), vat_amount=Decimal('0'), total_amount=Decimal('0'),
+            balance=Decimal('0'),
             status='DRAFT',
-            early_pay_eligible=early_pay_eligible,
-            line_items=line_items,
         )
-
+        apply_lines(invoice, raw_lines, save=False)
+        invoice._pending_lines = raw_lines
+        invoice.early_pay_eligible = self._check_early_pay_eligibility(invoice.total_amount)
         return invoice
 
     def _build_line_items(
@@ -131,7 +125,7 @@ class InvoiceGenerator:
             base_rate = self.trip.load.rate
 
         line_items.append({
-            'description': f'Freight Charge - {self.trip.origin} to {self.trip.destination}',
+            'description': f'Freight Charge - {self.trip.origin} to {self.trip.destination}', 'revenue_type': 'FREIGHT',
             'quantity': 1,
             'unit_price': float(base_rate),
             'amount': float(base_rate),
@@ -144,7 +138,7 @@ class InvoiceGenerator:
                 rate_per_km = Decimal('10.00')
                 extra_distance_charge = extra_km * rate_per_km
                 line_items.append({
-                    'description': f'Extra Distance ({extra_km} km)',
+                    'description': f'Extra Distance ({extra_km} km)', 'revenue_type': 'EXTRA_KM',
                     'quantity': float(extra_km),
                     'unit_price': float(rate_per_km),
                     'amount': float(extra_distance_charge),
@@ -154,14 +148,14 @@ class InvoiceGenerator:
         if fuel_surcharge_rate and self.trip.distance_km:
             fuel_surcharge = (self.trip.distance_km * fuel_surcharge_rate).quantize(Decimal('0.01'))
             line_items.append({
-                'description': f'Fuel Surcharge ({self.trip.distance_km} km)',
+                'description': f'Fuel Surcharge ({self.trip.distance_km} km)', 'revenue_type': 'FUEL_SURCHARGE',
                 'quantity': float(self.trip.distance_km),
                 'unit_price': float(fuel_surcharge_rate),
                 'amount': float(fuel_surcharge),
             })
         elif self.trip.load.fuel_surcharge:
             line_items.append({
-                'description': 'Fuel Surcharge',
+                'description': 'Fuel Surcharge', 'revenue_type': 'FUEL_SURCHARGE',
                 'quantity': 1,
                 'unit_price': float(self.trip.load.fuel_surcharge),
                 'amount': float(self.trip.load.fuel_surcharge),
@@ -170,7 +164,7 @@ class InvoiceGenerator:
         # 4. Toll costs (actual)
         if include_tolls and self.trip.actual_toll_cost:
             line_items.append({
-                'description': 'Toll Charges',
+                'description': 'Toll Charges', 'revenue_type': 'TOLLS',
                 'quantity': 1,
                 'unit_price': float(self.trip.actual_toll_cost),
                 'amount': float(self.trip.actual_toll_cost),
@@ -180,7 +174,7 @@ class InvoiceGenerator:
         if include_driver_premium:
             driver_premium = (base_rate * Decimal('0.10')).quantize(Decimal('0.01'))
             line_items.append({
-                'description': 'Driver Premium (Special Handling)',
+                'description': 'Driver Premium (Special Handling)', 'revenue_type': 'OTHER',
                 'quantity': 1,
                 'unit_price': float(driver_premium),
                 'amount': float(driver_premium),
@@ -273,26 +267,9 @@ class InvoiceGenerator:
         return date.today() + timedelta(days=days)
 
     def _generate_invoice_number(self) -> str:
-        """
-        Generate unique invoice number.
-
-        Format: INV-YYYYMMDD-XXXXX
-
-        Returns:
-            str: Invoice number
-        """
-        today = date.today()
-        prefix = f"INV-{today.strftime('%Y%m%d')}"
-
-        # Get count of invoices created today
-        count = Invoice.objects.filter(
-            invoice_number__startswith=prefix
-        ).count()
-
-        # Generate sequential number
-        sequence = str(count + 1).zfill(5)
-
-        return f"{prefix}-{sequence}"
+        """Provisional draft number; the sequential one is allocated on issue."""
+        from core.services.numbering import provisional_number
+        return provisional_number()
 
     def _check_early_pay_eligibility(self, total_amount: Decimal) -> bool:
         """
@@ -315,7 +292,7 @@ class InvoiceGenerator:
             return False
 
         # Check customer credit score
-        if not hasattr(self.customer, 'credit_score') or self.customer.credit_score < 3:
+        if (getattr(self.customer, 'credit_score', None) or 0) < 3:
             return False
 
         # Check for overdue invoices
@@ -340,7 +317,8 @@ class InvoiceGenerator:
         Returns:
             Invoice: Created and saved invoice
         """
+        from core.services.invoice_lines import apply_lines
         generator = cls(trip)
         invoice = generator.generate_invoice(**kwargs)
-        invoice.save()
+        apply_lines(invoice, invoice._pending_lines)
         return invoice

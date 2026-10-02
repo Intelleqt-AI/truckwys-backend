@@ -38,6 +38,16 @@ TRACKED_TASKS = {
     'sweep_stale_activity_logs': timedelta(hours=36),
     # Monthly (2nd, 05:30 SAST): a missed month plus a few days' slack.
     'refresh_verified_rates': timedelta(days=35),
+    # Fast Pay (Capital). The monthly data room is tracked by track_task_run but
+    # deliberately not listed: it would read 'never run' for up to a month
+    # after deploy and email the superusers daily.
+    'capital_process_queue': timedelta(hours=2),
+    'capital_monitor': timedelta(hours=3),
+    'capital_nightly_rescore': timedelta(hours=36),
+    'capital_reconcile': timedelta(hours=36),
+    # Accounting integrations: hourly payment catch-up, nightly reconciliation.
+    'accounting_poll_payments': timedelta(hours=3),
+    'accounting_reconcile_all': timedelta(hours=36),
 }
 
 
