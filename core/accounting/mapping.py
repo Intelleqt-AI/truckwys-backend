@@ -24,6 +24,9 @@ EXPENSE_CATEGORY_CHOICES = [
     ('SUBCONTRACTOR', 'Subcontractor'), ('INSURANCE', 'Insurance'), ('OVERHEAD', 'Overhead'), ('OTHER', 'Other'),
 ]
 EXPENSE_CATEGORIES = [c for c, _ in EXPENSE_CATEGORY_CHOICES]
+# Account.type of a product/service offered as a revenue target (QBO Items).
+# Allowed for revenue types only; never for expense categories or receipts.
+ITEM = 'ITEM'
 SECTIONS = ('revenue_types', 'expense_categories', 'tax_sales', 'tax_purchases')
 
 
@@ -55,16 +58,22 @@ def refresh_options(connection) -> dict:
                                  'options': [{'id': o.id, 'name': o.name} for o in c.options]}
                                 for c in adapter.get_tracking() if c.status == 'ACTIVE'],
         'fetched_at': timezone.now().isoformat(),
+        # Provider settings that block syncing (adapter.sync_blockers()).
+        'blockers': list(adapter.sync_blockers()),
     }
     from django.db import transaction
     from core.models import AccountingConnection
     with transaction.atomic():   # merge into the stored settings, never overwrite a mapping saved meanwhile
         fresh = AccountingConnection.objects.select_for_update().get(pk=connection.pk)
         s = dict(fresh.settings or {})
+        was_blocked = bool((s.get('options') or {}).get('blockers'))
         s['options'] = opts
         fresh.settings = s
         fresh.save(update_fields=['settings', 'updated_at'])
     connection.settings = s
+    if was_blocked and not opts['blockers'] and is_complete(connection):
+        from core.accounting.sync import requeue_blocked
+        requeue_blocked(connection)
     return opts
 
 
@@ -92,7 +101,16 @@ def refresh_blockers(connection, adapter=None) -> list[str]:
 
 
 def provider_blockers(connection) -> list[str]:
+    """Messages from the last options read (see AccountingAdapter.sync_blockers)."""
     return list(((connection.settings or {}).get('options') or {}).get('blockers') or [])
+
+
+def _needs_item(connection) -> bool:
+    from core.accounting.registry import adapter_class
+    try:
+        return bool(adapter_class(connection.provider).sales_lines_need_item)
+    except LookupError:
+        return False
 
 
 def options(connection, *, refresh=False) -> dict:
@@ -160,6 +178,8 @@ def suggestions(connection) -> dict:
             out['tax_purchases'][code] = p
     revenue_accounts = [a for a in opts.get('accounts') or [] if (a.get('class') or a.get('type')) in ('REVENUE', 'Income')
                         or a.get('type') in ('REVENUE', 'SALES', 'Income')]
+    if _needs_item(connection):
+        revenue_accounts = [a for a in revenue_accounts if a.get('type') == ITEM]
     if len(revenue_accounts) == 1:
         out['revenue_types'] = {k: revenue_accounts[0]['code'] for k in revenue_types.REVENUE_TYPES}
     return out
@@ -202,6 +222,7 @@ def update(connection, payload: dict) -> dict:
     cats = {c['id']: c for c in opts.get('tracking_categories') or []}
     s = _settings(connection)
     errors = {}
+    needs_item = _needs_item(connection)
 
     def accounts_section(name, keys):
         raw = payload.get(name)
@@ -222,6 +243,14 @@ def update(connection, payload: dict) -> dict:
                 continue
             if accounts[str(code)].get('is_bank'):
                 errors[f'{name}.{key}'] = f'{code} is a bank account; choose an income or expense account.'
+                continue
+            is_item = accounts[str(code)].get('type') == ITEM
+            if name == 'revenue_types' and needs_item and not is_item:
+                errors[f'{name}.{key}'] = (f'{connection.get_provider_display()} sales lines post to a product/'
+                                           'service; choose one (its income account decides where it posts).')
+                continue
+            if name != 'revenue_types' and is_item:
+                errors[f'{name}.{key}'] = f'{accounts[str(code)]["name"]} is a product/service; choose an account.'
                 continue
             s[name][key] = str(code)
 
@@ -262,7 +291,8 @@ def update(connection, payload: dict) -> dict:
         code = payload.get('receipts_account')
         if code in (None, ''):
             s.pop('receipts_account', None)
-        elif str(code) not in accounts or not accounts[str(code)].get('is_bank'):
+        elif (str(code) not in accounts or not accounts[str(code)].get('is_bank')
+              or accounts[str(code)].get('type') == ITEM):
             errors['receipts_account'] = 'Choose a bank account (payments can be received into it).'
         else:
             s['receipts_account'] = str(code)

@@ -1,0 +1,69 @@
+{
+  "Bill": {
+    "DueDate": "2026-09-03",
+    "Balance": 1150.0,
+    "domain": "QBO",
+    "sparse": false,
+    "Id": "310",
+    "SyncToken": "0",
+    "MetaData": {
+      "CreateTime": "2026-09-03T07:00:00-07:00",
+      "LastUpdatedTime": "2026-09-03T07:00:00-07:00"
+    },
+    "DocNumber": "TOLL-778",
+    "TxnDate": "2026-09-03",
+    "CurrencyRef": {
+      "value": "ZAR",
+      "name": "South African Rand"
+    },
+    "PrivateNote": "EXP-1-1",
+    "Line": [
+      {
+        "Id": "1",
+        "LineNum": 1,
+        "Description": "N4 tolls [EXP-1-1]",
+        "Amount": 1000.0,
+        "DetailType": "AccountBasedExpenseLineDetail",
+        "AccountBasedExpenseLineDetail": {
+          "AccountRef": {
+            "value": "80",
+            "name": "Tolls"
+          },
+          "BillableStatus": "NotBillable",
+          "TaxInclusiveAmt": 1150.0,
+          "TaxCodeRef": {
+            "value": "3"
+          }
+        }
+      }
+    ],
+    "TxnTaxDetail": {
+      "TotalTax": 150.0,
+      "TaxLine": [
+        {
+          "Amount": 150.0,
+          "DetailType": "TaxLineDetail",
+          "TaxLineDetail": {
+            "TaxRateRef": {
+              "value": "2"
+            },
+            "PercentBased": true,
+            "TaxPercent": 15,
+            "NetAmountTaxable": 1000.0
+          }
+        }
+      ]
+    },
+    "VendorRef": {
+      "value": "61",
+      "name": "N4 Toll Concession"
+    },
+    "APAccountRef": {
+      "value": "33",
+      "name": "Accounts Payable (A/P)"
+    },
+    "TotalAmt": 1150.0,
+    "GlobalTaxCalculation": "TaxInclusive"
+  },
+  "time": "2026-09-30T08:14:31.112-07:00"
+}

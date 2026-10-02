@@ -266,6 +266,16 @@ class AccountingAdapter(abc.ABC):
     shared_contact_list: bool = False
     # Longest document number the provider keeps (QBO DocNumber: 21).
     max_number_length: int | None = None
+    # Sales lines post to products/services (QBO Items, account type 'ITEM')
+    # rather than straight to income accounts (Xero).
+    sales_lines_need_item: bool = False
+
+    def sync_blockers(self) -> list[str]:
+        """Provider settings that make syncing unsafe, as messages for the
+        user (e.g. QBO without custom transaction numbers). Read with the
+        other options (core.accounting.mapping.refresh_options); while any is
+        present, nothing is pushed. Default: none."""
+        return []
 
     # --- OAuth (classmethods: no connection exists yet)
     @classmethod
@@ -384,6 +394,12 @@ class AccountingAdapter(abc.ABC):
 
     @abc.abstractmethod
     def list_unallocated_credits(self) -> list[RemoteCredit]: ...
+
+    def unallocated_credits_for(self, external_ids) -> list[RemoteCredit]:
+        """Remaining credit of specific overpayments (providers with metered
+        reads override this with a targeted query)."""
+        ids = set(external_ids)
+        return [c for c in self.list_unallocated_credits() if c.external_id in ids]
 
     @abc.abstractmethod
     def get_credit_note_detail(self, external_id: str) -> dict:

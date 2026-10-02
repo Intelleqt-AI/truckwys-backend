@@ -1,0 +1,80 @@
+{
+  "CreditMemo": {
+    "RemainingCredit": 0,
+    "domain": "QBO",
+    "sparse": false,
+    "Id": "150",
+    "SyncToken": "1",
+    "MetaData": {
+      "CreateTime": "2026-09-11T10:00:00-07:00",
+      "LastUpdatedTime": "2026-09-12T08:00:00-07:00"
+    },
+    "DocNumber": "CN-00001",
+    "TxnDate": "2026-09-11",
+    "CurrencyRef": {
+      "value": "ZAR"
+    },
+    "LinkedTxn": [
+      {
+        "TxnId": "202",
+        "TxnType": "Payment"
+      }
+    ],
+    "Line": [
+      {
+        "Id": "1",
+        "LineNum": 1,
+        "Description": "Damaged pallet",
+        "Amount": 100.0,
+        "DetailType": "SalesItemLineDetail",
+        "SalesItemLineDetail": {
+          "ItemRef": {
+            "value": "1",
+            "name": "Freight"
+          },
+          "UnitPrice": 100,
+          "Qty": 1,
+          "ItemAccountRef": {
+            "value": "79"
+          },
+          "TaxCodeRef": {
+            "value": "3"
+          }
+        }
+      },
+      {
+        "Amount": 100.0,
+        "DetailType": "SubTotalLineDetail",
+        "SubTotalLineDetail": {}
+      }
+    ],
+    "TxnTaxDetail": {
+      "TotalTax": 15.0,
+      "TaxLine": [
+        {
+          "Amount": 15.0,
+          "DetailType": "TaxLineDetail",
+          "TaxLineDetail": {
+            "TaxRateRef": {
+              "value": "1"
+            },
+            "PercentBased": true,
+            "TaxPercent": 15,
+            "NetAmountTaxable": 100.0
+          }
+        }
+      ]
+    },
+    "CustomerRef": {
+      "value": "58",
+      "name": "Acme Mining (Pty) Ltd"
+    },
+    "TotalAmt": 1000.0,
+    "ApplyTaxAfterDiscount": false,
+    "PrintStatus": "NeedToPrint",
+    "EmailStatus": "NotSet",
+    "Balance": 0,
+    "GlobalTaxCalculation": "TaxExcluded"
+  },
+  "time": "2026-09-30T08:14:31.112-07:00"
+}

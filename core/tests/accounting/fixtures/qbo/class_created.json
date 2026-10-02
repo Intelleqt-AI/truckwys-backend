@@ -1,0 +1,17 @@
+{
+  "Class": {
+    "Name": "GP 77-12 XY",
+    "SubClass": false,
+    "FullyQualifiedName": "GP 77-12 XY",
+    "Active": true,
+    "domain": "QBO",
+    "sparse": false,
+    "Id": "5000000000000123402",
+    "SyncToken": "0",
+    "MetaData": {
+      "CreateTime": "2026-09-30T08:14:31.112-07:00",
+      "LastUpdatedTime": "2026-09-30T08:14:31.112-07:00"
+    }
+  },
+  "time": "2026-09-30T08:14:31.112-07:00"
+}

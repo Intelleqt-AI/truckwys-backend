@@ -1,0 +1,27 @@
+{
+  "Vendor": {
+    "Balance": 0,
+    "Vendor1099": false,
+    "CurrencyRef": {
+      "value": "ZAR"
+    },
+    "TaxIdentifier": "XXXXXX1111",
+    "AcctNum": "TW-S-4",
+    "domain": "QBO",
+    "sparse": false,
+    "Id": "61",
+    "SyncToken": "0",
+    "MetaData": {
+      "CreateTime": "2026-09-30T08:14:31.112-07:00",
+      "LastUpdatedTime": "2026-09-30T08:14:31.112-07:00"
+    },
+    "CompanyName": "N4 Toll Concession",
+    "DisplayName": "N4 Toll Concession",
+    "PrintOnCheckName": "N4 Toll Concession",
+    "Active": true,
+    "PrimaryEmailAddr": {
+      "Address": "billing@n4.test"
+    }
+  },
+  "time": "2026-09-30T08:14:31.112-07:00"
+}

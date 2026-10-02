@@ -528,3 +528,29 @@ class XeroWebhookView(APIView):
         if events:
             store_webhook_events('XERO', events)
         return HttpResponse(status=200)
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class QuickBooksWebhookView(APIView):
+    """QuickBooks Online webhooks. `intuit-signature` = base64 HMAC-SHA256 of
+    the raw body with the app's Verifier Token; invalid -> 401. Both the
+    classic payload (eventNotifications) and the CloudEvents array are
+    accepted. Events are stored and processed asynchronously: Intuit expects
+    an answer within 3 seconds and retries otherwise."""
+    permission_classes = []
+    authentication_classes = []
+
+    def post(self, request):
+        from core.accounting.quickbooks import parse_webhook, verify_webhook_signature
+        from core.accounting.pull import store_webhook_events
+        body = request.body
+        if not verify_webhook_signature(body, request.headers.get('intuit-signature', '')):
+            return HttpResponse(status=401)
+        try:
+            payload = json.loads(body or b'{}')
+        except ValueError:
+            return HttpResponse(status=200)
+        events = parse_webhook(payload)
+        if events:
+            store_webhook_events('QBO', events)
+        return HttpResponse(status=200)

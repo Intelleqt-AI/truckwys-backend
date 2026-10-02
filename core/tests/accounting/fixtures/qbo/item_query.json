@@ -1,0 +1,116 @@
+{
+  "QueryResponse": {
+    "Item": [
+      {
+        "Name": "Freight",
+        "Description": "Freight",
+        "Active": true,
+        "FullyQualifiedName": "Freight",
+        "Taxable": true,
+        "UnitPrice": 0,
+        "Type": "Service",
+        "PurchaseCost": 0,
+        "TrackQtyOnHand": false,
+        "domain": "QBO",
+        "sparse": false,
+        "Id": "1",
+        "SyncToken": "0",
+        "MetaData": {
+          "CreateTime": "2019-03-01T02:14:00-07:00",
+          "LastUpdatedTime": "2019-03-01T02:14:00-07:00"
+        },
+        "IncomeAccountRef": {
+          "value": "79",
+          "name": "Freight Income"
+        }
+      },
+      {
+        "Name": "Waiting time",
+        "Description": "Waiting time",
+        "Active": true,
+        "FullyQualifiedName": "Waiting time",
+        "Taxable": true,
+        "UnitPrice": 0,
+        "Type": "NonInventory",
+        "PurchaseCost": 0,
+        "TrackQtyOnHand": false,
+        "domain": "QBO",
+        "sparse": false,
+        "Id": "5",
+        "SyncToken": "0",
+        "MetaData": {
+          "CreateTime": "2019-03-01T02:14:00-07:00",
+          "LastUpdatedTime": "2019-03-01T02:14:00-07:00"
+        },
+        "IncomeAccountRef": {
+          "value": "79",
+          "name": "Freight Income"
+        }
+      },
+      {
+        "Name": "Pallets",
+        "Description": "Pallets",
+        "Active": true,
+        "FullyQualifiedName": "Pallets",
+        "Taxable": true,
+        "UnitPrice": 0,
+        "Type": "Inventory",
+        "PurchaseCost": 0,
+        "TrackQtyOnHand": false,
+        "domain": "QBO",
+        "sparse": false,
+        "Id": "6",
+        "SyncToken": "0",
+        "MetaData": {
+          "CreateTime": "2019-03-01T02:14:00-07:00",
+          "LastUpdatedTime": "2019-03-01T02:14:00-07:00"
+        },
+        "IncomeAccountRef": {
+          "value": "79",
+          "name": "Freight Income"
+        }
+      },
+      {
+        "Name": "Hours",
+        "Description": "Hours",
+        "Active": true,
+        "FullyQualifiedName": "Hours",
+        "Taxable": true,
+        "UnitPrice": 0,
+        "Type": "Service",
+        "PurchaseCost": 0,
+        "TrackQtyOnHand": false,
+        "domain": "QBO",
+        "sparse": false,
+        "Id": "7",
+        "SyncToken": "0",
+        "MetaData": {
+          "CreateTime": "2019-03-01T02:14:00-07:00",
+          "LastUpdatedTime": "2019-03-01T02:14:00-07:00"
+        }
+      },
+      {
+        "Name": "Fuel bundle",
+        "Description": "Fuel bundle",
+        "Active": true,
+        "FullyQualifiedName": "Fuel bundle",
+        "Taxable": true,
+        "UnitPrice": 0,
+        "Type": "Group",
+        "PurchaseCost": 0,
+        "TrackQtyOnHand": false,
+        "domain": "QBO",
+        "sparse": false,
+        "Id": "8",
+        "SyncToken": "0",
+        "MetaData": {
+          "CreateTime": "2019-03-01T02:14:00-07:00",
+          "LastUpdatedTime": "2019-03-01T02:14:00-07:00"
+        }
+      }
+    ],
+    "startPosition": 1,
+    "maxResults": 5
+  },
+  "time": "2026-09-30T08:14:31.112-07:00"
+}

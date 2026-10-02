@@ -276,9 +276,13 @@ urlpatterns = [
 
     # Accounting integrations (Xero, QuickBooks Online): core.accounting.
     # The OAuth callback and webhook paths are registered with the providers;
-    # keep them stable (docs/integrations/XERO.md).
+    # keep them stable (docs/integrations/XERO.md, QUICKBOOKS.md).
     path('integrations/xero/callback/', accounting_views.OAuthCallbackView.as_view(slug='xero'), name='xero-callback'),
     path('integrations/xero/webhooks/', accounting_views.XeroWebhookView.as_view(), name='xero-webhooks'),
+    path('integrations/quickbooks/callback/', accounting_views.OAuthCallbackView.as_view(slug='quickbooks'),
+         name='quickbooks-callback'),
+    path('integrations/quickbooks/webhooks/', accounting_views.QuickBooksWebhookView.as_view(),
+         name='quickbooks-webhooks'),
     path('integrations/accounting/', include('core.accounting.urls')),
 
     # Cartrack Fleet API integration endpoints

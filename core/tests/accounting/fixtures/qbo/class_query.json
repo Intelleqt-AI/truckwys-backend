@@ -1,0 +1,23 @@
+{
+  "QueryResponse": {
+    "Class": [
+      {
+        "Name": "ND 123-456",
+        "SubClass": false,
+        "FullyQualifiedName": "ND 123-456",
+        "Active": true,
+        "domain": "QBO",
+        "sparse": false,
+        "Id": "5000000000000123401",
+        "SyncToken": "0",
+        "MetaData": {
+          "CreateTime": "2026-09-01T03:00:00-07:00",
+          "LastUpdatedTime": "2026-09-01T03:00:00-07:00"
+        }
+      }
+    ],
+    "startPosition": 1,
+    "maxResults": 1
+  },
+  "time": "2026-09-30T08:14:31.112-07:00"
+}
