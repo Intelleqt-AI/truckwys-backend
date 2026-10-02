@@ -543,6 +543,40 @@ CELERY_BEAT_SCHEDULE_FILENAME = config(
 # which is cheap and makes the signal genuinely tick-by-tick.
 CELERY_BEAT_SYNC_EVERY = 1
 
+# ---------------------------------------------------------------------------
+# Fast Pay (Capital): docs/capital/IMPLEMENTATION.md and RUNBOOK.md
+# ---------------------------------------------------------------------------
+# Launch switch. False: transporters can see nothing new and cannot request
+# Fast Pay (the request endpoints answer 403 {'code': 'not_launched'}); the
+# capital desk (staff / funder members) still works so the book can be set up.
+# The frontend has its own CAPITAL_LAUNCHED constant; flip both together.
+CAPITAL_LAUNCHED = config('CAPITAL_LAUNCHED', default=False, cast=bool)
+# Company ids allowed to request while not launched (a closed pilot). Empty = none.
+CAPITAL_PILOT_COMPANY_IDS = tuple(
+    int(c) for c in config('CAPITAL_PILOT_COMPANY_IDS', default='').split(',') if c.strip())
+# Mode B (limited auto-approval) needs this AND Funder.auto_approve_enabled
+# AND the request inside the policy's auto_approve envelope. Default off:
+# Mode A, the funder approves every advance.
+CAPITAL_AUTO_APPROVE_ENABLED = config('CAPITAL_AUTO_APPROVE_ENABLED', default=False, cast=bool)
+# Enrichment adapters: 'fake' (deterministic, recorded fixtures; tests and
+# local dev), 'null' (honest no-data) or 'live'. 'live' CIPC is not built
+# yet (no contract); 'live' bureau uses core.integrations.bureau_adapter and
+# its CREDIT_BUREAU_* settings. Never point tests at live.
+CAPITAL_CIPC_ADAPTER = config('CAPITAL_CIPC_ADAPTER', default='null')
+CAPITAL_BUREAU_ADAPTER = config('CAPITAL_BUREAU_ADAPTER', default='null')
+# How long a debtor / transporter score is reused before it is recomputed.
+CAPITAL_SCORE_TTL_HOURS = config('CAPITAL_SCORE_TTL_HOURS', default=24, cast=int)
+# LLM use in Fast Pay is limited to (1) extracting fields from POD / invoice
+# documents and (2) rewording a decision's reason codes in plain language.
+# It never decides. Off by default; with it off (or over budget, or on any
+# error) the deterministic template text is used.
+CAPITAL_AI_ENABLED = config('CAPITAL_AI_ENABLED', default=False, cast=bool)
+CAPITAL_AI_MODEL = config('CAPITAL_AI_MODEL', default='claude-haiku-4-5')
+CAPITAL_AI_DAILY_BUDGET_USD = config('CAPITAL_AI_DAILY_BUDGET_USD', default=2, cast=float)
+CAPITAL_AI_TIMEOUT_SECONDS = config('CAPITAL_AI_TIMEOUT_SECONDS', default=8, cast=int)
+# Where monthly data-room packs are written (default storage, under this prefix).
+CAPITAL_DATA_ROOM_PREFIX = config('CAPITAL_DATA_ROOM_PREFIX', default='capital/data-room')
+
 from celery.schedules import crontab  # noqa: E402
 from datetime import timedelta  # noqa: E402
 # In SUBSCRIPTION_TEST_MODE, run every billing sweep every minute instead of
@@ -697,6 +731,34 @@ CELERY_BEAT_SCHEDULE = {
     'refresh-verified-rates': {
         'task': 'core.tasks.refresh_verified_rates',
         'schedule': crontab(day_of_month='2', hour='5', minute='30'),
+    },
+    # Fast Pay (Capital) book automation (core.capital.jobs). Each is a fast
+    # no-op until a funder has lines or ledger rows.
+    # Release queued advances into freed headroom; expire stale queue items.
+    'capital-process-queue': {
+        'task': 'core.tasks.capital_process_queue',
+        'schedule': crontab(minute='*/15'),
+    },
+    # Limits, concentration, risk index, reconciliation, early warnings,
+    # overdue / paid-awaiting-settlement alerts and the daily book snapshot.
+    'capital-monitor': {
+        'task': 'core.tasks.capital_monitor',
+        'schedule': crontab(minute='20'),
+    },
+    # Rescore debtors with exposure and transporters with a line.
+    'capital-nightly-rescore': {
+        'task': 'core.tasks.capital_nightly_rescore',
+        'schedule': crontab(hour='2', minute='30'),
+    },
+    # Ledger vs cached facility / advance balances; RED alert on any break.
+    'capital-reconcile': {
+        'task': 'core.tasks.capital_reconcile',
+        'schedule': crontab(hour='2', minute='50'),
+    },
+    # Previous month's funder data room (skipped when it already exists).
+    'capital-monthly-data-room': {
+        'task': 'core.tasks.capital_monthly_data_room',
+        'schedule': crontab(day_of_month='1', hour='6', minute='30'),
     },
 }
 

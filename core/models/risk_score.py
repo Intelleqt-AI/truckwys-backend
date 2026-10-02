@@ -257,22 +257,23 @@ class RiskScore(models.Model):
         }
         return fee_ranges.get(tier, (Decimal('0.0'), Decimal('0.0')))
 
-    def calculate_total_score(self) -> int:
-        """
-        Calculate total score from all factors.
+    # Pillar weights of the (legacy) 7-pillar breakdown, matching the column help texts.
+    PILLAR_WEIGHTS = (
+        ('factor_client_identity', 15), ('factor_client_financial', 20), ('factor_debtor_credit', 20),
+        ('factor_invoice_chars', 15), ('factor_pod_docs', 10), ('factor_operational', 10),
+        ('factor_macro_market', 10),
+    )
 
-        Returns:
-            int: Total score (0-100)
+    def calculate_total_score(self) -> int:
+        """Weighted 0-100 total of the seven pillar scores.
+
+        It used to sum the six DEPRECATED factor columns, which the engine
+        never fills, so any caller got a meaningless number. Fast Pay decisions
+        no longer use this score at all (core.capital.engine decides; this row
+        is a legacy breakdown for the risk-score page).
         """
-        total = (
-            self.factor_payment_history +
-            self.factor_invoice_age +
-            self.factor_pod_quality +
-            self.factor_credit_score +
-            self.factor_relationship_length +
-            self.factor_facility_ratio
-        )
-        return min(100, max(0, total))
+        total = sum(getattr(self, f) * w for f, w in self.PILLAR_WEIGHTS) / 100
+        return int(min(100, max(0, round(total))))
 
     def set_expiry(self, days: int = 7) -> None:
         """

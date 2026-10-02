@@ -169,6 +169,17 @@ class LenderBaseView(APIView):
             return request.user.company_ids
         return frozenset()
 
+    def _funder_matches(self, request, invoice) -> bool:
+        """A key bound to a funder acts only on that funder's lines. Keys from
+        before the funder model (no funder) keep their company binding only."""
+        key = getattr(request.user, 'key_obj', None)
+        funder_id = getattr(key, 'funder_id', None)
+        if not funder_id:
+            return True
+        from core.models import Facility
+        return Facility.objects.filter(company_id=invoice.company_id, status='ACTIVE',
+                                       funder_id=funder_id).exists()
+
 
 # ---------------------------------------------------------------------------
 # GET /api/v1/lender/health/
@@ -389,41 +400,50 @@ class LenderEligibleInvoicesView(LenderBaseView):
             advance_requests__status__in=ACTIVE_STATUSES,
         ).select_related('customer', 'load')
 
+        # Fast Pay (2026-10): every row comes from core.capital.engine, the
+        # one decision path. The old per-tier fee map and the default score 55
+        # for unscored invoices are gone.
+        from core.capital import engine as fp_engine
         result = []
         for inv in invoices:
             if not load_has_pod_evidence(inv.load):
                 continue
-            # Get risk score for this customer
-            risk = RiskScore.objects.filter(customer=inv.customer).order_by('-calculated_at').first()
-            tier = risk.tier if risk else 'FAIR'
-            score = risk.total_score if risk else 55
-
-            fee_map = {
-                'EXCELLENT': 2.0, 'GOOD': 2.5, 'FAIR': 3.0,
-                'ELEVATED': 3.5, 'INELIGIBLE': 0.0,
-            }
-            fee_rate = fee_map.get(tier, 3.0)
+            if not self._funder_matches(request, inv):
+                continue
+            try:
+                ev = fp_engine.evaluate(inv)
+            except Exception:
+                continue
+            if not ev.eligible or ev.decision == 'DECLINE':
+                continue
             amount = float(inv.total_amount)
-            net_payout = round(amount * (1 - fee_rate / 100), 2)
-
-            age_days = (date.today() - inv.issue_date).days
-
             result.append({
                 'id': inv.id,
                 'invoice_number': inv.invoice_number,
                 'customer': inv.customer.name,
                 'customer_id': inv.customer.id,
+                'debtor_registration_number': getattr(ev.debtor, 'registration_number', None),
                 'amount_zar': amount,
                 'subtotal_zar': float(inv.subtotal),
                 'vat_zar': float(inv.vat_amount),
                 'issue_date': inv.issue_date.isoformat(),
                 'due_date': inv.due_date.isoformat(),
-                'age_days': age_days,
-                'risk_score': score,
-                'risk_tier': tier,
-                'fee_rate_pct': fee_rate,
-                'fee_amount_zar': round(amount * fee_rate / 100, 2),
-                'net_payout_zar': net_payout,
+                'age_days': (date.today() - inv.issue_date).days,
+                'decision': ev.decision,
+                'invoice_grade': ev.invoice_grade,
+                'risk_tier': ev.invoice_grade,
+                'debtor_grade': getattr(ev.debtor_score, 'grade', None),
+                'transporter_grade': getattr(ev.transporter_score, 'grade', None),
+                'expected_loss_pct': float(ev.el_pct),
+                'advance_rate_pct': float(ev.advance_rate_pct),
+                'fundable_amount_zar': float(ev.fundable_amount),
+                'fee_rate_pct': float(ev.fee_pct),
+                'fee_amount_zar': float(ev.fee_amount),
+                'fee_vat_zar': float(ev.fee_vat_amount),
+                'net_payout_zar': float(ev.net_payout),
+                'expected_payment_date': ev.expected_payment_date.isoformat() if ev.expected_payment_date else None,
+                'verification_tier': ev.verification_tier,
+                'reason_codes': [r['code'] for r in ev.reasons],
                 'load_reference': inv.load.load_number if inv.load else None,
                 'route': f'{inv.load.pickup_city} → {inv.load.delivery_city}' if inv.load else None,
             })
@@ -491,26 +511,33 @@ class LenderAdvanceRequestView(LenderBaseView):
         if amount > balance:
             return Response({'error': f'requested_amount exceeds the invoice balance (R{balance})'}, status=400)
 
-        # Check facility — the INVOICE's company facility (tenant isolation,
-        # 2026-09). This used Company.objects.first(), so any tenant's invoice
-        # was checked against (and disclosed) the first tenant's facility.
+        if not self._funder_matches(request, invoice):
+            return Response({'error': f'Invoice {invoice_id} not found'}, status=404)
         facility = Facility.objects.filter(
             company_id=invoice.company_id, status='ACTIVE'
         ).first() if invoice.company_id else None
         if not facility:
             return Response({'error': 'No active facility found'}, status=400)
 
-        # Create + reserve capacity atomically; a duplicate active advance
-        # (pre-check or the DB unique constraint under a race) is refused.
+        # Fast Pay (2026-10): the same decision path as an in-app request:
+        # evaluate under the funder lock, record the decision, open the advance.
+        from core.capital import engine as fp_engine
+        if not fp_engine.can_request(invoice.company):
+            return Response({'code': 'not_launched', 'error': 'Fast Pay is not live yet.'}, status=403)
         try:
-            advance, created = open_advance(
-                invoice=invoice,
-                facility=facility,
-                amount=amount,
-                notes=f'Submitted by lender: {lender_name}',
-            )
+            advance, assessment, ev, created = fp_engine.request(
+                invoice, actor=request.user, actor_label=f'funder API: {lender_name}', purpose='LENDER',
+                requested_amount=amount)
         except CapacityError as exc:
-            return Response({'error': f'Requested amount exceeds available facility: {exc}'}, status=400)
+            return Response({'error': f'Requested amount exceeds available capacity: {exc}'}, status=400)
+        if advance is None:
+            return Response({
+                'error': 'Invoice is not fundable',
+                'decision': ev.decision,
+                'reason_codes': [r['code'] for r in ev.reasons],
+                'reasons': [r['text'] for r in ev.reasons if r['direction'] in ('!', '-')],
+                'assessment_id': assessment.pk,
+            }, status=400)
         if not created:
             return Response({
                 'error': 'Invoice already has an active advance',
@@ -524,11 +551,19 @@ class LenderAdvanceRequestView(LenderBaseView):
             'invoice_number': invoice.invoice_number,
             'customer': invoice.customer.name,
             'requested_amount_zar': float(amount),
+            'decision': ev.decision,
+            'advance_amount_zar': float(advance.amount),
+            'fee_rate_pct': float(ev.fee_pct),
+            'fee_amount_zar': float(ev.fee_amount),
+            'net_payout_zar': float(ev.net_payout),
+            'queued_amount_zar': float(ev.queued_amount),
+            'assessment_id': assessment.pk,
             'status': advance.status,
             'lender': lender_name,
             'submitted_at': timezone.now().isoformat(),
-            'expected_disbursement': (date.today() + timedelta(hours=4)).isoformat(),
-            'message': 'Advance request received. Funds disbursed within 4 business hours upon approval.',
+            'message': ('Decision recorded. The advance needs the funder\'s approval (Mode A) before it is '
+                        'paid out.' if advance.status in ('REQUESTED', 'SCORING') else
+                        'Decision recorded. The request is queued until capacity frees.'),
         }, status=201)
 
 

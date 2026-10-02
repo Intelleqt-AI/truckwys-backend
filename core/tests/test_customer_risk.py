@@ -5,7 +5,7 @@ from decimal import Decimal
 from unittest import mock
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -188,7 +188,12 @@ class AdvanceRiskGateTests(TestCase):
             phone='', address='', city='', state='', zip_code='',
         )
 
+    @override_settings(CAPITAL_LAUNCHED=True)
     def test_critical_risk_customer_blocked(self):
+        """The >70% customer-risk gate no longer decides Fast Pay (it was a
+        per-tenant formula on guessed terms). The decision engine does: this
+        invoice is refused on its own rules (no identified debtor, no
+        delivered load), and the old gate's message is gone."""
         customer = self._customer('Blocked Ltd')
         # chronic extreme lateness → CRITICAL (>70)
         for i in range(5):
@@ -202,7 +207,8 @@ class AdvanceRiskGateTests(TestCase):
 
         r = self.client.post('/api/v1/advances/', {'invoice_id': target.id}, format='json')
         self.assertEqual(r.status_code, 400)
-        self.assertIn('risk too high', r.json()['error'].lower())
+        self.assertEqual(r.json()['decision'], 'DECLINE')
+        self.assertNotIn('risk too high', r.json()['error'].lower())
 
     def test_advance_amount_deducted_by_risk(self):
         customer = self._customer('Deduct Ltd')

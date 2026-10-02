@@ -133,6 +133,8 @@ router.register(r'activity', ActivityEventViewSet, basename='activity')
 # Partner API ViewSets (Fleet Management + Capital APIs)
 router.register(r'partners/webhooks', PartnerWebhookSubscriptionViewSet, basename='partner-webhook')
 
+from core import views_fastpay as fp  # noqa: E402
+
 urlpatterns = [
     # Authentication endpoints (must come before router)
     path('auth/register/', RegisterView.as_view(), name='register'),
@@ -335,6 +337,45 @@ urlpatterns = [
     path('lender/eligible-invoices/', LenderEligibleInvoicesView.as_view(), name='lender-eligible-invoices'),
     path('lender/advance-request/', LenderAdvanceRequestView.as_view(), name='lender-advance-request'),
     path('lender/portfolio/', LenderPortfolioView.as_view(), name='lender-portfolio'),
+
+    # Fast Pay (risk scoring, book engine): docs/capital/IMPLEMENTATION.md
+    path('capital/status/', fp.CapitalStatusView.as_view(), name='capital-status'),
+    path('capital/application/', fp.CapitalApplicationView.as_view(), name='capital-application'),
+    path('capital/application/submit/', fp.CapitalApplicationSubmitView.as_view(), name='capital-application-submit'),
+    path('capital/fast-pay/invoices/', fp.FastPayInvoicesView.as_view(), name='fastpay-invoices'),
+    path('capital/fast-pay/invoices/<int:invoice_id>/offer/', fp.FastPayOfferView.as_view(), name='fastpay-offer'),
+    path('capital/fast-pay/requests/', fp.FastPayRequestView.as_view(), name='fastpay-request'),
+    path('capital/fast-pay/advances/', fp.FastPayAdvancesView.as_view(), name='fastpay-advances'),
+    path('capital/fast-pay/advances/<int:pk>/', fp.FastPayAdvanceDetailView.as_view(), name='fastpay-advance'),
+    path('capital/fast-pay/advances/<int:pk>/cancel/', fp.FastPayAdvanceCancelView.as_view(), name='fastpay-advance-cancel'),
+    path('capital/desk/funders/', fp.DeskFundersView.as_view(), name='desk-funders'),
+    path('capital/desk/book/', fp.DeskBookView.as_view(), name='desk-book'),
+    path('capital/desk/approvals/', fp.DeskApprovalsView.as_view(), name='desk-approvals'),
+    path('capital/desk/queue/', fp.DeskQueueView.as_view(), name='desk-queue'),
+    path('capital/desk/advances/', fp.DeskAdvancesView.as_view(), name='desk-advances'),
+    path('capital/desk/advances/<int:pk>/', fp.DeskAdvanceDetailView.as_view(), name='desk-advance'),
+    path('capital/desk/advances/<int:pk>/<str:action>/', fp.DeskAdvanceActionView.as_view(), name='desk-advance-action'),
+    path('capital/desk/alerts/', fp.DeskAlertsView.as_view(), name='desk-alerts'),
+    path('capital/desk/alerts/<int:pk>/resolve/', fp.DeskAlertResolveView.as_view(), name='desk-alert-resolve'),
+    path('capital/desk/ledger/', fp.DeskLedgerView.as_view(), name='desk-ledger'),
+    path('capital/desk/debtors/', fp.DeskDebtorsView.as_view(), name='desk-debtors'),
+    path('capital/desk/debtors/<int:pk>/', fp.DeskDebtorDetailView.as_view(), name='desk-debtor'),
+    path('capital/desk/transporters/', fp.DeskTransportersView.as_view(), name='desk-transporters'),
+    path('capital/desk/transporters/<int:company_id>/', fp.DeskTransporterDetailView.as_view(), name='desk-transporter'),
+    path('capital/desk/policy/', fp.DeskPolicyView.as_view(), name='desk-policy'),
+    path('capital/desk/policy/<int:pk>/approve/', fp.DeskPolicyApproveView.as_view(), name='desk-policy-approve'),
+    path('capital/desk/limits/', fp.DeskLimitsView.as_view(), name='desk-limits'),
+    path('capital/desk/data-room/', fp.DeskDataRoomView.as_view(), name='desk-data-room'),
+    path('capital/desk/data-room/<int:pk>/download/', fp.DeskDataRoomDownloadView.as_view(), name='desk-data-room-download'),
+    path('capital/desk/assessments/<int:pk>/', fp.DeskAssessmentView.as_view(), name='desk-assessment'),
+    # Funder API v2 (X-API-Key of a LENDER key bound to a funder)
+    path('funder/book/', fp.FunderBookView.as_view(), name='funder-book'),
+    path('funder/approvals/', fp.FunderApprovalsView.as_view(), name='funder-approvals'),
+    path('funder/advances/<int:pk>/', fp.FunderAdvanceDetailView.as_view(), name='funder-advance'),
+    path('funder/advances/<int:pk>/<str:action>/', fp.FunderAdvanceActionView.as_view(), name='funder-advance-action'),
+    path('funder/ledger/', fp.FunderLedgerView.as_view(), name='funder-ledger'),
+    path('funder/data-room/', fp.FunderDataRoomView.as_view(), name='funder-data-room'),
+    path('funder/data-room/<int:pk>/download/', fp.FunderDataRoomDownloadView.as_view(), name='funder-data-room-download'),
 
     # Capital eligible invoices for operators (Sprint A4)
     path('capital/eligible/', CapitalEligibleInvoicesView.as_view(), name='capital-eligible'),
