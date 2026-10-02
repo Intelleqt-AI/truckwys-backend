@@ -60,7 +60,25 @@ class Load(models.Model):
     pod_signature = models.TextField(blank=True)  # Proof of delivery signature
     pod_received_by = models.CharField(max_length=200, blank=True)
     pod_document = models.FileField(upload_to='pod/', blank=True, null=True)
-    
+
+    # POD evidence metadata (capital-safety 2026-10). A POD photo is what an
+    # advance is funded against, so these are written only by the POD upload
+    # endpoint (and fleet integrations), never by a generic PATCH — see
+    # LoadSerializer.read_only_fields. pod_file_sha256 is computed server-side
+    # so a funder can later prove the file they saw is the file on record.
+    POD_SOURCE_CHOICES = [
+        ('CAMERA', 'Camera'),
+        ('LIBRARY', 'Photo library'),
+        ('UPLOAD', 'File upload'),
+        ('UNKNOWN', 'Unknown'),
+    ]
+    pod_captured_at = models.DateTimeField(null=True, blank=True)
+    pod_latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    pod_longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    pod_device = models.CharField(max_length=200, blank=True)
+    pod_source = models.CharField(max_length=10, choices=POD_SOURCE_CHOICES, blank=True, default='')
+    pod_file_sha256 = models.CharField(max_length=64, blank=True)
+
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name='loads_created')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

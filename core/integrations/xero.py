@@ -10,6 +10,15 @@ from urllib.parse import urlencode, quote
 from django.conf import settings
 from django.utils import timezone
 from core.models import Company, Invoice, Customer
+from core.utils.crypto import DecryptionError, decrypt_secret
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+class XeroCredentialsError(ValueError):
+    """Stored Xero tokens can't be decrypted with the current key: the
+    connection is effectively gone and the user must reconnect."""
 
 
 class XeroClient:
@@ -155,10 +164,10 @@ class XeroClient:
         if not self.company.xero_refresh_token:
             raise ValueError("No refresh token available")
 
-        from core.utils.crypto import encrypt_secret, decrypt_secret
+        from core.utils.crypto import encrypt_secret
         data = {
             'grant_type': 'refresh_token',
-            'refresh_token': decrypt_secret(self.company.xero_refresh_token),
+            'refresh_token': self._decrypt_token(self.company.xero_refresh_token),
         }
 
         response = requests.post(
@@ -191,8 +200,15 @@ class XeroClient:
             if self.company.xero_token_expires_at <= expires_soon:
                 self.refresh_token()
 
-        from core.utils.crypto import decrypt_secret
-        return decrypt_secret(self.company.xero_access_token)
+        return self._decrypt_token(self.company.xero_access_token)
+
+    def _decrypt_token(self, value) -> str:
+        try:
+            return decrypt_secret(value)
+        except DecryptionError:
+            logger.error('Xero tokens for company %s cannot be decrypted; treating as disconnected',
+                         getattr(self.company, 'id', None))
+            raise XeroCredentialsError('Stored Xero tokens are unreadable; reconnect Xero')
 
     def _make_request(self, method: str, endpoint: str, data: Optional[Dict] = None) -> Dict[str, Any]:
         """
@@ -394,7 +410,10 @@ class XeroClient:
 
             # Idempotency: never double-record the same Xero payment.
             ref = f'XERO:{xero_id}' if xero_id else f'XERO:{invoice_number}:{date_str}:{amount}'
-            if Payment.objects.filter(invoice=invoice, reference_number=ref).exists():
+            already = Payment.objects.filter(invoice=invoice, reference_number=ref)
+            if xero_id:
+                already = already | Payment.objects.filter(company=self.company, source='XERO', external_id=str(xero_id))
+            if already.exists():
                 synced_payments.append({
                     'invoice_number': invoice_number,
                     'amount': float(amount),
@@ -412,12 +431,13 @@ class XeroClient:
                 payment_method='EFT',
                 reference_number=ref,
                 notes='Imported from Xero',
+                source='XERO',
+                external_id=str(xero_id or ''),
             )
 
-            # Recompute paid_amount from all payments; invoice.save() recalcs balance + status.
-            total_paid = invoice.payments.aggregate(s=Sum('amount'))['s'] or Decimal('0')
-            invoice.paid_amount = total_paid
-            invoice.save()
+            # Re-derive paid/credited/balance/status from the rows.
+            from core.services.ledger import recalculate_invoice
+            recalculate_invoice(invoice)
 
             synced_payments.append({
                 'invoice_number': invoice_number,
@@ -497,9 +517,15 @@ class XeroClient:
 
     @property
     def is_connected(self) -> bool:
-        """Check if Xero is connected and tokens are valid."""
-        return bool(
-            self.company.xero_access_token and
-            self.company.xero_refresh_token and
-            self.company.xero_tenant_id
-        )
+        """Check if Xero is connected and its stored tokens are readable."""
+        if not (self.company.xero_access_token and
+                self.company.xero_refresh_token and
+                self.company.xero_tenant_id):
+            return False
+        # Tokens the current key can't open are as good as no tokens: report
+        # disconnected so the UI offers Reconnect instead of failing every sync.
+        try:
+            self._decrypt_token(self.company.xero_refresh_token)
+        except XeroCredentialsError:
+            return False
+        return True

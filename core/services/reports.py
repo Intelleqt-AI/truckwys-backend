@@ -3,9 +3,11 @@
 Both are read-only, company-scoped, and defensive (never raise). They power the
 new tabs in the Finance reports / Insights surface:
 
-  - margin_by_lane: which routes actually make money, using the SAME true-cost
-    engine as the quoting tool (fuel + driver + tolls + wear, deadheaded), so the
-    margin shown here is consistent with what the AI quotes against.
+  - margin_by_lane: which routes actually make money: invoiced revenue (excl.
+    VAT, net of credit notes) minus the expenses recorded against each load.
+    The quoting tool's true-cost engine (fuel + driver + tolls + wear,
+    deadheaded) fills in only where no expense is recorded, flagged as an
+    estimate.
   - fastpay_value: reframes the advance programme as VALUE delivered — cash put in
     the operator's hands N days early — and states the true effective cost (APR)
     honestly rather than burying it.
@@ -23,44 +25,123 @@ def _f(v) -> float:
         return 0.0
 
 
-def margin_by_lane(company, limit: int = 25) -> dict:
-    """Aggregate true margin by lane (pickup_city → delivery_city). Never raises."""
-    from core.models import Load
+def _modelled_cost(distance, price):
+    """The true-cost model (fuel + driver + tolls + wear, deadheaded) for one
+    load: an ESTIMATE, used only where no actual expense is recorded."""
     from core.services.margin_calculator import calculate_true_margin
+    if not distance or float(distance) <= 0:
+        return None
+    try:
+        return Decimal(str(calculate_true_margin(
+            {'distance_km': float(distance)},
+            truck_type='articulated', load_type='general',
+            quote_price=Decimal(str(price or 0)),
+        ).true_cost))
+    except Exception as exc:
+        logger.debug('modelled cost skipped: %s', exc)
+        return None
+
+
+def load_economics(company, loads) -> dict:
+    """{load_id: per-load revenue and cost, each flagged actual vs estimate}.
+
+    revenue: ACTUAL = issued invoices linked to the load (directly or via a
+      trip), EXCLUDING VAT, net of their credit notes (drafts/void never
+      count); ESTIMATE = the load price (Load.total_amount, excl. VAT) when
+      the load has not been invoiced.
+    cost: ACTUAL = non-rejected expenses linked to the load (Expense.load or
+      Expense.trip -> trip.load), net of VAT; ESTIMATE = the true-cost model
+      on the load distance when no expense is linked; None when neither.
+    """
+    from core.services import report_figures as rf
+    loads = list(loads)
+    ids = [l.pk for l in loads]
+    revenue = rf.revenue_by_load(company, ids)
+    actual = rf.actual_costs_by_load(company, ids)
+    out = {}
+    for l in loads:
+        if l.pk in revenue:
+            rev, rev_basis = revenue[l.pk], 'actual'
+        else:
+            rev, rev_basis = Decimal(str(l.total_amount or 0)), 'estimate'
+        if l.pk in actual:
+            cost, cost_basis = actual[l.pk], 'actual'
+        else:
+            cost = _modelled_cost(l.distance, l.total_amount)
+            cost_basis = 'estimate' if cost is not None else None
+        out[l.pk] = {
+            'load_id': l.pk,
+            'revenue': rev, 'revenue_basis': rev_basis,
+            'cost': cost, 'cost_basis': cost_basis,
+        }
+    return out
+
+
+def _basis_of(actual_n, estimate_n):
+    if actual_n and estimate_n:
+        return 'mixed'
+    if actual_n:
+        return 'actual'
+    if estimate_n:
+        return 'estimate'
+    return None
+
+
+def margin_by_lane(company, limit: int = 25, include_loads: bool = False) -> dict:
+    """Margin by lane (pickup_city -> delivery_city) from ACTUAL invoiced
+    revenue (excl. VAT, net of credit notes) minus ACTUAL load/trip expenses
+    (excl. VAT). The modelled true cost is used only as an estimate for loads
+    with no recorded expense, and every row says which it used
+    (cost_basis / revenue_basis: actual | estimate | mixed). Never raises."""
+    from core.models import Load
 
     lanes: dict = {}
     try:
-        loads = (Load.objects
-                 .filter(company=company,
-                         status__in=['DELIVERED', 'COMPLETED', 'INVOICED', 'IN_TRANSIT'])
-                 .only('pickup_city', 'delivery_city', 'total_amount', 'distance'))
+        loads = list(Load.objects
+                     .filter(company=company,
+                             status__in=['DELIVERED', 'COMPLETED', 'INVOICED', 'IN_TRANSIT'])
+                     .only('id', 'load_number', 'pickup_city', 'delivery_city', 'total_amount', 'distance'))
+        econ = load_economics(company, loads)
         for l in loads:
+            e = econ[l.pk]
             origin = (l.pickup_city or '—').strip() or '—'
             dest = (l.delivery_city or '—').strip() or '—'
             lane = lanes.setdefault((origin, dest), {
                 'lane': f'{origin} → {dest}',
                 'origin': origin, 'destination': dest,
-                'loads': 0, 'revenue': 0.0,
-                'costed_revenue': 0.0, 'cost': 0.0, 'with_cost': 0, 'distance_sum': 0.0,
+                'loads': 0, 'revenue': 0.0, 'costed_revenue': 0.0, 'cost': 0.0,
+                'actual_cost': 0.0, 'estimated_cost': 0.0,
+                'with_cost': 0, 'distance_sum': 0.0, 'distance_loads': 0, 'distance_rev': 0.0,
+                'cost_actual_n': 0, 'cost_estimate_n': 0,
+                'rev_actual_n': 0, 'rev_estimate_n': 0, 'rows': [],
             })
+            rev = _f(e['revenue'])
             lane['loads'] += 1
-            rev = _f(l.total_amount)
             lane['revenue'] += rev
-
-            # True cost only where we have a positive distance to cost against.
+            lane['rev_actual_n' if e['revenue_basis'] == 'actual' else 'rev_estimate_n'] += 1
             if l.distance and float(l.distance) > 0:
-                try:
-                    res = calculate_true_margin(
-                        {'distance_km': float(l.distance)},
-                        truck_type='articulated', load_type='general',
-                        quote_price=Decimal(str(l.total_amount or 0)),
-                    )
-                    lane['cost'] += float(res.true_cost)
-                    lane['costed_revenue'] += rev
-                    lane['with_cost'] += 1
-                    lane['distance_sum'] += float(l.distance)
-                except Exception as exc:
-                    logger.debug('lane margin calc skipped: %s', exc)
+                lane['distance_sum'] += float(l.distance)
+                lane['distance_loads'] += 1
+                lane['distance_rev'] += rev
+            if e['cost'] is not None:
+                c = _f(e['cost'])
+                lane['cost'] += c
+                lane['costed_revenue'] += rev
+                lane['with_cost'] += 1
+                if e['cost_basis'] == 'actual':
+                    lane['actual_cost'] += c
+                    lane['cost_actual_n'] += 1
+                else:
+                    lane['estimated_cost'] += c
+                    lane['cost_estimate_n'] += 1
+            if include_loads:
+                lane['rows'].append({
+                    'load_id': l.pk, 'load_number': l.load_number,
+                    'revenue_excl_vat': rev, 'revenue_basis': e['revenue_basis'],
+                    'cost_excl_vat': _f(e['cost']) if e['cost'] is not None else None,
+                    'cost_basis': e['cost_basis'],
+                    'margin': round(rev - _f(e['cost']), 2) if e['cost'] is not None else None,
+                })
     except Exception as exc:
         logger.warning('margin_by_lane failed: %s', exc)
 
@@ -70,19 +151,37 @@ def margin_by_lane(company, limit: int = 25) -> dict:
         has_cost = lane['with_cost'] > 0
         margin = round(costed_rev - lane['cost'], 2) if has_cost else None
         margin_pct = round(margin / costed_rev * 100, 1) if has_cost and costed_rev else None
-        rows.append({
+        row = {
             'lane': lane['lane'],
             'origin': lane['origin'],
             'destination': lane['destination'],
             'loads': lane['loads'],
             'revenue': round(lane['revenue'], 2),
+            'revenue_excl_vat': round(lane['revenue'], 2),
+            'revenue_basis': _basis_of(lane['rev_actual_n'], lane['rev_estimate_n']),
+            'loads_invoiced': lane['rev_actual_n'],
+            'loads_uninvoiced': lane['rev_estimate_n'],
+            # est_cost/est_margin keep their names for older clients; they are
+            # the cost/margin actually used (actuals where recorded).
             'est_cost': round(lane['cost'], 2) if has_cost else None,
             'est_margin': margin,
+            'cost': round(lane['cost'], 2) if has_cost else None,
+            'margin': margin,
             'margin_pct': margin_pct,
-            'avg_distance_km': round(lane['distance_sum'] / lane['with_cost'], 0) if has_cost else None,
-            'revenue_per_km': round(costed_rev / lane['distance_sum'], 2) if lane['distance_sum'] else None,
+            'actual_cost': round(lane['actual_cost'], 2) if lane['cost_actual_n'] else None,
+            'estimated_cost': round(lane['estimated_cost'], 2) if lane['cost_estimate_n'] else None,
+            'cost_basis': _basis_of(lane['cost_actual_n'], lane['cost_estimate_n']),
+            'loads_actual_cost': lane['cost_actual_n'],
+            'loads_estimated_cost': lane['cost_estimate_n'],
+            'loads_no_cost': lane['loads'] - lane['with_cost'],
+            'avg_distance_km': (round(lane['distance_sum'] / lane['distance_loads'], 0)
+                                if lane['distance_loads'] else None),
+            'revenue_per_km': round(lane['distance_rev'] / lane['distance_sum'], 2) if lane['distance_sum'] else None,
             'cost_coverage': round(lane['with_cost'] / lane['loads'], 2) if lane['loads'] else 0,
-        })
+        }
+        if include_loads:
+            row['load_rows'] = lane['rows']
+        rows.append(row)
 
     rows.sort(key=lambda r: r['revenue'], reverse=True)
     rows = rows[:limit]
@@ -90,12 +189,22 @@ def margin_by_lane(company, limit: int = 25) -> dict:
     priced = [r for r in rows if r['margin_pct'] is not None]
     best = max(priced, key=lambda r: r['margin_pct']) if priced else None
     worst = min(priced, key=lambda r: r['margin_pct']) if priced else None
+    n_actual = sum(r['loads_actual_cost'] for r in rows)
+    n_est = sum(r['loads_estimated_cost'] for r in rows)
 
     return {
         'lanes': rows,
         'summary': {
             'lane_count': len(rows),
             'total_revenue': round(sum(r['revenue'] for r in rows), 2),
+            'total_revenue_excl_vat': round(sum(r['revenue'] for r in rows), 2),
+            'vat_treatment': 'excl_vat',
+            'revenue_basis': _basis_of(sum(r['loads_invoiced'] for r in rows),
+                                       sum(r['loads_uninvoiced'] for r in rows)),
+            'cost_basis': _basis_of(n_actual, n_est),
+            'loads_actual_cost': n_actual,
+            'loads_estimated_cost': n_est,
+            'loads_no_cost': sum(r['loads_no_cost'] for r in rows),
             'best_lane': {'lane': best['lane'], 'margin_pct': best['margin_pct']} if best else None,
             'worst_lane': {'lane': worst['lane'], 'margin_pct': worst['margin_pct']} if worst else None,
         },

@@ -23,6 +23,7 @@ from django.shortcuts import redirect
 from django.conf import settings
 from core.models import Company, Invoice, Load, Driver, Vehicle, Customer
 from core.models.integration_api_key import IntegrationAPIKey
+from core.permissions import IsIntegrationAdmin
 from core.integrations.xero import XeroClient
 from core.integrations.credit_bureau import CreditBureauService
 from core.integrations.fleet import ManualFleetIntegration
@@ -62,7 +63,7 @@ class XeroConnectView(APIView):
     Begin Xero OAuth. Returns the authorization URL for the frontend to redirect to.
     GET /api/v1/integrations/xero/connect/
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsIntegrationAdmin]
 
     def get(self, request):
         company = _user_company(request)
@@ -118,7 +119,7 @@ class XeroDisconnectView(APIView):
     Disconnect Xero integration.
     POST /api/v1/integrations/xero/disconnect/
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsIntegrationAdmin]
 
     def post(self, request):
         company = _user_company(request)
@@ -176,7 +177,7 @@ class CartrackConnectView(APIView):
     POST /api/v1/integrations/cartrack/connect/
     Body: {username, password, base_url}
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsIntegrationAdmin]
 
     def post(self, request):
         from core.utils.crypto import encrypt_secret
@@ -243,7 +244,7 @@ class CtrlFleetConnectView(APIView):
     POST /api/v1/integrations/ctrlfleet/connect/
     Body: {api_key}
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsIntegrationAdmin]
 
     def post(self, request):
         from core.utils.crypto import encrypt_secret
@@ -282,7 +283,7 @@ class CtrlFleetDisconnectView(APIView):
     every vehicle matched to a CtrlFleet vehicleCode.
     POST /api/v1/integrations/ctrlfleet/disconnect/
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsIntegrationAdmin]
 
     def post(self, request):
         company = _user_company(request)
@@ -357,7 +358,7 @@ class CtrlFleetLinkVehicleView(APIView):
     POST /api/v1/integrations/ctrlfleet/link-vehicle/
     Body: {vehicle_id, ctrlfleet_vehicle_code}  # falsy code unlinks
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsIntegrationAdmin]
 
     def post(self, request):
         company = _user_company(request)
@@ -398,15 +399,20 @@ class CtrlFleetSyncPositionsView(APIView):
         from core.integrations.ctrlfleet import CtrlFleetAPIError
         from core.services.ctrlfleet_sync import sync_ctrlfleet_positions
 
+        vehicle_id = request.data.get('vehicle_id')
+        vehicle_ids = [vehicle_id] if vehicle_id else None
+        # Refreshing one vehicle's location is the order page's "Sync
+        # Location" button, used by dispatchers; a fleet-wide sync is an
+        # integration action and needs a company admin.
+        if vehicle_ids is None and not IsIntegrationAdmin().has_permission(request, self):
+            return Response({'error': IsIntegrationAdmin.message}, status=status.HTTP_403_FORBIDDEN)
+
         company = _user_company(request)
         if not company.ctrlfleet_api_key:
             return Response(
                 {'error': 'CtrlFleet not connected. Please connect first.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-
-        vehicle_id = request.data.get('vehicle_id')
-        vehicle_ids = [vehicle_id] if vehicle_id else None
 
         try:
             sync_result = sync_ctrlfleet_positions(company, vehicle_ids=vehicle_ids)
@@ -422,7 +428,7 @@ class CtrlFleetSyncVehiclesView(APIView):
     a new truck to the fleet).
     POST /api/v1/integrations/ctrlfleet/sync-vehicles/
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsIntegrationAdmin]
 
     def post(self, request):
         from core.integrations.ctrlfleet import CtrlFleetAPIError
@@ -448,7 +454,7 @@ class XeroSyncInvoicesView(APIView):
     Push this company's outstanding invoices to Xero.
     POST /api/v1/integrations/xero/sync-invoices/
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsIntegrationAdmin]
 
     def post(self, request):
         company = _user_company(request)
@@ -484,7 +490,7 @@ class XeroSyncPaymentsView(APIView):
     Pull payments from Xero and reconcile them against this company's invoices.
     POST /api/v1/integrations/xero/sync-payments/
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsIntegrationAdmin]
 
     def post(self, request):
         company = _user_company(request)

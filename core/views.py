@@ -1155,6 +1155,9 @@ class SecuritySettingsView(APIView):
         return Response(settings)
 
 
+from core.permissions import IsIntegrationAdmin  # noqa: E402
+
+
 class IsAdmin(IsAuthenticated):
     def has_permission(self, request, view):
         return super().has_permission(request, view) and hasattr(request.user, 'role') and request.user.role == 'ADMIN'
@@ -1328,12 +1331,13 @@ class FleetOverviewView(APIView):
             if avg_margin_per_vehicle is not None and last_month_avg else None
         )
         
-        # Fleet Cost per KM
+        # Fleet Cost per KM: vehicle expenses EXCLUDING VAT (rejected never
+        # count) - the accounting_reports expense definition.
         total_expenses = Expense.objects.filter(
             created_at__gte=current_month_start,
             vehicle__isnull=False,
             company=request.user.company
-        ).aggregate(total=Sum('amount'))['total']
+        ).exclude(status='REJECTED').aggregate(total=Sum(F('amount') - F('vat_amount')))['total']
         
         total_expenses = float(total_expenses) if total_expenses else 0.0
         
@@ -2547,7 +2551,19 @@ class LoadViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'], parser_classes=[MultiPartParser, FormParser])
     def upload_pod(self, request, pk=None):
-        """Upload Proof of Delivery."""
+        """Upload Proof of Delivery.
+
+        This is the only writer of the POD fields (LoadSerializer makes them
+        read-only). It used to store a made-up "signature" built from the file
+        name, which made every upload look like a signed POD to the risk
+        engine; now pod_signature is only set from a signature the client
+        actually captured, and the file's SHA-256 is computed here so the
+        evidence a funder relies on can be proven unchanged later.
+        """
+        import hashlib
+        from decimal import Decimal, InvalidOperation
+        from django.utils.dateparse import parse_datetime
+
         load = self.get_object()
         file = request.FILES.get('pod_document') or request.FILES.get('file')
         if not file:
@@ -2555,9 +2571,59 @@ class LoadViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         ALLOWED_POD_TYPES = {'application/pdf', 'image/jpeg', 'image/png', 'image/webp'}
         if file.content_type not in ALLOWED_POD_TYPES:
             return Response({'error': 'Only PDF and image files are accepted'}, status=status.HTTP_400_BAD_REQUEST)
+
+        errors = {}
+        captured_at = None
+        raw_captured = (request.data.get('captured_at') or '').strip()
+        if raw_captured:
+            captured_at = parse_datetime(raw_captured)
+            if captured_at is None:
+                errors['captured_at'] = 'Must be an ISO-8601 datetime'
+            elif timezone.is_naive(captured_at):
+                captured_at = timezone.make_aware(captured_at)
+
+        def _coord(name, bound):
+            raw = request.data.get(name)
+            if raw in (None, ''):
+                return None
+            try:
+                val = Decimal(str(raw)).quantize(Decimal('0.000001'))
+            except (InvalidOperation, ValueError):
+                errors[name] = 'Must be a number'
+                return None
+            if abs(val) > bound:
+                errors[name] = f'Must be between -{bound} and {bound}'
+                return None
+            return val
+
+        lat = _coord('lat', 90) if 'lat' in request.data else _coord('latitude', 90)
+        lng = _coord('lng', 180) if 'lng' in request.data else _coord('longitude', 180)
+        source = (request.data.get('source') or '').strip().upper()
+        valid_sources = {c for c, _ in Load.POD_SOURCE_CHOICES}
+        if source and source not in valid_sources:
+            errors['source'] = f'Must be one of {sorted(valid_sources)}'
+        if errors:
+            return Response({'error': 'Invalid POD metadata', 'fields': errors},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        digest = hashlib.sha256()
+        for chunk in file.chunks():
+            digest.update(chunk)
+        file.seek(0)
+
         load.pod_document = file
-        load.pod_received_by = request.data.get('received_by', file.name)
-        load.pod_signature = f'POD: {file.name} ({file.size} bytes)'
+        load.pod_file_sha256 = digest.hexdigest()
+        load.pod_received_by = (request.data.get('received_by') or '').strip()[:200]
+        # Only a signature the client really captured (e.g. a drawn-signature
+        # data URL) is stored; otherwise leave whatever real one is on file.
+        signature = (request.data.get('signature') or '').strip()
+        if signature:
+            load.pod_signature = signature
+        load.pod_captured_at = captured_at
+        load.pod_latitude = lat
+        load.pod_longitude = lng
+        load.pod_device = (request.data.get('device') or '').strip()[:200]
+        load.pod_source = source or 'UNKNOWN'
         # A POD in hand means the order reached the customer — treat it as
         # proof of delivery from either point still short of Delivered, not
         # just the strict IN_TRANSIT step (e.g. a driver skipped logging
@@ -2569,6 +2635,7 @@ class LoadViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
             'message': 'POD uploaded successfully',
             'filename': file.name,
             'load_id': load.id,
+            'pod_file_sha256': load.pod_file_sha256,
             'pod_url': request.build_absolute_uri(load.pod_document.url) if load.pod_document else None
         })
 
@@ -3199,9 +3266,16 @@ class PublicInvoiceView(APIView):
             'discount': str(invoice.discount),
             'total_amount': str(invoice.total_amount),
             'paid_amount': str(invoice.paid_amount),
+            'credited_amount': str(invoice.credited_amount),
             'balance': str(invoice.balance),
             'notes': invoice.notes,
             'line_items': invoice.line_items or [],
+            'lines': [{
+                'description': l.description, 'quantity': str(l.quantity), 'unit_price': str(l.unit_price),
+                'discount_amount': str(l.discount_amount), 'tax_code': l.tax_code, 'tax_rate': str(l.tax_rate),
+                'net_amount': str(l.net_amount), 'vat_amount': str(l.vat_amount), 'total_amount': str(l.total_amount),
+            } for l in invoice.lines.all()],
+            'is_tax_invoice': bool(getattr(company, 'vat_registered', True)) if company else True,
             'description': getattr(invoice, 'description', '') or '',
             'company_name': company.company_name if company else 'TruckWys',
             'company_logo_url': company_logo_url,
@@ -4123,19 +4197,25 @@ class DashboardOverviewView(APIView):
         now = timezone.now()
         start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         
-        # Revenue MTD from PAID invoices
-        revenue_mtd = Invoice.objects.filter(
-            created_at__gte=start_of_month,
-            status='PAID',
-            company=request.user.company
-        ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0')
+        # Revenue MTD: the one definition (accounting_reports) - accrual,
+        # EXCLUDING VAT: issued invoices this month less credit notes issued
+        # this month; drafts and void never count. (Was: PAID invoices incl.
+        # VAT by created_at.) See docs/foundation/REPORTS.md.
+        from core.services import accounting_reports as ar
+        from core.services.aging_service import OUTSTANDING_STATUSES
+        company = request.user.company
+        revenue_mtd = (ar.sales(company, start_of_month.date(), None)['revenue_excl_vat']
+                       if company else Decimal('0'))
 
-        # Outstanding invoices (SENT + OVERDUE)
+        # Outstanding invoices: what is still owed (balance, incl. VAT) on
+        # issued invoices - the aging report's rule. (Was: full totals of
+        # SENT + OVERDUE only, ignoring part-payments and credit notes.)
         outstanding = Invoice.objects.filter(
-            status__in=['SENT', 'OVERDUE'],
+            status__in=OUTSTANDING_STATUSES,
+            balance__gt=0,
             company=request.user.company
         )
-        outstanding_total = outstanding.aggregate(total=Sum('total_amount'))['total'] or Decimal('0')
+        outstanding_total = outstanding.aggregate(total=Sum('balance'))['total'] or Decimal('0')
         outstanding_count = outstanding.count()
 
         # Active loads (IN_TRANSIT + LOADING)
@@ -4158,6 +4238,9 @@ class DashboardOverviewView(APIView):
         
         return Response({
             'revenue_mtd': float(revenue_mtd),
+            'revenue_excl_vat_mtd': float(revenue_mtd),
+            'revenue_basis': 'accrual',
+            'vat_treatment': 'excl_vat',
             'outstanding_invoices_total': float(outstanding_total),
             'outstanding_invoices_count': outstanding_count,
             'active_loads': active_loads,
@@ -4612,7 +4695,9 @@ class WebhookViewSet(viewsets.ModelViewSet):
     destroy: Delete webhook
     test: POST /api/v1/webhooks/{id}/test/ - Send test ping
     """
-    permission_classes = [IsAuthenticated]
+    # Webhooks push company data to an arbitrary URL: company ADMIN or
+    # superuser only (capital-safety 2026-10, see IsIntegrationAdmin).
+    permission_classes = [IsIntegrationAdmin]
     
     def get_queryset(self):
         from core.models import Webhook
@@ -4651,7 +4736,9 @@ class IntegrationAPIKeyViewSet(viewsets.ModelViewSet):
     destroy: Delete/revoke API key
     calls: GET paginated call log for this key
     """
-    permission_classes = [IsAuthenticated]
+    # API keys grant programmatic access to company data: company ADMIN or
+    # superuser only (capital-safety 2026-10, see IsIntegrationAdmin).
+    permission_classes = [IsIntegrationAdmin]
 
     def get_queryset(self):
         from core.models import IntegrationAPIKey

@@ -1263,8 +1263,8 @@ def send_weekly_summary_email(user, company, stats: dict) -> bool:
         _row('Bookings delivered', stats['bookings_delivered']) +
         _row('Quotes sent', stats['quotes_sent']) +
         _row('Quotes accepted', stats['quotes_accepted']) +
-        _row('Invoiced', format_zar(stats['invoiced_total'])) +
-        _row('Payments collected', format_zar(stats['collected_total']))
+        _row('Invoiced (excl. VAT)', format_zar(stats['invoiced_total'])) +
+        _row('Payments collected (incl. VAT)', format_zar(stats['collected_total']))
     )
     subject = f"Your weekly TruckWys summary — {stats['week_start']} to {stats['week_end']}"
     html_content = f"""<!DOCTYPE html>

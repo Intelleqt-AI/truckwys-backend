@@ -1,6 +1,8 @@
 """Advance Request model for capital advance management."""
 
+from django.conf import settings
 from django.db import models
+from django.db.models import Q
 from django.core.validators import MinValueValidator
 from django.utils import timezone
 from decimal import Decimal
@@ -122,6 +124,42 @@ class AdvanceRequest(models.Model):
         help_text='Additional notes about this advance'
     )
 
+    # Facility capacity this advance currently holds in Facility.reserved.
+    # Tracked per advance so release/disburse move exactly what was reserved
+    # (legacy rows created before reservation existed hold 0 and reserve on
+    # approve/disburse instead). Written only by core.services.facility_ledger.
+    capacity_reserved = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=Decimal('0.00'),
+        validators=[MinValueValidator(Decimal('0.00'))],
+        help_text='Amount of facility capacity held by this advance'
+    )
+
+    # Settlement evidence: an advance is only closed by the capital desk or a
+    # system path against a real debtor payment, never by the transporter.
+    settlement_reference = models.CharField(
+        max_length=200,
+        blank=True,
+        help_text='Bank/payment reference proving the debtor paid'
+    )
+    settlement_payment = models.ForeignKey(
+        'core.Payment',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='settled_advances',
+        help_text='Recorded payment on the advanced invoice that settled it'
+    )
+    settled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='settled_advances',
+        help_text='Staff user who settled the advance (null = system)'
+    )
+
     # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -135,6 +173,16 @@ class AdvanceRequest(models.Model):
             models.Index(fields=['facility']),
             models.Index(fields=['-created_at']),
             models.Index(fields=['disbursed_at']),
+        ]
+        # One live advance per invoice. The old view-level "race dupe" check
+        # locked rows that did not exist yet, so two concurrent requests could
+        # both insert; only the database can make this hold.
+        constraints = [
+            models.UniqueConstraint(
+                fields=['invoice'],
+                condition=Q(status__in=['REQUESTED', 'SCORING', 'APPROVED', 'DISBURSED']),
+                name='uniq_active_advance_per_invoice',
+            ),
         ]
 
     def __str__(self) -> str:
@@ -170,14 +218,15 @@ class AdvanceRequest(models.Model):
         self.fee_amount = (self.amount * fee_percent / Decimal('100')).quantize(Decimal('0.01'))
         self.net_amount = self.amount - self.fee_amount
 
-    def request(self) -> None:
-        """Mark advance as requested."""
-        if self.status != 'ELIGIBLE':
-            raise ValueError(f"Cannot request advance in status {self.status}")
+    # Every state change that moves facility capacity goes through
+    # core.services.facility_ledger, which locks the facility and advance rows
+    # and uses conditional F() updates. The methods below are thin wrappers so
+    # existing callers (staff + partner views) keep their API.
 
-        self.status = 'REQUESTED'
-        self.requested_at = timezone.now()
-        self.save()
+    def request(self) -> None:
+        """Mark advance as requested and reserve facility capacity."""
+        from core.services import facility_ledger
+        facility_ledger.request_advance(self)
 
     def start_scoring(self) -> None:
         """Mark advance as being scored."""
@@ -188,63 +237,30 @@ class AdvanceRequest(models.Model):
         self.save()
 
     def approve(self) -> None:
-        """Approve the advance request."""
-        if self.status not in ['SCORING', 'REQUESTED']:
-            raise ValueError(f"Cannot approve advance in status {self.status}")
-
-        self.status = 'APPROVED'
-        self.approved_at = timezone.now()
-        self.save()
+        """Approve the advance request (its reservation is kept)."""
+        from core.services import facility_ledger
+        facility_ledger.approve_advance(self)
 
     def deny(self, reason: str) -> None:
-        """
-        Deny the advance request.
-
-        Args:
-            reason: Reason for denial
-        """
-        if self.status not in ['SCORING', 'REQUESTED']:
-            raise ValueError(f"Cannot deny advance in status {self.status}")
-
-        self.status = 'DENIED'
-        self.denial_reason = reason
-        self.save()
+        """Deny the advance request and release its reservation."""
+        from core.services import facility_ledger
+        facility_ledger.deny_advance(self, reason)
 
     def disburse(self) -> None:
-        """Mark advance as disbursed and reserve facility amount."""
-        if self.status != 'APPROVED':
-            raise ValueError(f"Cannot disburse advance in status {self.status}")
+        """Pay out: move the reservation into facility outstanding."""
+        from core.services import facility_ledger
+        facility_ledger.disburse_advance(self)
 
-        # Reserve amount in facility
-        self.facility.reserve_amount(self.amount)
+    def settle(self, payment_reference: str, settled_by=None, payment=None) -> None:
+        """Close a disbursed advance against debtor-payment evidence."""
+        from core.services import facility_ledger
+        facility_ledger.settle_advance(
+            self, payment_reference=payment_reference, settled_by=settled_by, payment=payment)
 
-        self.status = 'DISBURSED'
-        self.disbursed_at = timezone.now()
-        self.save()
-
-    def settle(self) -> None:
-        """Mark advance as settled and release facility amount."""
-        if self.status != 'DISBURSED':
-            raise ValueError(f"Cannot settle advance in status {self.status}")
-
-        # Release amount from facility
-        self.facility.release_amount(self.amount)
-
-        self.status = 'SETTLED'
-        self.settled_at = timezone.now()
-        self.save()
-
-    def cancel(self) -> None:
-        """Cancel the advance request."""
-        if self.status in ['SETTLED', 'DISBURSED']:
-            raise ValueError(f"Cannot cancel advance in status {self.status}")
-
-        # If was disbursed, release the facility amount
-        if self.status == 'DISBURSED':
-            self.facility.release_amount(self.amount)
-
-        self.status = 'CANCELLED'
-        self.save()
+    def cancel(self, note: str = '') -> None:
+        """Cancel an undisbursed advance and release its reservation."""
+        from core.services import facility_ledger
+        facility_ledger.cancel_advance(self, note=note)
 
     def clean(self) -> None:
         """Validate model fields."""
@@ -256,13 +272,10 @@ class AdvanceRequest(models.Model):
                 'amount': 'Advance amount cannot exceed invoice total'
             })
 
-        # Validate facility has capacity
-        if self.facility and self.status == 'APPROVED':
-            can_advance, reason = self.facility.can_advance(self.amount)
-            if not can_advance:
-                raise ValidationError({
-                    'facility': reason
-                })
+        # Facility capacity is not checked here any more: an APPROVED advance
+        # already holds its own reservation, so a facility.available check
+        # would count it twice. facility_ledger + the Facility CheckConstraints
+        # enforce capacity.
 
     def save(self, *args, **kwargs) -> None:
         """Override save to run validation."""

@@ -13,6 +13,7 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.views import APIView
 from django.db.models import Q, Count, Sum
 from django.db import transaction
@@ -78,6 +79,19 @@ def _invoice_scope(user):
     return Invoice.objects.filter(company=company) if company else Invoice.objects.none()
 
 
+def _facility_for_invoice(invoice):
+    """The active facility of the transporter that issued the invoice.
+
+    Staff used to get the first ACTIVE facility of any tenant: an arbitrary
+    tenant's facility, so the capital desk scored and funded one
+    transporter's invoice against another's limit (audit §6 #7). The
+    facility always follows invoice.company now, for staff and tenants alike.
+    """
+    if invoice is None or not invoice.company_id:
+        return None
+    return Facility.objects.filter(company_id=invoice.company_id, status='ACTIVE').first()
+
+
 def _inv_no(advance):
     """Invoice number for an advance, defensively."""
     inv = getattr(advance, 'invoice', None)
@@ -113,11 +127,13 @@ class FacilityViewSet(viewsets.ModelViewSet):
         """Filter facilities by user's company."""
         return _capital_scope(self, Facility.objects.all(), 'company')
 
-    def perform_create(self, serializer):
-        """Only staff can create facilities."""
-        if not self.request.user.is_staff:
-            raise PermissionError("Only administrators can create facilities")
-        serializer.save()
+    def check_permissions(self, request):
+        # A facility limit is credit the funder extends; a tenant could PATCH
+        # its own limit up (only create was guarded, and with a PermissionError
+        # that surfaced as a 500). Writes are staff-only; reads stay scoped.
+        super().check_permissions(request)
+        if request.method not in ('GET', 'HEAD', 'OPTIONS') and not request.user.is_staff:
+            raise PermissionDenied('Only the capital desk can change facilities')
 
 
 class RiskScoreViewSet(viewsets.ReadOnlyModelViewSet):
@@ -160,19 +176,9 @@ class RiskScoreViewSet(viewsets.ReadOnlyModelViewSet):
                 status=status.HTTP_404_NOT_FOUND
             )
 
-        # Check permissions — admin/staff can score any invoice
-        user = request.user
-
-        # Get facility for the OPERATOR (logged-in user's company), not the debtor
-        # For staff/admin, use the first active facility
-        if user.is_staff:
-            facility = Facility.objects.filter(status='ACTIVE').first()
-        else:
-            company = getattr(user, 'company', None)
-            facility = Facility.objects.filter(
-                company=company,
-                status='ACTIVE'
-            ).first() if company else None
+        # Score against the invoice's own transporter facility (non-staff are
+        # already limited to their own invoices by _invoice_scope).
+        facility = _facility_for_invoice(invoice)
 
         if not facility:
             return Response(
@@ -227,6 +233,10 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
 
     serializer_class = AdvanceRequestSerializer
     permission_classes = [IsAuthenticated]
+    # No PUT/PATCH/DELETE: status, amount and facility used to be writable by
+    # a plain PATCH (e.g. status=SETTLED), bypassing every lifecycle check and
+    # the facility ledger. State changes go through the actions below only.
+    http_method_names = ['get', 'post', 'head', 'options']
 
     def get_queryset(self):
         """Filter advance requests by user's company."""
@@ -268,22 +278,14 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
         if not invoice:
             return Response({'error': 'Invoice not found'}, status=status.HTTP_404_NOT_FOUND)
 
-        # Get facility for the OPERATOR (logged-in user's company)
-        user = request.user
-        if user.is_staff:
-            facility = Facility.objects.filter(status='ACTIVE').first()
-        else:
-            company = getattr(user, 'company', None)
-            facility = Facility.objects.filter(
-                company=company,
-                status='ACTIVE'
-            ).first() if company else None
+        facility = _facility_for_invoice(invoice)
 
         if not facility:
             return Response(
                 {'error': 'No active facility found for this company'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
 
         # IDEMPOTENCY: if an active advance already exists for this invoice,
         # return it instead of creating a duplicate (handles retries/double-clicks).
@@ -306,7 +308,25 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
                  'block_threshold': BLOCK_THRESHOLD},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+        # Structural rules shared with the lender path: collectable status,
+        # linked load, POD evidence. The risk engine re-checks load/POD, but
+        # failing early gives a precise reason and skips a wasted score.
+        from core.services.capital_guard import financing_block_reason
+        block = financing_block_reason(invoice)
+        if block:
+            return Response(
+                {'error': 'Invoice is not eligible for advance', 'reason': block, 'reasons': [block]},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         advance_amount = fundable_amount(invoice.total_amount, crisk['risk_pct'] or 0)
+        # Never advance more than is still collectable on a part-paid invoice.
+        if invoice.balance is not None and invoice.balance < advance_amount:
+            advance_amount = Decimal(str(invoice.balance)).quantize(Decimal('0.01'))
+        if advance_amount <= 0:
+            return Response({'error': 'Invoice has no outstanding balance to advance against'},
+                            status=status.HTTP_400_BAD_REQUEST)
 
         # Calculate risk score
         engine = RiskEngine(invoice=invoice, facility=facility)
@@ -329,43 +349,35 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
         # Create risk score record
         risk_score = engine.create_risk_score_record(result)
 
-        # Atomically lock the facility row, re-check capacity under the lock to
-        # prevent concurrent requests double-spending the facility limit, and
-        # guard against a racing duplicate advance for the same invoice.
+        # Create + reserve capacity in one locked transaction (facility_ledger).
+        # A racing duplicate for the same invoice is caught by the
+        # uniq_active_advance_per_invoice constraint and handed back as-is.
+        from core.services.facility_ledger import open_advance, CapacityError
+        # Fee applies to the risk-deducted amount, not the face value.
+        fee_amount = (advance_amount * Decimal(str(result.final_fee_percent)) / Decimal('100')
+                      ).quantize(Decimal('0.01'))
         try:
-            with transaction.atomic():
-                locked_facility = Facility.objects.select_for_update().get(pk=facility.pk)
-
-                race_dupe = AdvanceRequest.objects.select_for_update().filter(
-                    invoice=invoice,
-                    status__in=['REQUESTED', 'SCORING', 'APPROVED', 'DISBURSED'],
-                ).first()
-                if race_dupe:
-                    return Response(AdvanceRequestSerializer(race_dupe).data, status=status.HTTP_200_OK)
-
-                if locked_facility.available < advance_amount:
-                    return Response(
-                        {'error': 'Advance would exceed available facility limit',
-                         'available': float(locked_facility.available)},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-
-                # Fee applies to the risk-deducted amount, not the face value.
-                fee_amount = (advance_amount * Decimal(str(result.final_fee_percent)) / Decimal('100')
-                              ).quantize(Decimal('0.01'))
-                advance_request = AdvanceRequest.objects.create(
-                    invoice=invoice,
-                    facility=locked_facility,
-                    risk_score=risk_score,
-                    amount=advance_amount,
-                    fee_percent=result.final_fee_percent,
-                    fee_amount=fee_amount,
-                    net_amount=advance_amount - fee_amount,
-                    status='REQUESTED',
-                    requested_at=timezone.now(),
-                )
+            advance_request, created = open_advance(
+                invoice=invoice,
+                facility=facility,
+                amount=advance_amount,
+                risk_score=risk_score,
+                fee_percent=result.final_fee_percent,
+                fee_amount=fee_amount,
+                net_amount=advance_amount - fee_amount,
+            )
+        except CapacityError as exc:
+            facility.refresh_from_db()
+            return Response(
+                {'error': 'Advance would exceed available facility limit',
+                 'detail': str(exc),
+                 'available': float(facility.available)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
         except Exception as exc:
             return Response({'error': f'Could not create advance: {exc}'}, status=status.HTTP_400_BAD_REQUEST)
+        if not created:
+            return Response(AdvanceRequestSerializer(advance_request).data, status=status.HTTP_200_OK)
 
         # Persist a notification + live-push to the operator's open sessions.
         try:
@@ -500,22 +512,41 @@ class AdvanceRequestViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'], url_path='settle')
     def settle(self, request, pk=None):
-        """Settle advance when customer pays."""
-        advance = self.get_object()
+        """Settle a disbursed advance against debtor-payment evidence.
 
-        # Check permissions
+        Staff (capital desk) only. The transporter used to be able to settle
+        its own advance with one click, releasing facility capacity while the
+        debt was still unpaid, and then draw again (audit §6 #1).
+        """
         user = request.user
-        if not user.is_staff and advance.facility.company != user.company:
+        if not user.is_staff:
             return Response(
-                {'error': 'You do not have permission to settle this advance'},
+                {'error': 'Only the capital desk can settle advances. Settlement is '
+                          'recorded when the debtor payment is received.'},
                 status=status.HTTP_403_FORBIDDEN
             )
+        advance = self.get_object()
 
         serializer = SettleAdvanceSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
+        payment = None
+        payment_id = serializer.validated_data.get('payment_id')
+        if payment_id is not None:
+            from core.models import Payment
+            payment = Payment.objects.filter(pk=payment_id, invoice_id=advance.invoice_id).first()
+            if payment is None:
+                return Response(
+                    {'error': 'payment_id must be a payment recorded on the advanced invoice'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
         try:
-            advance.settle()
+            advance.settle(
+                payment_reference=serializer.validated_data['payment_reference'],
+                settled_by=user,
+                payment=payment,
+            )
 
             if serializer.validated_data.get('notes'):
                 advance.notes = serializer.validated_data['notes']
@@ -619,6 +650,7 @@ class CapitalDashboardViewSet(viewsets.ViewSet):
             'id': facility.id,
             'limit': float(facility.limit),
             'outstanding': float(facility.outstanding),
+            'reserved': float(facility.reserved),
             'available': float(facility.available),
             'utilization_percent': float(facility.utilization_percent),
         }
@@ -730,15 +762,17 @@ class CapitalEligibleInvoicesView(APIView):
     def get(self, request):
         user = request.user
 
-        # Resolve the operator's active facility (advances are scored against it).
-        # Without a facility, no invoice is advanceable — return an empty, honest list.
+        # Each invoice is scored against its own transporter's facility (never
+        # an arbitrary "first active" one). Without a facility, no invoice is
+        # advanceable — return an empty, honest list.
         company = getattr(user, 'company', None)
-        if user.is_staff:
-            facility = Facility.objects.filter(status='ACTIVE').first()
-        else:
-            facility = Facility.objects.filter(
-                company=company, status='ACTIVE'
-            ).first() if company else None
+        if company is None and not user.is_staff:
+            # Company-less non-staff used to fall through to every tenant's
+            # invoices here; fail closed like the rest of the capital views.
+            return Response({
+                'eligible_count': 0, 'total_face_value_zar': 0.0, 'total_net_payout_zar': 0.0,
+                'invoices': [], 'ineligible_count': 0, 'ineligible_invoices': [],
+            })
 
         # Candidate invoices: this company's SENT/VIEWED/OVERDUE invoices with no active advance.
         # VIEWED is included because viewing the public link auto-transitions SENT → VIEWED.
@@ -751,6 +785,13 @@ class CapitalEligibleInvoicesView(APIView):
         if company is not None:
             candidates = candidates.filter(company=company)
         candidates = candidates.order_by('-issue_date')[:50]
+
+        facilities = {}
+
+        def facility_for(inv):
+            if inv.company_id not in facilities:
+                facilities[inv.company_id] = _facility_for_invoice(inv)
+            return facilities[inv.company_id]
 
         # AI customer risk (overdue-behavior based): one bulk pass for every
         # customer in the candidate list — drives the badge, the proportional
@@ -766,6 +807,7 @@ class CapitalEligibleInvoicesView(APIView):
         total_net_payout = Decimal('0.00')
 
         for inv in candidates:
+            facility = facility_for(inv)
             if not facility:
                 ineligible_result.append({
                     'id': inv.id,

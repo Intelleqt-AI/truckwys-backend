@@ -46,6 +46,7 @@ from .views_ai_quote import (
 )
 from .views_finance import (
     InvoiceFinanceViewSet, PaymentFinanceViewSet, ExpenseFinanceViewSet,
+    CreditNoteViewSet, SupplierViewSet, FinanceSettingsView,
     TripCostView, FinanceDashboardView, RouteAnalyticsView, DashboardKPIView,
     CustomerHealthView, ReportsExportView, BillingAuditView,
     MarginByLaneView, FastPaySavingsView
@@ -105,6 +106,8 @@ router.register(r'quotes', QuoteViewSet, basename='quote')
 router.register(r'invoices', InvoiceFinanceViewSet, basename='invoice')
 router.register(r'payments', PaymentFinanceViewSet, basename='payment')
 router.register(r'expenses', ExpenseFinanceViewSet, basename='expense')
+router.register(r'credit-notes', CreditNoteViewSet, basename='credit-note')
+router.register(r'suppliers', SupplierViewSet, basename='supplier')
 router.register(r'settlements', SettlementViewSet, basename='settlement')
 router.register(r'notifications', NotificationViewSet, basename='notification')
 
@@ -237,6 +240,7 @@ urlpatterns = [
 
     # Finance Dashboard endpoints (NEW - Phase 2)
     path('dashboard/finance/', FinanceDashboardView.as_view(), name='finance-dashboard'),
+    path('finance/settings/', FinanceSettingsView.as_view(), name='finance-settings'),
     path('billing/audit/', BillingAuditView.as_view(), name='billing-audit'),
     path('dashboard/kpi/', DashboardKPIView.as_view(), name='dashboard-kpi'),
     path('dashboard/briefing/', DashboardBriefingView.as_view(), name='dashboard-briefing'),

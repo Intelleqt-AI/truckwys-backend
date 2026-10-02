@@ -226,6 +226,10 @@ class FinanceScopingTests(TestCase):
         r_a = self._client(self.user_a).get(f'/api/v1/expenses/report/?month={month}')
         self.assertEqual(r_a.json()['total_amount'], 500.0)
 
+    def _a_revenue_excl_vat(self):
+        # A's two issued invoices (both dated today), excl. VAT.
+        return float(sum(i.total_amount - i.vat_amount for i in (self.inv_paid, self.inv_overdue)))
+
     # -- dashboard/finance --------------------------------------------------
 
     def test_finance_dashboard_scoped(self):
@@ -238,7 +242,9 @@ class FinanceScopingTests(TestCase):
         self.assertEqual(body_b['total_expenses'], 0.0)
 
         body_a = self._client(self.user_a).get('/api/v1/dashboard/finance/').json()
-        self.assertEqual(body_a['total_revenue'], float(self.inv_paid.total_amount))
+        # Revenue = accrual, excl. VAT (foundation spec item 7): BOTH of A's
+        # issued invoices count, not only the paid one — and never C's.
+        self.assertEqual(body_a['total_revenue'], self._a_revenue_excl_vat())
         self.assertEqual(body_a['outstanding_invoices_total'], float(self.inv_overdue.balance))
         self.assertEqual(body_a['top_customers'][0]['customer_name'], 'A Customer')
         # Expense-side scoping: A's own 500, never C's 7777 fuel expense.
@@ -252,7 +258,7 @@ class FinanceScopingTests(TestCase):
         self.assertIsNone(body_b['dso'])
 
         body_a = self._client(self.user_a).get('/api/v1/dashboard/kpi/').json()
-        self.assertEqual(body_a['revenue_mtd'], float(self.inv_paid.total_amount))
+        self.assertEqual(body_a['revenue_mtd'], self._a_revenue_excl_vat())
         self.assertEqual(body_a['outstanding_invoices'], float(self.inv_overdue.balance))
         self.assertGreater(body_a['dso'], 0.0)
 

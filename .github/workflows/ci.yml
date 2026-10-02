@@ -7,6 +7,11 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      # The app refuses to start without an encryption key outside DEBUG
+      # (core/utils/crypto.py, fail closed). CI-only throwaway key: it
+      # protects nothing and must never be used anywhere else.
+      FIELD_ENCRYPTION_KEY: Nsgc3x4jayZhAYiajbv6PDAuaOrLRyNPAKvqf4SOleM=
 
     strategy:
       matrix:

@@ -184,7 +184,10 @@ class InvoicePDFGenerator:
         elements.append(Spacer(1, 5*mm))
 
         # TAX INVOICE title
-        elements.append(Paragraph("TAX INVOICE", self.styles['InvoiceTitle']))
+        # Only a VAT vendor may issue a "tax invoice" (VAT Act s20).
+        company = getattr(self.invoice, 'company', None)
+        title = "TAX INVOICE" if getattr(company, 'vat_registered', True) else "INVOICE"
+        elements.append(Paragraph(title, self.styles['InvoiceTitle']))
 
         return elements
 
@@ -268,10 +271,23 @@ class InvoicePDFGenerator:
         )
 
         # Header row — wrap header in Paragraph too so styles apply consistently
-        data = [[Paragraph('Description', header_desc_style), 'Quantity', 'Unit Price', 'Amount']]
+        data = [[Paragraph('Description', header_desc_style), 'Qty', 'Unit Price', 'Discount', 'VAT', 'Amount']]
 
-        # Line items
-        line_items = self.invoice.line_items or []
+        typed = list(self.invoice.lines.all()) if self.invoice.pk else []
+        vat_label = {'STANDARD': None, 'ZERO_RATED': '0%', 'EXEMPT': 'Exempt', 'NO_VAT': '-'}
+        for line in typed:
+            qty = line.quantity.normalize()
+            data.append([
+                Paragraph(str(line.description), desc_style),
+                f'{qty:f}',
+                format_zar(line.unit_price, minus='-'),
+                format_zar(line.discount_amount, minus='-') if line.discount_amount else '',
+                vat_label.get(line.tax_code) or f'{line.tax_rate.normalize():f}%',
+                format_zar(line.net_amount, minus='-'),
+            ])
+
+        # Pre-foundation invoices without typed lines: the old JSON, or one line.
+        line_items = [] if typed else (self.invoice.line_items or [])
 
         def _num(v):
             try:
@@ -284,11 +300,11 @@ class InvoicePDFGenerator:
                 Paragraph(str(item.get('description', '')), desc_style),
                 str(item.get('quantity', 1)),
                 format_zar(_num(item.get('unit_price')), minus='-'),
+                '', '',
                 format_zar(_num(item.get('amount')), minus='-'),
             ])
 
-        # If no line items, show basic freight charge
-        if not line_items:
+        if not typed and not line_items:
             if self.invoice.load:
                 desc_text = f"Freight Charge - {self.invoice.load.pickup_location} → {self.invoice.load.delivery_location}"
             else:
@@ -297,10 +313,11 @@ class InvoicePDFGenerator:
                 Paragraph(desc_text, desc_style),
                 '1',
                 format_zar(self.invoice.subtotal, minus='-'),
+                '', '',
                 format_zar(self.invoice.subtotal, minus='-'),
             ])
 
-        table = Table(data, colWidths=[90*mm, 25*mm, 30*mm, 30*mm])
+        table = Table(data, colWidths=[70*mm, 15*mm, 25*mm, 22*mm, 15*mm, 28*mm])
         table.setStyle(TableStyle([
             # Header styling
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1e3a8a')),
@@ -331,21 +348,32 @@ class InvoicePDFGenerator:
         """Build totals section."""
         elements = []
 
-        data = [
-            ['Subtotal:', format_zar(self.invoice.subtotal, minus='-')],
-            ['VAT (15%):', format_zar(self.invoice.vat_amount, minus='-')],
-        ]
-
-        if self.invoice.discount > 0:
-            data.append(['Discount:', format_zar(-self.invoice.discount, minus='-')])
+        inv = self.invoice
+        data = []
+        if inv.totals_source == 'LINES':
+            # Discount is taken per line before VAT, so it sits above the
+            # ex-VAT subtotal.
+            if inv.discount > 0:
+                data.append(['Total before discount (excl. VAT):', format_zar(inv.subtotal + inv.discount, minus='-')])
+                data.append(['Discount:', format_zar(-inv.discount, minus='-')])
+            data.append(['Subtotal (excl. VAT):', format_zar(inv.subtotal, minus='-')])
+            data.append(['VAT (15%):' if inv.vat_amount else 'VAT:', format_zar(inv.vat_amount, minus='-')])
+        else:
+            data.append(['Subtotal:', format_zar(inv.subtotal, minus='-')])
+            data.append(['VAT (15%):', format_zar(inv.vat_amount, minus='-')])
+            if inv.discount > 0:
+                data.append(['Discount:', format_zar(-inv.discount, minus='-')])
 
         total_row = len(data)
-        data.append(['TOTAL:', format_zar(self.invoice.total_amount, minus='-')])
+        data.append(['TOTAL (incl. VAT):' if inv.vat_amount else 'TOTAL:', format_zar(inv.total_amount, minus='-')])
 
-        has_balance = self.invoice.paid_amount > 0
+        has_balance = inv.paid_amount > 0 or inv.credited_amount > 0
+        if inv.credited_amount > 0:
+            data.append(['Credited:', format_zar(-inv.credited_amount, minus='-')])
+        if inv.paid_amount > 0:
+            data.append(['Paid:', format_zar(inv.paid_amount, minus='-')])
         if has_balance:
-            data.append(['Paid:', format_zar(self.invoice.paid_amount, minus='-')])
-            data.append(['Balance Due:', format_zar(self.invoice.balance, minus='-')])
+            data.append(['Balance Due:', format_zar(inv.balance, minus='-')])
 
         bold_rows = [total_row]
         if has_balance:
