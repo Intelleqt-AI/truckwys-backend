@@ -24,11 +24,31 @@ from rest_framework.views import exception_handler as _drf_exception_handler
 
 _exc_logger = _logging.getLogger(__name__)
 
+def _protected_delete_response(exc, context):
+    """A delete blocked by PROTECT/RESTRICT foreign keys (e.g. a customer with
+    quotes or invoices) is expected, not a server error: say what's linked."""
+    from collections import Counter
+    counts = Counter(type(obj) for obj in getattr(exc, 'protected_objects', None) or getattr(exc, 'restricted_objects', None) or [])
+    parts = [f"{n} {(m._meta.verbose_name if n == 1 else m._meta.verbose_name_plural)}".lower() for m, n in counts.most_common()]
+    linked = parts[0] if len(parts) == 1 else ', '.join(parts[:-1]) + f' and {parts[-1]}' if parts else 'other records'
+    view = context.get('view')
+    model = getattr(getattr(view, 'queryset', None), 'model', None)
+    noun = model._meta.verbose_name.lower() if model is not None else 'record'
+    return Response(
+        {'error': f"This {noun} can't be deleted: {linked} {'is' if sum(counts.values()) == 1 else 'are'} linked to it.",
+         'linked': {m._meta.verbose_name_plural.lower(): n for m, n in counts.items()}},
+        status=status.HTTP_409_CONFLICT,
+    )
+
+
 def custom_exception_handler(exc, context):
     """Return JSON for every error — never let Django's HTML debug page leak to the API."""
     response = _drf_exception_handler(exc, context)
     if response is not None:
         return response
+    from django.db.models import ProtectedError, RestrictedError
+    if isinstance(exc, (ProtectedError, RestrictedError)):
+        return _protected_delete_response(exc, context)
     # Unhandled exception (e.g. OperationalError, AttributeError) — log and return 500 JSON.
     _exc_logger.exception('Unhandled exception in %s', context.get('view', ''))
     return Response(
@@ -2148,8 +2168,26 @@ class CustomerViewSet(DemoFixedDataMixin, CompanyFilterMixin, viewsets.ModelView
     permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['status', 'city', 'state']
-    search_fields = ['name', 'company_name', 'email', 'phone']
+    search_fields = ['name', 'company_name', 'email', 'phone', 'city']
     ordering_fields = ['created_at', 'name']
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        if self.action != 'list':
+            return qs
+        # The list carries what each customer owes and sorts on the server
+        # (?sort= the page's menu), so the page needn't load the invoice ledger.
+        from core.services.customer_list import SORTS, with_balances
+        sort = self.request.query_params.get('sort') or 'name_asc'
+        return with_balances(qs).order_by(*SORTS.get(sort, SORTS['name_asc']))
+
+    def list(self, request, *args, **kwargs):
+        response = super().list(request, *args, **kwargs)
+        if isinstance(response.data, dict):
+            from core.services.customer_list import page_flags
+            company_customers = CompanyFilterMixin.get_queryset(self)
+            response.data['flags'] = page_flags(company_customers, self.filter_queryset(company_customers))
+        return response
 
     @action(detail=True, methods=['get'])
     def loads(self, request, pk=None):
@@ -2181,6 +2219,25 @@ class DriverViewSet(DemoFixedDataMixin, CompanyFilterMixin, viewsets.ModelViewSe
     search_fields = ['user__username', 'license_number', 'user__first_name', 'user__last_name']
     ordering_fields = ['created_at', 'hire_date']
 
+    def list(self, request, *args, **kwargs):
+        """?view=fleet (the Drivers page): rows carry the open order they're
+        on, and `summary` carries the tiles over the searched drivers
+        (core.services.driver_list). Without it, the plain list."""
+        response = super().list(request, *args, **kwargs)
+        if request.query_params.get('view') != 'fleet' or not isinstance(response.data, dict):
+            return response
+        from core.services import driver_list as dl
+        user = request.user
+        loads = (Load.objects.all() if user.is_superuser and getattr(user, 'company_id', None) is None
+                 else Load.objects.filter(company=user.company))
+        open_numbers = dl.open_load_numbers(loads)
+        for row in response.data.get('results', []):
+            row['open_load_number'] = open_numbers.get(row.get('id'))
+        # The tiles and chips count every searched driver, whatever chip is on.
+        searched = filters.SearchFilter().filter_queryset(request, self.get_queryset(), self)
+        response.data['summary'] = dl.summary(searched, loads)
+        return response
+
     @action(detail=True, methods=['get'])
     def loads(self, request, pk=None):
         """Get all loads assigned to a driver"""
@@ -2209,8 +2266,43 @@ class VehicleViewSet(DemoFixedDataMixin, CompanyFilterMixin, viewsets.ModelViewS
         'fuel_type': ['exact'],
         'vehicle_type__name': ['exact', 'icontains'],
     }
-    search_fields = ['vin', 'plate', 'make', 'model']
+    search_fields = ['vin', 'plate', 'make', 'model', 'vehicle_type__name']
     ordering_fields = ['created_at', 'make', 'model', 'year']
+
+    def _company_loads(self):
+        user = self.request.user
+        if user.is_superuser and getattr(user, 'company_id', None) is None:
+            return Load.objects.all()
+        return Load.objects.filter(company=user.company)
+
+    def list(self, request, *args, **kwargs):
+        """The Vehicles page (?view=fleet), server-side: ?tile=job|free|shop|mismatch,
+        ?sort=revenue (delivered revenue, the page's order), search and page.
+        Each row carries its open order and delivered work; `summary` carries
+        the tiles over the searched trucks (core.services.vehicle_list).
+        Only with ?view=fleet; without it, the plain list (pickers, settings)."""
+        if request.query_params.get('view') != 'fleet':
+            return super().list(request, *args, **kwargs)
+        from core.services import vehicle_list as vl
+        loads = self._company_loads()
+        state = vl.fleet_state(loads)
+        searched = self.filter_queryset(self.get_queryset())
+        qs = vl.filter_tile(searched, request.query_params.get('tile'), state)
+        qs = vl.with_delivered(qs)
+        if request.query_params.get('sort') == 'revenue':
+            qs = qs.order_by('-delivered_revenue', 'plate', 'id')
+        page = self.paginate_queryset(qs)
+        rows = page if page is not None else list(qs)
+        data = self.get_serializer(rows, many=True).data
+        for row, vehicle in zip(data, rows):
+            row['delivered_revenue'] = float(vehicle.delivered_revenue)
+            row['delivered_loads'] = vehicle.delivered_loads
+            row['active_load'] = vl.active_load_for_api(state, vehicle.id)
+            row['holding_open'] = bool(state.get(vehicle.id, {}).get('any_open') and not state.get(vehicle.id, {}).get('any_current'))
+        response = self.get_paginated_response(data) if page is not None else Response(data)
+        if isinstance(response.data, dict):
+            response.data['summary'] = vl.summary(searched, loads, state)
+        return response
 
     def create(self, request, *args, **kwargs):
         from django.db import IntegrityError
@@ -2359,7 +2451,7 @@ class VehicleLogViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
 class LoadViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
     # Actual fuel: approved FUEL expenses on the load's trips (one subquery,
     # not a query per row). Read by LoadSerializer.fuel_cost_actual.
-    queryset = Load.objects.all().annotate(
+    queryset = Load.objects.all().select_related('company').annotate(
         fuel_actual_total=Subquery(
             Expense.objects.filter(trip__load=OuterRef('pk'), category='FUEL', status='APPROVED')
             .values('trip__load').annotate(t=Sum('amount')).values('t')[:1]
@@ -2372,6 +2464,30 @@ class LoadViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
     search_fields = ['load_number', 'pickup_city', 'delivery_city', 'cargo_description']
     ordering_fields = ['created_at', 'pickup_date', 'delivery_date']
     billing_blocked_message = 'Update your payment method to continue managing orders.'
+
+    def list(self, request, *args, **kwargs):
+        """?tab=orders|history (the Orders and History pages): only that tab's
+        statuses, ?q= searches customer, load, route, driver and truck,
+        History comes newest first, and `summary` carries the tab's tiles
+        (core.services.load_list). Without tab, the plain list."""
+        tab = request.query_params.get('tab')
+        if tab not in ('orders', 'history'):
+            return super().list(request, *args, **kwargs)
+        from core.services import load_list as ll
+        company_loads = self.get_queryset()
+        qs = self.filter_queryset(company_loads).filter(status__in=ll.TABS[tab])
+        qs = ll.search(qs, request.query_params.get('q'))
+        if tab == 'history':
+            qs = ll.newest_first(qs)
+        qs = qs.select_related('customer', 'driver__user', 'vehicle')
+        page = self.paginate_queryset(qs)
+        rows = page if page is not None else list(qs)
+        data = self.get_serializer(rows, many=True).data
+        response = self.get_paginated_response(data) if page is not None else Response(data)
+        if isinstance(response.data, dict):
+            plain = Load.objects.filter(pk__in=company_loads.values('pk'))
+            response.data['summary'] = ll.orders_summary(plain) if tab == 'orders' else ll.history_summary(plain)
+        return response
 
     def create(self, request, *args, **kwargs):
         # The demo's only legitimate way to get a Load is converting its one
@@ -2675,7 +2791,7 @@ class QuoteFilterSet(django_filters.FilterSet):
 
 
 class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
-    queryset = Quote.objects.all().prefetch_related('loads')
+    queryset = Quote.objects.all().select_related('company').prefetch_related('loads')
     serializer_class = QuoteSerializer
     permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
@@ -2693,13 +2809,17 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         queryset = self.filter_queryset(self.get_queryset())
         page = self.paginate_queryset(queryset)
         total_amount = queryset.aggregate(total=Sum('total_amount'))['total'] or 0
+        # The same total incl. VAT the cards show (15%, 0% international).
+        from core.services.quote_vat import sum_incl_vat
+        total_incl_vat = sum_incl_vat(queryset)
         if page is not None:
             serializer = self.get_serializer(page, many=True)
             response = self.get_paginated_response(serializer.data)
             response.data['total_amount'] = total_amount
+            response.data['total_incl_vat'] = total_incl_vat
             return response
         serializer = self.get_serializer(queryset, many=True)
-        return Response({'results': serializer.data, 'total_amount': total_amount})
+        return Response({'results': serializer.data, 'total_amount': total_amount, 'total_incl_vat': total_incl_vat})
 
     def update(self, request, *args, **kwargs):
         # Unlike Loads (status-change only), every PATCH/PUT to a quote is
@@ -2974,6 +3094,7 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
             distance=quote.distance,
             rate=quote.base_rate,
             fuel_surcharge=quote.fuel_surcharge,
+            is_international=quote.is_international,
             additional_charges=quote.additional_charges,
             total_amount=quote.total_amount,
             status='ASSIGNED' if vehicle else 'PENDING',
@@ -3052,6 +3173,11 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         })
 
 
+def public_quote_vat_fields(quote):
+    from core.services.quote_vat import public_fields, quote_vat
+    return public_fields(quote_vat(quote))
+
+
 class PublicQuoteView(APIView):
     """Public view for customers to view quote details (no auth required)"""
     permission_classes = [AllowAny]
@@ -3101,6 +3227,9 @@ class PublicQuoteView(APIView):
                 'pickup_date': str(quote.pickup_date) if quote.pickup_date else None,
                 'delivery_date': str(quote.delivery_date) if quote.delivery_date else None,
                 'total_amount': str(quote.total_amount),
+                # Price excl. VAT, VAT and total incl. VAT, the same figures
+                # as the PDF and the emails (core.services.quote_vat).
+                **public_quote_vat_fields(quote),
                 'valid_until': str(quote.valid_until),
                 'status': quote.status,
                 'sla_hours': quote.sla_hours,

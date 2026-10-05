@@ -25,6 +25,16 @@ def default_tax_code(company) -> str:
     return tax_codes.STANDARD
 
 
+def load_tax_code(load, company) -> str:
+    """Tax code for a load's freight line: zero-rated for international
+    transport (Load.is_international) when the company charges VAT,
+    otherwise the company default. Matches the quote (core.services.quote_vat)."""
+    code = default_tax_code(company)
+    if code == tax_codes.STANDARD and getattr(load, 'is_international', False):
+        return tax_codes.ZERO_RATED
+    return code
+
+
 def allowed_tax_codes(company) -> list:
     """A non-vendor can't charge VAT at all, so only NO_VAT; a vendor may use
     any code (NO_VAT there covers out-of-scope recharges like disbursements)."""

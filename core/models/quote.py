@@ -82,6 +82,11 @@ class Quote(models.Model):
     weight = models.DecimalField(max_digits=10, decimal_places=2)
     distance = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     vehicle_type = models.CharField(max_length=50, blank=True, default='')
+    # International transport (the route leaves South Africa): zero-rated
+    # for VAT (s11(2)(a)), so the customer is shown VAT 0%. Set by the quote
+    # builder from the route, copied to the Load by convert_to_load, and used
+    # by the delivery auto-invoice (core.services.quote_vat / invoicing).
+    is_international = models.BooleanField(default=False)
 
     # Estimated collection & delivery dates shown to the customer on the quote
     pickup_date = models.DateField(null=True, blank=True, help_text="Estimated collection date")

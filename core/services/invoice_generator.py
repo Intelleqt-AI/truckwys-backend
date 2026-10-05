@@ -67,9 +67,11 @@ class InvoiceGenerator:
 
         # Totals come from typed lines (tax per line, discount before VAT):
         # core.services.invoice_lines is the only place they are computed.
-        from core.services.invoice_lines import apply_lines, default_tax_code, terms_days_for
+        from core.services.invoice_lines import apply_lines, load_tax_code, terms_days_for
         company = self.trip.load.company
-        code = default_tax_code(company)
+        # Zero-rated for an international load (every line is part of the one
+        # international transport service), else the company default.
+        code = load_tax_code(self.trip.load, company)
         raw_lines = [{
             'description': item['description'],
             'quantity': str(item.get('quantity') or 1),

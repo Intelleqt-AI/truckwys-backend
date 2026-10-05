@@ -51,7 +51,7 @@ def create_invoice_for_load(load, *, company=None, mark_sent: bool = False):
     if subtotal <= 0:
         return None, False
 
-    from core.services.invoice_lines import apply_lines, customer_terms, due_date_for, default_tax_code
+    from core.services.invoice_lines import apply_lines, customer_terms, due_date_for, load_tax_code
     from django.db import transaction
 
     company = company or getattr(load, 'company', None)
@@ -80,9 +80,9 @@ def create_invoice_for_load(load, *, company=None, mark_sent: bool = False):
             'quantity': 1,
             'unit_price': Decimal(str(subtotal)),
             # The company's default code (STANDARD for a VAT vendor, NO_VAT
-            # otherwise). A cross-border load is zero-rated (s11(2)(a)); the
-            # user sets that on the draft until loads record it.
-            'tax_code': default_tax_code(company),
+            # otherwise); an international load is zero-rated (s11(2)(a)),
+            # matching the VAT 0% its quote showed the customer.
+            'tax_code': load_tax_code(load, company),
             'load': load.pk,
         }])
         if mark_sent:
