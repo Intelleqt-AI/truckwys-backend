@@ -255,6 +255,24 @@ class SelfProfileSerializer(UserSerializer):
 
 # Customer Serializer
 class CustomerSerializer(serializers.ModelSerializer):
+    # Only on the Customers list (core.services.customer_list annotates them);
+    # null everywhere else.
+    owed_amount = serializers.SerializerMethodField()
+    overdue_amount = serializers.SerializerMethodField()
+    oldest_overdue_due = serializers.SerializerMethodField()
+
+    def get_owed_amount(self, obj):
+        v = getattr(obj, 'owed_amount', None)
+        return float(v) if v is not None else None
+
+    def get_overdue_amount(self, obj):
+        v = getattr(obj, 'overdue_amount', None)
+        return float(v) if v is not None else None
+
+    def get_oldest_overdue_due(self, obj):
+        v = getattr(obj, 'oldest_overdue_due', None)
+        return v.isoformat() if v else None
+
     class Meta:
         model = Customer
         # debtor_identity is the cross-tenant Capital link: never exposed.
@@ -533,6 +551,9 @@ class LoadSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
     # load's trips. None when there's no figure, never a misleading 0.
     fuel_cost_estimated = serializers.SerializerMethodField()
     fuel_cost_actual = serializers.SerializerMethodField()
+    # Price excl. VAT, VAT and total incl. VAT for the order, by the same
+    # rule as its quote (core.services.quote_vat: 15%, or 0% international).
+    customer_price = serializers.SerializerMethodField()
 
     class Meta:
         model = Load
@@ -546,6 +567,10 @@ class LoadSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
             'pod_captured_at', 'pod_latitude', 'pod_longitude', 'pod_device',
             'pod_source', 'pod_file_sha256',
         ]
+
+    def get_customer_price(self, obj):
+        from core.services.quote_vat import public_fields, quote_vat
+        return public_fields(quote_vat(obj))
 
     def get_fuel_cost_estimated(self, obj):
         value = obj.fuel_surcharge
@@ -613,6 +638,10 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
     # the source of truth for "converted": the quote itself stays ACCEPTED.
     booked_load = serializers.SerializerMethodField()
     converted = serializers.SerializerMethodField()
+    # What the customer is shown once the quote is sent: price excl. VAT,
+    # VAT and total incl. VAT (core.services.quote_vat; same figures as the
+    # PDF, emails and online quote page). Used for the WhatsApp message.
+    customer_price = serializers.SerializerMethodField()
 
     class Meta:
         model = Quote
@@ -629,6 +658,10 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
     def get_booked_load(self, obj):
         load = self._first_load(obj)
         return {'id': load.id, 'load_number': load.load_number, 'status': load.status} if load else None
+
+    def get_customer_price(self, obj):
+        from core.services.quote_vat import public_fields, quote_vat
+        return public_fields(quote_vat(obj))
 
     def get_converted(self, obj):
         # Legacy IT/COMPLETED rows predate convert_to_load and count as converted.

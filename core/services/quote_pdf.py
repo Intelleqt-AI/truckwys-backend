@@ -124,10 +124,18 @@ def generate_quote_pdf_bytes(quote) -> bytes:
 
     # Route
     story.append(Paragraph('ROUTE', ParagraphStyle('section', fontSize=10, textColor=mid, fontName='Helvetica-Bold', spaceAfter=3)))
+    # Values are Paragraphs so a long address wraps inside its cell instead of
+    # running over the Distance/Weight columns; figures in en-ZA.
+    from xml.sax.saxutils import escape
+    from core.formatting import format_number
+    cell = ParagraphStyle('routecell', fontName='Helvetica', fontSize=9, leading=11, textColor=dark)
+    wrap = lambda text: Paragraph(escape(str(text)), cell)
+    distance = f'{format_number(quote.distance, 1)} km' if quote.distance else '—'
+    weight = f'{format_number(quote.weight)} kg' if quote.weight else '—'
     route_data = [
-        ['Pickup', quote.pickup_location or quote.origin or '—', 'Distance', f'{quote.distance or 0} km'],
-        ['Delivery', quote.delivery_location or quote.destination or '—', 'Weight', f'{quote.weight or 0} kg'],
-        ['Cargo', quote.cargo_description or '—', 'Vehicle', quote.vehicle_type or 'Standard'],
+        ['Pickup', wrap(quote.pickup_location or quote.origin or '—'), 'Distance', wrap(distance)],
+        ['Delivery', wrap(quote.delivery_location or quote.destination or '—'), 'Weight', wrap(weight)],
+        ['Cargo', wrap(quote.cargo_description or '—'), 'Vehicle', wrap(quote.vehicle_type or 'Standard')],
     ]
     route_table = Table(route_data, colWidths=[30*mm, 80*mm, 30*mm, 30*mm])
     route_table.setStyle(TableStyle([
@@ -139,6 +147,7 @@ def generate_quote_pdf_bytes(quote) -> bytes:
         ('TEXTCOLOR', (2,0), (2,-1), mid),
         ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#E2E8F0')),
         ('PADDING', (0,0), (-1,-1), 6),
+        ('VALIGN', (0,0), (-1,-1), 'TOP'),
     ]))
     story.append(route_table)
     story.append(Spacer(1, 6*mm))
@@ -149,34 +158,50 @@ def generate_quote_pdf_bytes(quote) -> bytes:
         try: return format_zar(v, minus='-')
         except: return format_zar(0, minus='-')
 
-    total_data = [
-        ['TOTAL AMOUNT', zar(quote.total_amount)],
-        ['Excl. VAT', ''],
-    ]
+    # Price excl. VAT, the VAT on it, and the total incl. VAT (one source:
+    # core.services.quote_vat, shared with the emails and the quote page).
+    from core.services.quote_vat import quote_vat, vat_label
+    v = quote_vat(quote)
+    if v['vat_registered']:
+        total_data = [
+            ['Price excl. VAT', zar(v['subtotal'])],
+            [vat_label(v), zar(v['vat'])],
+            ['TOTAL INCL. VAT', zar(v['total'])],
+        ]
+    else:
+        total_data = [['TOTAL AMOUNT', zar(v['total'])], ['No VAT charged', '']]
+    last = len(total_data) - 1
+    total_row = last if v['vat_registered'] else 0
     total_table = Table(total_data, colWidths=[110*mm, 60*mm])
-    total_table.setStyle(TableStyle([
+    style = [
         # Soft tinted panel with accent rules top & bottom — cleaner than a solid bar
         ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#EFF4FF')),
         ('LINEABOVE', (0,0), (-1,0), 1.5, accent),
         ('LINEBELOW', (0,-1), (-1,-1), 1.5, accent),
-        ('TEXTCOLOR', (0,0), (0,0), dark),
-        ('TEXTCOLOR', (1,0), (1,0), accent),
-        ('TEXTCOLOR', (0,1), (0,1), mid),
-        ('FONTNAME', (0,0), (0,0), 'Helvetica-Bold'),
-        ('FONTNAME', (1,0), (1,0), 'Helvetica-Bold'),
-        ('FONTNAME', (0,1), (0,1), 'Helvetica'),
-        ('FONTSIZE', (0,0), (0,0), 12),
-        ('FONTSIZE', (1,0), (1,0), 18),
-        ('FONTSIZE', (0,1), (0,1), 8),
+        ('TEXTCOLOR', (0,0), (-1,-1), mid),
+        ('FONTNAME', (0,0), (-1,-1), 'Helvetica'),
+        ('FONTSIZE', (0,0), (-1,-1), 10),
         ('ALIGN', (1,0), (1,-1), 'RIGHT'),
-        ('VALIGN', (0,0), (-1,0), 'MIDDLE'),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
         ('LEFTPADDING', (0,0), (-1,-1), 16),
         ('RIGHTPADDING', (0,0), (-1,-1), 16),
-        ('TOPPADDING', (0,0), (-1,0), 14),
-        ('BOTTOMPADDING', (0,0), (-1,0), 2),
-        ('TOPPADDING', (0,1), (-1,1), 0),
-        ('BOTTOMPADDING', (0,1), (-1,1), 12),
-    ]))
+        ('TOPPADDING', (0,0), (-1,-1), 6),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 6),
+        ('TOPPADDING', (0,0), (-1,0), 12),
+        ('BOTTOMPADDING', (0,-1), (-1,-1), 12),
+        # The total: bold, larger, accent figure.
+        ('TEXTCOLOR', (0,total_row), (0,total_row), dark),
+        ('TEXTCOLOR', (1,total_row), (1,total_row), accent),
+        ('FONTNAME', (0,total_row), (-1,total_row), 'Helvetica-Bold'),
+        ('FONTSIZE', (0,total_row), (0,total_row), 12),
+        ('FONTSIZE', (1,total_row), (1,total_row), 18),
+    ]
+    if v['vat_registered']:
+        style.append(('LINEABOVE', (0,last), (-1,last), 0.5, colors.HexColor('#C7D2FE')))
+        style.append(('TOPPADDING', (0,last), (-1,last), 10))
+    else:
+        style += [('FONTSIZE', (0,1), (0,1), 8), ('TOPPADDING', (0,1), (-1,1), 0)]
+    total_table.setStyle(TableStyle(style))
     story.append(total_table)
     story.append(Spacer(1, 6*mm))
 
@@ -190,7 +215,7 @@ def generate_quote_pdf_bytes(quote) -> bytes:
     story.append(Paragraph('Terms & Conditions', ParagraphStyle('tc', fontSize=9, textColor=mid, fontName='Helvetica-Bold', spaceAfter=2)))
     story.append(Paragraph(
         'This quote is valid for the period indicated. Prices subject to fuel surcharge adjustments. '
-        'Payment terms: 30 days from invoice date. All rates in South African Rand (ZAR) excl. VAT.',
+        'Payment terms: 30 days from invoice date. All amounts in South African Rand (ZAR).',
         ParagraphStyle('tcbody', fontSize=8, textColor=mid)
     ))
 

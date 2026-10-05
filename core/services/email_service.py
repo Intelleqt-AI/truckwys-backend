@@ -550,9 +550,28 @@ def _quote_number_pill(quote_number: str) -> str:
           </div>"""
 
 
-def _quote_summary_box(rows, total_label: str, total_value: str) -> str:
+def _quote_price_rows(quote):
+    """Price excl. VAT, the VAT on it, and the total incl. VAT, the customer
+    always sees all three (core.services.quote_vat). A company that isn't
+    VAT-registered shows the price as the total."""
+    from core.services.quote_vat import quote_vat, vat_label
+    v = quote_vat(quote)
+    if not v['vat_registered']:
+        return [], 'Total (no VAT)', _zar(v['total'])
+    return [('Price excl. VAT', _zar(v['subtotal'])), (vat_label(v), _zar(v['vat']))], \
+        'Total incl. VAT', _zar(v['total'])
+
+
+def _quote_box_totals(quote):
+    """(total_label, total_value, price_rows) for _quote_summary_box."""
+    price_rows, label, value = _quote_price_rows(quote)
+    return label, value, price_rows
+
+
+def _quote_summary_box(rows, total_label: str, total_value: str, price_rows=()) -> str:
     """Details box: nowrap label column so long addresses can't collapse it,
-    values wrap on the right, emphasized total row at the bottom."""
+    values wrap on the right, then the price lines (excl. VAT, VAT) and an
+    emphasized total row at the bottom."""
     row_cells = []
     for i, (label, value) in enumerate(rows):
         border = 'border-bottom:1px solid #1E293B;' if i < len(rows) - 1 else ''
@@ -560,6 +579,13 @@ def _quote_summary_box(rows, total_label: str, total_value: str) -> str:
               <tr>
                 <td style="color:#64748B;font-size:13px;white-space:nowrap;vertical-align:top;padding:9px 16px 9px 0;{border}">{label}</td>
                 <td align="right" style="color:#F8FAFC;font-size:13px;line-height:1.5;padding:9px 0;{border}">{value}</td>
+              </tr>""")
+    for i, (label, value) in enumerate(price_rows):
+        top = 'border-top:1px solid #334155;' if i == 0 else ''
+        row_cells.append(f"""
+              <tr>
+                <td style="color:#94A3B8;font-size:13px;white-space:nowrap;vertical-align:top;padding:9px 16px 6px 0;{top}">{label}</td>
+                <td align="right" style="color:#F8FAFC;font-size:13px;padding:9px 0 6px;{top}">{value}</td>
               </tr>""")
     return f"""
           <div style="background:#0F172A;border:1px solid #334155;border-radius:8px;padding:8px 20px 14px;margin-bottom:28px;">
@@ -590,7 +616,7 @@ def send_quote_share_email(quote, share_url: str) -> bool:
         ('Collection date', str(quote.pickup_date) if quote.pickup_date else 'To be confirmed'),
         ('Delivery date', str(quote.delivery_date) if quote.delivery_date else 'To be confirmed'),
         ('Valid until', valid_until),
-    ], 'Total excl. VAT', _zar(quote.total_amount))
+    ], *_quote_box_totals(quote))
     subject = f"Your freight quote {quote.quote_number} from {company_name or 'TruckWys'}"
     html_content = f"""<!DOCTYPE html>
 <html lang="en">
@@ -661,7 +687,7 @@ def send_quote_accepted_email(quote, pdf_bytes: Optional[bytes] = None) -> bool:
         ('To', quote.delivery_location or quote.destination or '—'),
         ('Collection date', str(quote.pickup_date) if quote.pickup_date else 'To be confirmed'),
         ('Delivery date', str(quote.delivery_date) if quote.delivery_date else 'To be confirmed'),
-    ], 'Total excl. VAT', _zar(quote.total_amount))
+    ], *_quote_box_totals(quote))
     attachment_note = (
         '<p style="margin:0 0 28px;font-size:13px;color:#94A3B8;line-height:1.6;text-align:center;">'
         '&#128206; A PDF copy of your quote is attached for your records.</p>'

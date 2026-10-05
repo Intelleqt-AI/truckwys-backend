@@ -46,7 +46,12 @@ import django_filters
 # 400 for a missing id but 200 for another tenant's id (an existence oracle).
 
 class InvoiceFilterSet(django_filters.FilterSet):
-    status = django_filters.ChoiceFilter(choices=Invoice.STATUS_CHOICES)
+    # OVERDUE is the shared rule (sent, unpaid, past due: invoice_list.overdue_q),
+    # not the stored status, so the filter matches the Overdue tile.
+    # Validated against the real statuses (an unknown one is a 400).
+    status = django_filters.ChoiceFilter(choices=Invoice.STATUS_CHOICES, method='filter_status')
+    # Invoice number or customer name.
+    search = django_filters.CharFilter(method='filter_search')
     customer = django_filters.NumberFilter(field_name='customer_id')
     load = django_filters.NumberFilter(field_name='load_id')
     issue_date__gte = django_filters.DateFilter(field_name='issue_date', lookup_expr='gte')
@@ -57,6 +62,21 @@ class InvoiceFilterSet(django_filters.FilterSet):
     class Meta:
         model = Invoice
         fields = []
+
+    def filter_status(self, queryset, name, value):
+        value = (value or '').strip().upper()
+        if not value or value == 'ALL':
+            return queryset
+        if value == 'OVERDUE':
+            from core.services.invoice_list import overdue_q
+            return queryset.filter(overdue_q())
+        return queryset.filter(status=value)
+
+    def filter_search(self, queryset, name, value):
+        value = (value or '').strip()
+        if not value:
+            return queryset
+        return queryset.filter(Q(invoice_number__icontains=value) | Q(customer__name__icontains=value))
 
 
 class PaymentFilterSet(django_filters.FilterSet):
@@ -80,10 +100,19 @@ class ExpenseFilterSet(django_filters.FilterSet):
     expense_date__lte = django_filters.DateFilter(field_name='expense_date', lookup_expr='lte')
     supplier = django_filters.NumberFilter(field_name='supplier_id')
     load = django_filters.NumberFilter(field_name='load_id')
+    # Reference, description, vendor or supplier name (the page's search box).
+    search = django_filters.CharFilter(method='filter_search')
 
     class Meta:
         model = Expense
         fields = []
+
+    def filter_search(self, queryset, name, value):
+        value = (value or '').strip()
+        if not value:
+            return queryset
+        return queryset.filter(Q(expense_number__icontains=value) | Q(description__icontains=value)
+                               | Q(vendor__icontains=value) | Q(supplier__name__icontains=value))
 
 
 class InvoiceFinanceViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
@@ -97,7 +126,22 @@ class InvoiceFinanceViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.Model
     billing_blocked_message = 'Update your payment method to continue quoting.'
 
     def get_queryset(self):
-        return super().get_queryset().select_related('customer', 'load').prefetch_related('lines', 'credit_notes')
+        qs = super().get_queryset().select_related('customer', 'load').prefetch_related('lines', 'credit_notes')
+        # The list is newest first by issue date (what the table shows), then
+        # number, so server pages are stable.
+        return qs.order_by('-issue_date', '-id') if self.action == 'list' else qs
+
+    @action(detail=False, methods=['get'])
+    def summary(self, request):
+        """Tiles and status-chip counts for the Invoices page, over every
+        invoice of the company (core.services.invoice_list): the page loads
+        one page of rows plus this, not the whole ledger.
+
+        GET /api/v1/invoices/summary/
+        """
+        from core.services.invoice_list import invoice_summary
+        from core.views import resolve_user_company
+        return Response(invoice_summary(Invoice.objects.filter(company=resolve_user_company(request.user))))
 
     def create(self, request, *args, **kwargs):
         if self._billing_blocked(request):
@@ -589,19 +633,43 @@ class CreditNoteFilterSet(django_filters.FilterSet):
     status = django_filters.ChoiceFilter(choices=CreditNote.STATUS_CHOICES)
     issue_date__gte = django_filters.DateFilter(field_name='issue_date', lookup_expr='gte')
     issue_date__lte = django_filters.DateFilter(field_name='issue_date', lookup_expr='lte')
+    # Credit note or invoice number, customer or reason (the page's search box).
+    search = django_filters.CharFilter(method='filter_search')
 
     class Meta:
         model = CreditNote
         fields = []
 
+    def filter_search(self, queryset, name, value):
+        value = (value or '').strip()
+        if not value:
+            return queryset
+        return queryset.filter(Q(credit_note_number__icontains=value) | Q(invoice__invoice_number__icontains=value)
+                               | Q(customer__name__icontains=value) | Q(reason__icontains=value))
+
 
 class CreditNoteViewSet(CompanyFilterMixin, viewsets.ReadOnlyModelViewSet):
     """Credit notes: list/retrieve, create (full or partial) and void.
     Never edited or deleted - a wrong credit note is voided."""
-    queryset = CreditNote.objects.select_related('invoice', 'customer').prefetch_related('lines')
+    # Newest first, so server pages are stable.
+    queryset = CreditNote.objects.select_related('invoice', 'customer').prefetch_related('lines').order_by('-issue_date', '-id')
     serializer_class = CreditNoteSerializer
     permission_classes = [IsAuthenticated]
     filterset_class = CreditNoteFilterSet
+
+    def list(self, request, *args, **kwargs):
+        """Adds what the page's toolbar shows: status counts over every
+        credit note, and the issued total over the filtered ones."""
+        response = super().list(request, *args, **kwargs)
+        everything = super().get_queryset()
+        filtered = self.filter_queryset(self.get_queryset())
+        counts = dict(everything.values_list('status').annotate(n=Count('id')).values_list('status', 'n'))
+        if isinstance(response.data, dict):
+            response.data['status_counts'] = {'ALL': sum(counts.values()), 'ISSUED': counts.get('ISSUED', 0),
+                                              'VOID': counts.get('VOID', 0)}
+            response.data['issued_total'] = float(
+                filtered.filter(status='ISSUED').aggregate(t=Sum('total_amount'))['t'] or 0)
+        return response
 
     def create(self, request, *args, **kwargs):
         from core.services.credit_notes import create_credit_note, CreditNoteError
@@ -646,11 +714,23 @@ class SupplierViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         qs = super().get_queryset().annotate(expense_count=Count('expenses')).order_by('name', 'id')
         search = (self.request.query_params.get('search') or '').strip()
         if search:
-            qs = qs.filter(Q(name__icontains=search) | Q(vat_number__icontains=search))
+            qs = qs.filter(Q(name__icontains=search) | Q(vat_number__icontains=search)
+                           | Q(registration_number__icontains=search) | Q(email__icontains=search))
         active = self.request.query_params.get('is_active')
         if active in ('true', 'false'):
             qs = qs.filter(is_active=(active == 'true'))
         return qs
+
+    def list(self, request, *args, **kwargs):
+        """Adds the active / inactive / all counts the page's filter shows,
+        over every supplier of the company (not just this page)."""
+        response = super().list(request, *args, **kwargs)
+        if isinstance(response.data, dict):
+            base = Supplier.objects.filter(pk__in=CompanyFilterMixin.get_queryset(self).values('pk'))
+            active = base.filter(is_active=True).count()
+            total = base.count()
+            response.data['counts'] = {'ACTIVE': active, 'INACTIVE': total - active, 'ALL': total}
+        return response
 
     def destroy(self, request, *args, **kwargs):
         supplier = self.get_object()
@@ -752,10 +832,20 @@ class ExpenseFinanceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     """
     Enhanced Expense ViewSet with approval workflow.
     """
-    queryset = Expense.objects.all()
+    # Newest first by expense date, then id, so server pages are stable.
+    queryset = Expense.objects.all().order_by('-expense_date', '-id')
     serializer_class = ExpenseSerializer
     permission_classes = [IsAuthenticated]
     filterset_class = ExpenseFilterSet
+
+    @action(detail=False, methods=['get'])
+    def summary(self, request):
+        """Overview tiles, charts and status counts over every expense of the
+        company (core.services.expense_list): the page loads one page of rows
+        plus this, not every expense. GET /api/v1/expenses/summary/"""
+        from core.services.expense_list import expense_summary
+        from core.views import resolve_user_company
+        return Response(expense_summary(Expense.objects.filter(company=resolve_user_company(request.user))))
 
     @action(detail=True, methods=['post'])
     def approve(self, request, pk=None):

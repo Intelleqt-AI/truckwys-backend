@@ -22,6 +22,9 @@ class Load(models.Model):
     driver = models.ForeignKey(Driver, on_delete=models.SET_NULL, null=True, blank=True, related_name='loads')
     vehicle = models.ForeignKey(Vehicle, on_delete=models.SET_NULL, null=True, blank=True, related_name='loads')
     quote = models.ForeignKey('core.Quote', on_delete=models.SET_NULL, null=True, blank=True, related_name='loads')
+    # International transport: the delivery auto-invoice zero-rates it (VAT
+    # 0%), matching the quote it came from (Quote.is_international).
+    is_international = models.BooleanField(default=False)
     
     pickup_location = models.CharField(max_length=500)
     pickup_city = models.CharField(max_length=100)
