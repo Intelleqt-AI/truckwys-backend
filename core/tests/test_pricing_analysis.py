@@ -1068,6 +1068,23 @@ class Round4Tests(_Base):
         raw['balanced'] = 0.5400
         self.assertEqual(pa._recommend(choices, None, None, raw_p=raw)['key'], 'balanced')
 
+    def test_balanced_within_3pct_is_one_plain_sentence(self):
+        choices = [_choice('safe', 22000, 2000, 70), _choice('balanced', 24000, 4000, 62),
+                   _choice('stretch', 26000, 6000, 42)]
+        raw = {'safe': 0.70, 'balanced': 0.62, 'stretch': 0.42}      # EP 2 480 vs Stretch 2 520
+        block = {'best': {'price': 24870, 'pct': 52, 'expected_profit': 2600, 'choice': None}}
+        rec = pa._recommend(choices, None, block, raw_p=raw)
+        self.assertEqual(rec['key'], 'balanced')
+        self.assertEqual(rec['reason'], 'Balanced is recommended: its expected profit (about R 2 500 per '
+                                        'quote) is within 3% of the best option, with a better chance to win.')
+
+    def test_no_market_reason_does_not_claim_a_market(self):
+        r = self.analyze(origin='BFN', destination='PLK')
+        self.assertFalse(r['market']['available'])
+        reason = r['recommendation']['reason']
+        self.assertNotIn('what this lane pays', reason)
+        self.assertIn('full cost plus your target margin', reason)
+
     def test_never_recommend_under_25_pct_unless_all_are(self):
         choices = [_choice('safe', 30000, 2000, 90), _choice('balanced', 31000, 3000, 40),
                    _choice('stretch', 40000, 12000, 20)]

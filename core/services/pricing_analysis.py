@@ -804,7 +804,7 @@ def _ep_txt(v):
     return 'about ' + _fmt(_round_to(v, 100))
 
 
-def _recommend(choices, cust, model_block=None, raw_p=None, hold_balanced=None):
+def _recommend(choices, cust, model_block=None, raw_p=None, hold_balanced=None, market_based=True):
     """{'key', 'reason'}.
 
     Rules level: Balanced (around the middle of the range).
@@ -822,8 +822,10 @@ def _recommend(choices, cust, model_block=None, raw_p=None, hold_balanced=None):
     bal = by_key.get('balanced')
     if hold_balanced and bal is not None:
         return {'key': 'balanced', 'reason': hold_balanced}
-    rules_reason = {'key': 'balanced', 'reason': 'Balanced is recommended: around the middle of what this lane pays, '
-                                                 'with a healthy margin.'}
+    rules_reason = {'key': 'balanced', 'reason': (
+        'Balanced is recommended: around the middle of what this lane pays, with a healthy margin.' if market_based
+        else 'Balanced is recommended: there is no market data for this lane, so it is built from your full cost '
+             'plus your target margin, with a buffer on top.')}
     if bal is None or bal['likelihood'].get('level') != 'model':
         return rules_reason
     raw_p = raw_p or {}
@@ -852,10 +854,11 @@ def _recommend(choices, cust, model_block=None, raw_p=None, hold_balanced=None):
                      f'lowering the price. On paper Safe would earn {_ep_txt(ep(safe))} per quote ({odds(safe)}).')
         stated.add('safe')
     if pick is bal and best is not bal:
-        parts.append(f'Balanced is recommended: {_ep_txt(ep(bal))} expected profit per quote ({odds(bal)}), within 3% '
-                     f'of {best["label"]} ({_ep_txt(ep(best))})'
-                     + (', at a better chance of winning.' if prob(best) < prob(bal) else '.'))
+        # One plain sentence; the curve's best is not named on top of it.
+        parts.append(f'Balanced is recommended: its expected profit ({_ep_txt(ep(bal))} per quote) is within 3% of '
+                     'the best option' + (', with a better chance to win.' if prob(best) < prob(bal) else '.'))
         stated.add(best['key'])
+        model_block = None
     else:
         others = 'of the choices open to this customer' if 'safe' in stated and pick is not safe else 'of the three'
         parts.append(f'{pick["label"]} is recommended: the highest expected profit {others}, '
@@ -1458,7 +1461,8 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
             attention.append({'code': 'empty_return_unpaid', 'level': 'medium',
                               'message': 'This lane pays less than your full cost when the truck returns empty. '
                                          'Price for a backload or charge for the empty return.'})
-        recommendation = _recommend(choices, cust, model_block, raw_p=raw_p, hold_balanced=hold)
+        recommendation = _recommend(choices, cust, model_block, raw_p=raw_p, hold_balanced=hold,
+                                    market_based=_market_usable(market))
         fwr = floor.get('floor_with_return')
         for c in choices:
             # What this price would leave if the truck came home empty
