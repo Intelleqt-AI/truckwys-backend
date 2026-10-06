@@ -59,6 +59,21 @@ class SeedPricingDemoTests(TestCase):
         lost = [o.feature_snapshot['features']['price_ratio'] for o in rows if o.outcome == 'rejected']
         self.assertLess(sum(won) / len(won), sum(lost) / len(lost))
 
+        # All-in operating cost (trip-linked + company-level bills, net of
+        # VAT) lands at R13-15/km for the model company; the rules company
+        # stays below the trip threshold. Night-out allowances are never
+        # booked as expenses (the floor's own allowance line covers them).
+        from core.models import Expense
+        from core.services.pricing_analysis import fixed_cost_per_km
+        fixed = fixed_cost_per_km(model, vt_name='Superlink Tautliner')
+        self.assertEqual(fixed['source'], 'company_actuals')
+        self.assertTrue(13 <= fixed['value'] <= 15, fixed)
+        self.assertGreater(fixed['actuals']['company_level'], 0)
+        self.assertEqual(fixed_cost_per_km(rules, vt_name='Superlink Tautliner')['source'], 'vehicle_default')
+        self.assertTrue(Expense.objects.filter(company=rules, trip__isnull=True).exists())
+        self.assertFalse(Expense.objects.filter(company__in=[model, rules],
+                                                description__icontains='allowance').exists())
+
         from core.services.lane_benchmark import compute_lane_benchmark
         self.assertTrue(compute_lane_benchmark('JHB', 'DBN')['available'])
 

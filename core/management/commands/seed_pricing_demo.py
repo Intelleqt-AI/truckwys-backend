@@ -15,7 +15,9 @@ What it creates (every name is invented and suffixed "(Demo)"):
       (Johannesburg->Durban, Cape Town->Johannesburg, Johannesburg->Gaborone),
       open + expired quotes, ~35 completed costed trips with expenses over the
       last 12 months (company-actual fixed cost per km), invoices/payments with
-      one slow payer carrying overdue invoices.
+      one slow payer carrying overdue invoices. Operating cost all-in ~R14/km
+      excl. fuel and tolls: trip-linked wages/maintenance plus monthly
+      company-level bills (insurance, vehicle finance, licences, office).
   RULES company  "Highveld Freight Co (Demo)"  login rules@demo.truckwys.local
       16 decided outcomes on Johannesburg->Durban (below the 40-outcome model
       threshold), 6 costed trips (below the 10-trip actuals threshold).
@@ -164,13 +166,36 @@ COLD_CUSTOMERS = [
 CARGO = ['Palletised packaging board', 'Steel coil and sections', 'Timber - structural pine',
          'Fresh produce (ambient)', 'General freight - palletised', 'Bagged animal feed']
 
-# Per-km cost allocations used for trip expenses (excl. fuel and tolls):
-# maintenance+tyres, insurance, finance/licensing/tracking overhead, driver
-# wages share. Sum ~R10.10/km for the model company (company actuals), with
-# driver nights-out allowance booked separately (DRIVER_COST).
-COST_PER_KM = {
-    'model': {'MAINTENANCE': 2.60, 'INSURANCE': 1.40, 'OVERHEAD': 3.20, 'DRIVER_COST': 2.90},
-    'rules': {'MAINTENANCE': 3.10, 'INSURANCE': 1.60, 'OVERHEAD': 3.80, 'DRIVER_COST': 3.00},
+# Operating cost, all-in and excl. VAT, fuel and tolls (what
+# pricing_analysis divides by completed-trip km). Two kinds of rows, the way
+# a fleet's books receive them:
+#   TRIP_COST_PER_KM  - trip-linked: driver wages share, service/tyres/repairs
+#   MONTHLY_COST_PER_KM - company-level monthly bills (no trip): insurance,
+#       vehicle finance instalments, licences, office/admin/tracking. Each
+#       month's bill is sized from the company's own completed-trip km so the
+#       all-in figure lands where intended (model company ~R14/km).
+# Night-out allowances are NOT booked as expenses: the cost floor carries them
+# as their own Driver allowance line, so booking them would double count.
+# Border clearing is not booked either: it is the floor's Border fees line,
+# and OTHER counts as operating cost.
+# (category, description, vendor, R/km net of VAT, VAT-able?)
+TRIP_COST_PER_KM = {
+    'model': [('DRIVER_COST', 'Driver wages - trip share', 'Payroll (fictional)', 2.90, False),
+              ('MAINTENANCE', 'Service, tyres and repairs - trip share', 'Demo Truck Services (fictional)', 2.60, True)],
+    'rules': [('DRIVER_COST', 'Driver wages - trip share', 'Payroll (fictional)', 3.00, False),
+              ('MAINTENANCE', 'Service, tyres and repairs - trip share', 'Demo Truck Services (fictional)', 3.10, True)],
+}
+MONTHLY_COST_PER_KM = {
+    'model': [('INSURANCE', 'Fleet insurance premium', 'Demo Insurers (fictional)', 1.60, False),
+              ('OVERHEAD', 'Vehicle finance instalments (4 units)', 'Demo Fleet Finance (fictional)', 4.20, False),
+              ('OVERHEAD', 'Licences, permits and roadworthy provision', 'Demo Licensing Office (fictional)', 0.50, False),
+              ('OVERHEAD', 'Office rent, admin and vehicle tracking', 'Demo Office Park (fictional)', 2.20, True)],
+}
+# Rules company: below the 10-trip actuals threshold (estimate shown), but its
+# books still carry a few monthly bills. Fixed rand amounts, excl. VAT.
+MONTHLY_FIXED = {
+    'rules': [('INSURANCE', 'Fleet insurance premium', 'Demo Insurers (fictional)', 6400, False),
+              ('OVERHEAD', 'Office rent and admin', 'Demo Office Park (fictional)', 3800, True)],
 }
 
 
@@ -290,9 +315,11 @@ class Command(BaseCommand):
             counts['customers'] = Customer.objects.filter(company__in=companies).delete()[0]
             counts['vehicle_types'] = VehicleType.objects.filter(company__in=companies).delete()[0]
             MLModelVersion.objects.filter(user_id__in=user_ids).delete()
+            if any(f.name == 'company' for f in MLModelVersion._meta.get_fields()):
+                MLModelVersion.objects.filter(company__in=companies).delete()
             MLUserRetrainQueue.objects.filter(user_id__in=user_ids).delete()
             counts['users'] = User.objects.filter(id__in=user_ids).delete()[0]
-            counts['companies'] = Company.objects.filter(id__in=[c.id for c in companies]).delete()[0]
+            counts['companies'] = self._delete_companies([c.id for c in companies], counts)
         # Per-user / per-company win-model artifacts trained for these demo
         # logins and companies (their MLModelVersion rows went with them). The
         # shared global artifact is NOT touched: demo companies never opt in
@@ -303,6 +330,41 @@ class Command(BaseCommand):
         for c in companies:
             shutil.rmtree(base / 'companies' / str(c.id), ignore_errors=True)
         return counts
+
+    @staticmethod
+    def _delete_companies(company_ids, counts):
+        """Delete the demo companies, one at a time. Rows people created while
+        reviewing the demo can hold a PROTECT foreign key to a demo company:
+          - ordinary rows of that same demo company are deleted first;
+          - append-only audit rows (e.g. a CapitalScore) can never be deleted
+            by design, so that company ROW is kept (all its seeded data is
+            already gone) and the reseed reuses it -- same id, same name.
+        A blocker belonging to any other tenant aborts the reset."""
+        from django.db.models import ProtectedError
+        from core.models.capital import AppendOnlyModel
+        deleted, kept = 0, []
+        for cid in company_ids:
+            for _ in range(10):
+                try:
+                    with transaction.atomic():
+                        deleted += Company.objects.filter(id=cid).delete()[0]
+                    break
+                except ProtectedError as exc:
+                    blockers = list(exc.protected_objects)
+                    if any(getattr(o, 'company_id', None) != cid for o in blockers):
+                        raise CommandError(f'Reset blocked by rows outside demo company {cid}: {blockers[:5]}')
+                    if any(isinstance(o, AppendOnlyModel) for o in blockers):
+                        kept.append(cid)
+                        break
+                    for obj in blockers:
+                        label = f'protected_{obj._meta.model_name}'
+                        counts[label] = counts.get(label, 0) + 1
+                        type(obj).objects.filter(pk=obj.pk).delete()
+            else:
+                raise CommandError(f'Reset could not clear protected rows of company {cid}')
+        if kept:
+            counts['companies_kept_for_append_only_rows'] = kept
+        return deleted
 
     # ------------------------------------------------------------------ seed
     def seed(self):
@@ -660,7 +722,6 @@ class Command(BaseCommand):
         ran = [q for q in wins if q.pickup_date and _aware(q.pickup_date, 6) < cutoff]
         if kind == 'rules':
             ran = ran[-6:]  # deliberately below the 10-costed-trip actuals threshold
-        per_km = COST_PER_KM[kind]
         loads, trips, invoices, payments, expenses = [], [], [], [], []
         completed_quote_ids = []
         for q in ran:
@@ -705,33 +766,15 @@ class Command(BaseCommand):
             d = delivered_at.date()
             diesel = _diesel_inland(pickup_at.date())
 
-            def exp(category, desc, amount, vendor):
-                e = Expense(
-                    company=company, expense_number=f'{PREFIX}-{key}-EXP-{self._next(key, "expense"):05d}',
-                    category=category, description=desc, amount=_q(amount), vehicle=vehicle, driver=driver,
-                    trip=trip, load=load, expense_date=min(d, self.today), vendor=vendor,
-                    receipt_number=f'R{rng.randint(100000, 999999)}', status='APPROVED', approved=True,
-                    approved_by=user, approved_at=_aware(min(d, self.today), 10), created_by=user,
-                    notes='Fictional demo expense (seed_pricing_demo).')
-                e._seed_created_at = _aware(min(d, self.today), 18)
-                expenses.append(e)
+            def exp(category, desc, net, vendor, vatable=False, _trip=trip, _load=load, _v=vehicle, _d=driver):
+                expenses.append(self._expense(acc, category, desc, net, vendor, vatable, d,
+                                              trip=_trip, load=_load, vehicle=_v, driver=_d))
 
             exp('FUEL', f'Diesel {litres} L @ R{diesel:.2f}', litres * diesel, 'Demo Fuel Card (fictional)')
             exp('TOLLS', 'SANRAL e-tag statement - trip share', lane['tolls'], 'SANRAL e-toll (demo statement)')
-            exp('DRIVER_COST', f"Nights-out allowance x{lane['nights']}", DRIVER_ALLOWANCE_PER_NIGHT * lane['nights'],
-                'Payroll (fictional)')
-            jitter = lambda: Decimal(str(round(rng.uniform(0.88, 1.12), 3)))  # noqa: E731
-            exp('DRIVER_COST', 'Driver wages - trip share', km * Decimal(str(per_km['DRIVER_COST'])) * jitter(),
-                'Payroll (fictional)')
-            exp('MAINTENANCE', 'Service, tyres and repairs - per-km allocation',
-                km * Decimal(str(per_km['MAINTENANCE'])) * jitter(), 'Demo Truck Services (fictional)')
-            exp('INSURANCE', 'Fleet insurance - per-km allocation', km * Decimal(str(per_km['INSURANCE'])) * jitter(),
-                'Demo Insurers (fictional)')
-            exp('OVERHEAD', 'Vehicle finance, licensing and tracking - per-km allocation',
-                km * Decimal(str(per_km['OVERHEAD'])) * jitter(), 'Demo Fleet Finance (fictional)')
-            if lane['border']:
-                exp('OTHER', 'Border clearing, permits and Botswana road fees', lane['border'],
-                    'Demo Clearing Agents (fictional)')
+            for category, desc, vendor, rate, vatable in TRIP_COST_PER_KM[kind]:
+                exp(category, desc, km * Decimal(str(rate)) * Decimal(str(round(rng.uniform(0.9, 1.1), 3))),
+                    vendor, vatable)
 
             inv, pays = self._invoice(acc, load, trip, spec, delivered_at)
             invoices.append(inv)
@@ -741,6 +784,9 @@ class Command(BaseCommand):
         Trip.objects.bulk_create(trips, batch_size=250)
         Invoice.objects.bulk_create(invoices, batch_size=250)
         Payment.objects.bulk_create(payments, batch_size=250)
+        expenses += self._monthly_bills(acc, kind, sum((t.distance_km for t in trips
+                                                         if t.start_time >= self.now - timedelta(days=365)),
+                                                        Decimal('0')))
         Expense.objects.bulk_create(expenses, batch_size=250)
         for model, rows in ((Load, loads), (Trip, trips), (Invoice, invoices), (Payment, payments),
                             (Expense, expenses)):
@@ -752,6 +798,42 @@ class Command(BaseCommand):
         self.created.setdefault(kind, {}).update(
             {'loads': len(loads), 'trips': len(trips), 'invoices': len(invoices),
              'payments': len(payments), 'expenses': len(expenses)})
+
+    def _expense(self, acc, category, desc, net, vendor, vatable, d, trip=None, load=None, vehicle=None, driver=None):
+        """An approved expense; `net` is excl. VAT. VAT-able bills carry 15%
+        on top (amount is the gross the supplier billed, vat_amount the VAT)."""
+        key = acc['spec']['key']
+        user = acc['user']
+        d = min(d, self.today)
+        net = _q(net)
+        vat = _q(net * VAT_RATE) if vatable else Decimal('0.00')
+        e = Expense(
+            company=acc['company'], expense_number=f'{PREFIX}-{key}-EXP-{self._next(key, "expense"):05d}',
+            category=category, description=desc, amount=net + vat, vat_amount=vat,
+            tax_code='STANDARD' if vatable else 'NO_VAT', vehicle=vehicle, driver=driver, trip=trip, load=load,
+            expense_date=d, vendor=vendor, receipt_number=f'R{self.rng.randint(100000, 999999)}',
+            status='APPROVED', approved=True, approved_by=user, approved_at=_aware(d, 10), created_by=user,
+            notes='Fictional demo expense (seed_pricing_demo).')
+        e._seed_created_at = _aware(d, 18)
+        return e
+
+    def _monthly_bills(self, acc, kind, km_12m):
+        """Company-level (no trip) bills on the 1st of each of the last 12
+        months, all inside the operating-cost window."""
+        rows = []
+        for i in range(12):
+            y, m = self.today.year, self.today.month - i
+            while m <= 0:
+                y, m = y - 1, m + 12
+            d = date(y, m, 1)
+            if (self.today - d).days >= 365:
+                continue
+            for category, desc, vendor, rate, vatable in MONTHLY_COST_PER_KM.get(kind, []):
+                net = km_12m * Decimal(str(rate)) / 12 * Decimal(str(round(self.rng.uniform(0.95, 1.05), 3)))
+                rows.append(self._expense(acc, category, f'{desc} - {d:%B %Y}', net, vendor, vatable, d))
+            for category, desc, vendor, amount, vatable in MONTHLY_FIXED.get(kind, []):
+                rows.append(self._expense(acc, category, f'{desc} - {d:%B %Y}', amount, vendor, vatable, d))
+        return rows
 
     def _invoice(self, acc, load, trip, spec, delivered_at):
         rng = self.rng
