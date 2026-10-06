@@ -706,27 +706,40 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
     def create(self, validated_data):
         from django.db import transaction
         decision = validated_data.pop('pricing_decision', None)
-        # One transaction: a quote saved with a decision either stores both or
-        # neither — never a 201 that claims a decision the DB doesn't hold.
+        # Score the final price FIRST, outside the write transaction (no
+        # SQLite write lock held while the model runs)...
+        scored = self._score_decision(None, validated_data, decision) if decision else None
+        # ...then one transaction: a quote saved with a decision either stores
+        # both or neither — never a 201 that claims a decision the DB doesn't hold.
         with transaction.atomic():
             instance = super().create(validated_data)
             if decision:
-                self._save_pricing_decision(instance, decision)
+                self._save_pricing_decision(instance, decision, scored)
         return instance
 
     def update(self, instance, validated_data):
         from django.db import transaction
         decision = validated_data.pop('pricing_decision', None)
+        scored = self._score_decision(instance, validated_data, decision) if decision else None
         with transaction.atomic():
             instance = super().update(instance, validated_data)
             if decision:
-                self._save_pricing_decision(instance, decision)
+                self._save_pricing_decision(instance, decision, scored)
         return instance
 
-    def _save_pricing_decision(self, quote, decision):
+    def _request_user(self):
+        return getattr(self.context.get('request'), 'user', None)
+
+    def _score_decision(self, instance, validated_data, decision):
+        from core.services.pricing_decisions import quote_fields, score_final_price
+        company = validated_data.get('company') or getattr(instance, 'company', None) \
+            or getattr(self._request_user(), 'company', None)
+        return score_final_price(quote_fields(instance, validated_data), decision,
+                                 company=company, user=self._request_user())
+
+    def _save_pricing_decision(self, quote, decision, scored=None):
         from core.services.pricing_decisions import save_pricing_decision
-        request = self.context.get('request')
-        save_pricing_decision(quote, decision, user=getattr(request, 'user', None))
+        save_pricing_decision(quote, decision, user=self._request_user(), scored=scored)
 
     def _first_load(self, obj):
         # .all() so a prefetch_related('loads') on the viewset serves it.

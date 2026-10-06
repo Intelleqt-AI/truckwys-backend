@@ -44,12 +44,12 @@ def base_payload(**over):
     return p
 
 
-def won_quotes(company, customer, n, *, start=24000, step=500, origin='JHB', destination='DBN', prefix='W'):
+def won_quotes(company, customer, n, *, start=24000, step=500, origin='JHB', destination='DBN', prefix='W', **extra):
     out = []
     for i in range(n):
         out.append(make_quote(company, customer, number=f'{prefix}-{company.id}-{i}', total=start + i * step,
                               origin=origin, destination=destination, status='ACCEPTED', outcome='accepted',
-                              pickup_location='Johannesburg', delivery_location='Durban'))
+                              pickup_location='Johannesburg', delivery_location='Durban', **extra))
     return out
 
 
@@ -446,7 +446,10 @@ class DecisionLoggingTests(_DecisionHelpers, _Base):
         self.assertEqual(d.likelihood_level, 'rules')
         detail = self.api.get(f'/api/v1/quotes/{quote.id}/').json()
         self.assertEqual(detail['pricing_decision']['picked_choice'], 'balanced')
-        self.assertEqual(detail['pricing_decision']['band_at_final'], 'likely')
+        # The SERVER's band: no real market on this lane (estimate only) and no
+        # customer history -> no band; the client's 'likely' is kept aside.
+        self.assertIsNone(detail['pricing_decision']['band_at_final'])
+        self.assertEqual(detail['pricing_decision']['client_band'], 'likely')
         self.assertIsNone(detail['win_probability'])
         # List pages don't carry it.
         listing = self.api.get('/api/v1/quotes/').json()
@@ -702,7 +705,7 @@ class Round1FixTests(_Base):
         vt = VehicleType.objects.get(name='Tautliner', company=self.company)
         expected = round(568 * _builder_consumption(vt, 0) / 100 * 30.0049)
         fuel_detail = next(d for d in ret['details'] if d['label'] == 'Fuel')['value']
-        self.assertIn(f'R {expected:,}'.replace(',', ' '), fuel_detail)
+        self.assertIn(f'R\u00a0{expected:,}'.replace(',', '\u00a0'), fuel_detail)
         nights = next(d for d in ret['details'] if d['label'] == 'Extra driver nights')['value']
         self.assertIn('1 extra night, no approved rate', nights)
 
@@ -731,10 +734,10 @@ class Round1FixTests(_Base):
         self.assertIn('at least your 10% target', safe['summary'])
         self.assertTrue(safe['summary'].startswith(f"{safe['margin_pct']}% margin"))
         text = ' '.join(r['reasoning'])
-        self.assertRegex(text, r'R \d')
+        self.assertRegex(text, 'R\u00a0\\d')
         self.assertNotRegex(text, r'R\d')
         fixed = next(ln for ln in r['cost_floor']['lines'] if ln['key'] == 'fixed_cost')
-        self.assertIn('R 11,50/km', fixed['basis'])
+        self.assertIn('R\u00a011,50/km', fixed['basis'])
 
     def test_empty_return_summaries_match_each_card(self):
         other = Company.objects.create(company_name='Ridgeback Freight')
@@ -854,3 +857,167 @@ class Round1FixTests(_Base):
         self.assertEqual(resp.status_code, 201, resp.content)
         self.assertTrue(resp.json()['pickup_date'].startswith('2026-11-10'))
         self.assertTrue(resp.json()['delivery_date'].startswith('2026-11-12'))
+
+
+class Round3Tests(_ModelMixin, _Base):
+    """Round 3: exact model range, server band, scoring outside the write
+    transaction, recommendation by expected profit, return-trip market,
+    empty-return context, labels and short reasons."""
+
+    def _platform(self, n_own=3, n_other=4, start=24000, **kw):
+        other = Company.objects.create(company_name='Ridgeback Freight')
+        won_quotes(self.company, self.customer, n_own, start=start, prefix='A', **kw)
+        won_quotes(other, make_customer(other, 'Saltpan Traders'), n_other, start=start + 1500, prefix='B', **kw)
+
+    def test_round_trip_market_is_one_way_times_two(self):
+        self._platform()
+        one = self.analyze()
+        rt = self.analyze(legs=2, trip_type='ROUND_TRIP', distance_km=1136)
+        self.assertTrue(rt['market']['legs_scaled'])
+        self.assertIn('×2 for a return trip', rt['market']['tier_label'])
+        self.assertIn('one-way', rt['market']['tier_label'])
+        for k in ('p25', 'median', 'p75'):
+            self.assertAlmostEqual(rt['market'][k], one['market'][k] * 2, delta=1)
+        # Choices and bands come from the scaled range.
+        self.assertGreaterEqual(rt['choices'][1]['price'], rt['market']['median'])
+        self.assertEqual(rt['likelihood']['rules']['thresholds']['likely_max'], pa.round_price(rt['market']['median']))
+
+    def test_round_trip_quotes_are_not_in_the_one_way_sample(self):
+        self._platform()
+        before = self.analyze()['market']['n']
+        for i in range(3):
+            make_quote(self.company, self.customer, number=f'RT-{i}', total=60000, status='ACCEPTED',
+                       outcome='accepted', trip_type='ROUND_TRIP', pickup_location='Johannesburg',
+                       delivery_location='Durban')
+        pa._MARKET_MEMO.clear()
+        self.assertEqual(self.analyze()['market']['n'], before)
+
+    def test_vehicle_filter_is_named_in_the_label(self):
+        self._platform(n_own=3, n_other=3, vehicle_type='Superlink')
+        r = self.analyze(vehicle_type='Superlink')
+        self.assertTrue(r['market']['vehicle_specific'])
+        self.assertIn('Superlink only', r['market']['tier_label'])
+
+    def test_empty_return_context_always_present(self):
+        r = self.analyze()
+        f = r['cost_floor']
+        self.assertFalse(f['include_return'])
+        self.assertEqual(f['floor_with_return'], f['total'] + f['return_leg_amount'])
+        for c in r['choices']:
+            self.assertEqual(c['margin_pct_if_empty_return'],
+                             round((c['price'] - f['floor_with_return']) / c['price'] * 100))
+        rt = self.analyze(legs=2)
+        self.assertIsNone(rt['cost_floor']['floor_with_return'])
+        self.assertIsNone(rt['choices'][0]['margin_pct_if_empty_return'])
+
+    def test_reasoning_whole_rand_and_nbsp(self):
+        r = self.analyze()
+        first = r['reasoning'][0]
+        self.assertIn(pa._fmt(round(r['cost_floor']['total'], -2)), first)
+        self.assertNotRegex(first, r'/km\D*,\d\d/km')
+        self.assertNotIn('R ', ' '.join(r['reasoning']))   # no plain space after R
+
+    def test_short_reason_without_model(self):
+        r = self.analyze()
+        self.assertEqual(r['likelihood']['short'], 'Bands · 0 of 40 closed quotes')
+        self.assertLessEqual(len(r['likelihood']['short']), 40)
+
+
+class Round3ModelTests(_ModelMixin, _Base):
+    def setUp(self):
+        super().setUp()
+        if not WIN_ML_AVAILABLE:
+            self.skipTest('sklearn not installed')
+        self.train_company_model(self.company, self.user, self.customer)
+
+    def test_model_range_is_exactly_the_scoring_domain(self):
+        r = self.analyze(**self.model_payload(your_price=21000))
+        m = r['likelihood']['model']
+        self.assertIsNotNone(m, r['likelihood'].get('reason'))
+        lo, hi = m['range']
+        self.assertEqual(m['curve'][0]['price'], lo)
+        self.assertEqual(m['curve'][-1]['price'], hi)
+        inside = self.analyze(**self.model_payload(your_price=lo))
+        self.assertEqual(inside['your_price']['likelihood']['level'], 'model')
+        self.assertEqual(inside['likelihood']['model']['range'][0], lo)
+        # in_range() is True exactly on [lo, hi] — the published range.
+        from core.services.win_prediction import resolve_prediction_context
+        ctx = resolve_prediction_context(self.user, self.company)
+        p = base_payload(**self.model_payload(your_price=21000))
+        o, d = pa._resolve_lane(p)
+        floor = r['cost_floor']['total']
+        block, _r, (predict, in_range) = pa.model_likelihood(
+            ctx=ctx, company=self.company, user=self.user, payload=p, origin=o, destination=d, vt_name=None,
+            floor_total=floor, probe_prices=[c['price'] for c in r['choices']] + [21000], customer_id=None)
+        self.assertEqual(block['range'], [lo, hi])
+        self.assertTrue(in_range(lo) and in_range(hi))
+        self.assertFalse(in_range(lo - 1) or in_range(hi + 1))
+        self.assertLessEqual(len(r['likelihood']['short']), 40)
+        self.assertEqual(r['likelihood']['short'], 'From 40 closed quotes')
+
+    def test_recommendation_is_best_expected_profit_or_balanced_within_3pct(self):
+        r = self.analyze(**self.model_payload())
+        scored = {c['key']: c['likelihood']['pct'] / 100 * c['margin'] for c in r['choices']
+                  if c['likelihood']['level'] == 'model'}
+        best = max(scored, key=scored.get)
+        rec = r['recommendation']['key']
+        if rec == 'balanced' and best != 'balanced':
+            self.assertGreaterEqual(scored['balanced'], scored[best] * 0.97)
+        else:
+            self.assertEqual(rec, best)
+        self.assertIn('closest choice', r['recommendation']['reason'])
+        self.assertIn(r['recommendation']['reason'], r['reasoning'])
+        peak = r['likelihood']['model']['best']
+        self.assertEqual(peak['expected_profit'], max(p['expected_profit'] for p in r['likelihood']['model']['curve']))
+
+    def test_model_without_market_says_so(self):
+        from unittest import mock
+        with mock.patch.object(pa, 'market_rate', return_value=(None, 'none')):
+            r = self.analyze(**self.model_payload())
+        self.assertEqual(r['likelihood']['level'], 'rules')
+        self.assertIn('no market figures for this lane', r['likelihood']['reason'])
+        self.assertEqual(r['likelihood']['short'], 'No market figures for this lane')
+
+    def test_save_scores_outside_the_transaction_and_db_errors_propagate(self):
+        from unittest import mock
+        from django.db import OperationalError, connection
+        from core.services import pricing_decisions as pdm
+        seen = {}
+        real = pdm.score_final_price
+
+        def spy(*a, **kw):
+            seen['in_atomic'] = connection.in_atomic_block and not getattr(self, '_outer_atomic_only', False)
+            seen['depth'] = len(connection.savepoint_ids)
+            return real(*a, **kw)
+        payload = {'customer': self.customer.id, 'pickup_location': 'Johannesburg', 'delivery_location': 'Cape Town',
+                   'cargo_description': 'x', 'weight': '28000', 'base_rate': '15000', 'total_amount': '20000',
+                   'distance': '1000', 'valid_until': str(date.today() + timedelta(days=7)),
+                   'pricing_decision': {'final_price': 20000, 'floor': 17200, 'likelihood_level': 'rules',
+                                        'band_at_final': 'less_likely'}}
+        baseline = len(connection.savepoint_ids)
+        with mock.patch.object(pdm, 'score_final_price', side_effect=spy):
+            resp = self.api.post('/api/v1/quotes/', payload, format='json')
+        self.assertEqual(resp.status_code, 201, resp.content)
+        # TestCase wraps each test in one atomic block; scoring must not add a savepoint.
+        self.assertEqual(seen['depth'], baseline)
+        d = QuotePricingDecision.objects.get(quote_id=resp.json()['id'])
+        self.assertEqual(d.likelihood_level, 'model')        # server, not the client's 'rules'
+        self.assertEqual(d.payload['client_band'], 'less_likely')
+        # A DatabaseError while scoring -> 503, nothing saved.
+        n = Quote.objects.count()
+        with mock.patch.object(pa, 'customer_evidence', side_effect=OperationalError('database is locked')):
+            resp = self.api.post('/api/v1/quotes/', payload, format='json')
+        self.assertEqual(resp.status_code, 503)
+        self.assertEqual(Quote.objects.count(), n)
+
+    def test_rules_band_at_save_comes_from_server_thresholds(self):
+        other = Company.objects.create(company_name='Ridgeback Freight')
+        won_quotes(other, make_customer(other, 'Saltpan Traders'), 4, start=25500, prefix='B')
+        won_quotes(self.company, self.customer, 3, start=24000, prefix='A')
+        from core.services.pricing_decisions import score_final_price
+        fields = {'customer': self.customer, 'pickup_location': 'Johannesburg', 'delivery_location': 'Durban',
+                  'vehicle_type': '', 'weight': 28000, 'distance': 568, 'trip_type': 'ONE_WAY'}
+        out = score_final_price(fields, {'final_price': 99000, 'band_at_final': 'likely'}, company=self.company,
+                                user=self.user)
+        self.assertEqual(out['level'], 'rules')
+        self.assertEqual(out['band'], 'less_likely')

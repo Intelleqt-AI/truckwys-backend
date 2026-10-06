@@ -217,7 +217,7 @@ def _seasonality_for(values_with_months):
 
 def compute_lane_benchmark(origin, destination, vehicle_type=None,
                            k_anonymity=5, days=180, exclude_quote_id=None,
-                           exclude_created_by_user_id=None, as_of=None):
+                           exclude_created_by_user_id=None, as_of=None, one_way_only=False):
     """
     Compute an anonymized, cross-platform benchmark for a single lane.
 
@@ -287,6 +287,11 @@ def compute_lane_benchmark(origin, destination, vehicle_type=None,
         )
         if vehicle_type:
             qs = qs.filter(vehicle_type__icontains=vehicle_type)
+        if one_way_only:
+            # Additive (pricing analysis): a round-trip quote's total covers
+            # two legs, so it is not the same thing as a one-way lane price.
+            # Default False keeps every existing caller unchanged.
+            qs = qs.exclude(trip_type='ROUND_TRIP')
         if exclude_quote_id:
             # Callers benchmarking a specific quote must not see that quote's
             # own price inside its benchmark (k-anonymity is re-checked below
@@ -576,7 +581,7 @@ def _company_lane_amounts(o, d, vt, company, exclude_quote_id=None, as_of=None):
     base = Quote.objects.filter(
         won_quote_q(), _lane_q('origin', o), _lane_q('destination', d), company=company,
         created_at__gte=as_of - timedelta(days=COMPANY_FALLBACK_DAYS), created_at__lte=as_of,
-    ).exclude(total_amount__isnull=True)
+    ).exclude(total_amount__isnull=True).exclude(trip_type='ROUND_TRIP')   # one-way prices only
     if exclude_quote_id:
         base = base.exclude(id=exclude_quote_id)
     attempts = [(base.filter(vehicle_type__icontains=vt), True), (base, False)] if vt else [(base, False)]
@@ -616,7 +621,7 @@ def resolve_market_range(origin, destination, vehicle_type=None, company=None, e
     try:
         for vt_try in ([vt, None] if vt else [None]):
             b = compute_lane_benchmark(o, d, vt_try, days=PLATFORM_WINDOW_DAYS,
-                                       exclude_quote_id=exclude_quote_id, as_of=as_of)
+                                       exclude_quote_id=exclude_quote_id, as_of=as_of, one_way_only=True)
             if b.get('available') and b.get('market_median_rate'):
                 n = int(b['sample_size'])
                 out.update({

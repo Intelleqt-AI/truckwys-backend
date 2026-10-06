@@ -45,98 +45,142 @@ def _floor_lines(raw):
     return out[:len(FLOOR_LINE_KEYS)]
 
 
-def _quote_pricing_payload(quote):
-    """The pricing-analysis inputs the WIN MODEL needs, rebuilt from the saved
-    quote (lane, vehicle, weight, distance, legs, pickup date, customer)."""
-    legs = 2 if quote.trip_type == 'ROUND_TRIP' else 1
-    one_way = float(quote.distance or 0)
+def pricing_payload_from_fields(fields: dict):
+    """The pricing-analysis inputs the likelihood needs, from a quote's field
+    values (a saved Quote's attributes, or a serializer's validated_data
+    merged over the instance — so it works BEFORE the quote is written)."""
+    legs = 2 if fields.get('trip_type') == 'ROUND_TRIP' else 1
+    one_way = float(fields.get('distance') or 0)
+    customer = fields.get('customer')
+    pickup = fields.get('pickup_date')
     return {
-        'quote_id': quote.id, 'customer_id': quote.customer_id,
-        'origin': quote.origin, 'destination': quote.destination,
-        'pickup_location': quote.pickup_location, 'delivery_location': quote.delivery_location,
-        'vehicle_type': quote.vehicle_type, 'weight': float(quote.weight or 0),
+        'quote_id': fields.get('id'), 'customer_id': getattr(customer, 'id', customer),
+        'origin': fields.get('origin'), 'destination': fields.get('destination'),
+        'pickup_location': fields.get('pickup_location'), 'delivery_location': fields.get('delivery_location'),
+        'vehicle_type': fields.get('vehicle_type'), 'weight': float(fields.get('weight') or 0),
         'distance_km': one_way * legs, 'one_way_distance_km': one_way, 'legs': legs,
-        'pickup_date': quote.pickup_date.isoformat() if quote.pickup_date else None,
+        'pickup_date': pickup.isoformat() if hasattr(pickup, 'isoformat') else pickup,
     }
 
 
-def server_model_pct(quote, final_price, floor, *, user):
-    """(pct, model_version) — the win model's likelihood at the FINAL price,
-    computed here with exactly the pricing analysis' model-level gates (model
-    resolves, market reference, training range, price-sensitive curve, price
-    inside the range), or (None, None). Never trusts a client figure. Never
-    raises (a scoring failure just means no model %)."""
+QUOTE_SCORING_FIELDS = ('id', 'customer', 'origin', 'destination', 'pickup_location', 'delivery_location',
+                        'vehicle_type', 'weight', 'distance', 'trip_type', 'pickup_date', 'total_amount')
+
+
+def quote_fields(instance=None, validated_data=None):
+    out = {f: getattr(instance, f, None) for f in QUOTE_SCORING_FIELDS} if instance is not None else {}
+    out.update({k: v for k, v in (validated_data or {}).items() if k in QUOTE_SCORING_FIELDS})
+    return out
+
+
+def score_final_price(fields: dict, decision: dict, *, company, user):
+    """The SERVER's likelihood at the decision's final price, from the same
+    rules as the pricing analysis: {'level', 'pct', 'band', 'model_version',
+    'final_price', 'floor'}.
+
+      model level  a model resolves, the lane has a market reference and the
+                   final price sits inside the model's range -> pct, band None;
+      rules level  otherwise -> band from the same thresholds the panel uses
+                   (market range, scaled for a return trip, + this customer's
+                   record), pct None. The client's band/pct are never used.
+
+    Runs BEFORE the write transaction (no SQLite write lock held while
+    scoring). A DatabaseError PROPAGATES (the save then fails with 503); any
+    other failure just means no model % / no band."""
+    from django.db import DatabaseError
+    from core.services import pricing_analysis as pa
+
+    final_price = _dec(decision.get('final_price')) or _dec(fields.get('total_amount'))
+    floor = _dec(decision.get('floor'))
+    out = {'level': 'rules', 'pct': None, 'band': None, 'model_version': None,
+           'final_price': final_price, 'floor': floor}
+    price = float(final_price or 0)
+    if price <= 0 or company is None:
+        return out
+    payload = pricing_payload_from_fields(fields)
+    origin, destination = pa._resolve_lane(payload)
+    vt_name = fields.get('vehicle_type') or None
+    floor_total = float(floor) if floor and float(floor) > 0 else price * 0.75
     try:
-        from core.services import pricing_analysis as pa
+        market = pa.market_range(origin, destination, vt_name, company, payload['quote_id'])
+        market = pa._market_for_trip(market, payload['legs'], vt_name)
+        cust = None
+        customer = fields.get('customer')
+        if customer is not None and not hasattr(customer, 'id'):
+            from core.models import Customer
+            customer = Customer.objects.filter(id=customer, company=company).first()
+        if customer is not None and getattr(customer, 'company_id', None) == company.id:
+            cust = pa.customer_evidence(customer, company, origin, destination, payload['quote_id'])
+        thresholds, _basis = pa.rules_thresholds(market, cust)
+
         from core.services.win_prediction import resolve_prediction_context
-        price = float(final_price or 0)
-        if price <= 0:
-            return None, None
-        company = quote.company
         ctx = resolve_prediction_context(user, company)
-        if not ctx.available:
-            return None, None
-        payload = _quote_pricing_payload(quote)
-        origin, destination = pa._resolve_lane(payload)
-        floor_total = float(floor) if floor and float(floor) > 0 else price * 0.75
-        block, _reason, predictor = pa.model_likelihood(
-            ctx=ctx, company=company, user=user, payload=payload, origin=origin, destination=destination,
-            vt_name=quote.vehicle_type or None, floor_total=floor_total, probe_prices=[price],
-            customer_id=quote.customer_id)
-        if block is None or predictor is None:
-            return None, None
-        predict, in_range = predictor
-        if not in_range(price):
-            return None, None
-        return int(round(predict(price) * 100)), block.get('version')
+        if ctx.available:
+            try:
+                block, _reason, predictor = pa.model_likelihood(
+                    ctx=ctx, company=company, user=user, payload=payload, origin=origin, destination=destination,
+                    vt_name=vt_name, floor_total=floor_total, probe_prices=[price],
+                    customer_id=getattr(customer, 'id', None))
+            except DatabaseError:
+                raise
+            except Exception as exc:   # a model that can't score -> rules level
+                logger.warning('score_final_price: model scoring failed: %s', exc)
+                block, predictor = None, None
+            if block is not None and predictor is not None and predictor[1](price):
+                out.update({'level': 'model', 'pct': int(round(predictor[0](price) * 100)),
+                            'model_version': block.get('version')})
+                return out
+        out['band'] = pa._band(price, thresholds)
+        return out
+    except DatabaseError:
+        raise
     except Exception as exc:
-        logger.warning('server_model_pct failed for quote %s: %s', getattr(quote, 'id', None), exc)
-        return None, None
+        logger.warning('score_final_price failed: %s', exc)
+        return out
 
 
-def save_pricing_decision(quote, decision: dict, *, user=None):
+def save_pricing_decision(quote, decision: dict, *, user=None, scored=None):
     """Upsert the quote's QuotePricingDecision and set Quote.win_probability.
 
-    Call inside the same transaction as the quote save: a database error here
+    `scored` is score_final_price()'s result, computed BEFORE the transaction
+    (pass None only from callers outside the serializer: it is scored here
+    then). Call inside the quote's own transaction: a database error here
     PROPAGATES, so the save fails rather than reporting a decision that was
-    never stored.
-
-    The likelihood stored is the SERVER's model % at the final price (same
-    gates as the pricing analysis); the client's figure is kept only as
-    `client_pct` in the payload. win_probability = that server % at model
-    level, else null."""
+    never stored. Stored level / pct / band are the SERVER's; the client's
+    figures are kept only as client_level / client_pct / client_band."""
     from core.models import QuotePricingDecision
 
+    if scored is None:
+        scored = score_final_price(quote_fields(quote), decision, company=quote.company, user=user)
     market = decision.get('market') if isinstance(decision.get('market'), dict) else {}
-    final_price = _dec(decision.get('final_price')) or quote.total_amount
-    floor = _dec(decision.get('floor'))
-    pct, server_version = server_model_pct(quote, final_price, floor, user=user)
-    level = 'model' if pct is not None else 'rules'
+    level, pct, band = scored['level'], scored['pct'], scored['band']
     payload = dict(decision)
     payload.update({
         'client_level': decision.get('likelihood_level'),
         'client_pct': _pct(decision.get('likelihood_at_final_pct')),
+        'client_band': decision.get('band_at_final'),
         'likelihood_level': level,
         'likelihood_at_final_pct': pct,
+        'band_at_final': band,
         'floor_lines': _floor_lines(decision.get('floor_lines')),
         # Whole-rand adjustment the operator applied on top of the picked
         # price (client figure, kept for traceability), or None.
         'price_adjustment': (int(_dec(decision.get('price_adjustment')).to_integral_value())
                              if _dec(decision.get('price_adjustment')) is not None else None),
     })
-    if server_version:
-        payload['model_version'] = server_version
+    if scored.get('model_version'):
+        payload['model_version'] = scored['model_version']
     fields = {
         'company_id': quote.company_id,
         'created_by': user if getattr(user, 'is_authenticated', False) else None,
         'version': str(decision.get('version') or '')[:20],
         'picked_choice': decision.get('picked_choice') or '',
-        'final_price': final_price,
-        'floor': floor,
+        'final_price': scored['final_price'] or quote.total_amount,
+        'floor': scored['floor'],
         'likelihood_level': level,
         'likelihood_at_final_pct': pct,
-        'band_at_final': '' if level == 'model' else str(decision.get('band_at_final') or '')[:20],
-        'model_version': str(server_version or '')[:60],
+        'band_at_final': str(band or '')[:20],
+        'model_version': str(scored.get('model_version') or '')[:60],
         'market_tier': str(market.get('tier') or '')[:20],
         'payload': payload,
     }
