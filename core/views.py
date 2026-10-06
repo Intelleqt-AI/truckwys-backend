@@ -2791,7 +2791,7 @@ class QuoteFilterSet(django_filters.FilterSet):
 
 
 class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
-    queryset = Quote.objects.all().select_related('company').prefetch_related('loads')
+    queryset = Quote.objects.all().select_related('company', 'pricing_decision').prefetch_related('loads')
     serializer_class = QuoteSerializer
     permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
@@ -2826,7 +2826,15 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         # blocked for a suspended/cancelled company — TruckWys_Fee_Billing_Spec.pdf §5.
         if self._billing_blocked(request):
             return self._billing_blocked_response()
-        return super().update(request, *args, **kwargs)
+        from django.db import DatabaseError
+        try:
+            return super().update(request, *args, **kwargs)
+        except DatabaseError:
+            # The quote and its pricing decision save in one transaction
+            # (QuoteSerializer.update), so nothing was written: say so plainly.
+            _exc_logger.exception('quote update failed')
+            return Response({'error': 'The quote could not be saved just now. Nothing was changed; please try again.'},
+                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
     def perform_update(self, serializer):
         # IT/COMPLETED describe an Order's delivery progress, not the quote
@@ -2861,7 +2869,7 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         if self._billing_blocked(request):
             return self._billing_blocked_response()
         company = getattr(request.user, 'company', None)
-        from django.db import IntegrityError, transaction
+        from django.db import DatabaseError, IntegrityError, transaction
         from rest_framework.exceptions import ValidationError as DRFValidationError
         try:
             if company and company.is_demo:
@@ -2911,6 +2919,10 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
             return Response({'error': detail}, status=status.HTTP_400_BAD_REQUEST)
         except DRFValidationError:
             raise
+        except DatabaseError:
+            _exc_logger.exception('quote create failed')
+            return Response({'error': 'The quote could not be saved just now. Nothing was saved; please try again.'},
+                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
         except Exception as exc:
             return Response(
                 {'error': f'Could not create quote: {exc}'},
@@ -3080,6 +3092,26 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         pickup_city, pickup_state = lane_place(quote.origin, quote.pickup_location)
         delivery_city, delivery_state = lane_place(quote.destination, quote.delivery_location)
 
+        # Optional dates from the booking dialog (YYYY-MM-DD). Absent -> the
+        # quote's own dates, else the old +2/+4 day placeholders (unchanged).
+        def _req_date(key):
+            raw = request.data.get(key)
+            if raw in (None, ''):
+                return None, None
+            try:
+                return datetime.strptime(str(raw)[:10], '%Y-%m-%d').date(), None
+            except ValueError:
+                return None, f'{key} must be a date (YYYY-MM-DD)'
+        req_pickup, err1 = _req_date('pickup_date')
+        req_delivery, err2 = _req_date('delivery_date')
+        if err1 or err2:
+            return Response({'error': err1 or err2}, status=status.HTTP_400_BAD_REQUEST)
+        eff_pickup = req_pickup or quote.pickup_date
+        eff_delivery = req_delivery or quote.delivery_date
+        if (req_pickup or req_delivery) and eff_pickup and eff_delivery and eff_delivery < eff_pickup:
+            return Response({'error': 'The delivery date cannot be before the collection date.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
         # Create load from quote (stamp the company so it's tenant-scoped/visible)
         load = Load.objects.create(
             load_number=load_number,
@@ -3100,13 +3132,13 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
             # Use the quote's own dates when it has them (now reliably
             # captured via the AI/voice quote flow) instead of always
             # discarding them for a generic +2/+4 day placeholder.
-            pickup_date=_date_to_aware_datetime(quote.pickup_date) or (timezone.now() + timedelta(days=2)),
+            pickup_date=_date_to_aware_datetime(eff_pickup) or (timezone.now() + timedelta(days=2)),
             delivery_city=delivery_city or 'TBD',
             delivery_state=delivery_state,
             delivery_zip='',
             delivery_lat=quote.delivery_lat,
             delivery_lng=quote.delivery_lng,
-            delivery_date=_date_to_aware_datetime(quote.delivery_date) or (timezone.now() + timedelta(days=4)),
+            delivery_date=_date_to_aware_datetime(eff_delivery) or (timezone.now() + timedelta(days=4)),
             # Same list, verbatim — the order's route must show identically
             # to what the customer actually quoted/accepted.
             stops=quote.stops,

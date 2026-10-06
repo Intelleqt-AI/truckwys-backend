@@ -114,7 +114,7 @@ def _fleet_avg_cpk(company):
     return cpk
 
 
-def _full_floor_fields(total_cost, quote_price, distance_km, company):
+def _full_floor_fields(total_cost, quote_price, distance_km, company, vehicle_type=None):
     """Additive Revenue Guard fields on the ONE margin definition the pricing
     analysis uses (core.services.pricing_analysis.margin_against_floor):
     margin = price − full cost floor, where the floor adds fixed cost/km × km
@@ -123,7 +123,7 @@ def _full_floor_fields(total_cost, quote_price, distance_km, company):
     Never raises."""
     try:
         from core.services.pricing_analysis import fixed_cost_per_km, margin_against_floor
-        fixed = fixed_cost_per_km(company) if distance_km > 0 else None
+        fixed = fixed_cost_per_km(company, None, vehicle_type) if distance_km > 0 else None
         fixed_zar = round(fixed['value'] * distance_km) if fixed else 0
         floor = round(total_cost) + fixed_zar
         m = margin_against_floor(quote_price, floor)
@@ -140,7 +140,7 @@ def _full_floor_fields(total_cost, quote_price, distance_km, company):
 
 
 def assess_revenue_guard(*, total_cost, quote_price, distance_km=0.0,
-                         fuel_cost=0.0, company=None, quote=None, customer=None):
+                         fuel_cost=0.0, company=None, quote=None, customer=None, vehicle_type=None):
     """Assess margin health for a quote.
 
     total_cost = direct operating cost; quote_price = price being charged.
@@ -227,7 +227,8 @@ def assess_revenue_guard(*, total_cost, quote_price, distance_km=0.0,
             suggestions.append(f"Increase price by ~R{int(increase_needed)} to reach a {target_margin:.0f}% margin")
 
     margin_floor = int(total_cost)
-    floor_fields = _full_floor_fields(total_cost, quote_price, distance_km, company)
+    floor_fields = _full_floor_fields(total_cost, quote_price, distance_km, company,
+                                      vehicle_type or getattr(quote, 'vehicle_type', None))
     return {
         **floor_fields,
         'success': True,

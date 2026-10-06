@@ -1,4 +1,5 @@
 import json
+from decimal import Decimal
 import re
 from rest_framework import serializers
 from django.db.models import Avg, Q  # ADD THIS IMPORT
@@ -646,6 +647,20 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
     # operator picked, stored as QuotePricingDecision. Write-only here; the
     # quote DETAIL response carries it back read-only (to_representation).
     pricing_decision = serializers.JSONField(required=False, allow_null=True, write_only=True)
+    # Additive, list + detail: margin % against the full cost floor from the
+    # stored pricing decision (null when the quote has none). The viewset
+    # select_related's the decision, so this costs no extra query.
+    pricing_margin_pct = serializers.SerializerMethodField()
+
+    def get_pricing_margin_pct(self, obj):
+        try:
+            d = obj.pricing_decision
+        except Exception:
+            return None
+        price, floor = d.final_price, d.floor
+        if not price or floor is None or price <= 0:
+            return None
+        return int(round(float((price - floor) / price * 100)))
 
     class Meta:
         model = Quote
@@ -671,12 +686,15 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
             raise serializers.ValidationError(
                 f'pricing_decision is {size:,} bytes; the limit is {self.PRICING_DECISION_MAX_BYTES:,}.')
         picked = value.get('picked_choice')
+        lines = value.get('floor_lines')
+        if lines is not None and not isinstance(lines, list):
+            raise serializers.ValidationError('floor_lines must be a list.')
         if picked not in (None, '', 'safe', 'balanced', 'stretch', 'custom'):
             raise serializers.ValidationError('picked_choice must be safe, balanced, stretch or custom.')
         level = value.get('likelihood_level')
         if level not in (None, '', 'model', 'rules'):
             raise serializers.ValidationError('likelihood_level must be model or rules.')
-        for key in ('final_price', 'floor', 'likelihood_at_final_pct'):
+        for key in ('final_price', 'floor', 'likelihood_at_final_pct', 'price_adjustment'):
             v = value.get(key)
             if v is not None:
                 try:
@@ -686,17 +704,23 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
         return value
 
     def create(self, validated_data):
+        from django.db import transaction
         decision = validated_data.pop('pricing_decision', None)
-        instance = super().create(validated_data)
-        if decision:
-            self._save_pricing_decision(instance, decision)
+        # One transaction: a quote saved with a decision either stores both or
+        # neither — never a 201 that claims a decision the DB doesn't hold.
+        with transaction.atomic():
+            instance = super().create(validated_data)
+            if decision:
+                self._save_pricing_decision(instance, decision)
         return instance
 
     def update(self, instance, validated_data):
+        from django.db import transaction
         decision = validated_data.pop('pricing_decision', None)
-        instance = super().update(instance, validated_data)
-        if decision:
-            self._save_pricing_decision(instance, decision)
+        with transaction.atomic():
+            instance = super().update(instance, validated_data)
+            if decision:
+                self._save_pricing_decision(instance, decision)
         return instance
 
     def _save_pricing_decision(self, quote, decision):
@@ -1271,9 +1295,16 @@ class CompanySerializer(serializers.ModelSerializer):
             'ai_optimizer_max_market_deviation_pct',
             'default_toll_rate_per_km',
             # Pricing analysis (additive): empty-return default and global-model opt-in.
-            'pricing_include_empty_return', 'pool_pricing_data',
+            'pricing_include_empty_return', 'pool_pricing_data', 'operating_cost_per_km',
             'onboarding_completed_at',
         ] + list(BANK_FIELDS)
+
+    def validate_operating_cost_per_km(self, value):
+        # Blank clears it (back to the figure from expenses); otherwise a
+        # plausible R/km, so a typo can't price every quote at R0.10 or R10 000/km.
+        if value is not None and not (Decimal('1') <= value <= Decimal('200')):
+            raise serializers.ValidationError('Enter an operating cost between R1 and R200 per km, or leave it blank.')
+        return value
 
     def get_fields(self):
         # Banking details follow the company-edit permission: only a company

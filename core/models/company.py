@@ -455,6 +455,13 @@ class Company(models.Model):
         default=False,
         help_text='Include the empty run home in the cost floor of one-way quotes by default',
     )
+    # The operator's own all-in operating cost per km (excl. fuel and tolls).
+    # When set, it wins over the figure from expenses and the class estimate.
+    operating_cost_per_km = models.DecimalField(
+        max_digits=8, decimal_places=2, null=True, blank=True,
+        help_text='Your operating cost per km excl. fuel and tolls (driver wages, finance, insurance, '
+                  'licences, tyres, maintenance, overheads). Blank = worked out from your expenses.',
+    )
     # Opt-in to the pooled (global) win model: this company's decided quotes
     # train it, and this company may be served it when it has no model of its
     # own. Off by default — one tenant's outcomes never shape another's

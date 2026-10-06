@@ -444,6 +444,7 @@ class RevenueGuardView(APIView):
                 total_cost=total_cost, quote_price=quote_price,
                 distance_km=distance_km, fuel_cost=fuel_cost,
                 company=company, quote=quote, customer=customer,
+                vehicle_type=data.get('vehicle_type') or None,
             )
             result.setdefault('factors', [])  # legacy field
             return Response(result)
@@ -1350,10 +1351,25 @@ class QuoteOutcomeView(APIView):
                 'error': 'Failed to record outcome',
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+        # Keep the quote's status in step with the recorded answer (a DRAFT
+        # or SENT quote marked won otherwise read "Draft · Won"): accepted ->
+        # ACCEPTED unless already won/in transit; rejected -> DECLINED. Same
+        # direction as a status change recording the outcome (QuoteViewSet).
+        target = None
+        if outcome == 'accepted' and quote.status not in ('ACCEPTED', 'IT', 'COMPLETED'):
+            target = 'ACCEPTED'
+        elif outcome == 'rejected' and quote.status != 'DECLINED' and not quote.loads.exists():
+            target = 'DECLINED'
+        if target:
+            quote.status = target
+            quote._notify_actor_id = request.user.id
+            quote.save(update_fields=['status', 'updated_at'])
+
         return Response({
             'success': True,
             'id': quote.id,
             'outcome': quote.outcome,
+            'status': quote.status,
             'updated_at': quote.updated_at.isoformat(),
         })
 

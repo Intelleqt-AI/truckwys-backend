@@ -57,6 +57,8 @@ class _Base(IsolatedModelStorageMixin, TestCase):
     def setUp(self):
         super().setUp()
         cache.clear()
+        pa._MARKET_MEMO.clear()
+        self.addCleanup(pa._MARKET_MEMO.clear)
         self.company = Company.objects.create(company_name='Bluegum Haulage', margin_target_pct=Decimal('10'))
         self.user = User.objects.create_user(username='bluegum', password='x', company=self.company)
         self.customer = make_customer(self.company)
@@ -81,7 +83,9 @@ class ColdStartTests(_Base):
         self.assertFalse(r['market']['available'])
         self.assertEqual(r['likelihood']['level'], 'rules')
         self.assertIsNone(r['likelihood']['model'])
-        self.assertIn('Not enough closed quotes yet: 0 of 40', r['likelihood']['reason'])
+        self.assertIn('you have 0 so far', r['likelihood']['reason'])
+        # The level reason is not repeated in the reasoning sentences.
+        self.assertFalse(any('0 so far' in t for t in r['reasoning']))
         codes = {w['code'] for w in r['warnings']}
         self.assertIn('no_market', codes)
         self.assertIn('estimate_fixed_cost', codes)
@@ -139,7 +143,11 @@ class CostFloorTests(_Base):
         self.assertEqual(lines['tolls']['amount'], 1200)
         self.assertEqual(lines['tolls']['source']['kind'], 'official')
         self.assertIn('SANRAL', lines['tolls']['source']['label'])
-        self.assertEqual(lines['fixed_cost']['amount'], round(568 * 4.60))
+        # No VehicleType row: 'Tautliner' -> tri-axle class estimate, R11.50/km.
+        self.assertEqual(lines['fixed_cost']['amount'], round(568 * 11.50))
+        self.assertEqual(lines['fixed_cost']['label'], 'Operating costs')
+        self.assertIn('tri-axle', lines['fixed_cost']['source']['label'])
+        self.assertEqual(r['cost_floor']['fixed_cost_per_km']['class'], 'tri_axle')
         self.assertNotIn('return_leg', lines)
         self.assertFalse(r['cost_floor']['include_return'])
         for ln in lines.values():
@@ -238,19 +246,27 @@ class RulesWithMarketTests(_Base):
         self.assertFalse(m['is_estimate'])
         self.assertEqual(m['n'], 7)
         safe, balanced, stretch = r['choices']
-        self.assertGreaterEqual(safe['price'], m['p25'])
+        # Safe sits at p25, or up to 3% under it in a tight market (to keep
+        # Balanced at the median rather than pushing it above).
+        self.assertGreaterEqual(safe['price'], m['p25'] * 0.97)
+        self.assertGreaterEqual(balanced['price'], safe['price'] * 1.03 - 1)
         self.assertGreaterEqual(balanced['price'], m['median'])
         self.assertGreater(stretch['price'], balanced['price'])
         self.assertTrue(balanced['recommended'])
         th = r['likelihood']['rules']['thresholds']
-        self.assertEqual(th['likely_max'], m['median'])
-        self.assertEqual(th['even_max'], m['p75'])
+        # Rounded up to the choices' R50/R100 step.
+        self.assertEqual(th['likely_max'], pa.round_price(m['median']))
+        self.assertEqual(th['even_max'], pa.round_price(m['p75']))
         self.assertEqual(r['likelihood']['level'], 'rules')
         self.assertEqual(safe['likelihood']['band'], 'likely')
         self.assertEqual(r['your_price']['market_position'], 'within')
         # Customer evidence: their own lane quotes, newest first.
         self.assertEqual(len(r['customer']['recent_lane_quotes']), 3)
-        self.assertEqual(r['customer']['acceptance'], {'won': 3, 'decided': 3, 'rate_pct': 100})
+        self.assertEqual(r['customer']['acceptance'], {'won': 3, 'decided': 3, 'rate_pct': 100, 'scope': 'all_lanes'})
+        self.assertEqual(r['customer']['lane_acceptance']['scope'], 'this_lane')
+        # Balanced (the median, rounded up) sits in the median's band.
+        self.assertEqual(balanced['likelihood']['band'], 'likely')
+        self.assertLessEqual(balanced['price'], th['likely_max'])
         self.assertIn(r['customer']['payment_risk']['band'], ('low', 'medium', 'high', 'unknown'))
 
     def test_below_floor_warning(self):
@@ -309,8 +325,9 @@ class _ModelMixin:
     def model_payload(self, **over):
         # JHB->CPT: the lane make_outcomes prices (16k-29k against the 38,900
         # SA estimate the training market rate resolves to).
-        p = dict(origin='JHB', destination='CPT', fuel_cost=9000, toll_cost=1500, distance_km=1400,
-                 one_way_distance_km=1400, duration_minutes=480, vehicle_type='', route={})
+        # Floor ≈ 5 000 + 700 + 1 000 km × R11,50 = R17 200 -> choices ≈ R19k–R23k.
+        p = dict(origin='JHB', destination='CPT', fuel_cost=5000, toll_cost=700, distance_km=1000,
+                 one_way_distance_km=1000, duration_minutes=480, vehicle_type='', route={})
         p.update(over)
         return p
 
@@ -458,15 +475,27 @@ class ModelDecisionTests(_ModelMixin, _DecisionHelpers, _Base):
         if not WIN_ML_AVAILABLE:
             self.skipTest('sklearn not installed')
         self.train_company_model(self.company, self.user, self.customer)
-        resp = self.api.post('/api/v1/quotes/', self.quote_payload(), format='json')
+        # JHB->CPT at R20 000: inside what the company model was trained on.
+        resp = self.api.post('/api/v1/quotes/', self.quote_payload(
+            delivery_location='Cape Town', total_amount='20000', distance='1400'), format='json')
         qid = resp.json()['id']
         resp = self.api.patch(f'/api/v1/quotes/{qid}/', {'pricing_decision': self.decision(
-            likelihood_level='model', likelihood_at_final_pct=64, model_version='company:1:x')}, format='json')
+            final_price=20000, floor=16900, likelihood_level='model', likelihood_at_final_pct=99,
+            model_version='company:1:x')}, format='json')
         self.assertEqual(resp.status_code, 200, resp.content)
-        self.assertEqual(Quote.objects.get(id=qid).win_probability, Decimal('64'))
-        # Back to rules level -> cleared, never left at an old figure.
-        self.api.patch(f'/api/v1/quotes/{qid}/', {'pricing_decision': self.decision()}, format='json')
+        d = QuotePricingDecision.objects.get(quote_id=qid)
+        # The SERVER's model % at the final price, not the client's 99.
+        self.assertEqual(d.likelihood_level, 'model')
+        self.assertIsNotNone(d.likelihood_at_final_pct)
+        self.assertNotEqual(d.likelihood_at_final_pct, 99)
+        self.assertEqual(d.payload['client_pct'], 99)
+        self.assertTrue(d.model_version.startswith('company:'))
+        self.assertEqual(Quote.objects.get(id=qid).win_probability, Decimal(d.likelihood_at_final_pct))
+        # A price far outside the model's range -> rules level, cleared to null.
+        self.api.patch(f'/api/v1/quotes/{qid}/', {'total_amount': '90000', 'pricing_decision': self.decision(
+            final_price=90000, likelihood_level='model', likelihood_at_final_pct=70)}, format='json')
         self.assertIsNone(Quote.objects.get(id=qid).win_probability)
+        self.assertEqual(QuotePricingDecision.objects.get(quote_id=qid).likelihood_level, 'rules')
 
 
 class LossReasonAndOutcomeTests(_Base):
@@ -606,3 +635,222 @@ class RoundTripDocumentTests(_Base):
                 pass
         rows = box.call_args[0][0]
         self.assertIn(('Trip', 'Return trip (there and back)'), rows)
+
+
+class Round1FixTests(_Base):
+    """Round 1 review fixes (accuracy, phone and UX audits)."""
+
+    def _decision(self, **over):
+        d = {'version': 'pa-1', 'picked_choice': 'balanced', 'final_price': 22700, 'floor': 14000,
+             'market': {'tier': 'platform', 'n': 9}, 'likelihood_level': 'rules', 'band_at_final': 'likely',
+             'floor_lines': [{'key': 'fuel', 'label': 'Fuel', 'amount': 6500, 'source': {'kind': 'official'}},
+                             {'key': 'fixed_cost', 'label': 'Operating costs', 'amount': 7046,
+                              'source_kind': 'estimate'},
+                             {'key': 'bogus', 'label': 'x', 'amount': 1}]}
+        d.update(over)
+        return d
+
+    def _quote(self, **over):
+        p = {'customer': self.customer.id, 'pickup_location': 'Johannesburg', 'delivery_location': 'Durban',
+             'cargo_description': 'Maize', 'weight': '28000', 'base_rate': '15000', 'total_amount': '22700',
+             'valid_until': str(date.today() + timedelta(days=7))}
+        p.update(over)
+        return p
+
+    # B1
+    def test_decision_write_failure_fails_the_save(self):
+        from unittest import mock
+        from django.db import OperationalError
+        boom = mock.patch('core.models.QuotePricingDecision.objects.update_or_create',
+                          side_effect=OperationalError('database is locked'))
+        with boom:
+            resp = self.api.post('/api/v1/quotes/', self._quote(pricing_decision=self._decision()), format='json')
+        self.assertEqual(resp.status_code, 503, resp.content)
+        self.assertFalse(Quote.objects.filter(company=self.company).exists())
+        ok = self.api.post('/api/v1/quotes/', self._quote(pricing_decision=self._decision()), format='json')
+        qid = ok.json()['id']
+        with boom:
+            resp = self.api.patch(f'/api/v1/quotes/{qid}/', {'total_amount': '30000',
+                                                              'pricing_decision': self._decision(final_price=30000)},
+                                  format='json')
+        self.assertEqual(resp.status_code, 503)
+        self.assertEqual(Quote.objects.get(id=qid).total_amount, Decimal('22700'))
+        self.assertEqual(QuotePricingDecision.objects.get(quote_id=qid).final_price, Decimal('22700'))
+
+    def test_floor_lines_stored_and_returned(self):
+        resp = self.api.post('/api/v1/quotes/', self._quote(pricing_decision=self._decision()), format='json')
+        self.assertEqual(resp.status_code, 201, resp.content)
+        lines = resp.json()['pricing_decision']['floor_lines']
+        self.assertEqual(lines, [{'key': 'fuel', 'label': 'Fuel', 'amount': 6500, 'source_kind': 'official'},
+                                 {'key': 'fixed_cost', 'label': 'Operating costs', 'amount': 7046,
+                                  'source_kind': 'estimate'}])
+        detail = self.api.get(f"/api/v1/quotes/{resp.json()['id']}/").json()
+        self.assertEqual(len(detail['pricing_decision']['floor_lines']), 2)
+
+    # B3 / B4
+    def test_empty_return_uses_unrounded_fuel_price_and_counts_nights(self):
+        VehicleType.objects.create(company=self.company, name='Tautliner', capacity=Decimal('34'),
+                                   max_distance=Decimal('2000'), base_rate=Decimal('20'),
+                                   fuel_consumption_l_per_100km=Decimal('38'))
+        # 568 km at 30.0049 R/L; 9 h each way -> one way 0 nights, round trip 1.
+        r = self.analyze(include_return=True, fuel_price_used=30.0049, fuel_usage_litres=216.6,
+                         fuel_cost=6499, duration_minutes=540)
+        fuel = next(ln for ln in r['cost_floor']['lines'] if ln['key'] == 'fuel')
+        self.assertAlmostEqual(fuel['price_per_litre'], 30.0049)
+        ret = next(ln for ln in r['cost_floor']['lines'] if ln['key'] == 'return_leg')
+        from core.services.pricing_analysis import _builder_consumption
+        vt = VehicleType.objects.get(name='Tautliner', company=self.company)
+        expected = round(568 * _builder_consumption(vt, 0) / 100 * 30.0049)
+        fuel_detail = next(d for d in ret['details'] if d['label'] == 'Fuel')['value']
+        self.assertIn(f'R {expected:,}'.replace(',', ' '), fuel_detail)
+        nights = next(d for d in ret['details'] if d['label'] == 'Extra driver nights')['value']
+        self.assertIn('1 extra night, no approved rate', nights)
+
+    # Drafts and one definition of won
+    def test_drafts_and_the_edited_quote_are_not_customer_evidence(self):
+        sent = make_quote(self.company, self.customer, number='D-1', status='SENT', pickup_location='Johannesburg',
+                          delivery_location='Durban', origin='JHB', destination='DBN')
+        make_quote(self.company, self.customer, number='D-2', status='DRAFT', outcome='accepted',
+                   pickup_location='Johannesburg', delivery_location='Durban', origin='JHB', destination='DBN')
+        editing = make_quote(self.company, self.customer, number='D-3', status='SENT', origin='JHB',
+                             destination='DBN', pickup_location='Johannesburg', delivery_location='Durban')
+        r = self.analyze(customer_id=self.customer.id, quote_id=editing.id)
+        ids = [q['id'] for q in r['customer']['recent_lane_quotes']]
+        self.assertEqual(ids, [sent.id])
+        self.assertEqual(r['customer']['acceptance']['decided'], 0)
+        # Recorded won on a SENT quote counts as won (same as the market tier).
+        make_quote(self.company, self.customer, number='D-4', status='SENT', outcome='accepted')
+        r = self.analyze(customer_id=self.customer.id)
+        self.assertEqual(r['customer']['acceptance']['won'], 1)
+
+    # Copy
+    def test_sa_number_style_and_true_safe_summary(self):
+        r = self.analyze(origin='BFN', destination='PLK', fuel_cost=300, toll_cost=0, distance_km=10,
+                         one_way_distance_km=10, route={})
+        safe = r['choices'][0]
+        self.assertIn('at least your 10% target', safe['summary'])
+        self.assertTrue(safe['summary'].startswith(f"{safe['margin_pct']}% margin"))
+        text = ' '.join(r['reasoning'])
+        self.assertRegex(text, r'R \d')
+        self.assertNotRegex(text, r'R\d')
+        fixed = next(ln for ln in r['cost_floor']['lines'] if ln['key'] == 'fixed_cost')
+        self.assertIn('R 11,50/km', fixed['basis'])
+
+    def test_empty_return_summaries_match_each_card(self):
+        other = Company.objects.create(company_name='Ridgeback Freight')
+        won_quotes(self.company, self.customer, 3, start=12000, prefix='A')
+        won_quotes(other, make_customer(other, 'Saltpan Traders'), 4, start=12500, prefix='B')
+        r = self.analyze(include_return=True, your_price=26000)
+        for c in r['choices']:
+            if 'your 10% target' in c['summary'] and 'at least' not in c['summary']:
+                self.assertLessEqual(c['margin_pct'], 11, c)
+            self.assertIn(f"{c['margin_pct']}% margin", c['summary'])
+        self.assertTrue(next(c for c in r['choices'] if c['key'] == 'balanced')['recommended'])
+        self.assertEqual(r['recommendation']['key'], 'balanced')
+
+    # Payment risk, below floor, driver needs input
+    def test_payment_risk_attention_and_no_likelihood_below_floor(self):
+        from unittest import mock
+        risk = {'band': 'HIGH', 'stats': {'invoice_count': 6, 'late_count': 4}}
+        with mock.patch('core.services.customer_risk.compute_customer_risk', return_value=risk):
+            r = self.analyze(customer_id=self.customer.id, your_price=3000)
+        self.assertEqual(r['attention'][0]['code'], 'payment_risk')
+        self.assertEqual(r['attention'][0]['level'], 'high')
+        self.assertIn('deposit', r['attention'][0]['message'])
+        self.assertEqual(r['recommendation']['key'], 'balanced')
+        self.assertTrue(r['your_price']['below_floor'])
+        self.assertIsNone(r['your_price']['likelihood'])
+
+    def test_driver_line_needs_input_when_nights_and_no_rate(self):
+        r = self.analyze(duration_minutes=1200)
+        line = next(ln for ln in r['cost_floor']['lines'] if ln['key'] == 'driver_allowance')
+        self.assertEqual(line['status'], 'needs_input')
+        self.assertEqual(line['nights'], 2)
+        r = self.analyze(duration_minutes=1200, driver_cost=900)
+        line = next(ln for ln in r['cost_floor']['lines'] if ln['key'] == 'driver_allowance')
+        self.assertEqual(line['status'], 'ok')
+
+    # Operating costs
+    def test_operating_cost_setting_wins_and_classes(self):
+        self.company.operating_cost_per_km = Decimal('14.25')
+        self.company.save()
+        r = self.analyze()
+        line = next(ln for ln in r['cost_floor']['lines'] if ln['key'] == 'fixed_cost')
+        self.assertEqual(line['source']['kind'], 'user')
+        self.assertEqual(line['amount'], round(568 * 14.25))
+        self.assertNotIn('estimate_fixed_cost', {w['code'] for w in r['warnings']})
+        from core.serializers import CompanySerializer
+        ser = CompanySerializer(self.company, data={'operating_cost_per_km': '0.10'}, partial=True)
+        self.assertFalse(ser.is_valid())
+        self.assertIn('operating_cost_per_km', ser.errors)
+        from core.services.pricing_analysis import vehicle_class
+        self.assertEqual(vehicle_class(None, 'Superlink 34t'), 'superlink')
+        self.assertEqual(vehicle_class(None, 'Reefer'), 'reefer')
+        self.assertEqual(vehicle_class(None, '8 ton rigid'), 'rigid')
+        self.assertEqual(vehicle_class(None, ''), 'tri_axle')
+
+    def test_company_level_costs_count_in_actuals(self):
+        from core.models import Driver, Load, Vehicle
+        vt = VehicleType.objects.create(name='OpTruck', capacity=Decimal('34'), max_distance=Decimal('2000'),
+                                        base_rate=Decimal('15'))
+        vehicle = Vehicle.objects.create(company=self.company, vin='OPVIN1', plate='OP001GP', vehicle_type=vt,
+                                         make='Merc', model='Actros', year=2020, type='Truck',
+                                         capacity=Decimal('34'), fuel_type='Diesel', status='AVAILABLE')
+        du = User.objects.create_user(username='op_driver', email='d@op.test', password='x')
+        driver = Driver.objects.create(company=self.company, user=du, license_number='OP-1',
+                                       license_expiry=date.today() + timedelta(days=365), license_state='GP',
+                                       hire_date=date.today() - timedelta(days=365))
+        for i in range(10):
+            load = Load.objects.create(
+                load_number=f'OPL-{i}', company=self.company, customer=self.customer, pickup_location='A',
+                pickup_city='A', pickup_state='', pickup_zip='', pickup_date=timezone.now(),
+                delivery_location='B', delivery_city='B', delivery_state='', delivery_zip='',
+                delivery_date=timezone.now(), cargo_description='x', weight=1, rate=1, total_amount=1)
+            Trip.objects.create(load=load, vehicle=vehicle, driver=driver, status='COMPLETED',
+                                distance_km=Decimal('1000'), estimated_distance_km=Decimal('1000'),
+                                estimated_duration_hours=Decimal('12'), origin='A', destination='B',
+                                start_time=timezone.now())
+        # Company-level (no trip): insurance R60 000 + salaries R50 000 excl. VAT, fuel excluded.
+        Expense.objects.create(company=self.company, expense_number='OPX-1', category='INSURANCE', description='i',
+                               amount=Decimal('60000'), expense_date=date.today(), status='APPROVED')
+        Expense.objects.create(company=self.company, expense_number='OPX-2', category='DRIVER_COST', description='s',
+                               amount=Decimal('50000'), expense_date=date.today(), status='APPROVED')
+        Expense.objects.create(company=self.company, expense_number='OPX-3', category='FUEL', description='f',
+                               amount=Decimal('90000'), expense_date=date.today(), status='APPROVED')
+        cache.clear()
+        r = self.analyze()
+        fixed = r['cost_floor']['fixed_cost_per_km']
+        self.assertEqual(fixed['source'], 'company_actuals')
+        self.assertAlmostEqual(fixed['value'], 11.0)      # 110 000 / 10 000 km
+
+    # Outcome endpoint keeps status in step
+    def test_outcome_endpoint_moves_status(self):
+        q = make_quote(self.company, self.customer, number='ST-1', status='DRAFT', created_by=self.user)
+        resp = self.api.patch(f'/api/v1/quotes/{q.id}/outcome/', {'outcome': 'accepted'}, format='json')
+        self.assertEqual(resp.json()['status'], 'ACCEPTED')
+        q2 = make_quote(self.company, self.customer, number='ST-2', status='SENT', created_by=self.user)
+        self.api.patch(f'/api/v1/quotes/{q2.id}/outcome/', {'outcome': 'rejected', 'loss_reason': 'price'},
+                       format='json')
+        q2.refresh_from_db()
+        self.assertEqual((q2.status, q2.outcome), ('DECLINED', 'rejected'))
+
+    def test_price_adjustment_and_list_margin(self):
+        resp = self.api.post('/api/v1/quotes/', self._quote(pricing_decision=self._decision(price_adjustment=-250)),
+                             format='json')
+        self.assertEqual(resp.status_code, 201, resp.content)
+        self.assertEqual(resp.json()['pricing_decision']['price_adjustment'], -250)
+        listing = self.api.get('/api/v1/quotes/').json()
+        row = (listing.get('results', listing))[0]
+        self.assertEqual(row['pricing_margin_pct'], round((22700 - 14000) / 22700 * 100))
+        self.assertNotIn('pricing_decision', row)
+
+    def test_convert_to_load_accepts_dates(self):
+        q = make_quote(self.company, self.customer, number='CD-1', created_by=self.user, status='ACCEPTED')
+        bad = self.api.post(f'/api/v1/quotes/{q.id}/convert_to_load/',
+                            {'pickup_date': '2026-11-10', 'delivery_date': '2026-11-09'}, format='json')
+        self.assertEqual(bad.status_code, 400)
+        resp = self.api.post(f'/api/v1/quotes/{q.id}/convert_to_load/',
+                             {'pickup_date': '2026-11-10', 'delivery_date': '2026-11-12'}, format='json')
+        self.assertEqual(resp.status_code, 201, resp.content)
+        self.assertTrue(resp.json()['pickup_date'].startswith('2026-11-10'))
+        self.assertTrue(resp.json()['delivery_date'].startswith('2026-11-12'))

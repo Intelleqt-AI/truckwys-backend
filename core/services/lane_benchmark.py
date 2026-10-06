@@ -108,6 +108,19 @@ def derive_lane_code(*candidates):
     return ''
 
 
+def won_quote_q():
+    """ONE definition of a won quote for the pricing analysis' company tier and
+    customer acceptance: status says won (ACCEPTED / IT / COMPLETED), or the
+    outcome was recorded as accepted on a quote that was actually sent (never
+    a DRAFT)."""
+    return Q(status__in=WON_STATUSES) | (Q(outcome='accepted') & ~Q(status='DRAFT'))
+
+
+def lost_quote_q():
+    """A decided, lost quote: declined, or recorded rejected, on a sent quote."""
+    return (Q(status='DECLINED') | (Q(outcome='rejected') & ~Q(status='DRAFT'))) & ~won_quote_q()
+
+
 # Display city and province for each canonical code (bookings created from
 # a quote). Province '' outside South Africa.
 LANE_PLACES = {
@@ -561,8 +574,7 @@ def _company_lane_amounts(o, d, vt, company, exclude_quote_id=None, as_of=None):
 
     as_of = as_of or timezone.now()
     base = Quote.objects.filter(
-        _lane_q('origin', o), _lane_q('destination', d),
-        status__in=WON_STATUSES, company=company,
+        won_quote_q(), _lane_q('origin', o), _lane_q('destination', d), company=company,
         created_at__gte=as_of - timedelta(days=COMPANY_FALLBACK_DAYS), created_at__lte=as_of,
     ).exclude(total_amount__isnull=True)
     if exclude_quote_id:
