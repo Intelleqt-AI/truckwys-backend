@@ -511,7 +511,7 @@ def retrain_win_model():
     QuoteOutcome data. Idempotent: no-ops with a clear reason until enough
     outcomes exist (WIN_MODEL_GLOBAL_MIN_SAMPLES) and both outcome classes are
     present — an all-accepted dataset cannot train a classifier."""
-    from core.services.quote_training import retrain_win_model as _retrain
+    from core.services.quote_training import retrain_company_win_models, retrain_win_model as _retrain
     result = _retrain()
     if result.get('trained'):
         logger.info(
@@ -520,6 +520,15 @@ def retrain_win_model():
         )
     else:
         logger.info('Win model not retrained: %s', result.get('reason'))
+    # Per-company tier (pricing analysis checks it before the user and global
+    # tiers). Same nightly run, so no new Beat entry; additive result key.
+    try:
+        companies = retrain_company_win_models()
+        logger.info('Company win models: %s considered, %s trained, %s skipped',
+                    companies['considered'], companies['trained'], companies['skipped'])
+        result['companies'] = {k: v for k, v in companies.items() if k != 'results'}
+    except Exception as exc:  # never fail the global retrain over the company sweep
+        logger.warning('Company win-model sweep failed: %s', exc)
     return result
 
 

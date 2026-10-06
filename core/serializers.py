@@ -642,13 +642,67 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
     # VAT and total incl. VAT (core.services.quote_vat; same figures as the
     # PDF, emails and online quote page). Used for the WhatsApp message.
     customer_price = serializers.SerializerMethodField()
+    # Pricing analysis (additive): what the pricing panel showed and what the
+    # operator picked, stored as QuotePricingDecision. Write-only here; the
+    # quote DETAIL response carries it back read-only (to_representation).
+    pricing_decision = serializers.JSONField(required=False, allow_null=True, write_only=True)
 
     class Meta:
         model = Quote
         fields = '__all__'
         # 'company' read-only (2026-09): a PATCH could move a quote into
         # another tenant. Create paths set it server-side via save(company=).
-        read_only_fields = ['id', 'company', 'created_at', 'updated_at', 'created_by']
+        # 'win_probability' read-only (pricing analysis): the server sets it
+        # from pricing_decision — the model likelihood at the FINAL price when
+        # a real model priced the quote, else null. A client-sent figure (the
+        # old flow sent the heuristic at a price the operator never saw) is
+        # ignored, not rejected, so older clients keep working.
+        read_only_fields = ['id', 'company', 'created_at', 'updated_at', 'created_by', 'win_probability']
+
+    PRICING_DECISION_MAX_BYTES = 20_000
+
+    def validate_pricing_decision(self, value):
+        if value in (None, ''):
+            return None
+        if not isinstance(value, dict):
+            raise serializers.ValidationError('pricing_decision must be a JSON object.')
+        size = len(json.dumps(value, separators=(',', ':'), default=str).encode('utf-8'))
+        if size > self.PRICING_DECISION_MAX_BYTES:
+            raise serializers.ValidationError(
+                f'pricing_decision is {size:,} bytes; the limit is {self.PRICING_DECISION_MAX_BYTES:,}.')
+        picked = value.get('picked_choice')
+        if picked not in (None, '', 'safe', 'balanced', 'stretch', 'custom'):
+            raise serializers.ValidationError('picked_choice must be safe, balanced, stretch or custom.')
+        level = value.get('likelihood_level')
+        if level not in (None, '', 'model', 'rules'):
+            raise serializers.ValidationError('likelihood_level must be model or rules.')
+        for key in ('final_price', 'floor', 'likelihood_at_final_pct'):
+            v = value.get(key)
+            if v is not None:
+                try:
+                    float(v)
+                except (TypeError, ValueError):
+                    raise serializers.ValidationError(f'{key} must be a number.')
+        return value
+
+    def create(self, validated_data):
+        decision = validated_data.pop('pricing_decision', None)
+        instance = super().create(validated_data)
+        if decision:
+            self._save_pricing_decision(instance, decision)
+        return instance
+
+    def update(self, instance, validated_data):
+        decision = validated_data.pop('pricing_decision', None)
+        instance = super().update(instance, validated_data)
+        if decision:
+            self._save_pricing_decision(instance, decision)
+        return instance
+
+    def _save_pricing_decision(self, quote, decision):
+        from core.services.pricing_decisions import save_pricing_decision
+        request = self.context.get('request')
+        save_pricing_decision(quote, decision, user=getattr(request, 'user', None))
 
     def _first_load(self, obj):
         # .all() so a prefetch_related('loads') on the viewset serves it.
@@ -707,6 +761,11 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
         data = super().to_representation(instance)
         if isinstance(self.parent, serializers.ListSerializer):
             data.pop('route_snapshot', None)
+        else:
+            # Detail only (one extra query each; never on list pages).
+            from core.services.pricing_decisions import decision_representation, loss_reason_representation
+            data['pricing_decision'] = decision_representation(instance)
+            data['loss_reason'] = loss_reason_representation(instance)
         return data
 
     def _converted_load(self, obj):
@@ -1211,6 +1270,8 @@ class CompanySerializer(serializers.ModelSerializer):
             'ai_optimizer_min_margin_pct', 'ai_optimizer_min_win_probability_pct',
             'ai_optimizer_max_market_deviation_pct',
             'default_toll_rate_per_km',
+            # Pricing analysis (additive): empty-return default and global-model opt-in.
+            'pricing_include_empty_return', 'pool_pricing_data',
             'onboarding_completed_at',
         ] + list(BANK_FIELDS)
 

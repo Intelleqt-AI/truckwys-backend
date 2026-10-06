@@ -134,7 +134,7 @@ class UserIsolationAndFallbackTests(_RequiresSklearnMixin, IsolatedModelStorageM
         make_outcomes(self.company, self.customer, self.user_a, 40, prefix='A')
         quote_training.retrain_win_model_for_scope('user', user_id=self.user_a.id)
         # A qualifying global model too, from a different (unrelated) user.
-        other_company = Company.objects.create(company_name='Global Donor Co')
+        other_company = Company.objects.create(company_name='Global Donor Co', pool_pricing_data=True)
         other_customer = Customer.objects.create(
             company=other_company, name='Donor Ltd', email='donor@x.test',
             phone='', address='', city='', state='', zip_code='',
@@ -150,7 +150,7 @@ class UserIsolationAndFallbackTests(_RequiresSklearnMixin, IsolatedModelStorageM
 
     def test_resolve_falls_back_to_global_when_user_tier_insufficient(self):
         # user_b never qualifies on their own; global does (donor company).
-        other_company = Company.objects.create(company_name='Global Donor Co 2')
+        other_company = Company.objects.create(company_name='Global Donor Co 2', pool_pricing_data=True)
         other_customer = Customer.objects.create(
             company=other_company, name='Donor Ltd 2', email='donor2@x.test',
             phone='', address='', city='', state='', zip_code='',
@@ -159,6 +159,9 @@ class UserIsolationAndFallbackTests(_RequiresSklearnMixin, IsolatedModelStorageM
         make_outcomes(other_company, other_customer, donor_user, 40, prefix='D2')
         quote_training.retrain_win_model_for_scope('global')
 
+        # The global tier only serves companies that opted into pooling.
+        self.company.pool_pricing_data = True
+        self.company.save(update_fields=['pool_pricing_data'])
         ctx = resolve_prediction_context(self.user_b, self.company)
         self.assertTrue(ctx.available)
         self.assertEqual(ctx.scope, 'global')
@@ -187,7 +190,7 @@ class ModelVersionFieldWidthTests(_RequiresSklearnMixin, IsolatedModelStorageMix
 
     def setUp(self):
         super().setUp()
-        self.company = Company.objects.create(company_name='Width Co')
+        self.company = Company.objects.create(company_name='Width Co', pool_pricing_data=True)
         self.customer = Customer.objects.create(
             company=self.company, name='Width Ltd', email='width@x.test',
             phone='', address='', city='', state='', zip_code='',

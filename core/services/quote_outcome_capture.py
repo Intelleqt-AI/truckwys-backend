@@ -49,7 +49,7 @@ def _historical_acceptance_rate(quote):
 
 
 def record_quote_outcome(quote, outcome, *, rejection_reason='', final_price=None,
-                         update_quote=True, allow_flip=False):
+                         update_quote=True, allow_flip=False, loss_reason='', loss_reason_note=''):
     """Upsert the QuoteOutcome row for a quote and sync the quote's own
     outcome fields. Returns the QuoteOutcome or None on failure. Never raises.
 
@@ -67,6 +67,9 @@ def record_quote_outcome(quote, outcome, *, rejection_reason='', final_price=Non
         final_price: agreed price override; defaults to quote.total_amount.
         update_quote: also set quote.outcome/accepted_at/rejected_at.
         allow_flip: permit overwriting an existing opposite-outcome label.
+        loss_reason / loss_reason_note: structured reason a rejected quote was
+            lost (price|timing|capacity|relationship|other). Optional; may be
+            added to an already-recorded rejection.
     """
     try:
         from core.models import QuoteOutcome
@@ -74,9 +77,16 @@ def record_quote_outcome(quote, outcome, *, rejection_reason='', final_price=Non
         if outcome not in ('accepted', 'rejected'):
             return None
 
+        from core.services.pricing_decisions import clean_loss_reason
+        loss_reason = clean_loss_reason(loss_reason) if outcome == 'rejected' else ''
+        loss_reason_note = str(loss_reason_note or '')[:1000] if loss_reason else ''
+
         existing = QuoteOutcome.objects.filter(quote=quote).first()
         if existing is not None:
             if existing.outcome == outcome:
+                if loss_reason and (existing.loss_reason, existing.loss_reason_note) != (loss_reason, loss_reason_note):
+                    existing.loss_reason, existing.loss_reason_note = loss_reason, loss_reason_note
+                    existing.save(update_fields=['loss_reason', 'loss_reason_note', 'updated_at'])
                 return existing
             if not allow_flip:
                 logger.info(
@@ -179,6 +189,8 @@ def record_quote_outcome(quote, outcome, *, rejection_reason='', final_price=Non
                 'created_by': quote.created_by,
                 'outcome': outcome,
                 'rejection_reason': rejection_reason,
+                'loss_reason': loss_reason,
+                'loss_reason_note': loss_reason_note,
                 'final_price': final_price_val,
                 'margin_pct': margin_pct,
                 'distance_km': quote.distance,

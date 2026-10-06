@@ -91,6 +91,7 @@ from .views_invite import (
 )
 from .views_ai_insights import DashboardBriefingView, RiskScoreExplainView, AgentChatView, CopilotConversationsView, CopilotConversationDetailView, ConversationChatView, ProposalExecuteView, ProposalDismissView, CopilotMemoryView
 from .views_quote_optimize import AIPriceOptimizeView
+from .views_pricing_analysis import QuotePricingAnalysisView
 from .views_risk_score_api import RiskUnderwriteView
 
 router = DefaultRouter()
@@ -256,6 +257,7 @@ urlpatterns = [
     path('quotes/optimize/', AIPriceOptimizeView.as_view(), name='quote-optimize'),
     path('quotes/analyze/', AIQuoteAnalyzeView.as_view(), name='quote-analyze'),
     path('quotes/ai-price-analysis/', AIQuotePriceAnalysisView.as_view(), name='quote-ai-price-analysis'),
+    path('quotes/pricing-analysis/', QuotePricingAnalysisView.as_view(), name='quote-pricing-analysis'),
     path('risk/underwrite/', RiskUnderwriteView.as_view(), name='risk-underwrite'),
     path('risk/score/<int:pk>/explain/', RiskScoreExplainView.as_view(), name='risk-score-explain'),
     path('dashboard/overview/', DashboardOverviewView.as_view(), name='dashboard-overview'),

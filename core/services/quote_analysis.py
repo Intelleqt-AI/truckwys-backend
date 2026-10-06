@@ -33,10 +33,73 @@ def _i(v, default=0):
 # ---------------------------------------------------------------------------
 # Cost correctness / revenue guard — shared by RevenueGuardView and analyze_quote
 # ---------------------------------------------------------------------------
+# Trip-linked expense categories that make up the FIXED cost per km in the
+# pricing analysis floor. Fuel, tolls and subcontractor costs are excluded:
+# fuel and tolls are their own floor lines (the builder's figures), and a
+# subcontracted load isn't run on the fleet's own trucks.
+FIXED_COST_CATEGORIES = ('MAINTENANCE', 'INSURANCE', 'OVERHEAD', 'OTHER', 'DRIVER_COST')
+FLEET_CPK_MIN_TRIPS = 10
+
+
+def fleet_cost_per_km(company, categories=None, *, net_of_vat=False, exclude_rejected=False,
+                      use_cache=True):
+    """This company's cost per km from completed trips' expenses over the last
+    12 months. Generalises the Revenue Guard's fleet average.
+
+    `categories` (None = every category) picks which expenses count; the km
+    denominator is always every COSTED trip (a completed trip with distance
+    and at least one expense in the window), so a category logged on a few
+    trips is spread over the whole fleet's distance, not just those trips.
+    Returns {'value': float|None, 'trips': int, 'km': float} — value is None
+    with fewer than FLEET_CPK_MIN_TRIPS costed trips. Cached 1 h. Never raises.
+    """
+    empty = {'value': None, 'trips': 0, 'km': 0.0}
+    if company is None or not getattr(company, 'id', None):
+        return empty
+    from django.core.cache import cache
+    key_parts = ['all' if categories is None else '-'.join(sorted(categories)),
+                 'net' if net_of_vat else 'gross', 'norej' if exclude_rejected else 'all']
+    cache_key = f'fleet_cpk_{company.id}_{"_".join(key_parts)}'
+    if use_cache:
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+    out = dict(empty)
+    try:
+        from datetime import timedelta
+        from django.db.models import F, Sum
+        from core.models import Expense, Trip
+
+        year_ago = timezone.now().date() - timedelta(days=365)
+        exp = Expense.objects.filter(
+            company=company, trip__isnull=False, trip__status='COMPLETED',
+            trip__distance_km__gt=0, expense_date__gte=year_ago,
+        )
+        if exclude_rejected:
+            exp = exp.exclude(status='REJECTED')
+        trip_ids = list(exp.values_list('trip_id', flat=True).distinct())
+        out['trips'] = len(trip_ids)
+        total_km = float(Trip.objects.filter(id__in=trip_ids).aggregate(s=Sum('distance_km'))['s'] or 0)
+        out['km'] = round(total_km, 1)
+        if len(trip_ids) >= FLEET_CPK_MIN_TRIPS and total_km > 0:
+            counted = exp if categories is None else exp.filter(category__in=list(categories))
+            if net_of_vat:
+                total_cost = float(counted.aggregate(s=Sum(F('amount') - F('vat_amount')))['s'] or 0)
+            else:
+                total_cost = float(counted.aggregate(s=Sum('amount'))['s'] or 0)
+            if total_cost > 0:
+                out['value'] = round(total_cost / total_km, 2)
+    except Exception as exc:
+        logger.warning('fleet cost-per-km aggregate failed: %s', exc)
+    cache.set(cache_key, out, 3600)
+    return out
+
+
 def _fleet_avg_cpk(company):
     """This company's real cost-per-km from completed trips' expenses over the
     last 12 months (cached 1h). Falls back to the industry default when there
-    are fewer than 10 costed trips. Never raises."""
+    are fewer than 10 costed trips. Never raises. (Every category, gross —
+    unchanged; see fleet_cost_per_km for the generalised form.)"""
     FALLBACK = 19.80
     if company is None or not getattr(company, 'id', None):
         return FALLBACK
@@ -45,29 +108,35 @@ def _fleet_avg_cpk(company):
     cached = cache.get(cache_key)
     if cached is not None:
         return cached
-    cpk = FALLBACK
-    try:
-        from datetime import timedelta
-        from django.db.models import Sum
-        from core.models import Expense, Trip
-
-        year_ago = timezone.now().date() - timedelta(days=365)
-        exp = Expense.objects.filter(
-            company=company, trip__isnull=False, trip__status='COMPLETED',
-            trip__distance_km__gt=0, expense_date__gte=year_ago,
-        )
-        trip_ids = list(exp.values_list('trip_id', flat=True).distinct())
-        if len(trip_ids) >= 10:
-            total_cost = float(exp.aggregate(s=Sum('amount'))['s'] or 0)
-            total_km = float(
-                Trip.objects.filter(id__in=trip_ids).aggregate(s=Sum('distance_km'))['s'] or 0
-            )
-            if total_cost > 0 and total_km > 0:
-                cpk = round(total_cost / total_km, 2)
-    except Exception as exc:
-        logger.warning('fleet CPK aggregate failed: %s', exc)
+    result = fleet_cost_per_km(company, None, use_cache=False)
+    cpk = result['value'] if result['value'] else FALLBACK
     cache.set(cache_key, cpk, 3600)
     return cpk
+
+
+def _full_floor_fields(total_cost, quote_price, distance_km, company):
+    """Additive Revenue Guard fields on the ONE margin definition the pricing
+    analysis uses (core.services.pricing_analysis.margin_against_floor):
+    margin = price − full cost floor, where the floor adds fixed cost/km × km
+    to the direct costs the caller sent. The guard's original margin_pct /
+    margin_floor keep their meaning (direct-cost margin) for existing clients.
+    Never raises."""
+    try:
+        from core.services.pricing_analysis import fixed_cost_per_km, margin_against_floor
+        fixed = fixed_cost_per_km(company) if distance_km > 0 else None
+        fixed_zar = round(fixed['value'] * distance_km) if fixed else 0
+        floor = round(total_cost) + fixed_zar
+        m = margin_against_floor(quote_price, floor)
+        return {
+            'full_cost_floor': floor,
+            'fixed_cost_per_km': fixed['value'] if fixed else None,
+            'fixed_cost_source': fixed['source'] if fixed else None,
+            'margin_vs_floor': m['margin'],
+            'margin_floor_pct': m['margin_pct'],
+        }
+    except Exception as exc:
+        logger.warning('revenue guard: full floor failed: %s', exc)
+        return {}
 
 
 def assess_revenue_guard(*, total_cost, quote_price, distance_km=0.0,
@@ -158,7 +227,9 @@ def assess_revenue_guard(*, total_cost, quote_price, distance_km=0.0,
             suggestions.append(f"Increase price by ~R{int(increase_needed)} to reach a {target_margin:.0f}% margin")
 
     margin_floor = int(total_cost)
+    floor_fields = _full_floor_fields(total_cost, quote_price, distance_km, company)
     return {
+        **floor_fields,
         'success': True,
         'status': risk_level,
         'risk_level': risk_level,

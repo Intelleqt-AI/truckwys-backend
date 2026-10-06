@@ -337,6 +337,7 @@ class AIQuoteSuggestionView(APIView):
             # same two-tier (user -> global -> heuristic) model as the live
             # quote-creation flow — see core.services.win_prediction.
             win_probability = win_low = win_high = None
+            prediction_ctx = None
             try:
                 from core.services.win_prediction import resolve_prediction_context
 
@@ -376,6 +377,12 @@ class AIQuoteSuggestionView(APIView):
                 response_data['win_probability'] = win_probability
                 response_data['win_probability_at_lower_price'] = win_low
                 response_data['win_probability_at_higher_price'] = win_high
+            # Additive honesty fields: `available` is False whenever the win
+            # probabilities above come from the heuristic, not a trained model.
+            model_ok = bool(prediction_ctx is not None and prediction_ctx.available)
+            response_data['available'] = model_ok
+            response_data['level'] = 'model' if model_ok else 'heuristic'
+            response_data['model_scope'] = prediction_ctx.scope if model_ok else None
 
             return Response(response_data)
 
@@ -448,12 +455,11 @@ class RevenueGuardView(APIView):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-# UNREACHABLE FROM LIVE UI — QuoteBuilder.tsx's AI panel now calls
-# AIQuotePriceAnalysisView (POST /quotes/ai-price-analysis/) below instead.
-# Left in place (not deleted): the underlying win-probability ML system is
-# only paused, not removed, pending more accept/reject data (see PLAN doc
-# Part 8) — this endpoint and analyze_quote() keep working for anyone who
-# still calls them directly.
+# Still called by QuoteBuilder.tsx (debounced, skip_narrative) on main — only
+# for the win_probability it used to save. That figure is now server-owned
+# (QuoteSerializer: set from pricing_decision, model level only), and the
+# pricing analysis endpoint (/quotes/pricing-analysis/) replaces this call in
+# the redesigned builder. Kept for mobile / older clients.
 class AIQuoteAnalyzeView(APIView):
     """POST /api/v1/quotes/analyze/ — one comprehensive AI analysis of a quote.
 
@@ -1334,6 +1340,9 @@ class QuoteOutcomeView(APIView):
             quote, outcome,
             rejection_reason=rejection_reason, final_price=final_price,
             allow_flip=True,
+            # Optional, additive: structured loss reason for a rejection.
+            loss_reason=request.data.get('loss_reason') or '',
+            loss_reason_note=request.data.get('loss_reason_note') or '',
         )
         if record is None:
             return Response({
@@ -1657,12 +1666,39 @@ class QuoteBenchmarkView(APIView):
                     'recommendation': 'Market data not available for this lane yet.',
                 })
 
-            # Calculate recommendation (mock for now)
-            your_rate = request.query_params.get('your_rate', market_avg_rate)
-            your_rate = float(your_rate)
-            your_vs_market_pct = ((your_rate - market_avg_rate) / market_avg_rate) * 100 if market_avg_rate > 0 else 0
+            # The caller's price (your_rate, or your_price). Previously it
+            # defaulted to the market average itself, so the verdict was always
+            # "0% — competitive" whenever a client didn't send one.
+            raw_rate = request.query_params.get('your_rate') or request.query_params.get('your_price')
+            try:
+                your_rate = float(raw_rate) if raw_rate not in (None, '') else None
+            except (TypeError, ValueError):
+                your_rate = None
+            if your_rate is not None and your_rate <= 0:
+                your_rate = None
+            is_estimate = source == 'estimate'
+            your_vs_market_pct = (
+                ((your_rate - market_avg_rate) / market_avg_rate) * 100
+                if your_rate is not None and market_avg_rate > 0 else None
+            )
+            source_label = {
+                'platform': f'TruckWys platform, {data_points} accepted quotes',
+                'company': f'Your accepted quotes on this lane, {data_points}',
+                'estimate': 'Rough South African estimate, not market data',
+            }.get(source, source)
 
-            if your_vs_market_pct < -10:
+            if is_estimate:
+                # A hardcoded estimate is never "the market" and never makes a
+                # price "competitive" (pricing analysis rule 7).
+                recommendation = (
+                    f"No real quotes on this lane yet. A rough estimate is R{int(market_range_low):,}"
+                    f"-R{int(market_range_high):,}; treat it as a reference only."
+                )
+            elif your_vs_market_pct is None:
+                recommendation = (
+                    f"Accepted quotes on this lane mostly ran R{int(market_range_low):,}-R{int(market_range_high):,}."
+                )
+            elif your_vs_market_pct < -10:
                 recommendation = f"Your quote is {abs(your_vs_market_pct):.0f}% below market. Consider R{int(market_avg_rate * 0.9)}-R{int(market_avg_rate)} for better margin."
             elif your_vs_market_pct > 10:
                 recommendation = f"Your quote is {your_vs_market_pct:.0f}% above market. May be difficult to win at this price."
@@ -1682,7 +1718,10 @@ class QuoteBenchmarkView(APIView):
                 'source': source,
                 'distinct_operators': distinct_operators,
                 'your_rate': your_rate,
-                'your_vs_market_pct': round(your_vs_market_pct, 1),
+                'your_vs_market_pct': round(your_vs_market_pct, 1) if your_vs_market_pct is not None else None,
+                # Additive: provenance a client can show as-is.
+                'is_estimate': is_estimate,
+                'source_label': source_label,
                 'recommendation': recommendation,
             })
 
@@ -1800,6 +1839,11 @@ class QuoteWinProbabilityView(APIView):
                 'win_probability': round(win_probability, 2),
                 'win_probability_lower': round(win_probability_lower, 2),
                 'win_probability_higher': round(win_probability_higher, 2),
+                # Additive: False / 'heuristic' when no trained model is behind
+                # these numbers (they are the hand-tuned sigmoid, not a prediction).
+                'available': bool(prediction_ctx.available),
+                'level': 'model' if prediction_ctx.available else 'heuristic',
+                'model_scope': prediction_ctx.scope if prediction_ctx.available else None,
             })
 
         except Exception as e:

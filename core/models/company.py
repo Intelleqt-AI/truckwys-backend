@@ -447,6 +447,24 @@ class Company(models.Model):
         help_text='Outcomes recorded before this timestamp are excluded from win-model training/progress for this company',
     )
 
+    # Pricing analysis (core.services.pricing_analysis). Off by default: a
+    # one-way quote has never priced the empty run home into its cost (the
+    # price check shows it for reference only), so the floor matches that
+    # unless a fleet opts in — or the operator flips it per quote.
+    pricing_include_empty_return = models.BooleanField(
+        default=False,
+        help_text='Include the empty run home in the cost floor of one-way quotes by default',
+    )
+    # Opt-in to the pooled (global) win model: this company's decided quotes
+    # train it, and this company may be served it when it has no model of its
+    # own. Off by default — one tenant's outcomes never shape another's
+    # likelihoods without consent.
+    pool_pricing_data = models.BooleanField(
+        default=False,
+        help_text="Share this company's quote outcomes with the pooled win model, and use it when "
+                  "there is no company or personal model yet",
+    )
+
     # API usage tracking for plan limits (T1.3)
     api_calls_this_month = models.IntegerField(
         default=0,

@@ -394,7 +394,7 @@ class TrainingMatrixSnapshotTests(TestCase):
     matrix builder's own row-selection/scoping behaviour."""
 
     def setUp(self):
-        self.company = Company.objects.create(company_name='Train Co')
+        self.company = Company.objects.create(company_name='Train Co', pool_pricing_data=True)
         self.customer = Customer.objects.create(
             company=self.company, name='T Ltd', email='t@x.test',
             phone='', address='', city='', state='', zip_code='',
@@ -540,8 +540,8 @@ class ModelStatsScopingTests(TestCase):
     """A4: model-stats counts are tenant-scoped."""
 
     def setUp(self):
-        self.company_a = Company.objects.create(company_name='A Co')
-        self.company_b = Company.objects.create(company_name='B Co')
+        self.company_a = Company.objects.create(company_name='A Co', pool_pricing_data=True)
+        self.company_b = Company.objects.create(company_name='B Co', pool_pricing_data=True)
         self.cust_a = Customer.objects.create(
             company=self.company_a, name='A Ltd', email='a@x.test',
             phone='', address='', city='', state='', zip_code='',
@@ -591,7 +591,7 @@ class ModelProgressBlockerTests(IsolatedModelStorageMixin, TestCase):
 
     def setUp(self):
         super().setUp()
-        self.company = Company.objects.create(company_name='Blocker Co')
+        self.company = Company.objects.create(company_name='Blocker Co', pool_pricing_data=True)
         self.customer = Customer.objects.create(
             company=self.company, name='B Ltd', email='blocker@x.test',
             phone='', address='', city='', state='', zip_code='',

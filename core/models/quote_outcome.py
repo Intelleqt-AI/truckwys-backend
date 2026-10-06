@@ -27,6 +27,17 @@ class QuoteOutcome(models.Model):
     )
     outcome = models.CharField(max_length=20, choices=OUTCOME_CHOICES, help_text="Quote outcome: accepted or rejected")
     rejection_reason = models.TextField(blank=True, null=True, help_text="Reason for rejection if applicable")
+    # Structured loss reason (pricing analysis): why a declined quote was
+    # lost, so "lost on price" can be told apart from timing/capacity.
+    LOSS_REASON_CHOICES = [
+        ('price', 'Price'),
+        ('timing', 'Timing'),
+        ('capacity', 'Capacity'),
+        ('relationship', 'Relationship'),
+        ('other', 'Other'),
+    ]
+    loss_reason = models.CharField(max_length=20, choices=LOSS_REASON_CHOICES, blank=True, default='')
+    loss_reason_note = models.TextField(blank=True, default='')
 
     # Snapshot of quote data at outcome time
     final_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True, help_text="Final agreed price")

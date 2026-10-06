@@ -391,7 +391,13 @@ def optimize_price(
             # Without this, _build_ai_prediction had no way to tell the two
             # apart and labelled a heuristic number "Personal AI"/"Platform
             # AI", exactly what its own docstring says must never happen.
-            'used_heuristic_fallback': degenerate_model_curve,
+            # Also True when no trained model was supplied at all (the
+            # heuristic priced it from the start) — previously reported False
+            # in that case, so a pure-heuristic result looked model-derived.
+            'used_heuristic_fallback': degenerate_model_curve or predict_proba_fn is heuristic_win_proba,
+            # Additive: where the win probabilities came from.
+            'win_probability_source': ('heuristic' if (degenerate_model_curve or predict_proba_fn is heuristic_win_proba)
+                                       else 'model'),
         }
 
     except Exception as exc:
