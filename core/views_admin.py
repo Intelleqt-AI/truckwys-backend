@@ -999,10 +999,12 @@ class AdminModelHealthView(APIView):
 
     def get(self, request):
         from django.conf import settings
-        from core.models import MLModelVersion, QuoteOutcome
+        from core.models import MLModelVersion
         from core.services import quote_features
 
-        trainable = QuoteOutcome.objects.filter(outcome__in=['accepted', 'rejected'])
+        # What training actually uses (never-sent quotes excluded).
+        from core.services.quote_training import closed_outcomes
+        trainable = closed_outcomes()
         by_label = {
             row['outcome']: row['n']
             for row in trainable.values('outcome').annotate(n=Count('id'))

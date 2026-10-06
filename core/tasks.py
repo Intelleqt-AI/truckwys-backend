@@ -598,12 +598,13 @@ def sweep_user_win_model_training():
     """
     from django.conf import settings
     from django.db.models import Count
-    from core.models import MLModelVersion, QuoteOutcome
+    from core.models import MLModelVersion
     from core.services.ml_training_queue import schedule_user_retrain
+    from core.services.quote_training import closed_outcomes
 
     min_samples = int(getattr(settings, 'WIN_MODEL_USER_MIN_SAMPLES', 40))
     counts = (
-        QuoteOutcome.objects.filter(outcome__in=['accepted', 'rejected'], created_by__isnull=False)
+        closed_outcomes().filter(created_by__isnull=False)
         .values('created_by_id').annotate(n=Count('id'))
     )
     scheduled = 0

@@ -1141,6 +1141,34 @@ class Round4Tests(_Base):
         # Not raised for a one-way price without the return in the floor.
         self.assertNotIn('empty_return_unpaid', [a['code'] for a in self.analyze()['attention']])
 
+    def test_empty_return_unpaid_says_target_margin_when_p75_covers_the_cost(self):
+        # r5 L1: p75 above the full cost (with the return) but within the
+        # target margin -> never "pays less than your full cost".
+        from unittest import mock
+        self._platform(start=12000)
+        floor = self.analyze(include_return=True)['cost_floor']['total']
+        real = pa.trip_market
+
+        def shifted(*a, **kw):
+            m = real(*a, **kw)
+            m.update(p25=floor * 0.96, median=floor * 1.0, p75=floor * 1.04)
+            return m
+
+        with mock.patch.object(pa, 'trip_market', side_effect=shifted):
+            r = self.analyze(include_return=True)
+        msg = next(a for a in r['attention'] if a['code'] == 'empty_return_unpaid')['message']
+        self.assertEqual(msg, 'This lane leaves less than your 10% target margin once the empty run home is '
+                              'included. Price for a backload or charge for the empty return.')
+        self.assertNotIn('full cost', msg)
+        self.assertEqual(r['recommendation']['code'], 'empty_return_gap')
+        # A different target is named.
+        self.company.margin_target_pct = 15
+        self.company.save()
+        with mock.patch.object(pa, 'trip_market', side_effect=shifted):
+            r = self.analyze(include_return=True)
+        msg = next(a for a in r['attention'] if a['code'] == 'empty_return_unpaid')['message']
+        self.assertTrue(msg.startswith('This lane leaves less than your 15% target margin'), msg)
+
     # 4
     def test_per_km_is_per_km_driven(self):
         one = self.analyze()['cost_floor']
@@ -1416,15 +1444,18 @@ class Round5Tests(_Base):
         self.assertEqual(rec['code'], 'empty_return_gap')
         self.assertEqual(rec['short'], 'with the empty run home included, even this price is R 12 200 '
                                        'above the top of the market; price one-way if a load back is likely.')
+        # r5 L1: the old `empty_return_unpaid` recommendation (gap <= 0) is gone;
+        # a hold without a positive gap falls through to the normal reason.
         rec = pa._recommend(rules, None, hold={'p75': 31100}, market=market, target=10)
-        self.assertEqual(rec['short'], 'no price here meets your 10% target once the empty run home is included.')
+        self.assertEqual(rec, pa._recommend(rules, None, market=market, target=10))
+        self.assertNotEqual(rec['code'], 'empty_return_unpaid')
 
     def test_empty_return_hold_states_what_was_tested(self):
         # r4 B1: never "pays less than your target at any of the three prices" next to 10/13/16% cards.
         self._platform(start=12000)
         r = self.analyze(include_return=True)
         rec = r['recommendation']
-        self.assertIn(rec['code'], ('empty_return_gap', 'empty_return_unpaid'))
+        self.assertEqual(rec['code'], 'empty_return_gap')
         self.assertNotIn('at any of the three prices', rec['reason'])
         bal = next(c for c in r['choices'] if c['key'] == 'balanced')
         if rec['code'] == 'empty_return_gap':
@@ -1671,3 +1702,98 @@ class Round5ModelTests(_ModelMixin, _Base):
         for c in r['choices']:
             if c['likelihood']['level'] == 'model':
                 self.assertIsInstance(c['likelihood']['pct'], int)
+
+
+class Round5ThrottleTests(_DecisionHelpers, _Base):
+    """r5 M2: the analysis POST has its own throttle bucket, so analysis
+    traffic can never 429 a quote Save."""
+
+    def test_rate_default_and_view_scope(self):
+        from django.conf import settings
+        from core.throttling import PricingAnalysisRateThrottle
+        from core.views_pricing_analysis import QuotePricingAnalysisView
+        self.assertEqual(settings.REST_FRAMEWORK['DEFAULT_THROTTLE_RATES']['pricing_analysis'], '600/minute')
+        self.assertEqual(QuotePricingAnalysisView.throttle_classes, [PricingAnalysisRateThrottle])
+        self.assertEqual(PricingAnalysisRateThrottle.scope, 'pricing_analysis')
+
+    def test_many_analysis_calls_do_not_429_a_save(self):
+        from unittest import mock
+        from core.throttling import UserWriteRateThrottle
+        # Shrink the write bucket so 12 analysis calls would exhaust it if they counted.
+        with mock.patch.dict(UserWriteRateThrottle.THROTTLE_RATES, {'user_write': '3/minute'}):
+            for i in range(12):
+                resp = self.api.post(URL, base_payload(), format='json')
+                self.assertEqual(resp.status_code, 200, f'analysis call {i + 1}: {resp.status_code}')
+            resp = self.api.post('/api/v1/quotes/', self.quote_payload(), format='json')
+            self.assertEqual(resp.status_code, 201, resp.content)
+
+    def test_analysis_bucket_is_limited_on_its_own(self):
+        from unittest import mock
+        from core.throttling import PricingAnalysisRateThrottle
+        with mock.patch.dict(PricingAnalysisRateThrottle.THROTTLE_RATES, {'pricing_analysis': '2/minute'}):
+            codes = [self.api.post(URL, base_payload(), format='json').status_code for _ in range(3)]
+            self.assertEqual(codes, [200, 200, 429])
+            # ...and a Save is still allowed: the write bucket was never touched.
+            resp = self.api.post('/api/v1/quotes/', self.quote_payload(), format='json')
+            self.assertEqual(resp.status_code, 201, resp.content)
+
+
+class Round5NeverSentClosedQuoteTests(_ModelMixin, _Base):
+    """r5 M1: never-sent quotes (was_sent False) are not training rows and are
+    not counted as "closed quotes"; was_sent NULL still counts."""
+
+    def _outcomes(self, n, never_sent, prefix='NS', sent_true=0):
+        make_outcomes(self.company, self.customer, self.user, n, prefix=prefix)
+        ids = list(Quote.objects.filter(company=self.company, quote_number__startswith=f'{prefix}-')
+                   .order_by('id').values_list('id', flat=True))
+        # Spread across both classes (make_outcomes puts accepted first).
+        ns = ids[::max(1, len(ids) // never_sent)][:never_sent] if never_sent else []
+        Quote.objects.filter(id__in=ns).update(was_sent=False)
+        rest = [i for i in ids if i not in ns]
+        Quote.objects.filter(id__in=rest[:sent_true]).update(was_sent=True)
+        return ns
+
+    def test_counts_and_training_rows_exclude_never_sent(self):
+        from core.services.win_prediction import model_progress
+        self._outcomes(10, never_sent=3, sent_true=2)        # 5 NULL + 2 True count; 3 False don't
+        self.assertEqual(QuoteOutcome.objects.filter(company=self.company).count(), 10)
+        self.assertEqual(quote_training.closed_outcomes().filter(quote__company=self.company).count(), 7)
+        X, y, n, _ = quote_training.build_win_training_matrix_for_scope('company', company_id=self.company.id)
+        self.assertEqual(n, 7)
+        _, _, n_user, _ = quote_training.build_win_training_matrix_for_scope('user', user_id=self.user.id)
+        self.assertEqual(n_user, 7)
+        prog = model_progress(self.user, self.company)
+        self.assertEqual(prog['company']['outcomes_collected'], 7)
+        self.assertEqual(prog['user']['outcomes_collected'], 7)
+        self.assertEqual(quote_training.win_model_status(self.company)['outcomes_collected'], 7)
+        reason, short, code, n_closed = pa._model_unavailable_reason(self.company, with_code=True)
+        self.assertEqual((code, n_closed), ('few_closed', 7))
+        self.assertIn('you have 7 so far', reason)
+        self.assertEqual(short, 'Bands · 7 of 40 closed quotes')
+        r = self.analyze()
+        self.assertIn('you have 7 so far', r['likelihood']['reason'])
+        self.assertEqual(r['likelihood']['short'], 'Bands · 7 of 40 closed quotes')
+        self.assertEqual(pa.likelihood_headline('few_closed', thresholds={'likely_max': 1}, n_closed=n_closed),
+                         'Chance to win as Likely, Even chance or Less likely. A % needs 40 closed quotes '
+                         '(you have 7).')
+
+    def test_nightly_sweep_counts_only_sent_or_unknown(self):
+        self._outcomes(43, never_sent=5)                     # 38 count: below the 40 gate
+        summary = quote_training.retrain_company_win_models()
+        self.assertEqual(summary['considered'], 0)
+        self.assertNotIn(self.company.id, summary['results'])
+
+    def test_model_n_closed_and_label_exclude_never_sent(self):
+        if not WIN_ML_AVAILABLE:
+            self.skipTest('sklearn not installed')
+        self._outcomes(46, never_sent=6, prefix='M')          # 40 trainable
+        result = quote_training.retrain_win_model_for_scope('company', company_id=self.company.id)
+        self.assertTrue(result.get('trained'), result)
+        from core.services.quote_ml import _MODEL_CACHE
+        _MODEL_CACHE.clear()
+        r = self.analyze(**self.model_payload())
+        lk = r['likelihood']
+        self.assertEqual(lk['level'], 'model', lk.get('reason'))
+        self.assertEqual(lk['model']['n_closed'], 40)
+        self.assertTrue(lk['model']['basis_label'].startswith('40 closed quotes'), lk['model']['basis_label'])
+        self.assertEqual(lk['headline'], f"Chance to win from {lk['model']['basis_label']}.")

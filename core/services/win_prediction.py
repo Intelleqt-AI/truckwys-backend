@@ -149,8 +149,8 @@ def model_progress(user, company) -> dict:
     """
     from django.conf import settings
     from django.db.models import Count
-    from core.models import QuoteOutcome
     from core.services.quote_ml import WIN_ML_AVAILABLE
+    from core.services.quote_training import closed_outcomes
 
     user_needed = int(getattr(settings, 'WIN_MODEL_USER_MIN_SAMPLES', 40))
     global_needed = int(getattr(settings, 'WIN_MODEL_GLOBAL_MIN_SAMPLES', 40))
@@ -196,7 +196,8 @@ def model_progress(user, company) -> dict:
             'blocker_detail': detail,
         }
 
-    base = QuoteOutcome.objects.filter(outcome__in=['accepted', 'rejected'])
+    # Same "closed quote" definition training uses (never-sent quotes out).
+    base = closed_outcomes()
 
     user_id = getattr(user, 'id', None)
     user_qs = base.filter(created_by_id=user_id) if user_id else base.none()

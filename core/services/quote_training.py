@@ -46,6 +46,23 @@ def _cv_threshold() -> int:
 # Training matrix
 # ---------------------------------------------------------------------------
 
+def closed_outcomes():
+    """Every decided (accepted/rejected) QuoteOutcome the win model may learn
+    from — the ONE definition of a "closed quote" for training, the nightly
+    sweeps and every "N closed quotes" count shown to users (train and serve
+    stay consistent).
+
+    Quotes that were never sent to the customer (Quote.was_sent False: straight
+    from DRAFT to won/lost) are excluded — they are not evidence of how a
+    customer reacts to a price (r5 M1; the same rule quote_features and the
+    lane benchmark already apply). was_sent NULL (older rows, unknown) still
+    counts.
+    """
+    from core.models import QuoteOutcome
+    return (QuoteOutcome.objects.filter(outcome__in=['accepted', 'rejected'])
+            .exclude(quote__was_sent=False))
+
+
 def build_win_training_matrix_for_scope(scope: str, user_id=None, company_id=None):
     """Return (X, y, n, feature_names) engineered from QuoteOutcome. Never raises.
 
@@ -69,10 +86,8 @@ def build_win_training_matrix_for_scope(scope: str, user_id=None, company_id=Non
     frozen against future changes to the feature-computation code the way a
     stored snapshot is.
     """
-    from core.models import QuoteOutcome
-
     qs = (
-        QuoteOutcome.objects.filter(outcome__in=['accepted', 'rejected'])
+        closed_outcomes()
         # Exclude pre-launch/test outcomes for companies that reset their
         # training clock (Company.ai_training_started_at).
         .filter(
@@ -536,13 +551,13 @@ def retrain_company_win_models(min_growth: int = 5) -> dict:
     training attempt, so the nightly run is not a blind refit of everyone.
     Never raises. Returns {'considered', 'trained', 'skipped', 'results'}."""
     from django.db.models import Count
-    from core.models import MLModelVersion, QuoteOutcome
+    from core.models import MLModelVersion
 
     min_samples = _min_samples_for('company')
     summary = {'considered': 0, 'trained': 0, 'skipped': 0, 'results': {}}
     try:
         counts = (
-            QuoteOutcome.objects.filter(outcome__in=['accepted', 'rejected'], quote__company__isnull=False)
+            closed_outcomes().filter(quote__company__isnull=False)
             .filter(
                 Q(quote__company__ai_training_started_at__isnull=True)
                 | Q(created_at__gte=F('quote__company__ai_training_started_at'))
@@ -579,8 +594,7 @@ def win_model_status(company=None) -> dict:
     function is kept for the `retrain_win_model` management command's
     startup message and any other pre-existing global-only caller.
     """
-    from core.models import QuoteOutcome
-    qs = QuoteOutcome.objects.filter(outcome__in=['accepted', 'rejected'])
+    qs = closed_outcomes()
     if company is not None:
         qs = qs.filter(company=company)
         if company.ai_training_started_at is not None:

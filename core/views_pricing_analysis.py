@@ -8,11 +8,15 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.throttling import PricingAnalysisRateThrottle
+
 logger = logging.getLogger(__name__)
 
 
 class QuotePricingAnalysisView(APIView):
     permission_classes = [IsAuthenticated]
+    # Own bucket: analysis calls must not consume 'user_write' (quote saves).
+    throttle_classes = [PricingAnalysisRateThrottle]
 
     def post(self, request):
         from core.services.pricing_analysis import analyze_pricing

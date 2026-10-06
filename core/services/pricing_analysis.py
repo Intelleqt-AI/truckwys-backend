@@ -871,8 +871,8 @@ def _recommend(choices, cust, model_block=None, raw_p=None, hold=None, market=No
     never Safe for a medium/high payment-risk customer — that is a terms
     question (deposit), not a price one (see `attention`). Sentences show the
     rounded % and expected profits to the nearest R100.
-    `hold`: {'p75': displayed p75} keeps Balanced regardless (the lane pays
-    less than the full cost with the empty run home)."""
+    `hold`: {'p75': displayed p75} keeps Balanced regardless (with the empty
+    run home in the floor, even p75 is under the target margin)."""
     by_key = {c['key']: c for c in choices}
     bal = by_key.get('balanced')
     t = f'{target:g}'
@@ -881,13 +881,16 @@ def _recommend(choices, cust, model_block=None, raw_p=None, hold=None, market=No
         return {'key': key, 'code': code, 'short': short, 'reason': reason}
 
     if hold and bal is not None:
+        # Balanced >= Safe + 3% >= the target price > p75 whenever `hold` is
+        # set, so the gap is always > 0 in practice. A hold without a positive
+        # gap is ignored (the normal reasons below apply) rather than given a
+        # sentence that would not be true (r5 L1: the old `empty_return_unpaid`
+        # recommendation code could never fire and is removed).
         gap = _round_to(bal['price'] - hold['p75'], 100)
         if gap > 0:
             short = (f'with the empty run home included, even this price is {_fmt(gap)} above the top of the '
                      'market; price one-way if a load back is likely.')
             return out('balanced', 'empty_return_gap', short, f'Balanced is kept: {short}')
-        short = f'no price here meets your {t}% target once the empty run home is included.'
-        return out('balanced', 'empty_return_unpaid', short, f'Balanced is kept: {short}')
     if bal is None:
         return out('balanced', 'no_market', '', 'Balanced is recommended.')
 
@@ -1193,14 +1196,15 @@ def _model_unavailable_reason(company, with_code=False):
     code: few_closed | needs_both | trains_tonight | unavailable."""
     from django.conf import settings
     from django.db.models import Count, Q
-    from core.models import QuoteOutcome
+    from core.services.quote_training import closed_outcomes
     needed = int(getattr(settings, 'WIN_MODEL_COMPANY_MIN_SAMPLES', 40))
 
     def ret(reason, short, code, n=0):
         return (reason, short, code, n) if with_code else (reason, short)
     if company is None:
         return ret('No trained model is available.', 'Bands', 'unavailable')
-    qs = QuoteOutcome.objects.filter(quote__company=company, outcome__in=['accepted', 'rejected'])
+    # The training definition of a closed quote (never-sent quotes out, r5 M1).
+    qs = closed_outcomes().filter(quote__company=company)
     if company.ai_training_started_at is not None:
         qs = qs.filter(created_at__gte=company.ai_training_started_at)
     agg = qs.aggregate(won=Count('id', filter=Q(outcome='accepted')), lost=Count('id', filter=Q(outcome='rejected')))
@@ -1633,9 +1637,17 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
         if floor['include_return'] and _market_usable(market) and market['p75'] > 0 \
                 and (market['p75'] - floor_total) / market['p75'] * 100 < target:
             hold = {'p75': market_out['p75']}
+            # Say only what was tested: "pays less than your full cost" when
+            # even p75 is under the floor with the empty return; otherwise the
+            # lane covers the cost but not the target margin (r5 L1).
+            full_cost = floor.get('floor_with_return') or floor_total
+            if market['p75'] < full_cost:
+                unpaid = 'This lane pays less than your full cost when the truck returns empty.'
+            else:
+                unpaid = (f'This lane leaves less than your {target:g}% target margin '
+                          'once the empty run home is included.')
             attention.append({'code': 'empty_return_unpaid', 'level': 'medium',
-                              'message': 'This lane pays less than your full cost when the truck returns empty. '
-                                         'Price for a backload or charge for the empty return.'})
+                              'message': unpaid + ' Price for a backload or charge for the empty return.'})
         recommendation = _recommend(choices, cust, model_block, raw_p=raw_p, hold=hold,
                                     market=market_out if _market_usable(market) else None, target=target)
         fwr = floor.get('floor_with_return')

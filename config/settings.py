@@ -296,6 +296,10 @@ REST_FRAMEWORK = {
         # 2026-10 redesign): a coarse per-user cap; the per-quote cooldown
         # lives in AI_QUOTE_ANALYSIS_COOLDOWN_SECONDS below.
         'ai_quote_analysis': config('AI_QUOTE_ANALYSIS_THROTTLE_RATE', default='10/minute'),
+        # Quote-builder pricing analysis (core.throttling.PricingAnalysisRateThrottle):
+        # a debounced, read-like POST with its own bucket so it never uses up
+        # 'user_write' and 429s a quote Save.
+        'pricing_analysis': config('PRICING_ANALYSIS_THROTTLE_RATE', default='600/minute'),
     }
 }
 
