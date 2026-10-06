@@ -19,7 +19,8 @@ def _dec(v):
 
 def _pct(v):
     try:
-        out = int(round(float(v)))
+        from core.services.pricing_analysis import _half_up
+        out = _half_up(float(v))
     except (TypeError, ValueError):
         return None
     return max(0, min(100, out))
@@ -126,7 +127,7 @@ def score_final_price(fields: dict, decision: dict, *, company, user):
                 logger.warning('score_final_price: model scoring failed: %s', exc)
                 block, predictor = None, None
             if block is not None and predictor is not None and predictor[1](price):
-                out.update({'level': 'model', 'pct': int(round(predictor[0](price) * 100)),
+                out.update({'level': 'model', 'pct': pa._half_up(predictor[0](price) * 100),
                             'model_version': block.get('version')})
                 return out
         out['band'] = pa._band(price, thresholds)
@@ -239,6 +240,21 @@ def agreed_price_representation(quote):
     if abs(agreed - Decimal(quote.total_amount)) < Decimal('0.005') or agreed <= 0:
         return None
     return float(agreed)
+
+
+def agreed_margin_representation(agreed_price, decision):
+    """{'agreed_margin': whole rand, 'agreed_margin_pct': whole % (half up)}
+    = agreed price − the decision's cost floor (/ agreed price). Both null
+    when the agreed price or the floor is missing. Display only."""
+    from core.services.pricing_analysis import _rand, pct_half_up
+    floor = (decision or {}).get('floor') if isinstance(decision, dict) else None
+    try:
+        agreed, floor = float(agreed_price), float(floor)
+    except (TypeError, ValueError):
+        return {'agreed_margin': None, 'agreed_margin_pct': None}
+    if agreed <= 0:
+        return {'agreed_margin': None, 'agreed_margin_pct': None}
+    return {'agreed_margin': _rand(agreed - floor), 'agreed_margin_pct': pct_half_up(agreed - floor, agreed)}
 
 
 def clean_loss_reason(value):

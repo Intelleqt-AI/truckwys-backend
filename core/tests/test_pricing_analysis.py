@@ -254,9 +254,11 @@ class RulesWithMarketTests(_Base):
         self.assertGreater(stretch['price'], balanced['price'])
         self.assertTrue(balanced['recommended'])
         th = r['likelihood']['rules']['thresholds']
-        # Rounded up to the choices' R50/R100 step.
-        self.assertEqual(th['likely_max'], pa.round_price(m['median']))
-        self.assertEqual(th['even_max'], pa.round_price(m['p75']))
+        # R5 (K-5): edges rounded UP to R500, Even at least max(R1 000, 6% of the median) wide.
+        raw = r['likelihood']['rules']['raw_thresholds']
+        self.assertEqual(th['likely_max'], pa._ceil_to(raw['likely_max'], 500))
+        self.assertEqual(th['even_max'], max(pa._ceil_to(raw['even_max'], 500),
+                                             th['likely_max'] + pa._ceil_to(max(1000, 0.06 * m['raw_median']), 500)))
         self.assertEqual(r['likelihood']['level'], 'rules')
         self.assertEqual(safe['likelihood']['band'], 'likely')
         self.assertEqual(r['your_price']['market_position'], 'within')
@@ -731,8 +733,7 @@ class Round1FixTests(_Base):
         r = self.analyze(origin='BFN', destination='PLK', fuel_cost=300, toll_cost=0, distance_km=10,
                          one_way_distance_km=10, route={})
         safe = r['choices'][0]
-        self.assertIn('at least your 10% target', safe['summary'])
-        self.assertTrue(safe['summary'].startswith(f"{safe['margin_pct']}% margin"))
+        self.assertEqual(safe['summary'], f"{safe['margin_pct']}% margin, priced from your cost floor.")
         text = ' '.join(r['reasoning'])
         self.assertRegex(text, 'R\u00a0\\d')
         self.assertNotRegex(text, r'R\d')
@@ -744,10 +745,13 @@ class Round1FixTests(_Base):
         won_quotes(self.company, self.customer, 3, start=12000, prefix='A')
         won_quotes(other, make_customer(other, 'Saltpan Traders'), 4, start=12500, prefix='B')
         r = self.analyze(include_return=True, your_price=26000)
+        m = r['market']
         for c in r['choices']:
-            if 'your 10% target' in c['summary'] and 'at least' not in c['summary']:
-                self.assertLessEqual(c['margin_pct'], 11, c)
-            self.assertIn(f"{c['margin_pct']}% margin", c['summary'])
+            # R5 (K-6): where the price sits, never a margin % that could disagree with the card.
+            if c['summary'].endswith('priced from your cost floor.'):
+                self.assertTrue(c['summary'].startswith(f"{c['margin_pct']}% margin"))
+            elif c['price'] > m['p75']:
+                self.assertEqual(c['summary'], 'Above the middle half of the market.')
         self.assertTrue(next(c for c in r['choices'] if c['key'] == 'balanced')['recommended'])
         self.assertEqual(r['recommendation']['key'], 'balanced')
 
@@ -1063,7 +1067,8 @@ class Round4Tests(_Base):
         raw = {'safe': 0.6346, 'balanced': 0.5355, 'stretch': 0.30}
         rec = pa._recommend(choices, None, None, raw_p=raw)
         self.assertEqual(rec['key'], 'safe')
-        self.assertIn('about R 4 500 per quote', rec['reason'])   # R100 rounding
+        self.assertIn('about R 4 500 expected profit per quote', rec['reason'])   # R100 rounding
+        self.assertEqual(rec['short'], 'the highest expected profit of the three, about R 4 500 per quote.')
         # Within 3% on the raw figures -> Balanced kept.
         raw['balanced'] = 0.5400
         self.assertEqual(pa._recommend(choices, None, None, raw_p=raw)['key'], 'balanced')
@@ -1075,15 +1080,20 @@ class Round4Tests(_Base):
         block = {'best': {'price': 24870, 'pct': 52, 'expected_profit': 2600, 'choice': None}}
         rec = pa._recommend(choices, None, block, raw_p=raw)
         self.assertEqual(rec['key'], 'balanced')
-        self.assertEqual(rec['reason'], 'Balanced is recommended: its expected profit (about R 2 500 per '
-                                        'quote) is within 3% of the best option, with a better chance to win.')
+        self.assertEqual(rec['reason'], 'Balanced is recommended: about R 2 500 expected profit per quote '
+                                        '(62% chance × R 4 000 margin), level with Stretch (about R 2 500), '
+                                        'with a better chance to win.')
+        self.assertEqual(rec['short'], 'level with Stretch on expected profit, with a better chance to win.')
+        self.assertEqual(rec['code'], 'level_with')
 
     def test_no_market_reason_does_not_claim_a_market(self):
         r = self.analyze(origin='BFN', destination='PLK')
         self.assertFalse(r['market']['available'])
         reason = r['recommendation']['reason']
         self.assertNotIn('what this lane pays', reason)
-        self.assertIn('full cost plus your target margin', reason)
+        self.assertIn('while this lane has no market data', reason)
+        self.assertEqual(r['recommendation']['code'], 'no_market')
+        self.assertFalse(r['recommendation']['short'].startswith('Balanced'))
 
     def test_never_recommend_under_25_pct_unless_all_are(self):
         choices = [_choice('safe', 30000, 2000, 90), _choice('balanced', 31000, 3000, 40),
@@ -1104,7 +1114,9 @@ class Round4Tests(_Base):
         self.assertNotIn('model\'s best', rec['reason'])     # the best is a stated choice: said once
         block = {'best': {'price': 29500, 'pct': 66, 'expected_profit': 4600, 'choice': None}}
         rec = pa._recommend(choices, None, block, raw_p=raw)
-        self.assertIn('best expected profit is about R 4 600 at R 29 500', rec['reason'])
+        # R5 (D3): the curve's peak is never named; only the three prices are discussed.
+        self.assertNotIn('29\u00a0500', rec['reason'])
+        self.assertNotIn('best expected profit', rec['reason'])
 
     def test_payment_risk_override_first_then_both_profits(self):
         cust = {'payment_risk': {'band': 'high'}}
@@ -1139,7 +1151,8 @@ class Round4Tests(_Base):
         f = ret['cost_floor']
         self.assertEqual(f['km_driven'], 1136)
         self.assertEqual(f['per_km'], round(f['total'] / 1136, 2))
-        self.assertIn('/km driven, both legs', ret['reasoning'][0])
+        self.assertIn(' per km driven, both legs', ret['reasoning'][0])
+        self.assertIn(f"R\u00a0{f['per_km_rand']} per km driven", ret['reasoning'][0])
 
     # 5a
     def test_round_trip_prefers_real_return_trip_quotes(self):
@@ -1320,3 +1333,341 @@ class Round4ModelTests(_ModelMixin, _Base):
         import re
         for amount in re.findall(r'about R ([\d ]+)', r['recommendation']['reason']):
             self.assertEqual(int(amount.replace(' ', '')) % 100, 0)
+
+
+BANNED_WORDS = __import__('re').compile(r'\bmiddle\b|likelihood|\bbands?\b', __import__('re').IGNORECASE)
+ITEM_CODES = {'cost', 'market', 'margin', 'recommendation', 'customer', 'last_quote', 'model_basis', 'risk'}
+
+
+class Round5Tests(_Base):
+    """Round 5 (desk gate): display-ready headline / short recommendation /
+    reasoning items, price-sensitive notice, R500 band edges with a minimum
+    width, position-only summaries, half-up rounding, estimate below floor,
+    fuel zone label, agreed margin, target range, PDF cargo, never-sent
+    quotes out of the win model's evidence."""
+
+    def _platform(self, n_own=3, n_other=4, start=24000, **kw):
+        other = Company.objects.create(company_name='Ridgeback Freight')
+        won_quotes(self.company, self.customer, n_own, start=start, prefix='A', **kw)
+        won_quotes(other, make_customer(other, 'Saltpan Traders'), n_other, start=start + 1500, prefix='B', **kw)
+        return other
+
+    def _items_ok(self, r):
+        self.assertEqual(r['reasoning'], [it['text'] for it in r['reasoning_items']])
+        for it in r['reasoning_items']:
+            self.assertIn(it['code'], ITEM_CODES)
+            self.assertIsNone(BANNED_WORDS.search(it['text']), it['text'])
+
+    # K-1
+    def test_headline_per_case(self):
+        none = self.analyze(origin='BFN', destination='PLK')
+        self.assertEqual(none['likelihood']['headline'], 'No chance to win yet: no real quotes on this lane.')
+        self.assertEqual(none['likelihood']['reason_code'], 'no_basis')
+        self._platform()
+        rules = self.analyze()
+        self.assertEqual(rules['likelihood']['headline'],
+                         'Chance to win as Likely, Even chance or Less likely. A % needs 40 closed quotes (you have 0).')
+        self.assertEqual(rules['likelihood']['reason_code'], 'few_closed')
+        self.assertIsNotNone(rules['likelihood']['short'])           # old field kept
+        self.assertIsNone(self.analyze(distance_km=0)['likelihood']['headline'])
+        th = {'likely_max': 1, 'even_max': 2}
+        for code in ('few_closed', 'needs_both', 'trains_tonight', 'outside_range', 'no_market_for_model', None):
+            self.assertLessEqual(len(pa.likelihood_headline(code, thresholds=th, n_closed=17)), 111)
+        self.assertEqual(pa.likelihood_headline('outside_range', thresholds=th),
+                         'Chance to win as Likely, Even chance or Less likely: these prices are outside what your '
+                         'model has learned from.')
+        self.assertEqual(pa.BAND_LABELS['even'], 'Even chance')
+
+    # K-2 / K-14
+    def test_recommendation_short_cases(self):
+        c3 = [_choice('safe', 30000, 7063, 63), _choice('balanced', 31100, 8113, 54),
+              _choice('stretch', 33000, 10013, 30)]
+        cases = {
+            'highest_ep': pa._recommend(c3, None, raw_p={'safe': 0.6346, 'balanced': 0.5355, 'stretch': 0.3}),
+            'within_ep': pa._recommend(c3, None, raw_p={'safe': 0.6346, 'balanced': 0.5450, 'stretch': 0.3}),
+            'payment_risk': pa._recommend(c3, {'payment_risk': {'band': 'high'}},
+                                          raw_p={'safe': 0.6346, 'balanced': 0.5355, 'stretch': 0.3}),
+            'excluded_low_chance': pa._recommend(
+                [_choice('safe', 30000, 2000, 90), _choice('balanced', 31000, 3000, 40),
+                 _choice('stretch', 40000, 12000, 20)], None, raw_p={'safe': 0.9, 'balanced': 0.4, 'stretch': 0.2}),
+        }
+        for code, rec in cases.items():
+            self.assertEqual(rec['code'], code, rec)
+            self.assertLessEqual(len(rec['short']), 90, rec['short'])
+            if code not in ('payment_risk', 'excluded_low_chance'):    # those name the OTHER choice by design
+                self.assertFalse(rec['short'].startswith(('Safe ', 'Balanced ', 'Stretch ')), rec['short'])
+            self.assertNotIn('best expected profit', rec['reason'])
+        self.assertEqual(cases['within_ep']['short'],
+                         'within R 100 of Safe on expected profit, with a higher margin.')
+        self.assertEqual(cases['payment_risk']['short'],
+                         'Safe isn\'t recommended for a late payer; ask for a deposit instead.')
+        self.assertEqual(cases['excluded_low_chance']['short'],
+                         'Stretch has under a 25% chance to win; this is the best of the rest.')
+        rules = [dict(c, likelihood={'level': 'rules', 'band': 'likely'}, margin_pct=20) for c in c3]
+        market = {'p25': 30000, 'median': 31000, 'p75': 33000}
+        rec = pa._recommend(rules, None, market=market, target=10)
+        self.assertEqual((rec['code'], rec['short']),
+                         ('rules_median', 'at the lane median, with a 20% margin after all costs.'))
+        rec = pa._recommend(rules, None, market=dict(market, median=29000), target=10)
+        self.assertEqual(rec['code'], 'rules_middle_half')
+        rec = pa._recommend(rules, None, market=None, target=10)
+        self.assertEqual(rec['short'], 'a 20% margin, a buffer above your 10% target while this lane has no market data.')
+        rec = pa._recommend(rules, None, hold={'p75': 18950}, market=market, target=10)
+        self.assertEqual(rec['code'], 'empty_return_gap')
+        self.assertEqual(rec['short'], 'with the empty run home included, even this price is R 12 200 '
+                                       'above the top of the market; price one-way if a load back is likely.')
+        rec = pa._recommend(rules, None, hold={'p75': 31100}, market=market, target=10)
+        self.assertEqual(rec['short'], 'no price here meets your 10% target once the empty run home is included.')
+
+    def test_empty_return_hold_states_what_was_tested(self):
+        # r4 B1: never "pays less than your target at any of the three prices" next to 10/13/16% cards.
+        self._platform(start=12000)
+        r = self.analyze(include_return=True)
+        rec = r['recommendation']
+        self.assertIn(rec['code'], ('empty_return_gap', 'empty_return_unpaid'))
+        self.assertNotIn('at any of the three prices', rec['reason'])
+        bal = next(c for c in r['choices'] if c['key'] == 'balanced')
+        if rec['code'] == 'empty_return_gap':
+            gap = pa._round_to(bal['price'] - r['market']['p75'], 100)
+            self.assertIn(pa._fmt(gap), rec['short'])
+            self.assertGreater(bal['price'], r['market']['p75'])
+
+    def test_cold_estimate_never_claims_the_lane_pays(self):
+        r = self.analyze(origin='JHB', destination='CPT', distance_km=1400, one_way_distance_km=1400)
+        self.assertTrue(r['market']['is_estimate'])
+        self.assertEqual(r['recommendation']['code'], 'no_market')
+        self.assertNotIn('what this lane pays', r['recommendation']['reason'])
+        self.assertEqual(r['likelihood']['headline'], 'No chance to win yet: no real quotes on this lane.')
+
+    # K-3 / K-7
+    def test_reasoning_items_and_vocabulary(self):
+        self._platform()
+        for r in (self.analyze(customer_id=self.customer.id, your_price=3000), self.analyze(include_return=True),
+                  self.analyze(origin='BFN', destination='PLK'), self.analyze(legs=2, distance_km=1136)):
+            self._items_ok(r)
+            f = r['cost_floor']
+            self.assertEqual(f['per_km_rand'], pa._half_up(f['total'] / f['km_driven']))
+            cost = next(it['text'] for it in r['reasoning_items'] if it['code'] == 'cost')
+            self.assertIn(f"R {f['per_km_rand']} per km driven", cost)
+        r = self.analyze(customer_id=self.customer.id)
+        self.assertIn('(median R', ' '.join(r['reasoning']))
+
+    def test_half_up_rounding(self):
+        self.assertEqual(pa.margin_against_floor(200, 175)['margin_pct'], 13)    # 12.5 -> 13 (not banker's 12)
+        self.assertEqual(pa.margin_against_floor(200, 225)['margin_pct'], -13)   # -12.5 -> -13
+        self.assertEqual(pa.margin_against_floor(200, 179)['margin_pct'], 11)    # 10.5 -> 11
+        self.assertEqual(pa._rand(-2.5), -3)
+        r = self.analyze()
+        fwr = r['cost_floor']['floor_with_return']
+        for c in r['choices']:
+            self.assertEqual(c['margin_pct_if_empty_return'], pa.pct_half_up(c['price'] - fwr, c['price']))
+        self.assertEqual(self.analyze(your_price=23322.5)['your_price']['price'], 23322.5)
+
+    # K-4
+    def test_price_sensitive_notice(self):
+        self._platform()
+        prices = [26600, 28700, 25000, 25500, 26000, 27000, 27500, 24000]
+        for i, p in enumerate(prices):     # newest last: created in this order
+            make_quote(self.company, self.customer, number=f'PS-{i}', total=p, destination='DBN', status='DECLINED',
+                       outcome='rejected', pickup_location='Johannesburg', delivery_location='Durban')
+        r = self.analyze(customer_id=self.customer.id)
+        ps = [a for a in r['attention'] if a['code'] == 'price_sensitive']
+        self.assertEqual(len(ps), 1)
+        self.assertEqual(ps[0]['level'], 'info')
+        self.assertLessEqual(len(ps[0]['message']), 150)
+        lane = r['customer']['lane_acceptance']
+        self.assertTrue(ps[0]['message'].startswith(
+            f"Kestrel Mills accepted {lane['won']} of their last {lane['decided']} quotes on this lane."))
+        self.assertTrue(ps[0]['message'].endswith('Declined at R 27 500 and R 24 000.'))
+        # Display only: the prices don't move.
+        self.assertEqual([c['price'] for c in r['choices']], [c['price'] for c in self.analyze()['choices']])
+
+    def test_price_sensitive_by_recent_declines_above_median(self):
+        lane = {'won': 3, 'decided': 5, 'rate_pct': 60}
+        hist = [('rejected', 30000), ('accepted', 24000), ('rejected', 29000), ('accepted', 23000)]
+        self.assertEqual(pa.price_sensitivity(lane, hist, market_median=25000),
+                         {'won': 3, 'decided': 5, 'declined_prices': [30000, 29000]})
+        self.assertIsNone(pa.price_sensitivity(lane, hist, market_median=31000))
+        self.assertIsNone(pa.price_sensitivity(lane, hist, market_median=None))
+
+    def test_payment_risk_message_is_short(self):
+        from unittest import mock
+        self.customer.name = 'Kloofnek Fresh Produce (Demo)'
+        self.customer.save()
+        risk = {'band': 'CRITICAL', 'stats': {'invoice_count': 9, 'late_count': 9}}
+        with mock.patch('core.services.customer_risk.compute_customer_risk', return_value=risk):
+            r = self.analyze(customer_id=self.customer.id)
+        msg = next(a for a in r['attention'] if a['code'] == 'payment_risk')['message']
+        self.assertEqual(msg, 'Kloofnek Fresh Produce (Demo) often pays very late: 9 of 9 recent invoices over 30 '
+                              'days late. Ask for a deposit (e.g. 50% upfront) or shorter terms.')
+        self.assertLessEqual(len(msg), 150)
+        self.assertEqual(r['customer']['payment_risk']['basis'],
+                         '9 of 9 recent invoices paid late or still unpaid more than 30 days after due')
+
+    # K-5
+    def test_band_edges_round_and_wide(self):
+        for start in (12000, 18000, 24030, 40000):
+            pa._MARKET_MEMO.clear()
+            Quote.objects.all().delete()
+            Company.objects.exclude(id=self.company.id).delete()
+            self._platform(start=start)
+            r = self.analyze(customer_id=self.customer.id)
+            th = r['likelihood']['rules']['thresholds']
+            med = r['market']['raw_median']
+            self.assertEqual(th['likely_max'] % 500, 0)
+            self.assertEqual(th['even_max'] % 500, 0)
+            self.assertGreaterEqual(th['even_max'] - th['likely_max'], max(1000, 0.06 * med))
+            self.assertIn('raw_thresholds', r['likelihood']['rules'])
+
+    def test_saved_band_equals_shown_band_for_200_prices(self):
+        from core.services.pricing_decisions import score_final_price
+        self._platform()
+        fields = {'customer': self.customer, 'origin': 'JHB', 'destination': 'DBN', 'vehicle_type': 'Tautliner',
+                  'distance': 568, 'trip_type': 'ONE_WAY', 'weight': 28000,
+                  'pickup_location': 'Johannesburg', 'delivery_location': 'Durban'}
+        floor = self.analyze()['cost_floor']['total']
+        checked = 0
+        for i in range(200):
+            price = round(floor + 37.37 * i * 3.1, 2)
+            shown = self.analyze(customer_id=self.customer.id, your_price=price)['your_price']['likelihood']
+            saved = score_final_price(fields, {'final_price': price, 'floor': floor}, company=self.company,
+                                      user=self.user)
+            self.assertEqual(saved['band'], shown['band'], price)
+            checked += 1
+        self.assertEqual(checked, 200)
+
+    # K-6
+    def test_summaries_say_position_only(self):
+        m = {'p25': 22000, 'median': 23400, 'p75': 26200}
+        s = lambda p: pa._choice_summary('balanced', p, 20, m, 10, False)
+        self.assertEqual(s(23400), 'At the lane median.')
+        self.assertEqual(s(23600), 'At the lane median.')        # within ±1%
+        self.assertEqual(s(22500), 'In the lower half of the market.')
+        self.assertEqual(s(25000), 'In the upper half of the market.')
+        self.assertEqual(s(21000), 'Below the middle half of the market.')
+        self.assertEqual(s(27000), 'Above the middle half of the market.')
+        self.assertEqual(pa._choice_summary('safe', 20000, 12, None, 10, False), '12% margin, priced from your cost floor.')
+
+    # K-12
+    def test_estimate_below_floor_warning(self):
+        r = self.analyze(origin='JHB', destination='CPT', distance_km=1400, one_way_distance_km=1400,
+                         fuel_cost=60000)
+        self.assertTrue(r['market']['is_estimate'])
+        self.assertIn('estimate_below_floor', {w['code'] for w in r['warnings']})
+        cheap = self.analyze(origin='JHB', destination='CPT', distance_km=10, one_way_distance_km=10, fuel_cost=100,
+                             toll_cost=0, route={})
+        self.assertNotIn('estimate_below_floor', {w['code'] for w in cheap['warnings']})
+
+    # K-13
+    def test_fuel_label_names_the_zone_setting(self):
+        self.company.fuel_zone = 'COASTAL'
+        self.company.save()
+        fuel = next(ln for ln in self.analyze(fuel_zone='COASTAL')['cost_floor']['lines'] if ln['key'] == 'fuel')
+        if fuel['source']['kind'] == 'official':
+            self.assertTrue(fuel['source']['label'].endswith('(your fuel zone setting)'), fuel['source'])
+        self.assertTrue(fuel['source']['zone_from_setting'])
+        other = next(ln for ln in self.analyze(fuel_zone='INLAND')['cost_floor']['lines'] if ln['key'] == 'fuel')
+        self.assertFalse(other['source']['zone_from_setting'])
+        self.assertNotIn('your fuel zone setting', other['source']['label'])
+
+    def test_floor_working_never_reads_as_wrong_arithmetic(self):
+        f = self.analyze(distance_km=605.8, one_way_distance_km=605.8, fuel_cost=7524, fuel_usage_litres=254.56,
+                         fuel_price_used=29.5551)['cost_floor']
+        fuel = next(ln for ln in f['lines'] if ln['key'] == 'fuel')
+        self.assertTrue(fuel['basis'].startswith('≈ '), fuel['basis'])
+        fixed = next(ln for ln in f['lines'] if ln['key'] == 'fixed_cost')
+        self.assertIn('605,8 km', fixed['basis'].replace(' km', ' km'))
+
+    # K-8
+    def test_agreed_margin_on_detail(self):
+        from core.services.pricing_decisions import save_pricing_decision
+        q = make_quote(self.company, self.customer, number='AM-1', total=25100, status='ACCEPTED',
+                       outcome='accepted')
+        url = f'/api/v1/quotes/{q.id}/'
+        body = self.api.get(url).json()
+        self.assertIsNone(body['agreed_margin'])
+        self.assertIsNone(body['agreed_margin_pct'])
+        save_pricing_decision(q, {'version': 'pa-1', 'picked_choice': 'balanced', 'final_price': 25100,
+                                  'floor': 20000}, user=self.user)
+        QuoteOutcome.objects.create(quote=q, company=self.company, outcome='accepted', final_price=Decimal('24500'))
+        body = self.api.get(url).json()
+        self.assertEqual((body['agreed_margin'], body['agreed_margin_pct']), (4500, 18))
+        self.assertIsNotNone(body['pricing_decision'])
+
+    # K-9
+    def test_company_profile_exposes_target_range(self):
+        from core.serializers import CompanySerializer
+        data = CompanySerializer(self.company).data
+        self.assertEqual(data['margin_target_range'], [1, 40])
+        self.assertTrue(CompanySerializer(self.company).fields['margin_target_range'].read_only)
+
+    # K-11
+    def test_pdf_cargo_row_only_with_real_cargo(self):
+        from unittest import mock
+        from core.services import quote_pdf
+        self.assertIsNone(quote_pdf.quote_cargo_text('28t Superlink Tautliner', 'Superlink Tautliner'))
+        self.assertIsNone(quote_pdf.quote_cargo_text('28 t', None))
+        self.assertIsNone(quote_pdf.quote_cargo_text('', 'Tautliner'))
+        self.assertEqual(quote_pdf.quote_cargo_text('maize in bags', 'Tautliner'), 'Maize in bags')
+
+        def cells(q):
+            with mock.patch.object(quote_pdf, 'Table', wraps=quote_pdf.Table) as table:
+                self.assertTrue(quote_pdf.generate_quote_pdf_bytes(q).startswith(b'%PDF'))
+            return [c for call in table.call_args_list for row in call.args[0] for c in row if isinstance(c, str)]
+        blank = make_quote(self.company, self.customer, number='PDF-1', cargo_description='28t Tautliner',
+                           vehicle_type='Tautliner')
+        self.assertNotIn('Cargo', cells(blank))
+        real = make_quote(self.company, self.customer, number='PDF-2', cargo_description='Maize in bags',
+                          vehicle_type='Tautliner')
+        self.assertIn('Cargo', cells(real))
+
+    # r4 M1: never-sent quotes out of the win model's features and market reference
+    def test_never_sent_quotes_not_in_model_features(self):
+        from core.services import quote_features
+        from core.services.lane_benchmark import resolve_market_rate
+        won_quotes(self.company, self.customer, 3, start=24000, prefix='F', created_by=self.user)
+        as_of = timezone.now() + timedelta(seconds=5)
+        before = (quote_features.user_signals(self.user.id, as_of),
+                  quote_features.lane_historical_acceptance_rate(self.company, 'JHB', 'DBN', as_of),
+                  quote_features.customer_signals(self.company, self.customer.id, as_of)[:3],
+                  resolve_market_rate('JHB', 'DBN', None, company=self.company, one_way_only=True, sent_only=True))
+        q = make_quote(self.company, self.customer, number='NSF-1', total=90000, destination='DBN', status='DRAFT',
+                       outcome='pending', created_by=self.user, pickup_location='Johannesburg',
+                       delivery_location='Durban')
+        q.status, q.outcome = 'DECLINED', 'rejected'
+        q.save()
+        q.refresh_from_db()
+        self.assertIs(q.was_sent, False)
+        after = (quote_features.user_signals(self.user.id, as_of),
+                 quote_features.lane_historical_acceptance_rate(self.company, 'JHB', 'DBN', as_of),
+                 quote_features.customer_signals(self.company, self.customer.id, as_of)[:3],
+                 resolve_market_rate('JHB', 'DBN', None, company=self.company, one_way_only=True, sent_only=True))
+        self.assertEqual(before, after)
+
+
+class Round5ModelTests(_ModelMixin, _Base):
+    def setUp(self):
+        super().setUp()
+        if not WIN_ML_AVAILABLE:
+            self.skipTest('sklearn not installed')
+        self.train_company_model(self.company, self.user, self.customer)
+
+    def test_model_headline_short_and_vocabulary(self):
+        r = self.analyze(**self.model_payload())
+        lk = r['likelihood']
+        self.assertEqual(lk['level'], 'model', lk.get('reason'))
+        self.assertEqual(lk['reason_code'], 'model')
+        self.assertEqual(lk['headline'], f"Chance to win from {lk['model']['basis_label']}.")
+        rec = r['recommendation']
+        self.assertIn(rec['code'], ('highest_ep', 'level_with', 'within_ep', 'excluded_low_chance'))
+        self.assertLessEqual(len(rec['short']), 90)
+        self.assertIn('best', lk['model'])                                   # kept for audits
+        text = ' '.join(r['reasoning'])
+        self.assertEqual(text.count('best expected profit'), 0)
+        self.assertIn('Chance to win comes from a model trained on', text)
+        for it in r['reasoning_items']:
+            self.assertIsNone(BANNED_WORDS.search(it['text']), it['text'])
+        # Every model % is half-up of the raw probability.
+        for c in r['choices']:
+            if c['likelihood']['level'] == 'model':
+                self.assertIsInstance(c['likelihood']['pct'], int)

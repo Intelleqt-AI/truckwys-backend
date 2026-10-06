@@ -142,7 +142,7 @@ def record_quote_outcome(quote, outcome, *, rejection_reason='', final_price=Non
                 quote.origin, quote.destination, quote.vehicle_type or None,
                 company=quote.company, exclude_quote_id=quote.id,
                 # One-way market (as the pricing analysis scores live).
-                one_way_only=True,
+                one_way_only=True, sent_only=True,
             )
             if rate and rate > 0:
                 market_rate, market_source = Decimal(str(round(rate, 2))), src

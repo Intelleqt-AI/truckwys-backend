@@ -29,6 +29,7 @@ from django.utils import timezone
 logger = logging.getLogger(__name__)
 
 VERSION = 'pa-1'
+MARGIN_TARGET_RANGE = (1, 40)   # the analysis clamps the company target to this (company profile exposes it)
 
 # ---------------------------------------------------------------------------
 # Operating cost per km (everything except fuel and tolls)
@@ -151,9 +152,30 @@ def _i(v, default=None):
     return int(out) if out is not None else default
 
 
+def _half_up(v):
+    """Whole number, half AWAY from zero (Decimal ROUND_HALF_UP) — the one
+    rounding rule for rand and percentages, matching the client."""
+    from decimal import ROUND_HALF_UP, Decimal
+    x = float(v or 0)
+    if not math.isfinite(x):
+        raise ValueError('not a finite number')
+    return int(Decimal(repr(x)).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
+
+
 def _rand(v):
-    """Whole rand, half up."""
-    return int(math.floor(float(v or 0) + 0.5))
+    """Whole rand, half away from zero."""
+    return _half_up(v)
+
+
+def pct_half_up(numerator, denominator):
+    """round_half_up(numerator / denominator × 100), or None when the
+    denominator is not positive."""
+    from decimal import ROUND_HALF_UP, Decimal
+    n, d = _f(numerator), _f(denominator)
+    if n is None or not d or d <= 0:
+        return None
+    q = Decimal(repr(n)) * 100 / Decimal(repr(d))
+    return int(q.quantize(Decimal('1'), rounding=ROUND_HALF_UP))
 
 
 # SA number style, as the UI shows it (en-ZA): space thousands, comma
@@ -214,8 +236,22 @@ def margin_against_floor(price, floor) -> dict:
     margin = price - floor
     return {
         'margin': _rand(margin),
-        'margin_pct': int(round(margin / price * 100)) if price > 0 else None,
+        'margin_pct': pct_half_up(price - floor, price) if price > 0 else None,
     }
+
+
+def _a(n):
+    """'a' / 'an' before a number read aloud ("an 18% margin", "an 8%")."""
+    txt = str(abs(int(n))) if n is not None else ''
+    return 'an' if txt.startswith('8') or txt in ('11', '18') or txt.startswith('18') and len(txt) in (2, 5) else 'a'
+
+
+def _approx(qty, qty_dp, rate, amount):
+    """'≈ ' when the operands as SHOWN (qty to qty_dp, rate to 2 dp) don't
+    multiply out to the whole-rand amount, so a working line never reads as
+    exact arithmetic that visibly isn't."""
+    shown = round(float(qty), qty_dp) * round(float(rate), 2)
+    return '≈ ' if abs(_rand(shown) - _rand(amount)) >= 1 else ''
 
 
 def _source(kind, label, url=None, as_of=None):
@@ -283,7 +319,8 @@ def trip_market(origin, destination, vt_name, company, exclude_quote_id, legs):
 def market_rate(origin, destination, vt_name, company):
     from core.services.lane_benchmark import resolve_market_rate
     key = ('rate', origin, destination, (vt_name or '').lower(), getattr(company, 'id', None))
-    return _memo(key, lambda: resolve_market_rate(origin, destination, vt_name, company=company, one_way_only=True))
+    return _memo(key, lambda: resolve_market_rate(origin, destination, vt_name, company=company, one_way_only=True,
+                                                  sent_only=True))
 
 
 # ---------------------------------------------------------------------------
@@ -332,12 +369,17 @@ def _fuel_line(payload, distance, company, vt, today, warnings):
     from core.services.quote_ai_pricing import (FIASA_URL, FUEL_TOLERANCE, MANUAL_FUEL_TITLE,
                                                 official_fuel_price)
     fuel_type = payload.get('fuel_type') or getattr(vt, 'fuel_type', None) or 'Diesel'
-    zone = payload.get('fuel_zone') or getattr(company, 'fuel_zone', None) or 'INLAND'
+    company_zone = getattr(company, 'fuel_zone', None)
+    zone = payload.get('fuel_zone') or company_zone or 'INLAND'
+    # The builder sends the company's zone setting; say so on the label (the
+    # zone logic itself is the fuel engine's and is not changed here).
+    zone_from_setting = bool(company_zone) and str(zone).upper() == str(company_zone).upper()
     official = official_fuel_price(fuel_type, zone, today)
     off_price = _f(official.get('price_per_litre'))
     manual = official.get('source') == 'MANUAL'
     zone_name = official.get('zone') or str(zone).lower()
-    off_label = (MANUAL_FUEL_TITLE if manual else f'FIASA {zone_name} diesel 50ppm')
+    off_label = (MANUAL_FUEL_TITLE if manual else f'FIASA {zone_name} diesel 50ppm'
+                 + (' (your fuel zone setting)' if zone_from_setting else ''))
     off_url = None if manual else FIASA_URL
 
     fuel_cost = _f(payload.get('fuel_cost'))
@@ -381,11 +423,13 @@ def _fuel_line(payload, distance, company, vt, today, warnings):
             diff = ppl - off_price
             details.append({'label': 'Difference', 'value': f'{_fmt2(abs(diff))}/L '
                             + ('above' if diff > 0 else 'below') + ' the official price'})
+    source['zone_from_setting'] = zone_from_setting
     if off_price and official.get('current') is False:
         warnings.append({'code': 'stale_fuel_price',
                          'message': f'The latest official fuel price on record is from {_date(official.get("effective_date"))}; '
                                     'this month\'s may not be loaded yet.'})
-    basis = (f'{_num(litres)} L × {_fmt2(ppl)}/L' if litres and ppl else f'{_fmt(fuel_cost)} from the quote')
+    basis = (_approx(litres, 0, ppl, fuel_cost) + f'{_num(litres)} L × {_fmt2(ppl)}/L' if litres and ppl
+             else f'{_fmt(fuel_cost)} from the quote')
     if cons and distance:
         basis += f' ({_num(distance)} km at {_num(cons, 1)} L/100km)'
     # litres / price_per_litre are kept unrounded (4 dp): the empty-return
@@ -616,8 +660,10 @@ def _fixed_line(fixed, distance):
         details.append({'label': 'Why an estimate', 'value': f'{fixed["trips"]} completed trips with costs on record; '
                         f'your own figure is used from {fixed["min_trips"]}, or set one in company settings'})
     details += [{'label': 'Included', 'value': INCLUDED_TEXT}, {'label': 'Not included', 'value': EXCLUDED_TEXT}]
+    km_dp = 0 if abs(distance - round(distance)) < 0.05 else 1
     return _line('fixed_cost', 'Operating costs', fixed['value'] * distance, source,
-                 f'{_num(distance, 0)} km × {_fmt2(fixed["value"])}/km', details)
+                 _approx(distance, km_dp, fixed['value'], fixed['value'] * distance)
+                 + f'{_num(distance, km_dp)} km × {_fmt2(fixed["value"])}/km', details)
 
 
 def _return_line(payload, lines_by_key, fixed, one_way_km, vt):
@@ -721,6 +767,9 @@ def build_cost_floor(payload, *, company, vt, distance, today, include_return, w
         'floor_with_return': fwr,
         'return_leg_amount': ret['amount'] if ret is not None else None,
         'per_km': round(total / km_driven, 2) if km_driven > 0 else None,
+        # The whole-rand figure every sentence uses ("R 31 per km driven"):
+        # half-up from the unrounded ratio, never from the 2-dp per_km.
+        'per_km_rand': _half_up(total / km_driven) if km_driven > 0 else None,
         'per_km_label': 'per km driven',
         'km_driven': round(km_driven, 1),
         'floor_with_return_per_km': (round(fwr / (distance + one_way), 2)
@@ -782,11 +831,12 @@ def build_choices(floor_total, market, target):
             bumped[cur] = True
 
     out = []
+    shown = market_display(market) if usable else None   # summaries use the figures on screen
     for key in order:
         m = margin_against_floor(prices[key], floor_total)
         out.append({'key': key, 'label': CHOICE_LABELS[key], 'price': prices[key], **m,
                     'recommended': key == 'balanced',
-                    'summary': _choice_summary(key, prices[key], m['margin_pct'], market if usable else None,
+                    'summary': _choice_summary(key, prices[key], m['margin_pct'], shown,
                                                target, clamped[key] and not bumped[key]),
                     'likelihood': None})
     return out
@@ -804,30 +854,59 @@ def _ep_txt(v):
     return 'about ' + _fmt(_round_to(v, 100))
 
 
-def _recommend(choices, cust, model_block=None, raw_p=None, hold_balanced=None, market_based=True):
-    """{'key', 'reason'}.
+def _recommend(choices, cust, model_block=None, raw_p=None, hold=None, market=None, target=10.0):
+    """{'key', 'reason', 'short', 'code'}.
 
-    Rules level: Balanced (around the middle of the range).
+    `short` is display-ready (no leading choice name: the UI writes
+    "Why Balanced: " + short); `reason` is the full sentence with figures.
+    Only the three prices are discussed — the model curve's peak never is
+    (`likelihood.model.best` stays for audits).
+
+    Rules level: Balanced, said against the market on screen (`market`, the
+    displayed figures; None without a real market — then floor-based words,
+    never "what this lane pays").
     Model level: the choice with the highest expected profit (chance ×
     margin, with the UNROUNDED model probability); Balanced is kept if it is
     within 3% of that best. Never a choice under 25% chance unless all are;
     never Safe for a medium/high payment-risk customer — that is a terms
-    question (deposit), not a price one (see `attention`). Sentences show
-    the rounded % and expected profits to the nearest R100, and the model's
-    best expected profit (over the curve AND the three choices, so it is never
-    below a stated choice) is named once.
-    `hold_balanced`: a reason to keep Balanced regardless (e.g. the lane pays
-    less than the full cost with the empty return)."""
+    question (deposit), not a price one (see `attention`). Sentences show the
+    rounded % and expected profits to the nearest R100.
+    `hold`: {'p75': displayed p75} keeps Balanced regardless (the lane pays
+    less than the full cost with the empty run home)."""
     by_key = {c['key']: c for c in choices}
     bal = by_key.get('balanced')
-    if hold_balanced and bal is not None:
-        return {'key': 'balanced', 'reason': hold_balanced}
-    rules_reason = {'key': 'balanced', 'reason': (
-        'Balanced is recommended: around the middle of what this lane pays, with a healthy margin.' if market_based
-        else 'Balanced is recommended: there is no market data for this lane, so it is built from your full cost '
-             'plus your target margin, with a buffer on top.')}
-    if bal is None or bal['likelihood'].get('level') != 'model':
-        return rules_reason
+    t = f'{target:g}'
+
+    def out(key, code, short, reason):
+        return {'key': key, 'code': code, 'short': short, 'reason': reason}
+
+    if hold and bal is not None:
+        gap = _round_to(bal['price'] - hold['p75'], 100)
+        if gap > 0:
+            short = (f'with the empty run home included, even this price is {_fmt(gap)} above the top of the '
+                     'market; price one-way if a load back is likely.')
+            return out('balanced', 'empty_return_gap', short, f'Balanced is kept: {short}')
+        short = f'no price here meets your {t}% target once the empty run home is included.'
+        return out('balanced', 'empty_return_unpaid', short, f'Balanced is kept: {short}')
+    if bal is None:
+        return out('balanced', 'no_market', '', 'Balanced is recommended.')
+
+    def rules_reason():
+        m = bal['margin_pct']
+        if market is None:
+            short = f'{_a(m)} {m}% margin, a buffer above your {t}% target while this lane has no market data.'
+            return out('balanced', 'no_market', short, f'Balanced is recommended: {short}')
+        median = market['median']
+        if abs(bal['price'] - median) <= 0.01 * median:
+            code, short = 'rules_median', f'at the lane median, with a {m}% margin after all costs.'
+        elif market['p25'] <= bal['price'] <= market['p75']:
+            code, short = 'rules_middle_half', f'in the middle half of the market, with a {m}% margin after all costs.'
+        else:
+            code, short = 'rules_target', f'priced to keep your {t}% target margin; this lane usually pays less.'
+        return out('balanced', code, short, f'Balanced is recommended: {short}')
+
+    if bal['likelihood'].get('level') != 'model':
+        return rules_reason()
     raw_p = raw_p or {}
 
     def prob(c):
@@ -839,71 +918,64 @@ def _recommend(choices, cust, model_block=None, raw_p=None, hold_balanced=None, 
     scored = [c for c in choices if c['likelihood'].get('level') == 'model']
     candidates = [c for c in scored if not (c['key'] == 'safe' and risky)]
     if not candidates:
-        return rules_reason
+        return rules_reason()
     eligible = [c for c in candidates if prob(c) >= MIN_RECOMMEND_CHANCE] or candidates
     best = max(eligible, key=ep)
     pick = bal if (bal in eligible and ep(bal) >= ep(best) * (1 - RECOMMEND_BALANCED_TOLERANCE)) else best
 
     def odds(c):
         return f'{c["likelihood"]["pct"]}% chance × {_fmt(c["margin"])} margin'
-    parts, stated = [], {pick['key']}
+
+    def ep100(c):
+        return _round_to(ep(c), 100)
+    head = f'{pick["label"]} is recommended: {_ep_txt(ep(pick))} expected profit per quote ({odds(pick)}), '
     safe = by_key.get('safe')
+    low = [c for c in candidates if prob(c) < MIN_RECOMMEND_CHANCE and c is not pick and ep(c) > ep(pick)]
+    low_txt = ' '.join(f'{c["label"]} is not recommended: under a 25% chance to win.' for c in low)
     if risky and safe is not None and safe['likelihood'].get('level') == 'model' and ep(safe) > ep(pick):
         # The override first, then both expected profits, honestly.
-        parts.append(f'Safe is not recommended for this customer: they pay late, so ask for a deposit rather than '
-                     f'lowering the price. On paper Safe would earn {_ep_txt(ep(safe))} per quote ({odds(safe)}).')
-        stated.add('safe')
+        short = 'Safe isn\'t recommended for a late payer; ask for a deposit instead.'
+        reason = (f'Safe is not recommended for this customer: they pay late, so ask for a deposit rather than '
+                  f'lowering the price. On paper Safe would earn {_ep_txt(ep(safe))} per quote ({odds(safe)}). '
+                  + head + 'the highest of the choices open to this customer.' + (' ' + low_txt if low_txt else ''))
+        return out(pick['key'], 'payment_risk', short, reason)
+    if low:
+        names = ' and '.join(c['label'] for c in low)
+        short = f'{names} {"has" if len(low) == 1 else "have"} under a 25% chance to win; this is the best of the rest.'
+        return out(pick['key'], 'excluded_low_chance', short,
+                   head + 'the highest of the choices with at least a 25% chance to win. ' + low_txt)
     if pick is bal and best is not bal:
-        # One plain sentence; the curve's best is not named on top of it.
-        parts.append(f'Balanced is recommended: its expected profit ({_ep_txt(ep(bal))} per quote) is within 3% of '
-                     'the best option' + (', with a better chance to win.' if prob(best) < prob(bal) else '.'))
-        stated.add(best['key'])
-        model_block = None
-    else:
-        others = 'of the choices open to this customer' if 'safe' in stated and pick is not safe else 'of the three'
-        parts.append(f'{pick["label"]} is recommended: the highest expected profit {others}, '
-                     f'{_ep_txt(ep(pick))} per quote ({odds(pick)}).')
-    low = [c for c in candidates if prob(c) < MIN_RECOMMEND_CHANCE and c is not pick and ep(c) > ep(pick)]
-    for c in low:
-        parts.append(f'{c["label"]} is not recommended: under a 25% chance to win.')
-    peak = (model_block or {}).get('best')
-    # Named only when it says something new: a different price whose expected
-    # profit is higher even after rounding to R100 (else the best is stated once).
-    if peak and peak.get('choice') not in stated \
-            and _round_to(peak['expected_profit'], 100) > _round_to(ep(pick), 100):
-        closest = min(choices, key=lambda c: abs(c['price'] - peak['price']))
-        parts.append(f'The model\'s best expected profit is {_ep_txt(peak["expected_profit"])} at '
-                     f'{_fmt(peak["price"])}; {closest["label"]} is the closest choice to it.')
-    return {'key': pick['key'], 'reason': ' '.join(parts)}
+        better = 'with a better chance to win' if prob(bal) > prob(best) else 'with a higher margin'
+        if ep100(bal) == ep100(best):
+            short = f'level with {best["label"]} on expected profit, {better}.'
+            reason = head + f'level with {best["label"]} ({_ep_txt(ep(best))}), {better}.'
+            return out('balanced', 'level_with', short, reason)
+        diff = _fmt(abs(ep100(best) - ep100(bal)))
+        short = f'within {diff} of {best["label"]} on expected profit, {better}.'
+        reason = head + f'within {diff} of {best["label"]} ({_ep_txt(ep(best))}), {better}.'
+        return out('balanced', 'within_ep', short, reason)
+    short = f'the highest expected profit of the three, {_ep_txt(ep(pick))} per quote.'
+    return out(pick['key'], 'highest_ep', short, head + 'the highest of the three.')
 
 
 def _choice_summary(key, price, margin_pct, market, target, held_at_target):
-    """One true sentence per card, computed from that card's own price and
-    margin — never a fixed phrase per key (with the empty return on, a fixed
-    "holds your target margin" sat next to 13% and 16% cards)."""
-    t = f'{target:g}%'
-    if margin_pct is not None and margin_pct < target:
-        margin_txt = f'{margin_pct}% margin, under your {t} target'
-    elif held_at_target and margin_pct is not None and margin_pct <= target + 1:
-        margin_txt = f'{margin_pct}% margin: your {t} target'
-    else:
-        margin_txt = f'{margin_pct}% margin' + (f', at least your {t} target' if key == 'safe' else '')
-    if market is None:
-        tail = {'safe': 'over the full cost.',
-                'balanced': 'a buffer above your target while there is no market data for this lane.',
-                'stretch': 'for a customer you know values the service.'}[key]
-        return f'{margin_txt}, {tail}' if key != 'safe' else f'{margin_txt} over the full cost.'
-    if held_at_target:
-        where = 'The market here pays less, so this is priced at your target'
-    elif price < market['p25']:
-        where = 'Below what this lane usually pays'
-    elif price <= round_price(market['median']):
-        where = 'In the lower half of what this lane pays'
-    elif price <= round_price(market['p75']):
-        where = 'In the upper half of what this lane pays'
-    else:
-        where = 'Above what this lane usually pays'
-    return f'{where}. {margin_txt}.'
+    """One true sentence per choice about WHERE its price sits, from that
+    choice's own price (the margin is shown next to it, so not repeated):
+    against the DISPLAYED market figures (R100), "at the lane median" within
+    ±1% of it. A price set by the cost floor (no real market, or the market
+    pays less than the target) says so instead."""
+    if market is None or held_at_target:
+        return f'{margin_pct}% margin, priced from your cost floor.'
+    median, p25, p75 = market['median'], market['p25'], market['p75']
+    if abs(price - median) <= 0.01 * median:
+        return 'At the lane median.'
+    if price < p25:
+        return 'Below the middle half of the market.'
+    if price > p75:
+        return 'Above the middle half of the market.'
+    if price < median:
+        return 'In the lower half of the market.'
+    return 'In the upper half of the market.'
 
 
 # ---------------------------------------------------------------------------
@@ -929,7 +1001,43 @@ RISK_BANDS = {
 }
 
 
-def customer_evidence(customer, company, origin, destination, exclude_quote_id=None):
+ATTENTION_MAX_CHARS = 150
+PRICE_SENSITIVE_MIN_DECIDED = 5
+PRICE_SENSITIVE_MAX_RATE = 30
+
+
+def _price_sensitive_message(name, ps):
+    """'{name} accepted 2 of their last 10 quotes on this lane. Declined at
+    R 28 700 and R 26 600.' (≤ 150 characters; the declined prices go first
+    if it would run over)."""
+    head = f'{name} accepted {ps["won"]} of their last {ps["decided"]} quotes on this lane.'
+    prices = ps.get('declined_prices') or []
+    tail = (' Declined at ' + ' and '.join(_fmt(p) for p in prices) + '.') if prices else ''
+    return head + tail if len(head + tail) <= ATTENTION_MAX_CHARS else head[:ATTENTION_MAX_CHARS]
+
+
+def price_sensitivity(lane_acceptance, lane_decided, market_median=None):
+    """{won, decided, declined_prices} when this customer is price-sensitive
+    on the lane, else None: >= 5 decided lane quotes with <= 30% accepted, OR
+    >= 2 of their last 4 decided lane quotes declined at a price above the
+    lane median. `lane_decided`: [(outcome, price)] newest first. Display
+    only: prices and the recommendation are unchanged (the model already
+    reflects it)."""
+    if not lane_acceptance or not lane_acceptance.get('decided'):
+        return None
+    decided, rate = lane_acceptance['decided'], lane_acceptance.get('rate_pct')
+    low_rate = decided >= PRICE_SENSITIVE_MIN_DECIDED and rate is not None and rate <= PRICE_SENSITIVE_MAX_RATE
+    above = 0
+    if market_median:
+        above = sum(1 for outcome, price in lane_decided[:4] if outcome == 'rejected' and price > market_median)
+    if not (low_rate or above >= 2):
+        return None
+    declined = [price for outcome, price in lane_decided if outcome == 'rejected'][:2]
+    return {'won': lane_acceptance['won'], 'decided': decided,
+            'declined_prices': sorted(declined, reverse=True)}
+
+
+def customer_evidence(customer, company, origin, destination, exclude_quote_id=None, market_median=None):
     """Acceptance (all lanes, plus this lane), the last 5 quotes SENT to this
     customer on this lane, and payment risk. Drafts never count — they were
     never put to the customer — and neither does the quote being edited.
@@ -948,28 +1056,37 @@ def customer_evidence(customer, company, origin, destination, exclude_quote_id=N
         agg = qs.aggregate(won=Count('id', filter=won_quote_q()), lost=Count('id', filter=lost_quote_q()))
         won, lost = agg['won'] or 0, agg['lost'] or 0
         return {'won': won, 'decided': won + lost,
-                'rate_pct': int(round(won / (won + lost) * 100)) if won + lost else None}
+                'rate_pct': pct_half_up(won, won + lost) if won + lost else None}
 
     acceptance = {**counts(base), 'scope': 'all_lanes'}
     lane_acceptance = None
     recent = []
+    price_sensitive = None
     if origin and destination:
         lane_qs = base.filter(_lane_q('origin', origin), _lane_q('destination', destination))
         lane_acceptance = {**counts(lane_qs), 'scope': 'this_lane'}
         rows = lane_qs.order_by('-created_at')[:5]
         recent = [{'id': q.id, 'number': q.quote_number, 'date': timezone.localtime(q.created_at).date().isoformat(),
                    'price': _rand(q.total_amount), 'outcome': _outcome_of(q)} for q in rows]
+        if lane_acceptance['decided']:
+            decided_rows = (lane_qs.filter(won_quote_q() | lost_quote_q()).order_by('-created_at')
+                            .only('status', 'outcome', 'total_amount')[:10])
+            lane_decided = [(_outcome_of(q), _rand(q.total_amount)) for q in decided_rows]
+            price_sensitive = price_sensitivity(lane_acceptance, lane_decided, market_median)
 
-    risk = {'band': 'unknown', 'label': 'Not enough invoices to judge yet', 'basis': None}
+    risk = {'band': 'unknown', 'label': 'Not enough invoices to judge yet', 'basis': None, 'short_basis': None}
     try:
         from core.services.customer_risk import compute_customer_risk
         r = compute_customer_risk(customer, company)
         band, label = RISK_BANDS.get(r.get('band'), ('unknown', 'Not enough invoices to judge yet'))
         stats = r.get('stats') or {}
         n, late = stats.get('invoice_count') or 0, stats.get('late_count') or 0
+        # late_count = invoices settled, or still open, more than 30 days
+        # after their due date (customer_risk), so "paid" alone overstates it.
         risk = {'band': band, 'label': label,
-                'basis': (f'{late} of {n} recent invoices paid more than 30 days late' if n
-                          else 'No invoices yet')}
+                'basis': (f'{late} of {n} recent invoices paid late or still unpaid more than 30 days after due'
+                          if n else 'No invoices yet'),
+                'short_basis': f'{late} of {n} recent invoices over 30 days late' if n else None}
     except Exception as exc:
         logger.warning('pricing analysis: customer risk failed: %s', exc)
 
@@ -979,6 +1096,7 @@ def customer_evidence(customer, company, origin, destination, exclude_quote_id=N
         'lane_acceptance': lane_acceptance,
         'recent_lane_quotes': recent,
         'payment_risk': risk,
+        'price_sensitive': price_sensitive,
     }
 
 
@@ -1004,19 +1122,38 @@ def _rules_likelihood(price, thresholds, outside_model_range=False):
     return out
 
 
-def rules_thresholds(market, customer):
+THRESHOLD_STEP = 500             # band edges are whole R500 (rounded UP)
+MIN_EVEN_WIDTH = 1000            # the Even band is at least max(R1 000, 6% of the median) wide
+MIN_EVEN_WIDTH_SHARE = 0.06
+
+
+def _ceil_to(v, unit):
+    return int(math.ceil(float(v) / unit - 1e-9) * unit)
+
+
+def rules_thresholds(market, customer, raw=False):
     """Price thresholds for the likely / even / less-likely bands, or None.
     Market: likely up to the median, even up to p75. The customer's own
     record nudges them: a customer who accepts most quotes (>= 70% of >= 5)
     moves them up 3%, one who rarely does (<= 30%) down 3%, and a price this
     customer already accepted on this lane counts as likely. With no market,
-    the customer's own lane quotes alone set them."""
+    the customer's own lane quotes alone set them.
+
+    The edges are rounded UP to R500 and the Even band is at least
+    max(R1 000, 6% of the median) wide (median ×2 for a return trip priced
+    from one-way quotes — `market` is already the trip's range), so a band is
+    never a sliver and every edge is a round figure. One rule set: the
+    choices, your_price, the client and the save-time band all use these.
+    Returns (thresholds, basis), or (thresholds, basis, raw_thresholds) with
+    raw=True (the unrounded edges, 2 dp, for audits)."""
     basis = []
     thresholds = None
+    median_ref = None
     accepted = [q['price'] for q in (customer or {}).get('recent_lane_quotes', []) if q['outcome'] == 'accepted']
     rejected = [q['price'] for q in (customer or {}).get('recent_lane_quotes', []) if q['outcome'] == 'rejected']
     if _market_usable(market):
         thresholds = {'likely_max': float(market['median']), 'even_max': float(market['p75'])}
+        median_ref = float(market['median'])
         basis.append('market range (' + ('TruckWys platform' if market['tier'] == 'platform'
                                          else 'your accepted quotes on this lane') + ')')
     elif accepted:
@@ -1024,9 +1161,10 @@ def rules_thresholds(market, customer):
         higher_rejects = [p for p in rejected if p > likely]
         thresholds = {'likely_max': float(likely),
                       'even_max': float(min(higher_rejects)) if higher_rejects else likely * 1.08}
+        median_ref = float(likely)
         basis.append(f'this customer accepted {_fmt(likely)} on this lane')
     if thresholds is None:
-        return None, basis
+        return (None, basis, None) if raw else (None, basis)
     acc = (customer or {}).get('acceptance') or {}
     decided, won = acc.get('decided') or 0, acc.get('won') or 0
     if decided >= CUSTOMER_MIN_DECIDED:
@@ -1042,23 +1180,26 @@ def rules_thresholds(market, customer):
         if top > thresholds['likely_max']:
             thresholds['likely_max'] = min(float(top), thresholds['even_max'])
             basis.append(f'this customer accepted {_fmt(top)} on this lane')
-    # Rounded UP to the same R50 / R100 step the choices use, so a choice
-    # priced at the (rounded-up) median sits in the median's band, and the
-    # client can band any typed price with the same numbers.
-    thresholds = {k: round_price(v) for k, v in thresholds.items()}
-    if thresholds['even_max'] < thresholds['likely_max']:
-        thresholds['even_max'] = thresholds['likely_max']
-    return thresholds, basis
+    raw_th = {k: round(v, 2) for k, v in thresholds.items()}
+    likely = _ceil_to(thresholds['likely_max'], THRESHOLD_STEP)
+    width = _ceil_to(max(MIN_EVEN_WIDTH, MIN_EVEN_WIDTH_SHARE * median_ref), THRESHOLD_STEP)
+    even = max(_ceil_to(thresholds['even_max'], THRESHOLD_STEP), likely + width)
+    thresholds = {'likely_max': likely, 'even_max': even}
+    return (thresholds, basis, raw_th) if raw else (thresholds, basis)
 
 
-def _model_unavailable_reason(company):
-    """(reason, short): plain words for why there is no model % yet."""
+def _model_unavailable_reason(company, with_code=False):
+    """(reason, short[, code, n]): plain words for why there is no model % yet.
+    code: few_closed | needs_both | trains_tonight | unavailable."""
     from django.conf import settings
     from django.db.models import Count, Q
     from core.models import QuoteOutcome
     needed = int(getattr(settings, 'WIN_MODEL_COMPANY_MIN_SAMPLES', 40))
+
+    def ret(reason, short, code, n=0):
+        return (reason, short, code, n) if with_code else (reason, short)
     if company is None:
-        return 'No trained model is available.', 'Bands'
+        return ret('No trained model is available.', 'Bands', 'unavailable')
     qs = QuoteOutcome.objects.filter(quote__company=company, outcome__in=['accepted', 'rejected'])
     if company.ai_training_started_at is not None:
         qs = qs.filter(created_at__gte=company.ai_training_started_at)
@@ -1066,12 +1207,32 @@ def _model_unavailable_reason(company):
     won, lost = agg['won'] or 0, agg['lost'] or 0
     n = won + lost
     if n < needed:
-        return ((f'A percentage needs {needed} won or lost quotes to learn from; you have {n} so far. '
-                 'Until then, likelihood is shown in plain bands.'), f'Bands · {n} of {needed} closed quotes')
+        return ret((f'A percentage needs {needed} won or lost quotes to learn from; you have {n} so far. '
+                    'Until then, likelihood is shown in plain bands.'), f'Bands · {n} of {needed} closed quotes',
+                   'few_closed', n)
     if not won or not lost:
-        return ((f'A percentage needs both won and lost quotes to learn from; you have {won} won and {lost} lost.'),
-                'Bands · needs won and lost quotes')
-    return 'You have enough closed quotes; your pricing model trains overnight.', 'Bands · model trains tonight'
+        return ret((f'A percentage needs both won and lost quotes to learn from; you have {won} won and {lost} lost.'),
+                   'Bands · needs won and lost quotes', 'needs_both', n)
+    return ret('You have enough closed quotes; your pricing model trains overnight.', 'Bands · model trains tonight',
+               'trains_tonight', n)
+
+
+BANDS_WORDS = 'Chance to win as Likely, Even chance or Less likely'
+
+
+def likelihood_headline(code, *, thresholds, model_block=None, n_closed=0, needed=40):
+    """The panel subtitle (≤ 110 characters), display-ready."""
+    if code == 'model' and model_block is not None:
+        return f'Chance to win from {model_block["basis_label"]}.'
+    if not thresholds:
+        return 'No chance to win yet: no real quotes on this lane.'
+    return {
+        'few_closed': f'{BANDS_WORDS}. A % needs {needed} closed quotes (you have {n_closed}).',
+        'needs_both': f'{BANDS_WORDS}. A % needs both won and lost quotes.',
+        'trains_tonight': f'{BANDS_WORDS} until your model trains tonight.',
+        'outside_range': f'{BANDS_WORDS}: these prices are outside what your model has learned from.',
+        'no_market_for_model': f'{BANDS_WORDS}: your model needs market figures for this lane.',
+    }.get(code, f'{BANDS_WORDS}.')
 
 
 def _model_meta(ctx):
@@ -1216,7 +1377,7 @@ def model_likelihood(*, ctx, company, user, payload, origin, destination, vt_nam
         p = predict(price_r)
         pcts.append(p)
         raw_ep.append((p * (price_r - floor_total), price_r, p))
-        curve.append({'price': price_r, 'pct': int(round(p * 100)),
+        curve.append({'price': price_r, 'pct': _half_up(p * 100),
                       'expected_profit': _rand(p * (price_r - floor_total))})
     steps = [a - b for a, b in zip(pcts, pcts[1:])]
     monotonic = sum(1 for d in steps if d >= -1e-6) / len(steps)
@@ -1234,7 +1395,7 @@ def model_likelihood(*, ctx, company, user, payload, origin, destination, vt_nam
             p = predict(bp)
             raw_ep.append((p * (bp - floor_total), bp, p))
     top_ep, top_price, top_p = max(raw_ep, key=lambda t: t[0])
-    best = {'price': top_price, 'pct': int(round(top_p * 100)), 'expected_profit': _rand(top_ep)}
+    best = {'price': top_price, 'pct': _half_up(top_p * 100), 'expected_profit': _rand(top_ep)}
     block = {
         'version': _model_version_label(obj, scope), 'scope': scope, 'n_closed': n,
         'basis_label': f'{n} closed quotes ({who})',
@@ -1331,7 +1492,7 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
     from core.models import Customer, Quote
 
     target = _f(getattr(company, 'margin_target_pct', None), 10.0) or 10.0
-    target = min(max(target, 1.0), 40.0)
+    target = min(max(target, float(MARGIN_TARGET_RANGE[0])), float(MARGIN_TARGET_RANGE[1]))
 
     quote_id = _i(payload.get('quote_id'))
     if quote_id and not Quote.objects.filter(id=quote_id, company=company).exists():
@@ -1363,7 +1524,9 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
     market_out = market_display(market)
     market_out['your_position'] = _position(your_price, market_out)
 
-    cust = customer_evidence(customer, company, origin, destination, quote_id) if customer is not None else None
+    cust = (customer_evidence(customer, company, origin, destination, quote_id,
+                              market_median=market_out['median'] if _market_usable(market) else None)
+            if customer is not None else None)
 
     floor = None
     if distance <= 0:
@@ -1380,10 +1543,12 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
     choices = []
     attention = []
     recommendation = None
-    likelihood = {'level': 'rules', 'model': None, 'rules': None, 'reason': None, 'short': None}
+    likelihood = {'level': 'rules', 'model': None, 'rules': None, 'reason': None, 'short': None,
+                  'headline': None, 'reason_code': None}
     your = None
-    thresholds, rules_basis = rules_thresholds(market, cust)
-    likelihood['rules'] = {'thresholds': thresholds, 'basis': rules_basis} if thresholds else None
+    thresholds, rules_basis, raw_thresholds = rules_thresholds(market, cust, raw=True)
+    likelihood['rules'] = ({'thresholds': thresholds, 'basis': rules_basis, 'raw_thresholds': raw_thresholds}
+                           if thresholds else None)
 
     if floor is not None and floor['complete']:
         floor_total = floor['total']
@@ -1398,8 +1563,9 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
             ctx = None
         model_block, reason, predictor = None, None, None
         short = None
+        reason_code, n_closed = None, 0
         if ctx is None or not ctx.available:
-            reason, short = _model_unavailable_reason(company)
+            reason, short, reason_code, n_closed = _model_unavailable_reason(company, with_code=True)
         else:
             try:
                 model_block, reason, predictor = model_likelihood(
@@ -1416,14 +1582,16 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
                           'pays, and there are no market figures for this lane yet, so likelihood is shown '
                           'in bands.')
                 short = 'No market figures for this lane'
+                reason_code = 'no_market_for_model'
             elif model_block is None:
                 short = 'Bands · outside what the model has seen'
+                reason_code = 'outside_range'
 
         def likelihood_at(price):
             if predictor is not None:
                 predict, in_range = predictor
                 if in_range(price):
-                    return {'level': 'model', 'pct': int(round(predict(price) * 100))}
+                    return {'level': 'model', 'pct': _half_up(predict(price) * 100)}
                 return _rules_likelihood(price, thresholds, outside_model_range=True)
             return _rules_likelihood(price, thresholds)
 
@@ -1434,10 +1602,12 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
             model_block, predictor = None, None
             reason = 'These prices sit outside the range the model has been trained on.'
             short = 'Bands · outside what the model has seen'
+            reason_code = 'outside_range'
             for c in choices:
                 c['likelihood'] = _rules_likelihood(c['price'], thresholds, outside_model_range=True)
             warnings.append({'code': 'outside_model_range',
-                             'message': 'These prices are outside the range your model has seen, so bands are shown instead of a %.'})
+                             'message': 'These prices are outside the range your model has seen, so Likely, Even '
+                                        'chance or Less likely is shown instead of a %.'})
         raw_p = {}
         if model_block is not None:
             likelihood.update({'level': 'model', 'model': model_block, 'reason': None,
@@ -1447,22 +1617,27 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
             raw_p = {c['key']: predictor[0](c['price']) for c in choices if c['likelihood']['level'] == 'model'}
             model_block['best']['choice'] = next(
                 (c['key'] for c in choices if c['price'] == model_block['best']['price']), None)
+            reason_code = 'model'
         else:
             likelihood['reason'] = reason
             likelihood['short'] = short or 'Bands'
+        from django.conf import settings as dj_settings
+        likelihood['reason_code'] = reason_code if model_block is not None or thresholds else 'no_basis'
+        likelihood['headline'] = likelihood_headline(
+            reason_code, thresholds=thresholds, model_block=model_block, n_closed=n_closed,
+            needed=int(getattr(dj_settings, 'WIN_MODEL_COMPANY_MIN_SAMPLES', 40)))
         # Empty return priced in and even the market's upper quarter can't
         # reach the target margin over the full round-trip cost: no choice is
         # a good answer, so keep Balanced and say what to do instead.
         hold = None
         if floor['include_return'] and _market_usable(market) and market['p75'] > 0 \
                 and (market['p75'] - floor_total) / market['p75'] * 100 < target:
-            hold = ('Balanced is kept: with the empty run home included, this lane pays less than your target '
-                    'margin at any of the three prices.')
+            hold = {'p75': market_out['p75']}
             attention.append({'code': 'empty_return_unpaid', 'level': 'medium',
                               'message': 'This lane pays less than your full cost when the truck returns empty. '
                                          'Price for a backload or charge for the empty return.'})
-        recommendation = _recommend(choices, cust, model_block, raw_p=raw_p, hold_balanced=hold,
-                                    market_based=_market_usable(market))
+        recommendation = _recommend(choices, cust, model_block, raw_p=raw_p, hold=hold,
+                                    market=market_out if _market_usable(market) else None, target=target)
         fwr = floor.get('floor_with_return')
         for c in choices:
             # What this price would leave if the truck came home empty
@@ -1495,6 +1670,11 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
             warnings.append({'code': 'market_below_floor',
                              'message': 'This lane usually pays less than your full cost for this trip.'})
 
+    if market.get('is_estimate') and floor is not None and floor.get('complete') \
+            and _f(market.get('p75')) is not None and market['p75'] < 1.1 * floor['total']:
+        warnings.append({'code': 'estimate_below_floor',
+                         'message': 'This rough estimate looks low against your cost floor, so it isn\'t used. '
+                                    'Price from your floor.'})
     if market['tier'] == 'estimate':
         warnings.append({'code': 'estimate_market',
                          'message': 'The range shown is a rough South African estimate, not real quotes, so it is '
@@ -1503,14 +1683,19 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
         warnings.append({'code': 'no_market', 'message': 'No market data for this lane yet.'})
     if cust and cust['payment_risk']['band'] in ('medium', 'high'):
         risk = cust['payment_risk']
-        advice = ('Ask for a deposit (e.g. 50% upfront) or shorter payment terms.' if risk['band'] == 'high'
-                  else 'Consider shorter payment terms or a deposit.')
-        msg = f'{cust["name"]} {risk["label"].lower()}: {risk["basis"]}. {advice}'
+        advice = ('Ask for a deposit (e.g. 50% upfront) or shorter terms.' if risk['band'] == 'high'
+                  else 'Consider shorter terms or a deposit.')
+        msg = f'{cust["name"]} {risk["label"].lower()}: {risk.get("short_basis") or risk["basis"]}. {advice}'
+        if len(msg) > ATTENTION_MAX_CHARS:
+            msg = f'{cust["name"]} {risk["label"].lower()}. {advice}'
         attention.append({'code': 'payment_risk', 'level': risk['band'], 'message': msg})
         if risk['band'] == 'high':
             warnings.append({'code': 'customer_payment_risk', 'message': msg})
+    if cust and cust.get('price_sensitive'):
+        attention.append({'code': 'price_sensitive', 'level': 'info',
+                          'message': _price_sensitive_message(cust['name'], cust['price_sensitive'])})
 
-    reasoning = _reasoning(floor, market_out, choices, likelihood, cust, your, target, recommendation)
+    reasoning_items = _reasoning(floor, market_out, choices, likelihood, cust, your, target, recommendation)
 
     return {
         'success': True, 'version': VERSION,
@@ -1525,56 +1710,67 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
         'customer': cust,
         'recommendation': recommendation,
         'attention': attention,
-        'reasoning': reasoning,
+        'reasoning': [it['text'] for it in reasoning_items],     # old clients
+        'reasoning_items': reasoning_items,
         'warnings': warnings,
     }
 
 
 def _reasoning(floor, market, choices, likelihood, cust, your, target, recommendation=None):
-    """Template sentences, SA number style. The likelihood level's reason is
-    NOT repeated here (it is `likelihood.reason`, which the UI shows)."""
+    """Template sentences, SA number style, as [{code, text}] (codes: cost,
+    market, margin, recommendation, customer, last_quote, model_basis, risk).
+    The likelihood level's reason is NOT repeated here (it is
+    `likelihood.reason` / `headline`). Vocabulary: "median", "chance to win" —
+    never "middle", "likelihood" or "bands"."""
     out = []
+
+    def add(code, text):
+        out.append({'code': code, 'text': text})
     if floor is not None and floor.get('complete'):
         fixed = floor['fixed_cost_per_km']
         fixed_txt = {
             'company_actuals': f'operating costs of {_fmt2(fixed["value"])}/km from your last 12 months',
             'company_setting': f'your operating cost setting of {_fmt2(fixed["value"])}/km',
         }.get(fixed['source'], f'a typical {_fmt2(fixed["value"])}/km for operating costs')
-        # Whole rand, rounded: the UI rounds too, and cents here would be fake precision.
-        # Per km DRIVEN (both legs when the empty run home is included).
-        out.append(f'This trip costs you about {_fmt(_round_to(floor["total"], 100))} '
-                   f'({_fmt(floor["per_km"])}/km driven'
-                   + (', both legs' if floor['include_return'] else '') + '), '
-                   f'including {fixed_txt}' + (' and the empty run home.' if floor['include_return'] else '.'))
+        # Whole rand per km DRIVEN (both legs when the empty run home is
+        # included): cost_floor.per_km_rand, the same figure the UI shows.
+        add('cost', f'This trip costs you about {_fmt(_round_to(floor["total"], 100))} '
+                    f'({_fmt(floor["per_km_rand"])} per km driven'
+                    + (', both legs' if floor['include_return'] else '') + '), '
+                    f'including {fixed_txt}' + (' and the empty run home.' if floor['include_return'] else '.'))
     scaled = ' (one-way prices ×2 for this return trip)' if market.get('legs_scaled') else ''
     kind = 'return-trip' if market.get('basis') == 'round_trip' else 'one-way'
     if market['tier'] == 'platform':
-        out.append(f'On this lane TruckWys operators were paid {_fmt(market["p25"])} to {_fmt(market["p75"])} '
-                   f'(middle {_fmt(market["median"])}) across {market["n"]} accepted {kind} quotes in the last '
-                   f'180 days{scaled}.')
+        add('market', f'On this lane TruckWys operators were paid {_fmt(market["p25"])} to {_fmt(market["p75"])} '
+                      f'(median {_fmt(market["median"])}) across {market["n"]} accepted {kind} quotes in the last '
+                      f'180 days{scaled}.')
     elif market['tier'] == 'company':
-        out.append(f'Your own accepted {kind} quotes on this lane ran {_fmt(market["p25"])} to {_fmt(market["p75"])} '
-                   f'(middle {_fmt(market["median"])}) over {market["n"]} quotes{scaled}.')
+        add('market', f'Your own accepted {kind} quotes on this lane ran {_fmt(market["p25"])} to '
+                      f'{_fmt(market["p75"])} (median {_fmt(market["median"])}) over {market["n"]} quotes{scaled}.')
     elif market['tier'] == 'estimate':
-        out.append('There are no real quotes on this lane yet; the range shown is a rough estimate, so the '
-                   f'choices are built from your {target:g}% target margin instead.')
+        add('market', 'There are no real quotes on this lane yet; the range shown is a rough estimate, so the '
+                      f'prices are built from your cost floor and {target:g}% target margin instead.')
     else:
-        out.append(f'There is no market data for this lane yet, so the choices are built from your {target:g}% target margin.')
+        add('market', 'There is no market data for this lane yet, so the prices are built from your cost floor '
+                      f'and {target:g}% target margin.')
     rec = next((c for c in choices if c.get('recommended')), None)
     if rec:
-        out.append(f'{rec["label"]} at {_fmt(rec["price"])} leaves {_fmt(rec["margin"])} ({rec["margin_pct"]}%) after all costs.')
+        add('margin', f'{rec["label"]} at {_fmt(rec["price"])} leaves {_fmt(rec["margin"])} ({rec["margin_pct"]}%) '
+                      'after all costs.')
         if recommendation and (recommendation['key'] != 'balanced' or likelihood['level'] == 'model'):
-            out.append(recommendation['reason'])
+            add('recommendation', recommendation['reason'])
     if cust:
         acc = cust['acceptance']
         if acc['decided']:
-            out.append(f'{cust["name"]} accepted {acc["won"]} of {acc["decided"]} decided quotes from you (all lanes).')
+            add('customer', f'{cust["name"]} accepted {acc["won"]} of {acc["decided"]} decided quotes from you '
+                            '(all lanes).')
         lane = cust['recent_lane_quotes']
         if lane:
             last = lane[0]
-            out.append(f'Last quote to them on this lane: {_fmt(last["price"])} on {_date(last["date"])} ({last["outcome"]}).')
+            add('last_quote', f'Last quote to them on this lane: {_fmt(last["price"])} on {_date(last["date"])} '
+                              f'({last["outcome"]}).')
     if likelihood['level'] == 'model':
-        out.append(f'Likelihood comes from a model trained on {likelihood["model"]["basis_label"]}.')
+        add('model_basis', f'Chance to win comes from a model trained on {likelihood["model"]["basis_label"]}.')
     if your is not None and your['below_floor']:
-        out.append(f'At {_fmt(your["price"])} you would lose {_fmt(-your["margin"])} on this trip.')
+        add('risk', f'At {_fmt(your["price"])} you would lose {_fmt(-your["margin"])} on this trip.')
     return out

@@ -450,8 +450,14 @@ def lookup_sa_estimate(origin, destination, vehicle_type=None):
 
 def resolve_market_rate(origin, destination, vehicle_type=None, company=None,
                         exclude_quote_id=None, exclude_created_by_user_id=None,
-                        as_of=None, one_way_only=False):
+                        as_of=None, one_way_only=False, sent_only=False):
     """Resolve a REAL market/benchmark rate for a lane, with provenance.
+
+    sent_only (additive, default False = unchanged): leave quotes decided
+    without ever being sent (Quote.was_sent False) out of every real-quote
+    tier. Passed by the win model's market reference — live scoring, the
+    outcome snapshot and feature reconstruction alike — so never-sent quotes
+    are not evidence for the chance to win either.
 
     one_way_only (additive, default False = unchanged for every existing
     caller): leave round-trip quotes out of every real-quote tier, the same
@@ -492,12 +498,14 @@ def resolve_market_rate(origin, destination, vehicle_type=None, company=None,
     try:
         b = compute_lane_benchmark(
             o, d, vt, exclude_quote_id=exclude_quote_id,
-            exclude_created_by_user_id=exclude_created_by_user_id, as_of=as_of, one_way_only=one_way_only)
+            exclude_created_by_user_id=exclude_created_by_user_id, as_of=as_of, one_way_only=one_way_only,
+            sent_only=sent_only)
         if b.get('available') and b.get('market_median_rate'):
             return float(b['market_median_rate']), 'platform'
         b = compute_lane_benchmark(
             o, d, exclude_quote_id=exclude_quote_id,
-            exclude_created_by_user_id=exclude_created_by_user_id, as_of=as_of, one_way_only=one_way_only)
+            exclude_created_by_user_id=exclude_created_by_user_id, as_of=as_of, one_way_only=one_way_only,
+            sent_only=sent_only)
         if b.get('available') and b.get('market_median_rate'):
             return float(b['market_median_rate']), 'platform_lane'
     except Exception as exc:  # never raise
@@ -521,6 +529,8 @@ def resolve_market_rate(origin, destination, vehicle_type=None, company=None,
             base = base.exclude(total_amount__isnull=True)
             if one_way_only:
                 base = base.exclude(trip_type='ROUND_TRIP')
+            if sent_only:
+                base = base.exclude(never_sent_q())
 
             # Vehicle-specific first, then lane-level — the same degradation
             # tiers 1 and 2 already use. Without the second attempt this tier

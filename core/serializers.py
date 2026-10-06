@@ -660,7 +660,8 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
         price, floor = d.final_price, d.floor
         if not price or floor is None or price <= 0:
             return None
-        return int(round(float((price - floor) / price * 100)))
+        from core.services.pricing_analysis import pct_half_up
+        return pct_half_up(float(price - floor), float(price))   # half away from zero, as the panel
 
     class Meta:
         model = Quote
@@ -807,6 +808,10 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
             # Read-only, display only: the price agreed when the quote was won
             # at a figure other than its total (billing is unchanged).
             data['agreed_price'] = agreed_price_representation(instance)
+            # R5 (K-8): the margin at the agreed price, against the cost floor
+            # stored with the pricing decision (null when either is missing).
+            from core.services.pricing_decisions import agreed_margin_representation
+            data.update(agreed_margin_representation(data['agreed_price'], data['pricing_decision']))
         return data
 
     def _converted_load(self, obj):
@@ -1317,10 +1322,17 @@ class CompanySerializer(serializers.ModelSerializer):
             # allowance is on record) and the operating cost the pricing
             # analysis is using right now (read-only).
             'driver_allowance_per_night', 'operating_cost_in_use',
+            # Round 5 (read-only): the target margin range the analysis uses (it clamps to it).
+            'margin_target_range',
             'onboarding_completed_at',
         ] + list(BANK_FIELDS)
 
     operating_cost_in_use = serializers.SerializerMethodField()
+    margin_target_range = serializers.SerializerMethodField()
+
+    def get_margin_target_range(self, obj):
+        from core.services.pricing_analysis import MARGIN_TARGET_RANGE
+        return list(MARGIN_TARGET_RANGE)
 
     def get_operating_cost_in_use(self, obj):
         """{value, source: setting|company_actuals|vehicle_default, trips,
