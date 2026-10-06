@@ -1589,7 +1589,7 @@ class QuoteBenchmarkView(APIView):
         """
         try:
             from core.services.lane_benchmark import (
-                compute_lane_benchmark, derive_lane_code, lookup_sa_estimate, _lane_q,
+                LANE_CODES_ADDED_FOR_PRICING, compute_lane_benchmark, derive_lane_code, lookup_sa_estimate, _lane_q,
             )
             # derive_lane_code, not bare canon_code: the browser sends whatever
             # its address parsing produced, which has included street numbers
@@ -1662,6 +1662,16 @@ class QuoteBenchmarkView(APIView):
                 market_range_high = int(stats['max_price'] or 0)
                 confidence = 'high'
                 source = 'company'
+            elif origin in LANE_CODES_ADDED_FOR_PRICING or destination in LANE_CODES_ADDED_FOR_PRICING:
+                # Backward compatibility: before these lane codes existed
+                # the place derived no code at all, and this endpoint
+                # answered 400. Without real quotes on the lane, answer
+                # exactly as before (only lanes that now HAVE real data get
+                # a real answer).
+                return Response({
+                    'success': False,
+                    'error': 'origin, destination, and vehicle_type are required'
+                }, status=status.HTTP_400_BAD_REQUEST)
             elif sa_estimate:
                 # Fallback to hardcoded
                 market_avg_rate = sa_estimate['avg']

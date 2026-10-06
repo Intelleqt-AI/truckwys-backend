@@ -15,7 +15,7 @@ What it creates (every name is invented and suffixed "(Demo)"):
       (Johannesburg->Durban, Cape Town->Johannesburg, Johannesburg->Gaborone),
       open + expired quotes, ~35 completed costed trips with expenses over the
       last 12 months (company-actual fixed cost per km), invoices/payments with
-      one slow payer carrying overdue invoices. Operating cost all-in ~R14/km
+      one slow payer carrying overdue invoices. Operating cost all-in ~R17/km
       excl. fuel and tolls: trip-linked wages/maintenance plus monthly
       company-level bills (insurance, vehicle finance, licences, office).
   RULES company  "Highveld Freight Co (Demo)"  login rules@demo.truckwys.local
@@ -84,20 +84,28 @@ PLACES = {
 # the TollPlaza table) + border/permit costs in additional_charges.
 LANES = {
     'JHB-DBN': {'from': 'JHB', 'to': 'DBN', 'km': 568, 'hours': 8, 'nights': 1, 'tolls': Decimal('1274.00'),
-                'border': Decimal('0'), 'market_ref': 26500, 'international': False},
+                'border': Decimal('0'), 'market_ref': 25000, 'international': False},
     'CPT-JHB': {'from': 'CPT', 'to': 'JHB', 'km': 1398, 'hours': 20, 'nights': 2, 'tolls': Decimal('1115.00'),
-                'border': Decimal('0'), 'market_ref': 46000, 'international': False},
+                'border': Decimal('0'), 'market_ref': 50000, 'international': False},
     'JHB-GBE': {'from': 'JHB', 'to': 'GBE', 'km': 362, 'hours': 7, 'nights': 1, 'tolls': Decimal('968.00'),
                 'border': Decimal('1850.00'), 'market_ref': 19500, 'international': True},
 }
 
 DRIVER_ALLOWANCE_PER_NIGHT = Decimal('650.00')
 
-# (name, capacity t, base_rate R/km, L/100km, SANRAL class, description)
+# (name, capacity t, base_rate R/km, L/100km, SANRAL class, description, %/t)
+# L/100km are base figures at rated payload for a laden SA long-haul unit
+# (the builder scales them by (1 + %/t)^(tonnes - capacity)): superlink
+# 45-48, tri-axle 38-40, 6x4 rigid 30-32. The per-tonne sensitivity keeps the
+# curve believable at both ends: a superlink at 28 t burns ~42 L/100km and
+# ~28 L/100km running home empty (a flat 2%/t would say ~23 L empty).
 VEHICLE_TYPES = [
-    ('Superlink Tautliner', 34, Decimal('24.00'), Decimal('42.0'), 4, '6x4 truck-tractor with a 6+12m superlink tautliner.'),
-    ('Tri-axle Tautliner', 30, Decimal('23.00'), Decimal('38.0'), 4, '6x4 truck-tractor with a 13.6m tri-axle tautliner.'),
-    ('Rigid 6x4 Curtainsider', 14, Decimal('19.00'), Decimal('28.0'), 3, '14-ton 6x4 rigid for regional distribution.'),
+    ('Superlink Tautliner', 34, Decimal('24.00'), Decimal('46.0'), 4, '6x4 truck-tractor with a 6+12m superlink tautliner.',
+     Decimal('1.5')),
+    ('Tri-axle Tautliner', 30, Decimal('23.00'), Decimal('39.0'), 4, '6x4 truck-tractor with a 13.6m tri-axle tautliner.',
+     Decimal('1.5')),
+    ('Rigid 6x4 Curtainsider', 14, Decimal('19.00'), Decimal('31.0'), 3, '14-ton 6x4 rigid for regional distribution.',
+     Decimal('2.0')),
 ]
 
 DEMO_EMAIL_DOMAIN = 'demo.truckwys.local'
@@ -173,23 +181,26 @@ CARGO = ['Palletised packaging board', 'Steel coil and sections', 'Timber - stru
 #   MONTHLY_COST_PER_KM - company-level monthly bills (no trip): insurance,
 #       vehicle finance instalments, licences, office/admin/tracking. Each
 #       month's bill is sized from the company's own completed-trip km so the
-#       all-in figure lands where intended (model company ~R14/km).
+#       all-in figure lands where intended (model company ~R17/km).
 # Night-out allowances are NOT booked as expenses: the cost floor carries them
 # as their own Driver allowance line, so booking them would double count.
 # Border clearing is not booked either: it is the floor's Border fees line,
 # and OTHER counts as operating cost.
 # (category, description, vendor, R/km net of VAT, VAT-able?)
 TRIP_COST_PER_KM = {
-    'model': [('DRIVER_COST', 'Driver wages - trip share', 'Payroll (fictional)', 2.90, False),
-              ('MAINTENANCE', 'Service, tyres and repairs - trip share', 'Demo Truck Services (fictional)', 2.60, True)],
-    'rules': [('DRIVER_COST', 'Driver wages - trip share', 'Payroll (fictional)', 3.00, False),
+    # Driver wages at cost-to-company (basic, overtime, UIF/SDL, provident
+    # fund, medical) for a Code 14 long-haul driver: ~R4.25/km.
+    'model': [('DRIVER_COST', 'Driver wages (cost to company) - trip share', 'Payroll (fictional)', 4.25, False),
+              ('MAINTENANCE', 'Service, tyres and repairs - trip share', 'Demo Truck Services (fictional)', 3.20, True)],
+    'rules': [('DRIVER_COST', 'Driver wages (cost to company) - trip share', 'Payroll (fictional)', 4.30, False),
               ('MAINTENANCE', 'Service, tyres and repairs - trip share', 'Demo Truck Services (fictional)', 3.10, True)],
 }
 MONTHLY_COST_PER_KM = {
-    'model': [('INSURANCE', 'Fleet insurance premium', 'Demo Insurers (fictional)', 1.60, False),
-              ('OVERHEAD', 'Vehicle finance instalments (4 units)', 'Demo Fleet Finance (fictional)', 4.20, False),
-              ('OVERHEAD', 'Licences, permits and roadworthy provision', 'Demo Licensing Office (fictional)', 0.50, False),
-              ('OVERHEAD', 'Office rent, admin and vehicle tracking', 'Demo Office Park (fictional)', 2.20, True)],
+    # Trip-linked 7.45 + monthly 9.45 = ~R16.90/km all-in, excl. fuel and tolls.
+    'model': [('INSURANCE', 'Fleet insurance premium', 'Demo Insurers (fictional)', 1.70, False),
+              ('OVERHEAD', 'Vehicle finance instalments (4 units)', 'Demo Fleet Finance (fictional)', 4.90, False),
+              ('OVERHEAD', 'Licences, permits and roadworthy provision', 'Demo Licensing Office (fictional)', 0.55, False),
+              ('OVERHEAD', 'Office rent, admin and vehicle tracking', 'Demo Office Park (fictional)', 2.30, True)],
 }
 # Rules company: below the 10-trip actuals threshold (estimate shown), but its
 # books still carry a few monthly bills. Fixed rand amounts, excl. VAT.
@@ -445,12 +456,12 @@ class Command(BaseCommand):
 
     def _vehicle_types(self, company, names=None):
         out = {}
-        for name, cap, rate, l100, sclass, desc in VEHICLE_TYPES:
+        for name, cap, rate, l100, sclass, desc, sens in VEHICLE_TYPES:
             if names and name not in names:
                 continue
             values = {'capacity': Decimal(cap), 'max_distance': Decimal('5000') if cap > 20 else Decimal('900'),
                       'base_rate': rate, 'fuel_consumption_l_per_100km': l100,
-                      'fuel_consumption_sensitivity_pct': Decimal('2.0'), 'fuel_type': 'Diesel',
+                      'fuel_consumption_sensitivity_pct': sens, 'fuel_type': 'Diesel',
                       'sanral_toll_class': sclass, 'description': desc, 'active': True}
             vt = VehicleType.objects.filter(company=company, name=name).first()
             if vt is None:
@@ -516,6 +527,13 @@ class Command(BaseCommand):
 
     def _account(self, kind, spec):
         company = self._company(spec['name'], spec['city'], spec['key'])
+        # The company's own night-out allowance (additive field, round 4):
+        # model and rules companies set one; the cold-start company leaves it
+        # unset so the builder shows the allowance as "Not set".
+        if any(f.name == 'driver_allowance_per_night' for f in Company._meta.get_fields()):
+            Company.objects.filter(pk=company.pk).update(
+                driver_allowance_per_night=DRIVER_ALLOWANCE_PER_NIGHT if kind in ('model', 'rules') else None)
+            company.refresh_from_db()
         user = self._user(company, spec['login'], *spec['admin'])
         vtypes = self._vehicle_types(company)
         cust_specs = {'model': MODEL_CUSTOMERS, 'rules': RULES_CUSTOMERS, 'cold': COLD_CUSTOMERS}[kind]
@@ -610,7 +628,7 @@ class Command(BaseCommand):
             days_ago = 540 - offset - i * 58 - rng.randint(0, 20)
             days_ago = max(3, days_ago)
             created = self.now - timedelta(days=days_ago, hours=rng.randint(0, 9))
-            ratio = rng.uniform(0.88, 1.10) if won else rng.uniform(1.08, 1.24)
+            ratio = rng.uniform(0.88, 1.06) if won else rng.uniform(1.06, 1.22)
             total = round(ref * ratio / 50) * 50
             q = self._quote(acc, acc['customer'], 'JHB-DBN', vt, total, created,
                             status='ACCEPTED' if won else 'DECLINED',
@@ -653,9 +671,9 @@ class Command(BaseCommand):
             days_ago = span - (i + 0.5) * (span - 6) / n + rng.uniform(-2, 2)
             created = self.now - timedelta(days=max(6.0, days_ago), hours=rng.randint(0, 8))
             lane = LANES[lane_code]
-            ratio = rng.uniform(0.84, 1.24)
+            ratio = rng.uniform(0.84, 1.20)
             if spec['role'] == 'price_sensitive':
-                ratio = rng.uniform(0.86, 1.20)
+                ratio = rng.uniform(0.86, 1.18)
             p_win = _sigmoid(spec['bias'] - spec['slope'] * (ratio - 1.0))
             won = rng.random() < p_win
             total = round(lane['market_ref'] * ratio / 50) * 50

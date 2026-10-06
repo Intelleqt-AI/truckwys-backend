@@ -111,6 +111,12 @@ class Quote(models.Model):
     notes = models.TextField(blank=True)
 
     token = models.CharField(max_length=64, unique=True, blank=True)
+    # Pricing analysis (additive): True once the quote has been SENT, False
+    # when it was decided (won/lost) straight from DRAFT without ever being
+    # sent, None for older rows where it isn't known. Set by core.signals on
+    # status transitions; never written by clients. A never-sent quote is not
+    # market evidence (lane_benchmark.never_sent_q).
+    was_sent = models.BooleanField(null=True, blank=True, default=None, editable=False)
 
     # Sprint 1: Quote Feedback Loop
     outcome = models.CharField(max_length=20, choices=OUTCOME_CHOICES, default='pending', help_text="Quote outcome for ML training")

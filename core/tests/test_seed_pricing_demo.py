@@ -60,22 +60,33 @@ class SeedPricingDemoTests(TestCase):
         self.assertLess(sum(won) / len(won), sum(lost) / len(lost))
 
         # All-in operating cost (trip-linked + company-level bills, net of
-        # VAT) lands at R13-15/km for the model company; the rules company
+        # VAT) lands at R16-18/km for the model company; the rules company
         # stays below the trip threshold. Night-out allowances are never
         # booked as expenses (the floor's own allowance line covers them).
         from core.models import Expense
         from core.services.pricing_analysis import fixed_cost_per_km
         fixed = fixed_cost_per_km(model, vt_name='Superlink Tautliner')
         self.assertEqual(fixed['source'], 'company_actuals')
-        self.assertTrue(13 <= fixed['value'] <= 15, fixed)
+        self.assertTrue(16 <= fixed['value'] <= 18, fixed)
         self.assertGreater(fixed['actuals']['company_level'], 0)
         self.assertEqual(fixed_cost_per_km(rules, vt_name='Superlink Tautliner')['source'], 'vehicle_default')
         self.assertTrue(Expense.objects.filter(company=rules, trip__isnull=True).exists())
         self.assertFalse(Expense.objects.filter(company__in=[model, rules],
                                                 description__icontains='allowance').exists())
 
+        # Believable SA fuel figures at rated payload (seed data, not engine).
+        from core.models import VehicleType
+        l100 = {vt.name: float(vt.fuel_consumption_l_per_100km) for vt in VehicleType.objects.filter(company=model)}
+        self.assertTrue(45 <= l100['Superlink Tautliner'] <= 48, l100)
+        self.assertTrue(38 <= l100['Tri-axle Tautliner'] <= 40, l100)
+        self.assertTrue(30 <= l100['Rigid 6x4 Curtainsider'] <= 32, l100)
+
+        # 2026 JHB->DBN superlink market: platform band in the low-to-mid
+        # R20 000s, so one-way margins over a ~R17/km floor stay believable.
         from core.services.lane_benchmark import compute_lane_benchmark
-        self.assertTrue(compute_lane_benchmark('JHB', 'DBN')['available'])
+        bench = compute_lane_benchmark('JHB', 'DBN')
+        self.assertTrue(bench['available'])
+        self.assertTrue(20000 <= bench['p25'] < bench['market_median_rate'] < bench['p75'] <= 30000, bench)
 
         self._run()
         self.assertEqual(_counts(), first)

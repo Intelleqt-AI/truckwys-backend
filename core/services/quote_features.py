@@ -273,7 +273,7 @@ def compute_features(
             from core.services.lane_benchmark import resolve_market_rate
             market_rate, _source = resolve_market_rate(
                 origin, destination, vehicle_type, company=company,
-                exclude_quote_id=exclude_quote_id, as_of=as_of,
+                exclude_quote_id=exclude_quote_id, as_of=as_of, one_way_only=True,
             )
         except Exception as exc:
             logger.warning('compute_features: market rate resolve failed: %s', exc)

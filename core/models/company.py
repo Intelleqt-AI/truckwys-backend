@@ -462,6 +462,13 @@ class Company(models.Model):
         help_text='Your operating cost per km excl. fuel and tolls (driver wages, finance, insurance, '
                   'licences, tyres, maintenance, overheads). Blank = worked out from your expenses.',
     )
+    # Driver night-out allowance per night away the operator pays, used by
+    # the pricing analysis only when no approved allowance (VerifiedRate) is
+    # on record. Blank = none set.
+    driver_allowance_per_night = models.DecimalField(
+        max_digits=8, decimal_places=2, null=True, blank=True,
+        help_text='Driver allowance you pay per night away (used when no approved allowance is on record).',
+    )
     # Opt-in to the pooled (global) win model: this company's decided quotes
     # train it, and this company may be served it when it has no model of its
     # own. Off by default — one tenant's outcomes never shape another's

@@ -143,8 +143,8 @@ class CostFloorTests(_Base):
         self.assertEqual(lines['tolls']['amount'], 1200)
         self.assertEqual(lines['tolls']['source']['kind'], 'official')
         self.assertIn('SANRAL', lines['tolls']['source']['label'])
-        # No VehicleType row: 'Tautliner' -> tri-axle class estimate, R11.50/km.
-        self.assertEqual(lines['fixed_cost']['amount'], round(568 * 11.50))
+        # No VehicleType row: 'Tautliner' -> tri-axle class estimate, R14.50/km.
+        self.assertEqual(lines['fixed_cost']['amount'], round(568 * 14.50))
         self.assertEqual(lines['fixed_cost']['label'], 'Operating costs')
         self.assertIn('tri-axle', lines['fixed_cost']['source']['label'])
         self.assertEqual(r['cost_floor']['fixed_cost_per_km']['class'], 'tri_axle')
@@ -737,7 +737,7 @@ class Round1FixTests(_Base):
         self.assertRegex(text, 'R\u00a0\\d')
         self.assertNotRegex(text, r'R\d')
         fixed = next(ln for ln in r['cost_floor']['lines'] if ln['key'] == 'fixed_cost')
-        self.assertIn('R\u00a011,50/km', fixed['basis'])
+        self.assertIn('R\u00a014,50/km', fixed['basis'])
 
     def test_empty_return_summaries_match_each_card(self):
         other = Company.objects.create(company_name='Ridgeback Freight')
@@ -877,7 +877,10 @@ class Round3Tests(_ModelMixin, _Base):
         self.assertIn('×2 for a return trip', rt['market']['tier_label'])
         self.assertIn('one-way', rt['market']['tier_label'])
         for k in ('p25', 'median', 'p75'):
-            self.assertAlmostEqual(rt['market'][k], one['market'][k] * 2, delta=1)
+            self.assertAlmostEqual(rt['market']['raw_' + k], one['market']['raw_' + k] * 2, delta=0.01)
+            self.assertEqual(rt['market'][k] % 100, 0)
+        self.assertEqual(rt['market']['basis'], 'one_way_x2')
+        self.assertEqual(rt['market']['basis_label'], 'one-way quotes ×2')
         # Choices and bands come from the scaled range.
         self.assertGreaterEqual(rt['choices'][1]['price'], rt['market']['median'])
         self.assertEqual(rt['likelihood']['rules']['thresholds']['likely_max'], pa.round_price(rt['market']['median']))
@@ -913,7 +916,7 @@ class Round3Tests(_ModelMixin, _Base):
     def test_reasoning_whole_rand_and_nbsp(self):
         r = self.analyze()
         first = r['reasoning'][0]
-        self.assertIn(pa._fmt(round(r['cost_floor']['total'], -2)), first)
+        self.assertIn(pa._fmt(pa._round_to(r['cost_floor']['total'], 100)), first)
         self.assertNotRegex(first, r'/km\D*,\d\d/km')
         self.assertNotIn('R ', ' '.join(r['reasoning']))   # no plain space after R
 
@@ -965,7 +968,11 @@ class Round3ModelTests(_ModelMixin, _Base):
             self.assertGreaterEqual(scored['balanced'], scored[best] * 0.97)
         else:
             self.assertEqual(rec, best)
-        self.assertIn('closest choice', r['recommendation']['reason'])
+        # Round 4: the curve's best is named only when it beats the pick after
+        # rounding to R100 (else the best is stated once, as the pick's).
+        peak_ep = r['likelihood']['model']['best']['expected_profit']
+        if 'closest choice' not in r['recommendation']['reason']:
+            self.assertLessEqual(pa._round_to(peak_ep, 100), pa._round_to(max(scored.values()), 100) + 100)
         self.assertIn(r['recommendation']['reason'], r['reasoning'])
         peak = r['likelihood']['model']['best']
         self.assertEqual(peak['expected_profit'], max(p['expected_profit'] for p in r['likelihood']['model']['curve']))
@@ -1021,3 +1028,278 @@ class Round3ModelTests(_ModelMixin, _Base):
                                 user=self.user)
         self.assertEqual(out['level'], 'rules')
         self.assertEqual(out['band'], 'less_likely')
+
+
+def _choice(key, price, margin, pct):
+    return {'key': key, 'label': pa.CHOICE_LABELS[key], 'price': price, 'margin': margin,
+            'likelihood': {'level': 'model', 'pct': pct}}
+
+
+class Round4Tests(_Base):
+    """Round 4: exact your_price echo, expected profit from the unrounded
+    probability, the 25% rule, empty-return hold, per km driven, return-trip
+    market basis, display rounding, never-sent quotes, driver allowance
+    setting, company profile fields, agreed price, benchmark back-compat."""
+
+    def _platform(self, n_own=3, n_other=4, start=24000, **kw):
+        other = Company.objects.create(company_name='Ridgeback Freight')
+        won_quotes(self.company, self.customer, n_own, start=start, prefix='A', **kw)
+        won_quotes(other, make_customer(other, 'Saltpan Traders'), n_other, start=start + 1500, prefix='B', **kw)
+        return other
+
+    # B1
+    def test_your_price_is_echoed_exactly(self):
+        r = self.analyze(your_price=23322.5)
+        self.assertEqual(r['your_price']['price'], 23322.5)
+        r = self.analyze(your_price=26401.37)
+        self.assertEqual(r['your_price']['price'], 26401.37)
+
+    # B2 + 25% rule
+    def test_recommendation_uses_unrounded_probability(self):
+        # S4a: Safe 0.6346 × 7 063 = 4 482 vs Balanced 0.5355 × 8 113 = 4 345
+        # (3.06% below). Rounded % (63 / 54) would keep Balanced; raw picks Safe.
+        choices = [_choice('safe', 30000, 7063, 63), _choice('balanced', 31100, 8113, 54),
+                   _choice('stretch', 33000, 10013, 30)]
+        raw = {'safe': 0.6346, 'balanced': 0.5355, 'stretch': 0.30}
+        rec = pa._recommend(choices, None, None, raw_p=raw)
+        self.assertEqual(rec['key'], 'safe')
+        self.assertIn('about R 4 500 per quote', rec['reason'])   # R100 rounding
+        # Within 3% on the raw figures -> Balanced kept.
+        raw['balanced'] = 0.5400
+        self.assertEqual(pa._recommend(choices, None, None, raw_p=raw)['key'], 'balanced')
+
+    def test_never_recommend_under_25_pct_unless_all_are(self):
+        choices = [_choice('safe', 30000, 2000, 90), _choice('balanced', 31000, 3000, 40),
+                   _choice('stretch', 40000, 12000, 20)]
+        raw = {'safe': 0.9, 'balanced': 0.4, 'stretch': 0.2}     # Stretch EP 2 400 is the highest
+        rec = pa._recommend(choices, None, None, raw_p=raw)
+        self.assertEqual(rec['key'], 'safe')
+        self.assertIn('Stretch is not recommended: under a 25% chance', rec['reason'])
+        low = {'safe': 0.2, 'balanced': 0.15, 'stretch': 0.1}
+        self.assertEqual(pa._recommend(choices, None, None, raw_p=low)['key'], 'stretch')
+
+    def test_best_expected_profit_is_never_below_a_stated_choice(self):
+        choices = [_choice('safe', 30000, 7063, 63), _choice('balanced', 31100, 8113, 54),
+                   _choice('stretch', 33000, 10013, 30)]
+        raw = {'safe': 0.6346, 'balanced': 0.5355, 'stretch': 0.30}
+        block = {'best': {'price': 30000, 'pct': 63, 'expected_profit': 4482, 'choice': 'safe'}}
+        rec = pa._recommend(choices, None, block, raw_p=raw)
+        self.assertNotIn('model\'s best', rec['reason'])     # the best is a stated choice: said once
+        block = {'best': {'price': 29500, 'pct': 66, 'expected_profit': 4600, 'choice': None}}
+        rec = pa._recommend(choices, None, block, raw_p=raw)
+        self.assertIn('best expected profit is about R 4 600 at R 29 500', rec['reason'])
+
+    def test_payment_risk_override_first_then_both_profits(self):
+        cust = {'payment_risk': {'band': 'high'}}
+        choices = [_choice('safe', 30000, 7063, 63), _choice('balanced', 31100, 8113, 54),
+                   _choice('stretch', 33000, 10013, 30)]
+        rec = pa._recommend(choices, cust, None, raw_p={'safe': 0.6346, 'balanced': 0.5355, 'stretch': 0.3})
+        self.assertEqual(rec['key'], 'balanced')
+        self.assertTrue(rec['reason'].startswith('Safe is not recommended for this customer'))
+        self.assertIn('R 4 500', rec['reason'])
+        self.assertIn('R 4 300', rec['reason'])
+
+    # 3: empty return can't be paid by this lane
+    def test_empty_return_unpaid_keeps_balanced_with_attention(self):
+        self._platform(start=12000)
+        r = self.analyze(include_return=True)
+        self.assertEqual(r['recommendation']['key'], 'balanced')
+        codes = [a['code'] for a in r['attention']]
+        self.assertIn('empty_return_unpaid', codes)
+        msg = next(a for a in r['attention'] if a['code'] == 'empty_return_unpaid')['message']
+        self.assertEqual(msg, 'This lane pays less than your full cost when the truck returns empty. '
+                              'Price for a backload or charge for the empty return.')
+        # Not raised for a one-way price without the return in the floor.
+        self.assertNotIn('empty_return_unpaid', [a['code'] for a in self.analyze()['attention']])
+
+    # 4
+    def test_per_km_is_per_km_driven(self):
+        one = self.analyze()['cost_floor']
+        self.assertEqual(one['per_km'], round(one['total'] / 568, 2))
+        self.assertEqual(one['per_km_label'], 'per km driven')
+        self.assertEqual(one['floor_with_return_per_km'], round(one['floor_with_return'] / 1136, 2))
+        ret = self.analyze(include_return=True)
+        f = ret['cost_floor']
+        self.assertEqual(f['km_driven'], 1136)
+        self.assertEqual(f['per_km'], round(f['total'] / 1136, 2))
+        self.assertIn('/km driven, both legs', ret['reasoning'][0])
+
+    # 5a
+    def test_round_trip_prefers_real_return_trip_quotes(self):
+        self._platform()
+        rt = self.analyze(legs=2, trip_type='ROUND_TRIP', distance_km=1136)
+        self.assertEqual(rt['market']['basis'], 'one_way_x2')
+        other = Company.objects.get(company_name='Ridgeback Freight')
+        won_quotes(self.company, self.customer, 3, start=47000, prefix='RA', trip_type='ROUND_TRIP')
+        won_quotes(other, make_customer(other, 'Kraal Foods'), 3, start=48000, prefix='RB', trip_type='ROUND_TRIP')
+        pa._MARKET_MEMO.clear()
+        rt = self.analyze(legs=2, trip_type='ROUND_TRIP', distance_km=1136)
+        m = rt['market']
+        self.assertEqual((m['basis'], m['basis_label'], m['n'], m['legs_scaled']),
+                         ('round_trip', 'return-trip quotes', 6, False))
+        self.assertIn('return-trip quotes', m['tier_label'])
+        self.assertTrue(47000 <= m['raw_median'] <= 50000)
+        # One-way sample unchanged by the return-trip quotes.
+        self.assertEqual(self.analyze()['market']['n'], 7)
+
+    # 5b + 8
+    def test_round_trip_nights_and_company_allowance_setting(self):
+        r = self.analyze(legs=2, trip_type='ROUND_TRIP', distance_km=1136, duration_minutes=420)
+        line = next(ln for ln in r['cost_floor']['lines'] if ln['key'] == 'driver_allowance')
+        self.assertEqual(line['nights'], 1)                 # 14 h driving over both legs
+        self.assertEqual(line['status'], 'needs_input')
+        self.company.driver_allowance_per_night = Decimal('650')
+        self.company.save()
+        r = self.analyze(legs=2, trip_type='ROUND_TRIP', distance_km=1136, duration_minutes=420)
+        line = next(ln for ln in r['cost_floor']['lines'] if ln['key'] == 'driver_allowance')
+        self.assertEqual((line['amount'], line['suggested'], line['status']), (650, 650, 'ok'))
+        self.assertEqual(line['source'], {'kind': 'user', 'label': 'Your setting', 'url': None, 'as_of': None})
+        self.assertNotIn('no_driver_allowance', {w['code'] for w in r['warnings']})
+        # An approved allowance on record still wins over the setting.
+        from unittest import mock
+        with mock.patch('core.services.quote_ai_pricing.stored_allowance',
+                        return_value={'rate_per_night': 500, 'label': 'NBCRFLI driver allowance'}):
+            r = self.analyze(legs=2, trip_type='ROUND_TRIP', distance_km=1136, duration_minutes=420)
+        line = next(ln for ln in r['cost_floor']['lines'] if ln['key'] == 'driver_allowance')
+        self.assertEqual((line['amount'], line['source']['kind']), (500, 'official'))
+
+    # 6
+    def test_market_display_rounding_keeps_raw_values(self):
+        self._platform(start=24030)
+        m = self.analyze(your_price=25000)['market']
+        for k in ('p25', 'median', 'p75'):
+            self.assertEqual(m[k] % 100, 0)
+            self.assertLessEqual(abs(m[k] - m['raw_' + k]), 50)
+        self.assertEqual(m['rounded_to'], 100)
+        est = self.analyze(origin='JHB', destination='CPT')['market']
+        self.assertTrue(est['is_estimate'])
+        for k in ('p25', 'median', 'p75'):
+            self.assertEqual(est[k] % 500, 0)
+        self.assertEqual(est['rounded_to'], 500)
+
+    # Never-sent quotes are not evidence
+    def test_never_sent_won_quotes_are_not_market_or_customer_evidence(self):
+        self._platform(n_own=3, n_other=3)                     # 6 one-way wins, created as won
+        base_n = self.analyze()['market']['n']
+        q = make_quote(self.company, self.customer, number='NS-1', total=25000, destination='DBN',
+                       status='DRAFT', pickup_location='Johannesburg', delivery_location='Durban')
+        q.status = 'ACCEPTED'
+        q.outcome = 'accepted'
+        q.save()
+        q.refresh_from_db()
+        self.assertIs(q.was_sent, False)
+        sent = make_quote(self.company, self.customer, number='S-1', total=25500, destination='DBN',
+                          status='DRAFT', pickup_location='Johannesburg', delivery_location='Durban')
+        sent.status = 'SENT'
+        sent.save()
+        sent.status = 'ACCEPTED'
+        sent.save()
+        sent.refresh_from_db()
+        self.assertIs(sent.was_sent, True)
+        pa._MARKET_MEMO.clear()
+        cache.clear()
+        r = self.analyze(customer_id=self.customer.id)
+        self.assertEqual(r['market']['n'], base_n + 1)         # only the sent one joins
+        self.assertNotIn(q.id, [x['id'] for x in r['customer']['recent_lane_quotes']])
+        self.assertIn(sent.id, [x['id'] for x in r['customer']['recent_lane_quotes']])
+        # Existing callers of compute_lane_benchmark are unchanged (default).
+        from core.services.lane_benchmark import compute_lane_benchmark
+        self.assertEqual(compute_lane_benchmark('JHB', 'DBN')['sample_size'], base_n + 2)
+        self.assertEqual(compute_lane_benchmark('JHB', 'DBN', sent_only=True)['sample_size'], base_n + 1)
+
+    # 7 (M2)
+    def test_market_rate_one_way_only_is_opt_in(self):
+        from core.services.lane_benchmark import resolve_market_rate
+        won_quotes(self.company, self.customer, 3, start=20000, prefix='OW')
+        won_quotes(self.company, self.customer, 3, start=60000, prefix='RT', trip_type='ROUND_TRIP')
+        both, _ = resolve_market_rate('JHB', 'DBN', company=self.company)
+        one, src = resolve_market_rate('JHB', 'DBN', company=self.company, one_way_only=True)
+        self.assertEqual(src, 'company')
+        self.assertAlmostEqual(one, 20500)
+        self.assertGreater(both, one)
+
+    # 8: company profile
+    def test_company_profile_pricing_fields(self):
+        from core.serializers import CompanySerializer
+        data = CompanySerializer(self.company).data
+        self.assertIsNone(data['driver_allowance_per_night'])
+        use = data['operating_cost_in_use']
+        self.assertEqual((use['source'], use['value'], use['window']), ('vehicle_default', 14.5, 'last 12 months'))
+        self.assertTrue(use['label'].startswith('Now using the typical SA estimate'))
+        self.assertEqual(use['estimates']['superlink'], 16.0)
+        ser = CompanySerializer(self.company, data={'margin_target_pct': '15', 'driver_allowance_per_night': '650'},
+                                partial=True)
+        self.assertTrue(ser.is_valid(), ser.errors)
+        ser.save()
+        self.company.refresh_from_db()
+        self.assertEqual((self.company.margin_target_pct, self.company.driver_allowance_per_night),
+                         (Decimal('15'), Decimal('650')))
+        self.assertEqual(self.analyze()['target_margin_pct'], 15)
+        for bad in ({'margin_target_pct': '0'}, {'margin_target_pct': '100'}, {'driver_allowance_per_night': '0.5'}):
+            self.assertFalse(CompanySerializer(self.company, data=bad, partial=True).is_valid(), bad)
+        self.company.operating_cost_per_km = Decimal('13.99')
+        self.company.save()
+        use = CompanySerializer(self.company).data['operating_cost_in_use']
+        self.assertEqual((use['source'], use['label']), ('setting', 'Now using your setting of R 13,99/km'))
+        self.assertTrue(CompanySerializer(self.company).fields['operating_cost_in_use'].read_only)
+
+    def test_operating_cost_classes_recalibrated(self):
+        self.assertEqual({k: pa._class_default(k)[0] for k in pa.OPERATING_COST_CLASSES},
+                         {'light': 8.0, 'rigid': 11.0, 'tri_axle': 14.5, 'reefer': 17.0, 'superlink': 16.0})
+
+    # 9
+    def test_agreed_price_on_quote_detail(self):
+        q = make_quote(self.company, self.customer, number='AG-1', total=25100, status='ACCEPTED',
+                       outcome='accepted')
+        url = f'/api/v1/quotes/{q.id}/'
+        self.assertIsNone(self.api.get(url).json()['agreed_price'])
+        QuoteOutcome.objects.create(quote=q, company=self.company, outcome='accepted', final_price=Decimal('24500'))
+        self.assertEqual(self.api.get(url).json()['agreed_price'], 24500.0)
+        QuoteOutcome.objects.filter(quote=q).update(final_price=Decimal('25100'))
+        self.assertIsNone(self.api.get(url).json()['agreed_price'])
+
+    # 11: benchmark backward compatibility
+    def test_benchmark_new_lane_code_without_data_answers_as_before(self):
+        resp = self.api.get('/api/v1/quotes/benchmark/?origin=Johannesburg&destination=Gaborone&vehicle_type=superlink')
+        self.assertEqual(resp.status_code, 400)
+        self.assertNotIn('data_points', resp.json())
+        self.assertEqual(resp.json(), {'success': False, 'error': 'origin, destination, and vehicle_type are required'})
+        # A known lane without data still answers 200 with data_points 0.
+        resp = self.api.get('/api/v1/quotes/benchmark/?origin=BFN&destination=PE&vehicle_type=superlink')
+        if resp.json().get('source') != 'estimate':
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(resp.json()['data_points'], 0)
+
+
+class Round4ModelTests(_ModelMixin, _Base):
+    def setUp(self):
+        super().setUp()
+        if not WIN_ML_AVAILABLE:
+            self.skipTest('sklearn not installed')
+        self.train_company_model(self.company, self.user, self.customer)
+
+    def test_model_level_expected_profit_is_raw_and_best_covers_choices(self):
+        r = self.analyze(**self.model_payload())
+        self.assertEqual(r['likelihood']['level'], 'model', r['likelihood'].get('reason'))
+        from core.services.win_prediction import resolve_prediction_context
+        ctx = resolve_prediction_context(self.user, self.company)
+        p = base_payload(**self.model_payload())
+        o, d = pa._resolve_lane(p)
+        floor = r['cost_floor']['total']
+        _b, _r, (predict, in_range) = pa.model_likelihood(
+            ctx=ctx, company=self.company, user=self.user, payload=p, origin=o, destination=d, vt_name=None,
+            floor_total=floor, probe_prices=[c['price'] for c in r['choices']] + [0], customer_id=None)
+        raw = {c['key']: predict(c['price']) * c['margin'] for c in r['choices']
+               if c['likelihood']['level'] == 'model'}
+        best = r['likelihood']['model']['best']
+        for v in raw.values():
+            self.assertGreaterEqual(best['expected_profit'], v - 0.5)
+        rec = r['recommendation']['key']
+        top = max(raw, key=raw.get)
+        if rec != top:
+            self.assertEqual(rec, 'balanced')
+            self.assertGreaterEqual(raw['balanced'], raw[top] * 0.97)
+        # Expected-profit figures in the text are whole hundreds.
+        import re
+        for amount in re.findall(r'about R ([\d ]+)', r['recommendation']['reason']):
+            self.assertEqual(int(amount.replace(' ', '')) % 100, 0)

@@ -102,8 +102,7 @@ def score_final_price(fields: dict, decision: dict, *, company, user):
     vt_name = fields.get('vehicle_type') or None
     floor_total = float(floor) if floor and float(floor) > 0 else price * 0.75
     try:
-        market = pa.market_range(origin, destination, vt_name, company, payload['quote_id'])
-        market = pa._market_for_trip(market, payload['legs'], vt_name)
+        market = pa.trip_market(origin, destination, vt_name, company, payload['quote_id'], payload['legs'])
         cust = None
         customer = fields.get('customer')
         if customer is not None and not hasattr(customer, 'id'):
@@ -223,6 +222,23 @@ def loss_reason_representation(quote):
     if row is None or not row.loss_reason:
         return None
     return {'reason': row.loss_reason, 'note': row.loss_reason_note or ''}
+
+
+def agreed_price_representation(quote):
+    """The price agreed on a WON quote when it differs from the quote's total
+    (QuoteOutcome.final_price, 2 dp, excl. VAT like total_amount), else None.
+    Display only — billing still uses the quote total."""
+    try:
+        from core.models import QuoteOutcome
+        row = (QuoteOutcome.objects.filter(quote=quote).only('outcome', 'final_price').first())
+    except Exception:
+        return None
+    if row is None or row.outcome != 'accepted' or row.final_price is None or quote.total_amount is None:
+        return None
+    agreed = Decimal(row.final_price).quantize(Decimal('0.01'))
+    if abs(agreed - Decimal(quote.total_amount)) < Decimal('0.005') or agreed <= 0:
+        return None
+    return float(agreed)
 
 
 def clean_loss_reason(value):

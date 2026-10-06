@@ -800,9 +800,13 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
             data.pop('route_snapshot', None)
         else:
             # Detail only (one extra query each; never on list pages).
-            from core.services.pricing_decisions import decision_representation, loss_reason_representation
+            from core.services.pricing_decisions import (agreed_price_representation, decision_representation,
+                                                         loss_reason_representation)
             data['pricing_decision'] = decision_representation(instance)
             data['loss_reason'] = loss_reason_representation(instance)
+            # Read-only, display only: the price agreed when the quote was won
+            # at a figure other than its total (billing is unchanged).
+            data['agreed_price'] = agreed_price_representation(instance)
         return data
 
     def _converted_load(self, obj):
@@ -1309,8 +1313,37 @@ class CompanySerializer(serializers.ModelSerializer):
             'default_toll_rate_per_km',
             # Pricing analysis (additive): empty-return default and global-model opt-in.
             'pricing_include_empty_return', 'pool_pricing_data', 'operating_cost_per_km',
+            # Round 4 (additive): allowance per night (used when no approved
+            # allowance is on record) and the operating cost the pricing
+            # analysis is using right now (read-only).
+            'driver_allowance_per_night', 'operating_cost_in_use',
             'onboarding_completed_at',
         ] + list(BANK_FIELDS)
+
+    operating_cost_in_use = serializers.SerializerMethodField()
+
+    def get_operating_cost_in_use(self, obj):
+        """{value, source: setting|company_actuals|vehicle_default, trips,
+        window, label} — what pricing analysis uses for operating cost per km
+        right now (company actuals are cached 10 minutes). Never raises."""
+        try:
+            from core.services.pricing_analysis import operating_cost_in_use
+            return operating_cost_in_use(obj)
+        except Exception:
+            return None
+
+    def validate_margin_target_pct(self, value):
+        # Only nonsense is refused (a margin on price can't reach 100%), so a
+        # company already storing an unusual figure can still save its
+        # profile; the pricing analysis itself clamps the target to 1–40%.
+        if value is not None and not (Decimal('0') < value < Decimal('100')):
+            raise serializers.ValidationError('Enter a target margin above 0% and below 100%.')
+        return value
+
+    def validate_driver_allowance_per_night(self, value):
+        if value is not None and not (Decimal('1') <= value <= Decimal('5000')):
+            raise serializers.ValidationError('Enter a driver allowance between R1 and R5 000 per night, or leave it blank.')
+        return value
 
     def validate_operating_cost_per_km(self, value):
         # Blank clears it (back to the figure from expenses); otherwise a
