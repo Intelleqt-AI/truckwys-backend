@@ -1078,3 +1078,22 @@ class CopilotQuoteWriteTests(_Base):
         q = self.create(vehicle_type='Nope', weight='99000')
         q.refresh_from_db()
         self.assertIsNone(q.margin_percentage)
+
+
+class AnalyzeRoundingAndFormatTests(_Base):
+    def test_floor_and_margin_to_the_cent(self):
+        from core.services.quote_analysis import assess_revenue_guard
+        r = assess_revenue_guard(total_cost=20000.37, quote_price=25000, is_full_floor=True)
+        self.assertEqual(r['full_cost_floor'], 20000.37)
+        self.assertEqual(r['margin_vs_floor'], 4999.63)
+        self.assertEqual(r['margin_floor'], 20000.37)
+
+    def test_rules_narrative_is_sa_format(self):
+        from core.services.quote_analysis import _rule_based_narrative
+        text = _rule_based_narrative({'success': True, 'margin_pct': 12.5, 'risk_level': 'HEALTHY'}, {},
+                                     {'optimal_margin_pct': 15}, {'market_rate': 26000, 'your_vs_market_pct': -7.7},
+                                     24000, 23000)
+        self.assertIn('R 24 000', text.replace(' ', ' '))
+        self.assertIn('R 26 000', text.replace(' ', ' '))
+        self.assertIn('12,5%', text)
+        self.assertNotRegex(text, r'R\d')

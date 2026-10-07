@@ -796,9 +796,9 @@ def build_choices(floor_total, market, target, minimum=None):
         if lowered >= target_price:
             prices['safe'] = int(lowered)
     for prev, cur in zip(order, order[1:]):
-        minimum = prices[prev] * (1 + MIN_CHOICE_GAP_PCT / 100.0)
-        if prices[cur] < minimum - 1e-6:
-            prices[cur] = round_price(minimum)
+        gap_floor = prices[prev] * (1 + MIN_CHOICE_GAP_PCT / 100.0)    # not `minimum` (the charge)
+        if prices[cur] < gap_floor - 1e-6:
+            prices[cur] = round_price(gap_floor)
             bumped[cur] = True
 
     out = []
@@ -827,7 +827,7 @@ def _ep_txt(v):
     return 'about ' + _fmt(_round_to(v, 100))
 
 
-def _recommend(choices, cust, model_block=None, raw_p=None, hold=None, market=None, target=10.0):
+def _recommend(choices, cust, model_block=None, raw_p=None, hold=None, market=None, target=10.0, minimum=None):
     """{'key', 'reason', 'short', 'code'}.
 
     `short` is display-ready (no leading choice name: the UI writes
@@ -869,14 +869,26 @@ def _recommend(choices, cust, model_block=None, raw_p=None, hold=None, market=No
 
     def rules_reason():
         m = bal['margin_pct']
+        # The minimum charge, not the target margin, sets the prices when it
+        # is higher (`minimum` is passed only then): say so.
+        at_min = minimum is not None and bal['price'] <= round_price(minimum)
         if market is None:
-            short = f'{_a(m)} {m}% margin, a buffer above your {t}% target while this lane has no market data.'
+            if minimum is not None:
+                short = (f'at your minimum charge of {_fmt(minimum)}, a {m}% margin, while this lane has no '
+                         'market data.' if at_min else
+                         f'{_a(m)} {m}% margin, a buffer above your {_fmt(minimum)} minimum charge while this '
+                         'lane has no market data.')
+            else:
+                short = f'{_a(m)} {m}% margin, a buffer above your {t}% target while this lane has no market data.'
             return out('balanced', 'no_market', short, f'Balanced is recommended: {short}')
         median = market['median']
         if abs(bal['price'] - median) <= 0.01 * median:
             code, short = 'rules_median', f'at the lane median, with a {m}% margin after all costs.'
         elif market['p25'] <= bal['price'] <= market['p75']:
             code, short = 'rules_middle_half', f'in the middle half of the market, with a {m}% margin after all costs.'
+        elif minimum is not None:
+            code, short = 'rules_minimum', (f'priced at your minimum charge of {_fmt(minimum)}; '
+                                            'this lane usually pays less.')
         else:
             code, short = 'rules_target', f'priced to keep your {t}% target margin; this lane usually pays less.'
         return out('balanced', code, short, f'Balanced is recommended: {short}')
@@ -1577,9 +1589,10 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
     market_out['your_position'] = _position(your_price, market_out)
 
     # The customer's lane history is one-way prices: compare like for like
-    # with a return trip's market (scaled x2) — halve the median for the
-    # price-sensitivity test, double their prices for the bands.
-    trip_scale = 2 if market.get('legs_scaled') else 1
+    # with this trip by its legs — their prices x legs for the bands (with
+    # or without a market), and a return-trip market (x2 one-way, or real
+    # return-trip quotes) halved for the one-way price-sensitivity test.
+    trip_scale = 2 if _legs(payload) == 2 else 1
     cust = (customer_evidence(customer, company, origin, destination, quote_id,
                               market_median=(market_out['median'] / trip_scale) if _market_usable(market) else None)
             if customer is not None else None)
@@ -1695,8 +1708,12 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
                           'once the empty run home is included.')
             attention.append({'code': 'empty_return_unpaid', 'level': 'medium',
                               'message': unpaid + ' Price for a backload or charge for the empty return.'})
+        min_charge = floor.get('minimum_charge')
+        min_sets = (float(min_charge) if min_charge and float(min_charge) > price_for_margin(floor_total, target / 100.0)
+                    else None)
         recommendation = _recommend(choices, cust, model_block, raw_p=raw_p, hold=hold,
-                                    market=market_out if _market_usable(market) else None, target=target)
+                                    market=market_out if _market_usable(market) else None, target=target,
+                                    minimum=min_sets)
         recommendation = _never_recommend_less_likely(choices, recommendation, raw_p)
         if recommendation['key'] is None:
             likelihood['headline'] = 'All three prices are less likely to win on this lane.'

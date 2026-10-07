@@ -17,6 +17,12 @@ from django.utils import timezone
 logger = logging.getLogger(__name__)
 
 
+def _fr(v, dp=0):
+    """SA rand format ('R 24 000', 'R 32,80')."""
+    from core.services.quote_costing import fmt_rand
+    return fmt_rand(v, dp)
+
+
 def _f(v, default=0.0):
     try:
         return float(v)
@@ -127,8 +133,10 @@ def _full_floor_fields(total_cost, quote_price, distance_km, company, vehicle_ty
         # total_cost that is already THE floor (quote_costing) includes the
         # operating cost: never add it twice.
         fixed = fixed_cost_per_km(company, None, vehicle_type) if distance_km > 0 and not is_full_floor else None
-        fixed_zar = round(fixed['value'] * distance_km) if fixed else 0
-        floor = round(total_cost) + fixed_zar
+        # To the cent (as quote_costing): never whole-rand rounded.
+        from core.services.quote_costing import cents
+        fixed_zar = cents(fixed['value'] * distance_km) if fixed else 0.0
+        floor = cents(float(total_cost) + fixed_zar)
         m = margin_against_floor(quote_price, floor)
         return {
             'full_cost_floor': floor,
@@ -183,7 +191,7 @@ def assess_revenue_guard(*, total_cost, quote_price, distance_km=0.0,
     cost_per_km = round(total_cost / distance_km, 2) if distance_km > 0 else None
     fleet_avg_cpk = _fleet_avg_cpk(company)
     if cost_per_km is not None and fleet_avg_cpk and cost_per_km > fleet_avg_cpk * 1.1:
-        explanations.append(f"Cost-per-km on this route is R{cost_per_km:.2f} — above the fleet average of R{fleet_avg_cpk:.2f}")
+        explanations.append(f"Cost-per-km on this route is {_fr(cost_per_km, 2)} — above the fleet average of {_fr(fleet_avg_cpk, 2)}")
         suggestions.append("Review your cost model — this route may need a base rate increase")
 
     # Fuel-delta analysis for an already-saved quote: like-for-like zone
@@ -193,9 +201,9 @@ def assess_revenue_guard(*, total_cost, quote_price, distance_km=0.0,
             from core.services.quote_snapshot import fuel_change_since_pricing
             change = fuel_change_since_pricing(quote)
             if change and change['delta_pct'] > 3:
-                explanations.append(f"Fuel has risen R{change['delta']:.2f}/L since this quote was priced")
+                explanations.append(f"Fuel has risen {_fr(change['delta'], 2)}/L since this quote was priced")
                 surcharge = int(change['impact_zar'] or fuel_cost * (change['delta_pct'] / 100))
-                suggestions.append(f"Add a fuel surcharge of R{surcharge} to protect the margin")
+                suggestions.append(f"Add a fuel surcharge of {_fr(surcharge)} to protect the margin")
         except Exception as exc:  # never break the assessment
             logger.warning('revenue-guard fuel analysis failed: %s', exc)
 
@@ -223,9 +231,11 @@ def assess_revenue_guard(*, total_cost, quote_price, distance_km=0.0,
         # Margin is defined on revenue, so the price hitting target t is cost/(1-t).
         increase_needed = total_cost / (1 - t) - quote_price
         if increase_needed > 0:
-            suggestions.append(f"Increase price by ~R{int(increase_needed)} to reach a {target_margin:.0f}% margin")
+            from core.services.quote_costing import fmt_rand
+            suggestions.append(f"Increase price by ~{fmt_rand(increase_needed)} to reach a {target_margin:.0f}% margin")
 
-    margin_floor = int(total_cost)
+    from core.services.quote_costing import cents, fmt_rand
+    margin_floor = cents(float(total_cost))
     floor_fields = _full_floor_fields(total_cost, quote_price, distance_km, company,
                                       vehicle_type or getattr(quote, 'vehicle_type', None), is_full_floor)
     return {
@@ -239,7 +249,7 @@ def assess_revenue_guard(*, total_cost, quote_price, distance_km=0.0,
         'explanations': explanations,
         'suggestions': suggestions,
         'margin_floor': margin_floor,
-        'margin_floor_display': f"R{margin_floor:,}",
+        'margin_floor_display': fmt_rand(margin_floor, 2),
         'target_margin_pct': target_margin,
         'warnings': explanations if risk_level != 'SAFE' else [],
     }
@@ -283,8 +293,8 @@ def _fuel_analysis(fuel_cost, fuel_usage_litres, fuel_price_used, quote_total, c
         if fuel_price_used and current and abs(current - fuel_price_used) / current > 0.02:
             direction = 'higher' if current > fuel_price_used else 'lower'
             out['price_note'] = (
-                f"The price used (R{fuel_price_used:.2f}/L) is {direction} than your current price "
-                f"(R{current:.2f}/L) — fuel cost may be off."
+                f"The price used ({_fr(fuel_price_used, 2)}/L) is {direction} than your current price "
+                f"({_fr(current, 2)}/L) — fuel cost may be off."
             )
     except Exception as exc:
         logger.warning('fuel analysis failed: %s', exc)
@@ -383,22 +393,23 @@ def _optimization(cost_basis, market_rate, client_tier, days,
 # Narrative
 # ---------------------------------------------------------------------------
 def _rule_based_narrative(cost, fuel, opt, market, suggested_price, quote_total):
+    from core.services.quote_costing import fmt_rand
     parts = []
     if cost.get('success'):
-        parts.append(f"Margin is {cost['margin_pct']:.1f}% ({cost['risk_level'].replace('_', ' ').lower()}).")
+        parts.append(f"Margin is {cost['margin_pct']:.1f}% ({cost['risk_level'].replace('_', ' ').lower()}).".replace('.', ',', 1))
     if suggested_price:
         delta = suggested_price - quote_total
         move = 'above' if delta >= 0 else 'below'
         parts.append(
-            f"Suggested price R{suggested_price:,.0f}"
+            f"Suggested price {fmt_rand(suggested_price)}"
             + (f" ({opt['optimal_margin_pct']:.0f}% margin" if opt.get('optimal_margin_pct') is not None else "")
             + (f", {round((opt['win_probability_at_optimal'] or 0) * 100)}% win chance)" if opt.get('win_probability_at_optimal') is not None else ")" if opt.get('optimal_margin_pct') is not None else "")
-            + f" — R{abs(delta):,.0f} {move} your current total."
+            + f" — {fmt_rand(abs(delta))} {move} your current total."
         )
     if market.get('market_rate') and market.get('your_vs_market_pct') is not None:
         vs = market['your_vs_market_pct']
         rel = 'above' if vs >= 0 else 'below'
-        parts.append(f"Market rate ~R{market['market_rate']:,.0f} (you're {abs(vs):.0f}% {rel} market).")
+        parts.append(f"Market rate ~{fmt_rand(market['market_rate'])} (you're {abs(vs):.0f}% {rel} market).")
     elif not market.get('market_rate'):
         parts.append("No market data exists for this lane yet, so there's no market comparison.")
     if fuel.get('is_stale'):

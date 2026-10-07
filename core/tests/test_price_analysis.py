@@ -278,7 +278,7 @@ class OptimizerConstraintTests(IsolatedModelStorageMixin, TestCase):
         self.assertEqual(result['risk_level'], 'AT_RISK')
         matches = [s for s in result['suggestions'] if 'Increase price by' in s]
         self.assertTrue(matches, 'increase suggestion missing')
-        self.assertIn('R911', matches[0])
+        self.assertRegex(matches[0], r'R[ \u00a0]911\b')      # SA format: 'R 911'
 
 
 class OutcomeCaptureTests(TestCase):

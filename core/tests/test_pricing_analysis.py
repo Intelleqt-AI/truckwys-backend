@@ -1967,6 +1967,13 @@ class FinalCopyTests(_Base):
                             if c['price'] <= 90000))
         self.assertNotIn('below_target', {w['code'] for w in r['warnings']})
         self.assertIn('below_minimum_charge', {w['code'] for w in r['warnings']})
+        # The summary names THE minimum charge (no overwritten gap figure),
+        # and the recommendation never claims the target margin.
+        for c in r['choices']:
+            if c['summary'].startswith('At your minimum charge'):
+                self.assertEqual(c['summary'], 'At your minimum charge of R\u00a090\u00a0000.')
+        self.assertNotIn('target', r['recommendation']['reason'])
+        self.assertIn('minimum charge', r['recommendation']['reason'])
 
     def test_empty_return_gap_without_recommendation_says_none(self):
         rec = pa._never_recommend_less_likely(
@@ -2015,6 +2022,18 @@ class RoundTripLikeForLikeTests(_Base):
         th1, th2 = one['likelihood']['rules']['thresholds'], rt['likelihood']['rules']['thresholds']
         # Both scaled together: the round-trip edges sit at about twice the one-way ones.
         self.assertGreater(th2['likely_max'], 1.8 * th1['likely_max'])
+
+    def test_customer_prices_scaled_by_legs_without_a_market(self):
+        # No market at all: the customer's one-way accepted price alone sets
+        # the bands, x2 for a return trip.
+        make_quote(self.company, self.customer, number='RT-C1', total=24000, status='ACCEPTED',
+                   outcome='accepted', was_sent=True, origin='JHB', destination='DBN',
+                   pickup_location='Johannesburg', delivery_location='Durban')
+        one = self.analyze(customer_id=self.customer.id, include_return=False)
+        rt = self.analyze(customer_id=self.customer.id, legs=2, trip_type='ROUND_TRIP', distance_km=1136)
+        self.assertFalse(rt['market']['available'])
+        self.assertEqual(one['likelihood']['rules']['raw_thresholds']['likely_max'], 24000)
+        self.assertEqual(rt['likelihood']['rules']['raw_thresholds']['likely_max'], 48000)
 
 
 class FinalLowFixesTests(_Base):
