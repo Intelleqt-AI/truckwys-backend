@@ -773,3 +773,44 @@ class CustomerToastTests(_Base):
         Notification.objects.all().delete()
         _resolve_customer(self.company, 'Brand New Co', self.user)
         self.assertFalse(Notification.objects.filter(user=self.user, title='New customer added').exists())
+
+
+class FinalAnalysisFixTests(_Base):
+    PAYLOAD = AiCheckOnComputeTests.PAYLOAD
+
+    def test_ai_check_margin_is_price_minus_floor_and_blocked_has_no_figures(self):
+        from core.services.quote_ai_pricing import compute_pricing
+        out = compute_pricing(dict(self.PAYLOAD), date(2026, 10, 7), company=self.company,
+                              benchmark={'rate': None, 'source': 'none'}, allowance=None)
+        floor = out['cost_floor']['floor']
+        for c in out['combinations'].values():
+            self.assertAlmostEqual(c['margin_zar'], round(c['price_zar'] - floor, 2), places=2)
+        default = out['combinations'][out['default_choice_key']]
+        self.assertGreaterEqual(default['price_zar'], out['cost_floor']['target_price'])   # never under target
+        blocked = compute_pricing({**self.PAYLOAD, 'tolls_unknown': True}, date(2026, 10, 7), company=self.company,
+                                  benchmark={'rate': None, 'source': 'none'}, allowance=None)
+        self.assertIsNone(blocked['return_leg'])
+        self.assertTrue(all(i['ai_value_zar'] is None for i in blocked['cost_breakdown'].values()))
+
+    def test_ai_check_sa_formatting_and_grammar(self):
+        from core.services.quote_ai_pricing import BENCHMARK_SOURCES, _fmt_rand
+        self.assertEqual(_fmt_rand(23400), 'R 23 400')
+        self.assertEqual(_fmt_rand(32.8), 'R 32,80')
+        self.assertFalse(('The ' + BENCHMARK_SOURCES['company']).startswith('The your'))
+
+    def test_analyze_never_adds_operating_cost_to_a_client_cost_and_rationale_is_honest(self):
+        from core.services.quote_analysis import analyze_quote
+        out = analyze_quote({'quote_total': 25000, 'direct_cost': 12000, 'distance_km': 500, 'skip_narrative': True})
+        self.assertNotIn('expected profit', out['suggested_price_rationale'])
+        cost = out['cost_analysis']
+        self.assertEqual(cost.get('full_cost_floor', 12000), 12000)
+
+    def test_analyze_passes_the_costing_payload(self):
+        from unittest import mock
+        with mock.patch('core.services.quote_analysis.analyze_quote', return_value={'success': True}) as m:
+            self.api.post('/api/v1/quotes/analyze/', {'quote_total': 30000, 'duration_minutes': 440,
+                                                      'trip_type': 'ROUND_TRIP', 'tolls_unknown': True,
+                                                      'vehicle_type_id': self.vt.id}, format='json')
+        p = m.call_args.args[0]
+        self.assertEqual((p['duration_minutes'], p['trip_type'], p['tolls_unknown'], p['vehicle_type_id']),
+                         (440, 'ROUND_TRIP', True, self.vt.id))

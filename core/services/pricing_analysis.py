@@ -545,14 +545,18 @@ def _fuel_source(costing, company):
     from core.services.quote_ai_pricing import FIASA_URL, MANUAL_FUEL_TITLE
     d = costing['diesel']
     zone = 'coastal' if d['zone'] == 'COASTAL' else 'inland'
+    ft = str(d.get('fuel_type') or 'Diesel').lower()
+    fuel_word = ('petrol ' + str(d.get('grade') or (costing.get('inputs') or {}).get('diesel', {}).get('grade') or '95')
+                 if ft in ('petrol', 'hybrid') else 'diesel 50ppm' if ft == 'diesel' else ft)
     if d['source'] == 'own':
-        return _source('user', 'Your diesel price (company settings)', None, d.get('own_set_at'))
+        return _source('user', f'Your {ft if ft != "hybrid" else "petrol"} price (company settings)', None,
+                       d.get('own_set_at'))
     if d['source'] == 'override':
-        return _source('user', 'Diesel price for this quote')
+        return _source('user', f'{"Diesel" if ft == "diesel" else ft.title()} price for this quote')
     res = (costing.get('resolution') or {}).get('diesel_resolution') or {}
     official = res.get('official') if isinstance(res, dict) else None
     manual = (official or {}).get('source') == 'MANUAL'
-    src = _source('official', MANUAL_FUEL_TITLE if manual else f'FIASA {zone} diesel 50ppm (your fuel zone setting)',
+    src = _source('official', MANUAL_FUEL_TITLE if manual else f'FIASA {zone} {fuel_word} (your fuel zone setting)',
                   None if manual else FIASA_URL, _sast_iso_date(d.get('official_effective_from')))
     src['zone_from_setting'] = True
     return src
@@ -763,7 +767,8 @@ def build_choices(floor_total, market, target, minimum=None):
     below floor / (1 − target) nor the company's minimum charge (§6-§7)."""
     t = target / 100.0
     target_price = price_for_margin(floor_total, t)
-    if minimum and minimum > target_price:
+    at_minimum = bool(minimum and minimum > target_price)
+    if at_minimum:
         target_price = float(minimum)
     usable = _market_usable(market)
     if usable:
@@ -802,8 +807,10 @@ def build_choices(floor_total, market, target, minimum=None):
         m = margin_against_floor(prices[key], floor_total)
         out.append({'key': key, 'label': CHOICE_LABELS[key], 'price': prices[key], **m,
                     'recommended': key == 'balanced',
-                    'summary': _choice_summary(key, prices[key], m['margin_pct'], shown,
-                                               target, clamped[key] and not bumped[key]),
+                    'summary': (f'At your minimum charge of {_fmt(minimum)}.'
+                                if at_minimum and prices[key] <= round_price(minimum)
+                                else _choice_summary(key, prices[key], m['margin_pct'], shown,
+                                                     target, clamped[key] and not bumped[key])),
                     'likelihood': None})
     return out
 
@@ -947,7 +954,8 @@ def _never_recommend_less_likely(choices, recommendation, raw_p):
     if not ok and recommendation.get('code') == 'empty_return_gap':
         # The empty-return gap already says plainly what to do; keep it, but
         # recommend no price.
-        return {**recommendation, 'key': None}
+        short = recommendation.get('short') or ''
+        return {**recommendation, 'key': None, 'reason': f'No price is recommended: {short}'}
     if not ok:
         short = 'all three prices are less likely to win on this lane; consider a lower price or a return load.'
         return {'key': None, 'code': 'all_less_likely', 'short': short,
@@ -1709,6 +1717,8 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
                     'below_floor', f'At {_fmt(your_price)} this trip loses {_fmt(floor_total - your_price)}.',
                     title='Price is below your costs', detail=f'This trip loses {_fmt(floor_total - your_price)}.',
                     impact_zar=round(your_price - floor_total, 2)))
+            elif your['below_target'] and floor.get('minimum_charge') and target_price == float(floor['minimum_charge']):
+                pass    # below the minimum charge: quote_costing's below_minimum_charge says it (no target copy)
             elif your['below_target']:
                 warnings.append(warning_item(
                     'below_target', f'{_fmt(your_price)} is under your {target:g}% target margin '

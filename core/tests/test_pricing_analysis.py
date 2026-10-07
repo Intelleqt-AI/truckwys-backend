@@ -338,7 +338,7 @@ class MarginConsistencyTests(_Base):
         self.assertEqual(g['margin_vs_floor'], pa.margin_against_floor(26000, g['full_cost_floor'])['margin'])
         self.assertEqual(g['margin_floor_pct'], pa.margin_against_floor(26000, g['full_cost_floor'])['margin_pct'])
         # Old fields keep their meaning (direct-cost margin) for existing clients.
-        self.assertAlmostEqual(g['margin_pct'], round((26000 - direct) / 26000 * 100, 2))
+        self.assertAlmostEqual(g['margin_pct'], (26000 - direct) / 26000 * 100)   # unrounded
 
 
 class _ModelMixin:
@@ -1928,3 +1928,23 @@ class RecommendationHonestyTests(_Base):
         self.assertLess(alt['floor'], r['cost_floor']['total'])
         self.assertEqual(len(alt['choices']), 3)
         self.assertIsNone(self.analyze(include_return=False)['alternative_with_return_load'])
+
+
+class FinalCopyTests(_Base):
+    def test_minimum_charge_choices_never_mention_target_margin(self):
+        self.company.minimum_charge = Decimal('90000')
+        self.company.save()
+        r = self.analyze(include_return=False, your_price=60000)
+        self.assertTrue(all(c['summary'].startswith('At your minimum charge') for c in r['choices']
+                            if c['price'] <= 90000))
+        self.assertNotIn('below_target', {w['code'] for w in r['warnings']})
+        self.assertIn('below_minimum_charge', {w['code'] for w in r['warnings']})
+
+    def test_empty_return_gap_without_recommendation_says_none(self):
+        rec = pa._never_recommend_less_likely(
+            [{'key': k, 'label': k.title(), 'price': 1, 'margin': 0, 'likelihood': {'level': 'rules',
+                                                                                  'band': 'less_likely'}}
+             for k in ('safe', 'balanced', 'stretch')],
+            {'key': 'balanced', 'code': 'empty_return_gap', 'short': 'x.', 'reason': 'Balanced is kept: x.'}, {})
+        self.assertIsNone(rec['key'])
+        self.assertNotIn('Balanced is kept', rec['reason'])

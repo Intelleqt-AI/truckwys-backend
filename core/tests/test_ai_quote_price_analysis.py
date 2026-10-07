@@ -432,7 +432,7 @@ class ComputePricingTests(SimpleTestCase):
         fuel = self._price(fuel_price_used=29.0)['cost_breakdown']['fuel']  # 0.4% below 29.11
         self.assertEqual((fuel['verdict'], fuel['ai_value_zar']), ('accurate', 12000.0))
         self.assertIn('inland', fuel['reason'])
-        self.assertIn('coastal R28.24/L', fuel['reason'])
+        self.assertIn('coastal R 28,24/L', fuel['reason'])
 
     def test_no_official_price_means_fuel_is_not_verified(self):
         p = self._price(fuel={'price_per_litre': None, 'error': 'only diesel has an official monthly price (Petrol)'})

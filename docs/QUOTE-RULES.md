@@ -80,7 +80,9 @@ Suggested choices never below floor/(1 − target). Unchanged otherwise.
 Historic quote totals are **fuel-normalised** before percentiles:
 `adj_total = total + litres_hist × (price_today − price_hist)` where litres_hist comes from the quote's stored
 snapshot, else km × class rated burn; price_hist = stored price used, else official price in force on the
-quote's created date (zone), else exclude the quote. Filters: one-way only (or scaled consistently), sent only,
+quote's created date (zone), else exclude the quote. Market range = ACCEPTED (won) quotes — what customers
+paid — never merely sent ones; likelihood bands / win-model evidence = SENT quotes (won and lost). Filters:
+one-way only (or scaled consistently), sent only (was_sent true),
 same vehicle class when n ≥ 5 else labelled "all trucks", last 180 days. Median not mean; outlier cap.
 Customer history: same filters. The AI price-check endpoint (mobile uses it) must apply the floor and the same
 normalised market, and pass one_way_only/sent_only.

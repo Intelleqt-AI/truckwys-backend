@@ -233,7 +233,7 @@ def assess_revenue_guard(*, total_cost, quote_price, distance_km=0.0,
         'status': risk_level,
         'risk_level': risk_level,
         'color': color,
-        'margin_pct': round(margin_pct, 2),
+        'margin_pct': margin_pct,           # unrounded: displays round it
         'cost_per_km': cost_per_km,
         'explanations': explanations,
         'suggestions': suggestions,
@@ -407,6 +407,9 @@ def _rule_based_narrative(cost, fuel, opt, market, suggested_price, quote_total)
     return " ".join(parts) or "Analysis complete."
 
 
+NARRATIVE_BUDGET_SECONDS = 20
+
+
 def _llm_narrative(structured):
     """OpenAI (via agent._llm_generate) narrative grounded in the structured numbers.
     Returns text or None (caller falls back to the rule-based summary)."""
@@ -426,7 +429,18 @@ def _llm_narrative(structured):
     )
     convo = [{"role": "user", "content": "Summarise this quote analysis and justify the suggested price."}]
     try:
-        text = agent._llm_generate(system, convo)
+        # One overall budget for the narrative (QUOTE-RULES: <= 20 s), however
+        # many retries the client makes underneath.
+        from concurrent.futures import ThreadPoolExecutor
+        from concurrent.futures import TimeoutError as FutureTimeout
+        pool = ThreadPoolExecutor(max_workers=1)
+        try:
+            text = pool.submit(agent._llm_generate, system, convo).result(timeout=NARRATIVE_BUDGET_SECONDS)
+        except FutureTimeout:
+            logger.warning('LLM narrative over its %ss budget; using the rule-based summary', NARRATIVE_BUDGET_SECONDS)
+            return None
+        finally:
+            pool.shutdown(wait=False)
         return text.strip() or None
     except Exception as exc:
         logger.warning('LLM narrative failed, using rule-based: %s', exc)
@@ -654,7 +668,9 @@ def analyze_quote(payload, company=None, user=None):
     if cost_basis > 0:
         cost = assess_revenue_guard(
             total_cost=cost_basis, quote_price=quote_total, distance_km=distance_km, fuel_cost=fuel_cost,
-            company=company, customer=customer, is_full_floor=cost_basis_source == 'cost_floor')
+            # Never adds operating cost on top: the floor already has it, and a
+            # client's own direct cost is taken as given (labelled).
+            company=company, customer=customer, is_full_floor=True)
     else:
         cost = {'success': False, 'error': 'The cost floor is not known yet.', 'blocking': blocking}
     fuel = _fuel_analysis(fuel_cost, fuel_usage_litres, fuel_price_used, quote_total, company)
@@ -685,7 +701,7 @@ def analyze_quote(payload, company=None, user=None):
         'ai_prediction': ai_prediction,
     }
 
-    narrative = None if payload.get('skip_narrative') else _llm_narrative(
+    narrative = None if (payload.get('skip_narrative') or blocking) else _llm_narrative(
         {k: v for k, v in structured.items() if k not in ('cost_floor',)})
     if narrative and not narrative_numbers_ok(narrative, structured):
         # The model stated a number that isn't ours: never shown.
@@ -702,14 +718,16 @@ def analyze_quote(payload, company=None, user=None):
         t = min(max(t, 1.0), 40.0)
         rationale = (
             f"No market data for this lane yet — priced to your target margin of {t:.0f}%. "
-            "As you win quotes on this lane, pricing will optimise for expected profit."
+            "Market figures appear once real quotes on this lane have been sent and decided."
         )
+    elif opt.get('optimal_margin_pct') is not None and opt.get('win_probability_at_optimal') is not None:
+        # Only a real model gives an expected-profit optimum.
+        rationale = (f"Maximises expected profit at a {opt['optimal_margin_pct']:.0f}% margin with a "
+                     f"{round(opt['win_probability_at_optimal'] * 100)}% chance to win.")
     elif opt.get('optimal_margin_pct') is not None:
-        rationale = (
-            f"Maximises expected profit at a {opt['optimal_margin_pct']:.0f}% margin"
-            + (f" with a {round((opt['win_probability_at_optimal'] or 0) * 100)}% win probability."
-               if opt.get('win_probability_at_optimal') is not None else ".")
-        )
+        rationale = f"Priced at a {opt['optimal_margin_pct']:.0f}% margin over your costs."
+    if blocking:
+        rationale = 'No suggested price until the blocking items are fixed.'
 
     return {
         'success': True,

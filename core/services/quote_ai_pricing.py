@@ -55,7 +55,7 @@ MANUAL_FUEL_TITLE = 'Official price entered by TruckWys'
 BENCHMARK_SOURCES = {
     'platform': 'platform benchmark for this lane',
     'platform_lane': 'platform benchmark for this lane',
-    'company': "your company's accepted quotes on this lane",
+    'company': "median of your company's accepted quotes on this lane",
 }
 # The benchmark is one median, not a published range: a base rate within
 # this share of the implied one counts as at market.
@@ -251,7 +251,11 @@ def build_condensed_context(payload: dict, today: date = None, company=None) -> 
 
 
 def _fmt_rand(v):
-    return f'R{v:,.2f}'
+    """SA style, half-up: rates and small amounts with cents ('R 32,80'),
+    whole-rand totals without ('R 23 400')."""
+    from core.services.quote_costing import fmt_rand
+    v = float(v or 0)
+    return fmt_rand(v, 0 if abs(v) >= 1000 and abs(v - round(v)) < 0.005 else 2)
 
 
 # ---------------------------------------------------------------------------
@@ -350,7 +354,7 @@ def _fuel_verified_at(rec):
     return timezone.localtime(stamp).date().isoformat() if stamp else None
 
 
-def official_fuel_price(fuel_type, zone, today: date) -> dict:
+def official_fuel_price(fuel_type, zone, today: date, petrol_grade=None) -> dict:
     """The official diesel price in force today, read ONLY from the app's
     stored FuelPrice rows. Never scrapes: refreshing is the refresh_fuel_price
     beat task's job, and a live scrape here could hold the request for ~23 s.
@@ -363,8 +367,31 @@ def official_fuel_price(fuel_type, zone, today: date) -> dict:
     'effective_date', 'current', 'source', 'verified_at', 'error'}. Never raises."""
     out = {'price_per_litre': None, 'other_zone_price': None, 'zone': None, 'effective_date': None,
            'current': None, 'source': None, 'verified_at': None, 'error': None}
-    if (fuel_type or 'Diesel').strip().lower() != 'diesel':
-        out['error'] = f'only diesel has an official monthly price ({fuel_type})'
+    ft = (fuel_type or 'Diesel').strip().lower()
+    if ft in ('petrol', 'hybrid'):
+        # Petrol (and hybrids, which price on petrol) has an official price too.
+        try:
+            from datetime import datetime as _dt
+            from core.services.fuel_price import SAST, period_start, price_in_force
+            moment = min(timezone.now(), _dt(today.year, today.month, today.day, 23, 59, tzinfo=SAST))
+            coastal = (zone or '').upper() == 'COASTAL'
+            product = f'petrol_{petrol_grade or "95"}'
+            rec = price_in_force('COASTAL' if coastal else 'INLAND', moment, product=product)
+            other = price_in_force('INLAND' if coastal else 'COASTAL', moment, product=product)
+        except Exception as exc:
+            logger.warning('AI price analysis: official petrol price lookup failed: %s', exc)
+            rec = other = None
+        if rec is None:
+            out['error'] = f'no official {product.replace("_", " ")} price on record'
+            return out
+        eff = timezone.localtime(rec['effective_from']).date()
+        out.update({'price_per_litre': rec['price'], 'other_zone_price': other['price'] if other else None,
+                    'zone': 'coastal' if coastal else 'inland', 'effective_date': eff.isoformat(),
+                    'current': rec['effective_from'] >= period_start(moment), 'source': rec['source'],
+                    'verified_at': None, 'product': product})
+        return out
+    if ft != 'diesel':
+        out['error'] = f'no official monthly price for {fuel_type}'
         return out
     try:
         from datetime import datetime as _dt
@@ -509,9 +536,10 @@ def _fuel_item(official, payload):
     current = official.get('current') is not False
     # A price that isn't the adjustment in force today is still the best
     # official figure on record, and is labelled as exactly that.
-    published = ((f'the official {official.get("zone")} diesel price {_fmt_rand(market_rate)}/L (from '
+    fuel_word = (official.get('product') or 'diesel').replace('petrol_', 'petrol ')
+    published = ((f'the official {official.get("zone")} {fuel_word} price {_fmt_rand(market_rate)}/L (from '
                   if current else
-                  f'the latest official {official.get("zone")} diesel price {_fmt_rand(market_rate)}/L (effective ')
+                  f'the latest official {official.get("zone")} {fuel_word} price {_fmt_rand(market_rate)}/L (effective ')
                  + _long_date(eff) + (f'; {other_zone} {_fmt_rand(other)}/L)' if other else ')'))
     if manual:
         note = 'official monthly price (entered by TruckWys)' if current else 'latest official price on record'
@@ -947,7 +975,8 @@ def _apply_floor(items, payload, floor, cross_border):
     rate = math.ceil(needed / distance * 100) / 100
     base['detail']['ai_rate_per_km'] = rate
     base['detail']['floor_rate_per_km'] = rate
-    base['ai_value_zar'] = _whole_rand(rate * distance)
+    # Whole rand rounded UP: the lifted price is never a cent under the target.
+    base['ai_value_zar'] = float(math.ceil(rate * distance - 1e-9))
     if base['verdict'] != 'needs_adjustment':
         base['verdict'] = 'needs_adjustment'
         base['toggleable'] = True
@@ -975,7 +1004,7 @@ def compute_pricing(payload: dict, today: date = None, *, official_fuel: dict = 
     if floor and floor.get('driver_rate') and floor.get('driver_rate_source') == 'company_setting':
         # The driver line is checked against the same rate compute() uses:
         # the company's allowance first (QUOTE-RULES §6).
-        allowance = {'rate_per_night': floor['driver_rate'], 'label': 'your driver allowance (company settings)',
+        allowance = {'rate_per_night': floor['driver_rate'], 'label': 'driver allowance in your company settings',
                      'allowance_type': 'company_setting', 'effective_from': today, 'verified_at': None,
                      'source_url': None, 'source_name': 'Company settings'}
     fuel = _fuel_item(official_fuel, payload)
@@ -1007,14 +1036,29 @@ def compute_pricing(payload: dict, today: date = None, *, official_fuel: dict = 
                 references.append(src)
 
     combos = _combinations(items, payload)
+    if (floor or {}).get('blocking'):
+        # Blocked (tolls unknown, diesel missing, ...): no suggested figures.
+        for t in TOPICS:
+            items[t]['ai_value_zar'] = None
+            items[t]['toggleable'] = False
     default_key = choice_key({t: 'ai' if items[t]['toggleable'] else 'mine' for t in TOPICS})
     target_price = (floor or {}).get('target_price')
     blocking = list((floor or {}).get('blocking') or [])
+    floor_total = (floor or {}).get('floor')
     for combo in combos.values():
+        # Margin = price − the full cost floor, % of the price (QUOTE-RULES §7);
+        # not the base-rate line. Unknown floor -> no margin.
+        if floor_total is not None and combo['price_zar']:
+            combo['margin_zar'] = _money(combo['price_zar'] - floor_total)
+            combo['margin_pct'] = round((combo['price_zar'] - floor_total) / combo['price_zar'] * 100.0, 1)
+        elif floor is not None:
+            combo['margin_zar'] = combo['margin_pct'] = None
         combo['below_floor'] = bool(floor and floor.get('floor') is not None and combo['price_zar'] < floor['floor'])
         combo['below_target'] = bool(target_price is not None and combo['price_zar'] < target_price - 0.5)
         combo['blocked'] = bool(blocking)
         if blocking:
+            combo['values'] = {k: None for k in combo['values']}
+            combo['base_rate_per_km'] = combo['pass_through_zar'] = None
             # An unknown input (tolls unknown, diesel missing, ...) blocks:
             # no price figure, never one priced on a 0.
             combo['price_zar'] = combo['margin_zar'] = combo['margin_pct'] = None
@@ -1031,12 +1075,14 @@ def compute_pricing(payload: dict, today: date = None, *, official_fuel: dict = 
         'combinations': combos,
         'default_choice_key': default_key,
         'references': references,
-        'return_leg': ((floor or {}).get('empty_return') or _return_leg(items, payload)) if company is not None
-                      else _return_leg(items, payload),
+        'return_leg': (None if blocking else
+                       ((floor or {}).get('empty_return') or _return_leg(items, payload)) if company is not None
+                       else _return_leg(items, payload)),
         # QUOTE-RULES §7/§8 (additive): the authoritative cost floor; the
         # suggested (default) combination is never below floor / (1 − target).
         'cost_floor': floor,
         'blocking': blocking,
+        'blocked_items': blocking and [t for t in TOPICS] or [],
         'warnings': (floor or {}).get('warnings') or [],
     }
 

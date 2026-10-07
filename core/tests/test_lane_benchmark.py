@@ -350,3 +350,17 @@ class FuelNormalisationTests(TestCase):
         old = datetime(2025, 1, 10, tzinfo=ZoneInfo('Africa/Johannesburg'))
         self.assertIsNone(n.adjust({'total_amount': 20000, 'fuel_official_at_pricing': None, 'created_at': old,
                                     'company_id': None, 'vehicle_type': '', 'distance': 500}))
+
+
+class PetrolNormalisationTests(FuelNormalisationTests):
+    def test_petrol_quote_moves_with_petrol(self):
+        from core.models import FuelPrice, VehicleType
+        from core.services.lane_benchmark import FuelNormaliser
+        FuelPrice.objects.filter(date=date(2026, 9, 2)).update(petrol_95=Decimal('25.00'))
+        FuelPrice.objects.filter(date=date(2026, 10, 7)).update(petrol_95=Decimal('27.00'))
+        VehicleType.objects.create(company=None, name='Petrol LDV', capacity=1, max_distance=1000, base_rate=5,
+                                   fuel_consumption_l_per_100km=12, fuel_type='Petrol')
+        n = FuelNormaliser(self.now)
+        row = {'total_amount': 5000, 'fuel_litres': 100, 'fuel_official_at_pricing': None, 'fuel_zone': 'INLAND',
+               'created_at': self.sep, 'company_id': None, 'vehicle_type': 'Petrol LDV', 'distance': 500}
+        self.assertAlmostEqual(n.adjust(row), 5000 + 100 * (27.0 - 25.0))

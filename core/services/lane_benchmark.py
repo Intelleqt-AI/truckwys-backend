@@ -181,7 +181,8 @@ def _lane_q(field, code):
 MARKET_WINDOW_DAYS = 180       # QUOTE-RULES §8: last 180 days, every tier
 CLASS_MIN_N = 5                # same vehicle class only when it has >= 5 quotes
 QUOTE_ROW_FIELDS = ('id', 'total_amount', 'company_id', 'created_at', 'vehicle_type', 'distance', 'trip_type',
-                    'fuel_litres', 'fuel_official_at_pricing', 'fuel_zone', 'company__fuel_zone')
+                    'fuel_litres', 'fuel_official_at_pricing', 'fuel_zone', 'company__fuel_zone',
+                    'company__fuel_price_petrol_grade')
 
 
 class FuelNormaliser:
@@ -194,13 +195,24 @@ class FuelNormaliser:
         self._classes = {}
         self.active = self._price('INLAND', self.as_of) is not None or self._price('COASTAL', self.as_of) is not None
 
-    def _price(self, zone, at):
-        from core.services.fuel_price import price_in_force
-        key = (zone, at.date() if at is not self.as_of else 'now')
+    def _price(self, zone, at, product='diesel'):
+        from core.services.fuel_price import SAST, price_in_force
+        # Cached per SAST day (prices change at 00:01 SAST — a UTC date would
+        # put 7 Oct 00:30 SAST on 6 Oct) and per product.
+        key = (zone, product, at.astimezone(SAST).date() if at is not self.as_of else 'now')
         if key not in self._prices:
-            rec = price_in_force(zone, at, strict_grade=False)
+            rec = price_in_force(zone, at, strict_grade=False, product=product)
             self._prices[key] = rec['price'] if rec else None
         return self._prices[key]
+
+    def product(self, row_get):
+        """'diesel', or 'petrol_95' / 'petrol_93' for a petrol or hybrid truck
+        (by its vehicle type), so a petrol quote moves with petrol."""
+        vt = self._vt(row_get('company_id'), row_get('vehicle_type'))
+        ft = (getattr(vt, 'fuel_type', None) or 'Diesel').lower()
+        if ft in ('petrol', 'hybrid'):
+            return f"petrol_{row_get('company__fuel_price_petrol_grade') or '95'}"
+        return 'diesel'
 
     def _vt(self, company_id, name):
         key = (company_id, (name or '').strip().lower())
@@ -238,14 +250,15 @@ class FuelNormaliser:
             return total
         zone = (get('fuel_zone') or get('company__fuel_zone')
                 or getattr(getattr(row, 'company', None), 'fuel_zone', None) or 'INLAND').upper()
-        today = self._price(zone, self.as_of)
+        product = self.product(get)
+        today = self._price(zone, self.as_of, product)
         if today is None:
             return None
         # The OFFICIAL price when it was priced (snapshot), else the official
         # price in force on its created date — never fuel_price_used, which
         # may be the fleet's own or a per-quote override (not a market move).
         hist = get('fuel_official_at_pricing')
-        hist = float(hist) if hist is not None else self._price(zone, get('created_at'))
+        hist = float(hist) if hist is not None else self._price(zone, get('created_at'), product)
         if hist is None:
             return None
         if hist == today:

@@ -562,6 +562,16 @@ class AIQuoteAnalyzeView(APIView):
                 'customer_id': customer_id,
                 'skip_narrative': bool(data.get('skip_narrative')),
             }
+            # The full costing payload (QUOTE-RULES): the same inputs the
+            # builder's floor and the AI price check use.
+            for key in ('duration_minutes', 'trip_type', 'legs', 'one_way_distance_km', 'vehicle_type_id',
+                        'include_empty_return', 'include_return', 'tolls_unknown', 'tolls_confirmed_none',
+                        'toll_cost_one_way', 'toll_cost_empty_return', 'distance_estimated', 'distance_confirmed',
+                        'driver_cost_is_override', 'driver_nights', 'is_international', 'cross_border_cost',
+                        'use_official_fuel', 'fuel_price_override', 'pickup_location', 'delivery_location',
+                        'cargo_description', 'route', 'pickup_date', 'quote_id'):
+                if data.get(key) is not None:
+                    payload[key] = data.get(key)
             from core.services.quote_analysis import analyze_quote
             result = analyze_quote(payload, company=company, user=request.user)
             if not result.get('success'):
