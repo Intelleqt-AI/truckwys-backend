@@ -680,19 +680,27 @@ def resolve_market_rate(origin, destination, vehicle_type=None, company=None,
     # the median is unmoved by it. This is the value that actually prices
     # quotes (via the optimizer's cost floor); market_avg_rate is left as-is
     # for the benchmark display endpoint, which already shows p25/p75 alongside it.
+    # Privacy (the same rule as resolve_market_range): never the requesting
+    # company's own quotes, >= PLATFORM_MIN_QUOTES quotes from >=
+    # PLATFORM_MIN_OPERATORS other operators in PLATFORM_WINDOW_DAYS, and the
+    # median only to the nearest R500, so no operator's price can be derived.
+    def platform(vclass):
+        b = compute_lane_benchmark(
+            o, d, None, k_anonymity=PLATFORM_MIN_QUOTES, days=PLATFORM_WINDOW_DAYS,
+            exclude_quote_id=exclude_quote_id, exclude_created_by_user_id=exclude_created_by_user_id,
+            as_of=as_of, one_way_only=one_way_only, sent_only=sent_only, vehicle_class=vclass,
+            exclude_company_id=getattr(company, 'id', None), min_operators=PLATFORM_MIN_OPERATORS)
+        if b.get('available') and b.get('market_median_rate'):
+            return _round_platform(b['market_median_rate'])
+        return None
     try:
-        b = compute_lane_benchmark(
-            o, d, vt, exclude_quote_id=exclude_quote_id,
-            exclude_created_by_user_id=exclude_created_by_user_id, as_of=as_of, one_way_only=one_way_only,
-            sent_only=sent_only, vehicle_class=cls)
-        if b.get('available') and b.get('market_median_rate'):
-            return float(b['market_median_rate']), 'platform'
-        b = compute_lane_benchmark(
-            o, d, exclude_quote_id=exclude_quote_id,
-            exclude_created_by_user_id=exclude_created_by_user_id, as_of=as_of, one_way_only=one_way_only,
-            sent_only=sent_only)
-        if b.get('available') and b.get('market_median_rate'):
-            return float(b['market_median_rate']), 'platform_lane'
+        if cls:
+            rate = platform(cls)
+            if rate:
+                return rate, 'platform'
+        rate = platform(None)
+        if rate:
+            return rate, 'platform' if not cls else 'platform_lane'
     except Exception as exc:  # never raise
         logger.warning('resolve_market_rate: platform lookup failed: %s', exc)
 
@@ -793,6 +801,11 @@ PLATFORM_MIN_OPERATORS = 3      # ... from >= 3 operators other than the request
 PLATFORM_ROUND = 500            # ... and is shown only to the nearest R500
 
 
+def _round_platform(value):
+    """A platform figure to the nearest PLATFORM_ROUND (R500)."""
+    return float(int(float(value) / PLATFORM_ROUND + 0.5) * PLATFORM_ROUND)
+
+
 def _company_lane_amounts(o, d, vt, company, exclude_quote_id=None, as_of=None, trip='one_way'):
     """This company's own won-quote totals on the lane (last
     COMPANY_FALLBACK_DAYS), vehicle-specific first then lane-level — the
@@ -861,8 +874,7 @@ def resolve_market_range(origin, destination, vehicle_type=None, company=None, e
             if b.get('available') and b.get('market_median_rate'):
                 n = int(b['sample_size'])
 
-                def r500(v):
-                    return float(int(float(v) / PLATFORM_ROUND + 0.5) * PLATFORM_ROUND)
+                r500 = _round_platform
                 out.update({
                     'available': True, 'tier': 'platform', 'n': n,
                     'p25': r500(b['p25']), 'median': r500(b['market_median_rate']), 'p75': r500(b['p75']),

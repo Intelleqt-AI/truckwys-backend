@@ -2032,3 +2032,37 @@ class FinalLowFixesTests(_Base):
         from django.core.management import CommandError, call_command
         with self.assertRaises(CommandError):
             call_command('retrain_win_model', '--scope', 'user')
+
+
+class BenchmarkAndOptimizePrivacyTests(_Base):
+    """Round 3: /quotes/benchmark/ and /quotes/optimize/ use the privacy
+    range (own company excluded, >= 10 quotes from >= 3 others, R500)."""
+
+    def test_benchmark_platform_is_rounded_and_never_a_mean_or_min_max(self):
+        platform_market(self.company, self.customer)
+        r = self.api.get('/api/v1/quotes/benchmark/?origin=JHB&destination=DBN&vehicle_type=tautliner').json()
+        self.assertEqual(r['source'], 'platform')
+        for k in ('market_avg_rate', 'market_range_low', 'market_range_high'):
+            self.assertEqual(r[k] % 500, 0, k)
+        self.assertIsNone(r['distinct_operators'])
+
+    def test_benchmark_with_two_other_operators_is_not_platform(self):
+        for i in range(2):
+            o = Company.objects.create(company_name=f'Two Op {i}')
+            won_quotes(o, make_customer(o, f'T{i}'), 6, start=40000 + i * 777, prefix=f'T{i}')
+        r = self.api.get('/api/v1/quotes/benchmark/?origin=JHB&destination=DBN&vehicle_type=tautliner').json()
+        self.assertIsNone(r['market_avg_rate'])
+        self.assertEqual(r['data_points'], 0)
+
+    def test_optimize_never_invents_a_market_and_hides_heuristic_win(self):
+        r = self.api.post('/api/v1/quotes/optimize/', {'total_cost': 20000, 'origin': 'JHB', 'destination': 'DBN'},
+                          format='json').json()
+        self.assertEqual((r['market_rate'], r['market_rate_source'], r['optimal_price']), (None, 'none', None))
+        platform_market(self.company, self.customer)
+        r = self.api.post('/api/v1/quotes/optimize/', {'total_cost': 20000, 'origin': 'JHB', 'destination': 'DBN',
+                                                       'vehicle_type': 'Tautliner'}, format='json').json()
+        self.assertEqual(r['market_rate_source'], 'platform')
+        self.assertEqual(r['market_rate'] % 500, 0)
+        self.assertIsNone(r['win_probability_at_optimal'])
+        self.assertEqual(r['win_probability_source'], 'heuristic')
+        self.assertTrue(all(pt['win_probability'] is None for pt in r['curve']))

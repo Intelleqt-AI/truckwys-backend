@@ -291,21 +291,36 @@ class PlatformBenchmarkOutlierTests(TestCase):
         self.assertFalse(result['available'])
 
     def test_resolve_market_rate_uses_the_median_not_the_mean(self):
+        # Platform privacy: >= 10 quotes from >= 3 operators other than the
+        # caller; the median only to the nearest R500.
+        company_c = Company.objects.create(company_name='Platform Co C')
+        user_c = User.objects.create_user(username='pc', email='pc@test.com', password='x', company=company_c)
+        cust_c = Customer.objects.create(company=company_c, name='C', email='c@platform.test')
         for amt in (20000, 21000, 22000, 23000):
             self._won(self.company_a, self.cust_a, self.user_a, amt)
+        for amt in (22100, 22300, 22400):
+            self._won(self.company_b, self.cust_b, self.user_b, amt)
         # A legitimately pricier quote, well inside the sanity cap (< 10x),
         # that would still drag a mean noticeably off-centre.
-        self._won(self.company_b, self.cust_b, self.user_b, 60000)
+        for amt in (22600, 23100, 60000):
+            self._won(company_c, cust_c, user_c, amt)
 
         rate, source = resolve_market_rate('CPT', 'DBN')
         self.assertEqual(source, 'platform')
-        amounts = sorted([20000, 21000, 22000, 23000, 60000])
+        amounts = sorted([20000, 21000, 22000, 23000, 22100, 22300, 22400, 22600, 23100, 60000])
         mean = sum(amounts) / len(amounts)
-        median = amounts[2]
-        self.assertNotAlmostEqual(rate, mean, delta=1)
-        self.assertAlmostEqual(rate, median, places=2)
+        self.assertNotAlmostEqual(rate, mean, delta=500)
+        self.assertEqual(rate, 22500.0)       # median 22 350 -> nearest R500
+        # The caller's own quotes are never its platform market.
+        rate, source = resolve_market_rate('CPT', 'DBN', company=company_c)
+        self.assertNotEqual(source, 'platform')
 
-
+    def test_platform_needs_three_other_operators(self):
+        for amt in (20000, 21000, 22000, 23000, 24000):
+            self._won(self.company_a, self.cust_a, self.user_a, amt)
+        for amt in (22100, 22300, 22400, 22600, 23100):
+            self._won(self.company_b, self.cust_b, self.user_b, amt)
+        self.assertEqual(resolve_market_rate('CPT', 'DBN'), (None, 'none'))
 
     def test_platform_tier_counts_a_recorded_win_like_the_company_tier(self):
         # Platform consistency: an accepted outcome on a quote that left

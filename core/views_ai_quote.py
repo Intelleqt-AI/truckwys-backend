@@ -1497,7 +1497,7 @@ class QuoteBenchmarkView(APIView):
         """
         try:
             from core.services.lane_benchmark import (
-                LANE_CODES_ADDED_FOR_PRICING, compute_lane_benchmark, derive_lane_code, lookup_sa_estimate, _lane_q,
+                LANE_CODES_ADDED_FOR_PRICING, derive_lane_code,
             )
             # derive_lane_code, not bare canon_code: the browser sends whatever
             # its address parsing produced, which has included street numbers
@@ -1521,56 +1521,32 @@ class QuoteBenchmarkView(APIView):
                     'error': 'origin, destination, and vehicle_type are required'
                 }, status=status.HTTP_400_BAD_REQUEST)
 
-            # Cross-platform anonymized benchmark first (pools won quotes across
-            # ALL operators, k-anonymity enforced so no single operator's pricing
-            # is exposed). Falls back to own-company data, then hardcoded estimates.
-            platform = compute_lane_benchmark(origin, destination, vehicle_type)
-            if not platform.get('available'):
-                # Retry at lane level (all vehicle types) before falling back.
-                platform = compute_lane_benchmark(origin, destination)
-
-            # Query this operator's own accepted quotes on this lane (fallback
-            # layer). _lane_q matches historical alias spellings (DUR/DURBAN)
-            # against the canonical query code.
+            # The SAME market range the pricing analysis shows (QUOTE-RULES §8,
+            # privacy): platform tier only from >= 10 accepted quotes by >= 3
+            # operators OTHER than the caller, p25 / median / p75 rounded to
+            # R500, never an average, a min / max or anything from which one
+            # operator's price could be derived; else the caller's own accepted
+            # quotes (>= 5, last 180 days); else no market data.
+            from core.services.lane_benchmark import resolve_market_range
             from core.views import resolve_user_company
-            lane_quotes = Quote.objects.filter(
-                _lane_q('origin', origin),
-                _lane_q('destination', destination),
-                company=resolve_user_company(request.user),
-                vehicle_type__icontains=vehicle_type,
-                outcome='accepted',
-                created_at__gte=timezone.now() - timedelta(days=90)
-            )
-
-            data_points = lane_quotes.count()
-            source = 'company'
+            company = resolve_user_company(request.user)
+            rng = resolve_market_range(origin, destination, vehicle_type, company=company)
+            usable = rng.get('available') and not rng.get('is_estimate')
+            data_points = int(rng.get('n') or 0) if usable else 0
+            source = rng.get('tier') if usable else 'none'
             distinct_operators = None
 
             # No invented stats (owner rule): the hard-coded SA lane table is
             # never shown as market data. No real quotes = "No market data".
             sa_estimate = None
 
-            if platform.get('available'):
-                # Real cross-platform benchmark (preferred)
-                market_avg_rate = round(platform['market_avg_rate'])
-                market_range_low = round(platform.get('p25') or platform['market_avg_rate'])
-                market_range_high = round(platform.get('p75') or platform['market_avg_rate'])
-                data_points = platform['sample_size']
-                distinct_operators = platform.get('distinct_operators')
+            if usable:
+                # market_avg_rate keeps its key for old clients but is the
+                # median (rounded to R500 on the platform tier), not a mean.
+                market_avg_rate = rng['median']
+                market_range_low = rng['p25']
+                market_range_high = rng['p75']
                 confidence = 'high'
-                source = 'platform'
-            elif data_points >= 10:
-                # Use this operator's own real data
-                stats = lane_quotes.aggregate(
-                    avg_price=Avg('total_amount'),
-                    min_price=Min('total_amount'),
-                    max_price=Max('total_amount'),
-                )
-                market_avg_rate = int(stats['avg_price'] or 0)
-                market_range_low = int(stats['min_price'] or 0)
-                market_range_high = int(stats['max_price'] or 0)
-                confidence = 'high'
-                source = 'company'
             elif origin in LANE_CODES_ADDED_FOR_PRICING or destination in LANE_CODES_ADDED_FOR_PRICING:
                 # Backward compatibility: before these lane codes existed
                 # the place derived no code at all, and this endpoint
@@ -1617,8 +1593,8 @@ class QuoteBenchmarkView(APIView):
                 if your_rate is not None and market_avg_rate > 0 else None
             )
             source_label = {
-                'platform': f'TruckWys platform, {data_points} accepted quotes',
-                'company': f'Your accepted quotes on this lane, {data_points}',
+                'platform': rng.get('tier_label') or 'TruckWys platform',
+                'company': rng.get('tier_label') or f'Your accepted quotes on this lane, {data_points}',
                 'estimate': 'Rough South African estimate, not market data',
             }.get(source, source)
 

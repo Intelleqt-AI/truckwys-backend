@@ -38,12 +38,14 @@ def ensure_lane_market(origin='JHB', destination='CPT'):
     from core.models import Company, Customer
     if Quote.objects.filter(quote_number__startswith=f'MKT-{origin}{destination}-').exists():
         return
-    totals = (37000, 38000, 38800, 39000, 40000, 41000)   # median 38 900, the level the old estimate stood at
-    for c_i in range(2):
+    # Platform privacy rule: >= 10 quotes from >= 3 operators other than the
+    # caller, median to the nearest R500 -> 39 000 (the old estimate's level).
+    totals = (37000, 37500, 38000, 38500, 38800, 39000, 39000, 39500, 40000, 40500, 41000, 41500)
+    for c_i in range(3):
         donor = Company.objects.create(company_name=f'Market Donor {origin}{destination} {c_i}')
         cust = Customer.objects.create(company=donor, name=f'Donor Customer {c_i}', email=f'd{c_i}@x.test',
                                        phone='', address='', city='', state='', zip_code='')
-        for i, total in enumerate(totals[c_i * 3:(c_i + 1) * 3]):
+        for i, total in enumerate(totals[c_i * 4:(c_i + 1) * 4]):
             make_quote(donor, cust, number=f'MKT-{origin}{destination}-{c_i}-{i}', total=total,
                        origin=origin, destination=destination, status='ACCEPTED', outcome='accepted',
                        was_sent=True)
