@@ -929,3 +929,82 @@ class NarrativeNumbersTests(TestCase):
         self.assertTrue(self.ok('Diesel R 32,8.'))
         self.assertFalse(self.ok('Diesel R 32,9.'))
         self.assertFalse(self.ok('About R37k.'))
+
+
+class CopilotPriceWarningTests(_Base):
+    """M5: the copilot shows below_floor / below_target on its proposal and a
+    send at such a price needs explicit confirmation."""
+
+    def _floor(self):
+        from core.services.quote_costing import costing_for_quote
+        q = self.create()
+        c = costing_for_quote(q)
+        return q, c['floor'], c['target_price']
+
+    def _fields(self, **over):
+        p = self.quote_payload(**over)
+        p['customer'] = self.customer.id
+        p.pop('fuel_surcharge', None)
+        return p
+
+    def test_send_below_floor_needs_acknowledgement(self):
+        from core.models import CopilotProposal
+        from core.services import copilot_tools as tools
+        _q, floor, _t = self._floor()
+        out = tools.propose_create(self.company, self.user, None,
+                                   {'table': 'quotes', 'fields': self._fields(status='SENT', total_amount=str(round(floor - 1000)))})
+        self.assertEqual([w['code'] for w in out['price_warnings']], ['below_floor'])
+        proposal = CopilotProposal.objects.get(id=out['proposal_id'])
+        pub = tools.proposal_public(proposal)
+        self.assertTrue(pub['requires_acknowledgement'])
+        self.assertIn('below your costs', pub['warning'])
+        before = Quote.objects.count()
+        ok, body = tools.execute_proposal(proposal, self.user, self.company)
+        self.assertFalse(ok)
+        self.assertEqual(body['code'], 'price_warnings_unacknowledged')
+        proposal.refresh_from_db()
+        self.assertEqual(proposal.status, 'PENDING')
+        self.assertEqual(Quote.objects.count(), before)
+        ok, body = tools.execute_proposal(proposal, self.user, self.company, acknowledged=True)
+        self.assertTrue(ok, body)
+        self.assertEqual(Quote.objects.get(id=body['result']['id']).status, 'SENT')
+
+    def test_draft_below_target_shows_warning_without_blocking(self):
+        from core.models import CopilotProposal
+        from core.services import copilot_tools as tools
+        _q, floor, target = self._floor()
+        out = tools.propose_create(self.company, self.user, None,
+                                   {'table': 'quotes', 'fields': self._fields(total_amount=str(round(floor + 10)))})
+        self.assertEqual([w['code'] for w in out['price_warnings']], ['below_target'])
+        proposal = CopilotProposal.objects.get(id=out['proposal_id'])
+        self.assertFalse(tools.proposal_public(proposal)['requires_acknowledgement'])
+        ok, body = tools.execute_proposal(proposal, self.user, self.company)
+        self.assertTrue(ok, body)
+
+    def test_update_to_sent_through_the_endpoint(self):
+        from core.services import copilot_tools as tools
+        q, floor, target = self._floor()
+        Quote.objects.filter(pk=q.pk).update(total_amount=Decimal(str(round(floor + 10))))
+        out = tools.propose_update(self.company, self.user, None,
+                                   {'table': 'quotes', 'record_id': q.id, 'fields': {'status': 'SENT'}})
+        self.assertEqual([w['code'] for w in out['price_warnings']], ['below_target'])
+        r = self.api.post(f"/api/v1/agent/proposals/{out['proposal_id']}/execute/", {}, format='json')
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertEqual((r.json()['status'], r.json()['proposal_status']), ('needs_acknowledgement', 'pending'))
+        q.refresh_from_db()
+        self.assertEqual(q.status, 'DRAFT')
+        r = self.api.post(f"/api/v1/agent/proposals/{out['proposal_id']}/execute/",
+                          {'acknowledge_price_warnings': True}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        q.refresh_from_db()
+        self.assertEqual(q.status, 'SENT')
+
+    def test_good_price_sends_without_acknowledgement(self):
+        from core.models import CopilotProposal
+        from core.services import copilot_tools as tools
+        _q, floor, target = self._floor()
+        out = tools.propose_create(self.company, self.user, None,
+                                   {'table': 'quotes', 'fields': self._fields(status='SENT', total_amount=str(round(target + 2000)))})
+        self.assertNotIn('price_warnings', out)
+        ok, body = tools.execute_proposal(CopilotProposal.objects.get(id=out['proposal_id']), self.user, self.company)
+        self.assertTrue(ok, body)

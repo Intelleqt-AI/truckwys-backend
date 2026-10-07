@@ -297,6 +297,92 @@ def _filter_writable(table, fields, *, for_update=False):
     return clean, dropped
 
 
+# ---------------------------------------------------------------------------
+# Quote price check (QUOTE-RULES: the copilot never sends a price under the
+# costs or the target margin without the user explicitly confirming it)
+# ---------------------------------------------------------------------------
+
+PRICE_CHECK_KEY = '_price_check'
+
+
+def quote_price_check(company, payload, instance=None):
+    """{'warnings': [{code, title, detail, impact_zar}], 'sends': bool,
+    'requires_ack': bool} for a quote proposal: the quote as it would be
+    after the write, priced with quote_costing (the builder's floor and
+    target). below_floor / below_target are warnings; a quote that would be
+    SENT with any of them (or that couldn't be checked) needs the user's
+    explicit acknowledgement before it is executed."""
+    import copy
+    from core.models import Quote
+    from core.services.quote_costing import costing_for_quote, fmt_rand
+
+    q = copy.copy(instance) if instance is not None else Quote(company=company)
+    q.company = company
+    for key, value in (payload or {}).items():
+        if key.startswith('_'):
+            continue
+        try:
+            field = Quote._meta.get_field(key)
+        except Exception:
+            continue
+        try:
+            if field.is_relation:
+                setattr(q, field.attname, value)
+            else:
+                setattr(q, key, field.to_python(value))
+        except Exception:
+            continue
+    sends = (payload or {}).get('status') == 'SENT' and getattr(instance, 'status', None) != 'SENT'
+    warnings = []
+    try:
+        c = costing_for_quote(q, timezone.now())
+        price = float(q.total_amount) if q.total_amount is not None else None
+        floor = c.get('floor') if c.get('floor_known') else None
+        target = c.get('target_price')
+        if price is not None and floor is not None and price < floor - 0.005:
+            warnings.append({'code': 'below_floor', 'title': 'Price is below your costs',
+                             'detail': f'At {fmt_rand(price)} this trip loses {fmt_rand(floor - price)}.',
+                             'impact_zar': round(price - floor, 2)})
+        elif price is not None and target is not None and price < target - 0.5:
+            warnings.append({'code': 'below_target', 'title': 'Price is under your target margin',
+                             'detail': f'{fmt_rand(price)} is {fmt_rand(target - price)} under your target '
+                                       f'price of {fmt_rand(target)}.',
+                             'impact_zar': round(price - target, 2)})
+        elif price is not None and floor is None:
+            warnings.append({'code': 'floor_unknown', 'title': 'Costs are incomplete',
+                             'detail': 'The cost floor is incomplete, so this price can\'t be checked against '
+                                       'your costs.', 'impact_zar': None})
+    except Exception:
+        logger.warning('copilot: quote price check failed', exc_info=True)
+        warnings.append({'code': 'check_failed', 'title': 'Couldn\'t check the price',
+                         'detail': 'The price couldn\'t be checked against your costs.', 'impact_zar': None})
+    return {'warnings': warnings, 'sends': sends, 'requires_ack': bool(sends and warnings)}
+
+
+def _price_check_text(check):
+    return ' '.join(f"{w['title']}: {w['detail']}" for w in check['warnings'])
+
+
+def _attach_price_check(company, payload, instance=None):
+    """Adds the price check to a quotes proposal payload; returns (check, warning text)."""
+    check = quote_price_check(company, payload, instance)
+    payload[PRICE_CHECK_KEY] = check
+    text = _price_check_text(check)
+    if check['requires_ack']:
+        text = (text + ' Sending needs your explicit confirmation.').strip()
+    return check, text
+
+
+def _price_check_result(check):
+    if not check['warnings']:
+        return {}
+    out = {'price_warnings': check['warnings']}
+    if check['requires_ack']:
+        out['hint'] = ('Tell the user plainly about these price warnings and that they must explicitly confirm '
+                       'sending at this price.')
+    return out
+
+
 def propose_create(company, user, conversation, args):
     table = args.get('table')
     spec = ENTITY_REGISTRY.get(table)
@@ -325,6 +411,10 @@ def propose_create(company, user, conversation, args):
         return {'error': fk_err, 'hint': 'Resolve the correct id via query_records first.'}
 
     display = _display_rows(user, company, spec, payload)
+    check = None
+    if table == 'quotes':
+        check, price_text = _attach_price_check(company, payload)
+        warning = ' '.join(t for t in (warning, price_text) if t)
     proposal = _save_proposal(company, user, conversation, table, 'CREATE',
                               payload=payload, display=display, warning=warning)
     if dropped:
@@ -334,6 +424,7 @@ def propose_create(company, user, conversation, args):
         'summary': f"Prepared new {spec['label']} for confirmation.",
         'needs_confirmation': True,
         'ignored_fields': dropped or None,
+        **(_price_check_result(check) if check else {}),
     }
 
 
@@ -368,13 +459,17 @@ def propose_update(company, user, conversation, args):
         return {'error': fk_err}
 
     display = _display_rows(user, company, spec, changed, instance=instance)
+    check, warning = None, ''
+    if table == 'quotes':
+        check, warning = _attach_price_check(company, changed, instance)
     proposal = _save_proposal(company, user, conversation, table, 'UPDATE',
-                              target_id=instance.pk, payload=changed, display=display)
+                              target_id=instance.pk, payload=changed, display=display, warning=warning)
     return {
         'proposal_id': proposal.id,
         'summary': f"Prepared update to {spec['label']} {getattr(instance, spec['id_display'], instance.pk)}.",
         'needs_confirmation': True,
         'ignored_fields': dropped or None,
+        **(_price_check_result(check) if check else {}),
     }
 
 
@@ -586,6 +681,10 @@ def proposal_public(proposal) -> dict:
         'confirm_text': confirm_text,
         'status': proposal.status.lower(),
         'result': proposal.result or None,
+        # Quotes: below_floor / below_target etc. A proposal that sends with
+        # any of them is executed only with acknowledge_price_warnings=true.
+        'price_warnings': ((proposal.payload or {}).get(PRICE_CHECK_KEY) or {}).get('warnings') or [],
+        'requires_acknowledgement': bool(((proposal.payload or {}).get(PRICE_CHECK_KEY) or {}).get('requires_ack')),
     }
 
 
@@ -670,7 +769,7 @@ def _execute_email_proposal(proposal, request_user, company):
     return True, {'result': proposal.result, 'message': f"Email sent to {name} ({email}).", 'action': None}
 
 
-def execute_proposal(proposal, request_user, company):
+def execute_proposal(proposal, request_user, company, acknowledged=False):
     """Perform the confirmed write. Returns (ok, payload_for_response).
 
     Atomically claims the PENDING proposal under a row lock so two concurrent
@@ -693,6 +792,21 @@ def execute_proposal(proposal, request_user, company):
         proposal = locked
         if proposal.table == 'email':
             return _execute_email_proposal(proposal, request_user, company)
+        if proposal.table == 'quotes' and proposal.operation in ('CREATE', 'UPDATE'):
+            # Re-checked now (costs may have moved since the proposal): a
+            # quote sent under its costs / target margin needs the user's
+            # explicit acknowledgement. The proposal stays PENDING.
+            instance = None
+            if proposal.operation == 'UPDATE':
+                instance = scoped_queryset(request_user, company, 'quotes').filter(pk=proposal.target_id).first()
+            fields = {k: v for k, v in (proposal.payload or {}).items() if k != PRICE_CHECK_KEY}
+            check = quote_price_check(company, fields, instance)
+            if check['requires_ack'] and not acknowledged:
+                return False, {'error': 'This quote would be sent with price warnings: ' + _price_check_text(check)
+                                        + ' Confirm explicitly to send it at this price.',
+                               'code': 'price_warnings_unacknowledged', 'price_warnings': check['warnings'],
+                               'requires_acknowledgement': True, 'proposal_status': 'pending',
+                               'status': 'needs_acknowledgement'}
         return _execute_write_proposal(proposal, request_user, company)
 
 
@@ -726,6 +840,8 @@ def _execute_write_proposal(proposal, request_user, company):
 
     hooks = spec.get('hooks', {})
     label = spec['label']
+    if PRICE_CHECK_KEY in (proposal.payload or {}):
+        proposal.payload = {k: v for k, v in proposal.payload.items() if k != PRICE_CHECK_KEY}
     try:
         with transaction.atomic():
             if proposal.operation == 'CREATE':
