@@ -215,3 +215,21 @@ class ReopenTests(SimpleTestCase):
         out = qc.changes_since_priced(20000, None, 18000)
         self.assertIsNone(out['delta_zar'])
         self.assertIsNone(out['repriced_price_keep_margin'])
+
+
+class DisplayRoundingTests(SimpleTestCase):
+    def test_half_up_on_the_decimal_form(self):
+        self.assertEqual(qc.fmt_num(1.005, 2), '1,01')      # float 1.00499.. but shown half-up
+        self.assertEqual(qc.fmt_num(2.5), '3')
+        self.assertEqual(qc.fmt_num(1049.5), '1 050')
+        self.assertEqual(qc.fmt_rand(-0.4), 'R 0')
+        self.assertEqual(qc.fmt_rand(32.795, 2), 'R 32,80')
+
+    def test_own_off_impact_is_the_difference_of_fuel_lines(self):
+        out = qc.compute(long_trip(diesel=official(mode='OWN', own_price=30.0, own_set_at=EFFECTIVE)))
+        w = next(w for w in out['warnings'] if w['code'] == 'diesel_own_off')
+        own_fuel = sum(ln['amount'] for ln in out['lines'] if ln['key'] in ('fuel', 'fuel_return'))
+        off = qc.compute(long_trip())
+        off_fuel = sum(ln['amount'] for ln in off['lines'] if ln['key'] in ('fuel', 'fuel_return'))
+        self.assertEqual(w['impact_zar'], qc.cents(own_fuel - off_fuel))
+        self.assertNotIn('R', w['detail'].split('(inland)')[1])     # amount not repeated in the detail

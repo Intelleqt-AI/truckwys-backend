@@ -148,19 +148,27 @@ def sa_date(value):
     return f'{d.day} {_MONTHS[d.month - 1]} {d.year}'
 
 
+def _half_up_decimal(v, dp):
+    """ROUND_HALF_UP on the shortest decimal form of the double (repr), so
+    1,005 -> 1,01 and 2,5 -> 3 — the same as the clients' formatter."""
+    from decimal import ROUND_HALF_UP, Decimal
+    return Decimal(repr(float(v))).quantize(Decimal(1).scaleb(-dp), rounding=ROUND_HALF_UP)
+
+
 def fmt_num(v, dp=0):
-    """SA style: space thousands, comma decimals ('1 050', '32,80')."""
-    v = float(v)
-    txt = f'{abs(v):,.{dp}f}'.replace(',', ' ').replace('.', ',')
-    return ('−' if v < 0 and txt.strip('0, ') else '') + txt
+    """SA style: space thousands, comma decimals ('1 050', '32,80'), rounded
+    ROUND_HALF_UP (away from zero) on the decimal form — one rule for every
+    displayed figure, backend and clients."""
+    d = _half_up_decimal(abs(float(v)), dp)
+    txt = f'{d:,.{dp}f}'.replace(',', ' ').replace('.', ',')
+    return ('−' if float(v) < 0 and txt.strip('0, ') else '') + txt
 
 
 def fmt_rand(v, dp=0):
     """'R 32,80' / 'R 1 050' (whole rand half-up when dp=0)."""
     v = float(v)
-    if dp == 0:
-        v = math.floor(abs(v) + 0.5) * (1 if v >= 0 else -1)
-    sign = '−' if v < 0 and abs(v) >= (0.5 if dp == 0 else 0.005) else ''
+    shown = _half_up_decimal(abs(v), dp)
+    sign = '−' if v < 0 and shown != 0 else ''
     return f'{sign}R {fmt_num(abs(v), dp)}'
 
 
@@ -229,8 +237,15 @@ def resolve_diesel(d):
     return out
 
 
-def diesel_warnings(diesel, litres_total=None):
-    """§1 warnings for a resolved diesel price. Pure."""
+def _fuel_lines_total(litres_parts, price):
+    """Sum of the fuel line amounts (each rounded to the cent) at `price`."""
+    return cents(sum(cents(l * price) for l in litres_parts))
+
+
+def diesel_warnings(diesel, litres_total=None, litres_parts=None):
+    """§1 warnings for a resolved diesel price. Pure. litres_parts: the
+    litres of each fuel line (loaded, empty return) so diesel_own_off's
+    impact is exactly the difference of the fuel line totals."""
     out = []
     zone_txt = 'coastal' if diesel['zone'] == 'COASTAL' else 'inland'
     if diesel['source'] == 'missing':
@@ -248,13 +263,13 @@ def diesel_warnings(diesel, litres_total=None):
     if diesel['source'] == 'own' and diesel['official_price']:
         own, official = diesel['own_price'], diesel['official_price']
         if abs(own - official) / official > OWN_OFF_THRESHOLD:
-            impact = cents((own - official) * litres_total) if litres_total is not None else None
-            more_less = ''
-            if impact is not None:
-                more_less = f': {fmt_rand(abs(impact))} {"more" if impact > 0 else "less"} on this quote'
+            if litres_parts is not None:
+                impact = cents(_fuel_lines_total(litres_parts, own) - _fuel_lines_total(litres_parts, official))
+            else:
+                impact = cents((own - official) * litres_total) if litres_total is not None else None
             out.append(warning(
                 'diesel_own_off', 'warn', 'Your diesel price differs from official',
-                f'Yours {fmt_rand(own, 2)}/L, official {fmt_rand(official, 2)}/L ({zone_txt}){more_less}.',
+                f'Yours {fmt_rand(own, 2)}/L, official {fmt_rand(official, 2)}/L ({zone_txt}).',
                 impact_zar=impact, actions=('use_official', 'update_own'),
                 own_price=own, official_price=official))
         set_at, eff = parse_dt(diesel['own_set_at']), parse_dt(diesel['official_effective_from'])
@@ -369,8 +384,8 @@ def compute(inputs):
                                     actions=('choose_vehicle',)))
         if cap_t is not None and ((rated is not None and rated < SUSPECT_BURN_MIN
                                    and cap_t >= SUSPECT_BURN_MIN_CAPACITY_T) or cap_t > SUSPECT_CAPACITY_MAX_T):
-            what = (f'{fmt_num(cap_t, 1)} t payload looks like GVM' if cap_t > SUSPECT_CAPACITY_MAX_T
-                    else f'{fmt_num(rated, 1)} L/100km for {fmt_num(cap_t, 1)} t looks low')
+            what = (f'A {fmt_num(cap_t)} t payload looks like the GVM' if cap_t > SUSPECT_CAPACITY_MAX_T
+                    else f'{fmt_num(rated)} L/100 km is low for a {fmt_num(cap_t)} t truck')
             warnings.append(warning('truck_burn_suspect', 'warn', 'Check this truck\'s fuel or capacity',
                                     f'{what}.', actions=('edit_vehicle',)))
 
@@ -382,7 +397,10 @@ def compute(inputs):
 
     # --- diesel (§1) ---
     diesel = resolve_diesel(inputs.get('diesel'))
-    warnings.extend(diesel_warnings(diesel, litres_total))
+    parts = None
+    if litres_loaded is not None and litres_empty is not None:
+        parts = [litres_loaded] + ([litres_empty] if empty_return else [])
+    warnings.extend(diesel_warnings(diesel, litres_total, parts))
     price_l = diesel['price']
 
     lines = []
@@ -523,7 +541,8 @@ def compute(inputs):
                                     f'This trip loses {fmt_rand(floor - price)}.', impact_zar=cents(price - floor)))
     if price is not None and minimum is not None and price < minimum:
         warnings.append(warning('below_minimum_charge', 'block', 'Price is below your minimum charge',
-                                f'Your minimum charge is {fmt_rand(minimum)}.', impact_zar=cents(minimum - price),
+                                f'{fmt_rand(minimum - price)} below your {fmt_rand(minimum)} minimum.',
+                                impact_zar=cents(minimum - price),
                                 actions=('use_minimum',)))
 
     blocking = [w['code'] for w in warnings if w['severity'] == 'block']

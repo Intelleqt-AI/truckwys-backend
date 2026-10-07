@@ -324,7 +324,7 @@
             "code": "diesel_own_off",
             "severity": "warn",
             "title": "Your diesel price differs from official",
-            "detail": "Yours R 30,00/L, official R 32,80/L (inland): R 258 less on this quote.",
+            "detail": "Yours R 30,00/L, official R 32,80/L (inland).",
             "impact_zar": -257.58,
             "actions": [
               {
@@ -2886,7 +2886,7 @@
             "code": "below_minimum_charge",
             "severity": "block",
             "title": "Price is below your minimum charge",
-            "detail": "Your minimum charge is R 15 000.",
+            "detail": "R 2 500 below your R 15 000 minimum.",
             "impact_zar": 2500.0,
             "actions": [
               {
@@ -3052,7 +3052,7 @@
             "code": "truck_burn_suspect",
             "severity": "warn",
             "title": "Check this truck's fuel or capacity",
-            "detail": "12,0 L/100km for 34,0 t looks low.",
+            "detail": "12 L/100 km is low for a 34 t truck.",
             "impact_zar": null,
             "actions": [
               {
@@ -3216,7 +3216,7 @@
             "code": "truck_burn_suspect",
             "severity": "warn",
             "title": "Check this truck's fuel or capacity",
-            "detail": "56,0 t payload looks like GVM.",
+            "detail": "A 56 t payload looks like the GVM.",
             "impact_zar": null,
             "actions": [
               {
