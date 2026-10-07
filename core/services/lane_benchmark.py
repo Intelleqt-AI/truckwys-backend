@@ -167,6 +167,128 @@ def _lane_q(field, code):
         q |= Q(**{f'{field}__iexact': variant})
     return q
 
+# ---------------------------------------------------------------------------
+# Fuel normalisation (QUOTE-RULES.md §8): historic totals are moved to
+# today's diesel price before any percentile.
+#   adj_total = total + litres_hist × (price_today − price_hist)
+# litres_hist: the quote's snapshot (fuel_litres), else km × the class's rated
+# burn; price_hist: the price the quote was priced on (fuel_price_used), else
+# the official price in force on its created date (its zone), else the quote
+# is left out. With no official price on record at all nothing can be
+# normalised and raw totals are used (flagged fuel_normalised False).
+# ---------------------------------------------------------------------------
+
+MARKET_WINDOW_DAYS = 180       # QUOTE-RULES §8: last 180 days, every tier
+CLASS_MIN_N = 5                # same vehicle class only when it has >= 5 quotes
+QUOTE_ROW_FIELDS = ('id', 'total_amount', 'company_id', 'created_at', 'vehicle_type', 'distance', 'trip_type',
+                    'fuel_litres', 'fuel_price_used', 'fuel_zone', 'company__fuel_zone')
+
+
+class FuelNormaliser:
+    """Per-call cache of official prices and rated burns."""
+
+    def __init__(self, as_of=None):
+        self.as_of = as_of or timezone.now()
+        self._prices = {}
+        self._burns = {}
+        self._classes = {}
+        self.active = self._price('INLAND', self.as_of) is not None or self._price('COASTAL', self.as_of) is not None
+
+    def _price(self, zone, at):
+        from core.services.fuel_price import price_in_force
+        key = (zone, at.date() if at is not self.as_of else 'now')
+        if key not in self._prices:
+            rec = price_in_force(zone, at, strict_grade=False)
+            self._prices[key] = rec['price'] if rec else None
+        return self._prices[key]
+
+    def _vt(self, company_id, name):
+        key = (company_id, (name or '').strip().lower())
+        if key not in self._burns:
+            from core.models import VehicleType
+            vt = None
+            if key[1]:
+                vt = (VehicleType.objects.filter(company_id=company_id, name__iexact=key[1]).first()
+                      or VehicleType.objects.filter(company__isnull=True, name__iexact=key[1]).first())
+            self._burns[key] = vt
+        return self._burns[key]
+
+    def vehicle_class(self, company_id, name):
+        key = (company_id, (name or '').strip().lower())
+        if key not in self._classes:
+            from core.services.pricing_analysis import vehicle_class
+            self._classes[key] = vehicle_class(self._vt(company_id, name), name)
+        return self._classes[key]
+
+    def rated_burn(self, company_id, name):
+        from core.services.pricing_analysis import CLASS_RATED_BURN
+        vt = self._vt(company_id, name)
+        burn = float(vt.fuel_consumption_l_per_100km) if vt is not None and vt.fuel_consumption_l_per_100km else None
+        return burn or CLASS_RATED_BURN[self.vehicle_class(company_id, name)]
+
+    def adjust(self, row):
+        """The fuel-normalised total for a quote row (dict or Quote), or None
+        when it can't be normalised (then it is left out)."""
+        get = row.get if isinstance(row, dict) else (lambda k, d=None: getattr(row, k, d))
+        total = get('total_amount')
+        if total is None:
+            return None
+        total = float(total)
+        if not self.active:
+            return total
+        zone = (get('fuel_zone') or get('company__fuel_zone')
+                or getattr(getattr(row, 'company', None), 'fuel_zone', None) or 'INLAND').upper()
+        today = self._price(zone, self.as_of)
+        if today is None:
+            return None
+        hist = get('fuel_price_used')
+        hist = float(hist) if hist is not None else self._price(zone, get('created_at'))
+        if hist is None:
+            return None
+        if hist == today:
+            return total          # same price: nothing to move, litres not needed
+        litres = get('fuel_litres')
+        if litres is not None:
+            litres = float(litres)
+        else:
+            km = get('distance')
+            if not km or float(km) <= 0:
+                return None
+            litres = float(km) * self.rated_burn(get('company_id'), get('vehicle_type')) / 100
+        return total + litres * (today - hist)
+
+
+def normalised_rows(qs, as_of=None, vehicle_class=None, normaliser=None):
+    """[{amount (fuel-normalised), company_id, created_at, cls}] for a Quote
+    queryset, rows that can't be normalised left out. vehicle_class filters
+    to that class when it has >= CLASS_MIN_N rows (else all trucks).
+    Returns (rows, class_applied: bool, normalised: bool)."""
+    norm = normaliser or FuelNormaliser(as_of)
+    out = []
+    for r in qs.exclude(total_amount__isnull=True).values(*QUOTE_ROW_FIELDS):
+        adj = norm.adjust(r)
+        if adj is None:
+            continue
+        out.append({'amount': adj, 'company_id': r['company_id'], 'created_at': r['created_at'],
+                    'cls': norm.vehicle_class(r['company_id'], r['vehicle_type'])})
+    applied = False
+    if vehicle_class:
+        same = [r for r in out if r['cls'] == vehicle_class]
+        if len(same) >= CLASS_MIN_N:
+            out, applied = same, True
+    return out, applied, norm.active
+
+
+def _cap_outliers(amounts):
+    """Order-of-magnitude sanity cap around the sample's own median."""
+    if not amounts:
+        return amounts
+    med = _percentile(sorted(amounts), 0.5)
+    if med and med > 0:
+        return [a for a in amounts if med / 10 <= a <= med * 10]
+    return amounts
+
+
 # Distinct operators required before a cell is exposed (in addition to k_anonymity).
 MIN_DISTINCT_OPERATORS = 2
 
@@ -231,7 +353,8 @@ def _seasonality_for(values_with_months):
 def compute_lane_benchmark(origin, destination, vehicle_type=None,
                            k_anonymity=5, days=180, exclude_quote_id=None,
                            exclude_created_by_user_id=None, as_of=None, one_way_only=False,
-                           round_trip_only=False, sent_only=False):
+                           round_trip_only=False, sent_only=False, vehicle_class=None,
+                           normalise_fuel=True):
     """
     Compute an anonymized, cross-platform benchmark for a single lane.
 
@@ -299,8 +422,11 @@ def compute_lane_benchmark(origin, destination, vehicle_type=None,
             status__in=WON_STATUSES,
             created_at__gte=since, created_at__lte=as_of,
         )
-        if vehicle_type:
+        if vehicle_type and not vehicle_class and not normalise_fuel:
             qs = qs.filter(vehicle_type__icontains=vehicle_type)
+        elif vehicle_type and not vehicle_class:
+            from core.services.pricing_analysis import vehicle_class as _vclass
+            vehicle_class = _vclass(None, vehicle_type)
         if one_way_only:
             # Additive (pricing analysis): a round-trip quote's total covers
             # two legs, so it is not the same thing as a one-way lane price.
@@ -326,10 +452,20 @@ def compute_lane_benchmark(origin, destination, vehicle_type=None,
             qs = qs.exclude(created_by_id=exclude_created_by_user_id)
 
         # Pull only what we need. Note: NOT filtered by company — cross-platform.
-        rows = list(
-            qs.exclude(total_amount__isnull=True)
-              .values_list('total_amount', 'company_id', 'created_at')
-        )
+        # Fuel-normalised to the price in force at `as_of` (QUOTE-RULES §8);
+        # with a vehicle class, that class only (the k-anonymity tier needs
+        # >= k rows of it anyway).
+        fuel_normalised = False
+        if normalise_fuel:
+            nrows, _applied, fuel_normalised = normalised_rows(qs, as_of=as_of)
+            if vehicle_class:
+                nrows = [r for r in nrows if r['cls'] == vehicle_class]
+            rows = [(r['amount'], r['company_id'], r['created_at']) for r in nrows]
+        else:
+            rows = list(
+                qs.exclude(total_amount__isnull=True)
+                  .values_list('total_amount', 'company_id', 'created_at')
+            )
 
         # Sanity cap against fat-fingered rate entries. Confirmed in production:
         # a handful of quotes had base_rate keyed in at ~1000x the intended R/km
@@ -393,6 +529,8 @@ def compute_lane_benchmark(origin, destination, vehicle_type=None,
             'currency': CURRENCY,
             'seasonality': seasonality,
             'source': 'platform',
+            'fuel_normalised': fuel_normalised,
+            'vehicle_class': vehicle_class,
         }
 
     except Exception as exc:  # never raise
@@ -423,7 +561,7 @@ SA_MARKET_ESTIMATES_REVERSED = {
 
 # How far back the own-company fallback looks. Without a window, years-old
 # won quotes (pre fuel-price/inflation moves) would anchor today's "market".
-COMPANY_FALLBACK_DAYS = 365
+COMPANY_FALLBACK_DAYS = MARKET_WINDOW_DAYS   # QUOTE-RULES §8 (was 365)
 
 
 def lookup_sa_estimate(origin, destination, vehicle_type=None):
@@ -446,6 +584,21 @@ def lookup_sa_estimate(origin, destination, vehicle_type=None):
             if key in table:
                 return table[key]
     return None
+
+
+def _class_for(vehicle_type, company=None):
+    """The vehicle class (pricing_analysis.vehicle_class) for a vehicle type
+    name, from the company's own type when there is one."""
+    name = (vehicle_type or '').strip()
+    if not name:
+        return None
+    try:
+        from core.services.pricing_analysis import vehicle_class
+        from core.services.quote_costing import resolve_vehicle
+        vt, _how = resolve_vehicle(company, name=name, suggest=False)
+        return vehicle_class(vt, name)
+    except Exception:
+        return None
 
 
 def resolve_market_rate(origin, destination, vehicle_type=None, company=None,
@@ -486,6 +639,7 @@ def resolve_market_rate(origin, destination, vehicle_type=None, company=None,
     o, d = canon_code(origin), canon_code(destination)
     vt = (vehicle_type or '').strip().lower() or None
     as_of = as_of or timezone.now()
+    cls = _class_for(vehicle_type, company)
 
     # 1-2) Cross-platform anonymized benchmark (vehicle-specific, then lane-level).
     # Median, not market_avg_rate: compute_lane_benchmark's sanity cap keeps an
@@ -499,7 +653,7 @@ def resolve_market_rate(origin, destination, vehicle_type=None, company=None,
         b = compute_lane_benchmark(
             o, d, vt, exclude_quote_id=exclude_quote_id,
             exclude_created_by_user_id=exclude_created_by_user_id, as_of=as_of, one_way_only=one_way_only,
-            sent_only=sent_only)
+            sent_only=sent_only, vehicle_class=cls)
         if b.get('available') and b.get('market_median_rate'):
             return float(b['market_median_rate']), 'platform'
         b = compute_lane_benchmark(
@@ -532,17 +686,13 @@ def resolve_market_rate(origin, destination, vehicle_type=None, company=None,
             if sent_only:
                 base = base.exclude(never_sent_q())
 
-            # Vehicle-specific first, then lane-level — the same degradation
-            # tiers 1 and 2 already use. Without the second attempt this tier
-            # was unreachable in practice: CPT->JHB had 6 won quotes but split
-            # 3/2/1 across vehicle types, and excluding the quote being priced
-            # took the best group down to 2, under the >= 3 floor. Every such
-            # lane then fell through to a coarse estimate or to nothing.
-            attempts = [base.filter(vehicle_type__icontains=vt), base] if vt else [base]
-            for qs in attempts:
-                agg = qs.aggregate(a=Avg('total_amount'), n=Count('id'))
-                if (agg['n'] or 0) >= 3 and agg['a']:
-                    return float(agg['a']), 'company'
+            # QUOTE-RULES §8: fuel-normalised, same vehicle class when it has
+            # >= 5 quotes (else all trucks), median with the outlier cap — not
+            # a raw mean, which one premium quote can drag off-centre.
+            rows, _applied, _norm = normalised_rows(base, as_of=as_of, vehicle_class=cls)
+            amounts = _cap_outliers([r['amount'] for r in rows])
+            if len(amounts) >= 3:
+                return float(_percentile(sorted(amounts), 0.5)), 'company'
         except Exception as exc:  # never raise
             logger.warning('resolve_market_rate: company lookup failed: %s', exc)
 
@@ -627,16 +777,12 @@ def _company_lane_amounts(o, d, vt, company, exclude_quote_id=None, as_of=None, 
     base = base.filter(trip_type='ROUND_TRIP') if trip == 'round_trip' else base.exclude(trip_type='ROUND_TRIP')
     if exclude_quote_id:
         base = base.exclude(id=exclude_quote_id)
-    attempts = [(base.filter(vehicle_type__icontains=vt), True), (base, False)] if vt else [(base, False)]
-    for qs, specific in attempts:
-        amounts = sorted(float(a) for a in qs.values_list('total_amount', flat=True))
-        if amounts:
-            # Same order-of-magnitude sanity cap as the platform benchmark.
-            med = _percentile(amounts, 0.5)
-            if med and med > 0:
-                amounts = [a for a in amounts if med / 10 <= a <= med * 10]
-        if len(amounts) >= COMPANY_RANGE_MIN_QUOTES:
-            return amounts, specific
+    # Fuel-normalised (QUOTE-RULES §8); the vehicle's class when it has >= 5
+    # quotes, else all trucks (labelled by the caller).
+    rows, specific, _norm = normalised_rows(base, as_of=as_of, vehicle_class=_class_for(vt, company))
+    amounts = sorted(_cap_outliers([r['amount'] for r in rows]))
+    if len(amounts) >= COMPANY_RANGE_MIN_QUOTES:
+        return amounts, specific
     return [], False
 
 
@@ -647,7 +793,7 @@ def resolve_market_range(origin, destination, vehicle_type=None, company=None, e
     Tiers, most trustworthy first:
       platform  cross-platform won quotes, k-anonymous (>= 5 quotes from >= 2
                 operators, compute_lane_benchmark), vehicle-specific then lane;
-      company   this company's own won quotes on the lane (>= 5, last 365 days);
+      company   this company's own won quotes on the lane (>= 5, last 180 days);
                 never another tenant's rows;
       estimate  the coarse SA table (low / avg / high) — NOT market data, and
                 labelled as such (is_estimate=True);
@@ -667,11 +813,14 @@ def resolve_market_range(origin, destination, vehicle_type=None, company=None, e
         return out
     vt = (vehicle_type or '').strip().lower() or None
 
+    cls = _class_for(vehicle_type, company)
     try:
-        for vt_try in ([vt, None] if vt else [None]):
-            b = compute_lane_benchmark(o, d, vt_try, days=PLATFORM_WINDOW_DAYS,
+        for cls_try in ([cls, None] if cls else [None]):
+            vt_try = cls_try
+            b = compute_lane_benchmark(o, d, None, days=PLATFORM_WINDOW_DAYS,
                                        exclude_quote_id=exclude_quote_id, as_of=as_of,
-                                       one_way_only=not round_trip, round_trip_only=round_trip, sent_only=True)
+                                       one_way_only=not round_trip, round_trip_only=round_trip, sent_only=True,
+                                       vehicle_class=cls_try)
             if b.get('available') and b.get('market_median_rate'):
                 n = int(b['sample_size'])
                 out.update({
@@ -695,7 +844,7 @@ def resolve_market_range(origin, destination, vehicle_type=None, company=None, e
                     'p25': round(_percentile(amounts, 0.25), 2), 'median': round(_percentile(amounts, 0.5), 2),
                     'p75': round(_percentile(amounts, 0.75), 2),
                     'window_days': COMPANY_FALLBACK_DAYS, 'vehicle_specific': specific,
-                    'tier_label': f'Your accepted quotes on this lane, {n} in the last 12 months',
+                    'tier_label': f'Your accepted quotes on this lane, {n} in the last {COMPANY_FALLBACK_DAYS} days',
                 })
                 return out
         except Exception as exc:  # never raise

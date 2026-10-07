@@ -306,3 +306,64 @@ class CostBreakdownEndpointTests(_Base):
         body = self.api.post(self.URL, {'distance_km': 100, 'weight': 5000, 'toll_cost': 0,
                                         'vehicle_type_id': theirs.id}, format='json').json()
         self.assertNotEqual(body['vehicle']['id'], theirs.id)
+
+
+class PdfDieselLineTests(_Base):
+    def test_line_from_snapshot(self):
+        from core.services.quote_pdf import diesel_reference_line, generate_quote_pdf_bytes
+        q = self.create()
+        self.assertEqual(diesel_reference_line(q), 'Priced on diesel at R 32,80/L (official inland, 7 Oct 2026).')
+        self.assertTrue(generate_quote_pdf_bytes(q).startswith(b'%PDF'))
+        q.fuel_price_used, q.fuel_price_source = None, ''
+        self.assertIsNone(diesel_reference_line(q))
+
+
+class CoordinatorFollowUpTests(_Base):
+    def test_suggestion_and_ids_in_resolution(self):
+        body = self.api.post('/api/v1/quotes/cost-breakdown/', {'distance_km': 100, 'weight': 20000,
+                                                                'toll_cost': 0}, format='json').json()
+        self.assertEqual(body['resolution']['vehicle_type_id'], body['vehicle']['id'])
+        self.assertEqual(body['resolution']['suggested_vehicle_type_id'], body['vehicle']['id'])
+
+    def test_non_diesel_missing_price_is_fuel_aware(self):
+        VehicleType.objects.create(company=self.company, name='E-Truck', capacity=10, max_distance=300,
+                                   base_rate=10, fuel_consumption_l_per_100km=90, fuel_type='Electric')
+        body = self.api.post('/api/v1/quotes/cost-breakdown/', {'distance_km': 100, 'weight': 5000, 'toll_cost': 0,
+                                                                'vehicle_type': 'E-Truck'}, format='json').json()
+        w = next(w for w in body['warnings'] if w['code'] == 'diesel_missing')
+        self.assertEqual(w['title'], 'No electric price set')
+        self.company.fuel_price_electric = Decimal('3.10')
+        self.company.save()
+        body = self.api.post('/api/v1/quotes/cost-breakdown/', {'distance_km': 100, 'weight': 5000, 'toll_cost': 0,
+                                                                'vehicle_type': 'E-Truck'}, format='json').json()
+        self.assertEqual((body['diesel']['source'], body['diesel']['price']), ('own', 3.1))
+
+    def test_missing_allowance_warns_not_blocks_and_unknown_time_is_guarded(self):
+        from core.services import quote_costing as qc
+        from core.tests.quote_golden_cases import long_trip
+        out = qc.compute(long_trip(driver={'allowance_per_night': None, 'nights': None, 'amount': None},
+                                   duration_minutes=1100))
+        w = [w for w in out['warnings'] if w['code'] == 'driver_allowance_missing']
+        self.assertEqual(len(w), 1)
+        self.assertEqual(w[0]['severity'], 'warn')
+        self.assertIsNotNone(out['floor'])
+        out = qc.compute(long_trip(driver={'allowance_per_night': None, 'nights': None, 'amount': None},
+                                   duration_minutes=None))
+        self.assertNotIn('None', ' '.join(w['detail'] for w in out['warnings']))
+        self.assertIn('driver_nights_unknown', out['blocking'])
+
+    def test_allowance_migration_copies_the_approved_rate(self):
+        import importlib
+        from core.models import VerifiedRate
+        mod = importlib.import_module('core.migrations.0150_company_driver_allowance_default')
+        c = Company.objects.create(company_name='No allowance')
+        mod.forwards(apps, None)
+        c.refresh_from_db()
+        self.assertIsNone(c.driver_allowance_per_night)        # nothing approved: nothing invented
+        VerifiedRate.objects.create(kind='driver_allowance', key='nbcrfli', label='NBCRFLI', value=Decimal('512'),
+                                    unit='per_night', effective_from=date(2026, 3, 1), status='approved')
+        mod.forwards(apps, None)
+        c.refresh_from_db()
+        self.assertEqual(c.driver_allowance_per_night, Decimal('512'))
+        self.company.refresh_from_db()
+        self.assertEqual(self.company.driver_allowance_per_night, Decimal('450'))   # own setting kept

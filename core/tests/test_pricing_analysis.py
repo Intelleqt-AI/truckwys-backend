@@ -224,14 +224,15 @@ class CostFloorTests(_Base):
         self.assertEqual(line['source']['kind'], 'user')
         self.assertEqual(line['suggested'], 1000)
 
-    def test_no_allowance_blocks_until_entered(self):
+    def test_no_allowance_warns_and_prices_nights_at_zero(self):
         self.company.driver_allowance_per_night = None
         self.company.save()
         r = self.analyze(duration_minutes=1200, include_return=False)
-        self.assertIn('driver_allowance_missing', r['blocking'])
-        self.assertFalse(r['cost_floor']['complete'])
+        w = next(w for w in r['warnings'] if w['code'] == 'driver_allowance_missing')
+        self.assertEqual(w['severity'], 'warn')
+        self.assertTrue(r['cost_floor']['complete'])
         r = self.analyze(duration_minutes=1200, include_return=False, driver_cost=900)
-        self.assertNotIn('driver_allowance_missing', r['blocking'])
+        self.assertNotIn('driver_allowance_missing', {w['code'] for w in r['warnings']})
 
     def test_empty_return_toggle_and_company_default(self):
         # QUOTE-RULES §5: one-way >= 300 km includes the empty return by default.

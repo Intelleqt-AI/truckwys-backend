@@ -267,6 +267,11 @@ def generate_quote_pdf_bytes(quote) -> bytes:
         story.append(Paragraph('NOTES', ParagraphStyle('section', fontSize=10, textColor=mid, fontName='Helvetica-Bold', spaceAfter=3)))
         story.append(Paragraph(quote.notes, ParagraphStyle('notes', fontSize=9, textColor=dark, spaceAfter=4)))
 
+    # QUOTE-RULES §11: one line naming the diesel price the quote was priced on.
+    diesel_line = diesel_reference_line(quote)
+    if diesel_line:
+        story.append(Paragraph(diesel_line, ParagraphStyle('diesel', fontSize=8, textColor=mid, spaceAfter=2)))
+
     # T&C
     story.append(Spacer(1, 4*mm))
     story.append(Paragraph('Terms & Conditions', ParagraphStyle('tc', fontSize=9, textColor=mid, fontName='Helvetica-Bold', spaceAfter=2)))
@@ -296,3 +301,18 @@ def _terms_days(quote) -> int:
         return terms_days_for(customer_terms(quote.customer))
     except Exception:
         return 30
+
+
+def diesel_reference_line(quote):
+    """'Priced on diesel at R 32,80/L (official inland, 7 Oct 2026).' from the
+    quote's pricing snapshot, or None when it has none (never a fallback)."""
+    price = getattr(quote, 'fuel_price_used', None)
+    source = getattr(quote, 'fuel_price_source', '') or ''
+    if price is None or not source:
+        return None
+    from core.services.quote_costing import fmt_rand, sa_date
+    zone = 'coastal' if (getattr(quote, 'fuel_zone', '') or '').upper() == 'COASTAL' else 'inland'
+    what = {'official': f'official {zone}', 'own': 'own price', 'override': 'set for this quote'}.get(source, source)
+    when = sa_date(getattr(quote, 'fuel_effective_from', None) if source == 'official' else None) \
+        or sa_date(getattr(quote, 'priced_at', None))
+    return f'Priced on diesel at {fmt_rand(float(price), 2)}/L ({what}' + (f', {when}' if when else '') + ').'

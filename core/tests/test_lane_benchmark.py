@@ -5,7 +5,7 @@ production quotes: the coarse estimate table only listed one direction per
 lane, and the own-company tier filtered by vehicle type with no lane-level
 retry, so excluding the quote being priced took every group under its floor.
 """
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
@@ -102,11 +102,12 @@ class OwnCompanyTierTests(TestCase):
             'CPT', 'JHB', 'flat bed', company=self.company, exclude_quote_id=priced.id,
         )
         self.assertEqual(source, 'company')
-        # Averaged across all five remaining won quotes on the lane.
-        self.assertAlmostEqual(rate, (30000 + 31000 + 32000 + 40000 + 41000) / 5, places=2)
+        # QUOTE-RULES §8: the MEDIAN of all five remaining won quotes on the lane.
+        self.assertAlmostEqual(rate, 32000, places=2)
 
     def test_vehicle_specific_average_is_preferred_when_it_qualifies(self):
-        for amt in (30000, 31000, 32000):
+        # QUOTE-RULES §8: same vehicle class once it has >= 5 quotes.
+        for amt in (30000, 31000, 32000, 33000, 34000):
             self._won('Heavy Truck (8-16 tonnes)', amt)
         self._won('Interlink / B-Train (34 tonnes)', 99000)
 
@@ -114,7 +115,7 @@ class OwnCompanyTierTests(TestCase):
             'CPT', 'JHB', 'Heavy Truck (8-16 tonnes)', company=self.company,
         )
         self.assertEqual(source, 'company')
-        self.assertAlmostEqual(rate, 31000, places=2)  # the interlink outlier excluded
+        self.assertAlmostEqual(rate, 32000, places=2)  # the interlink excluded
 
     def test_falls_through_to_estimate_below_the_floor(self):
         self._won('Heavy Truck (8-16 tonnes)', 30000)
@@ -301,3 +302,46 @@ class PlatformBenchmarkOutlierTests(TestCase):
         median = amounts[2]
         self.assertNotAlmostEqual(rate, mean, delta=1)
         self.assertAlmostEqual(rate, median, places=2)
+
+
+
+class FuelNormalisationTests(TestCase):
+    """QUOTE-RULES §8: totals moved to today's diesel before percentiles."""
+
+    def setUp(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        from core.models import FuelPrice
+        sast = ZoneInfo('Africa/Johannesburg')
+        FuelPrice.objects.create(date=date(2026, 9, 2), diesel_inland=Decimal('29.5551'),
+                                 diesel_coastal=Decimal('28.6831'), source='FIASA', diesel_grade='50ppm',
+                                 effective_from=datetime(2026, 9, 2, 0, 1, tzinfo=sast))
+        FuelPrice.objects.create(date=date(2026, 10, 7), diesel_inland=Decimal('32.7989'),
+                                 diesel_coastal=Decimal('31.9269'), source='FIASA', diesel_grade='50ppm',
+                                 effective_from=datetime(2026, 10, 7, 0, 1, tzinfo=sast))
+        self.now = datetime(2026, 10, 8, 9, tzinfo=sast)
+        self.sep = datetime(2026, 9, 15, 9, tzinfo=sast)
+
+    def test_snapshot_litres_and_price(self):
+        from core.services.lane_benchmark import FuelNormaliser
+        n = FuelNormaliser(self.now)
+        row = {'total_amount': 20000, 'fuel_litres': 400, 'fuel_price_used': 30.0, 'fuel_zone': 'INLAND',
+               'created_at': self.sep, 'company_id': None, 'vehicle_type': '', 'distance': 500}
+        self.assertAlmostEqual(n.adjust(row), 20000 + 400 * (32.7989 - 30.0))
+
+    def test_no_snapshot_uses_official_on_created_date_and_class_burn(self):
+        from core.services.lane_benchmark import FuelNormaliser
+        n = FuelNormaliser(self.now)
+        row = {'total_amount': 20000, 'fuel_litres': None, 'fuel_price_used': None, 'fuel_zone': '',
+               'company__fuel_zone': 'COASTAL', 'created_at': self.sep, 'company_id': None,
+               'vehicle_type': 'Superlink', 'distance': 500}
+        self.assertAlmostEqual(n.adjust(row), 20000 + 500 * 42.0 / 100 * (31.9269 - 28.6831))
+
+    def test_unpriceable_history_is_excluded(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        from core.services.lane_benchmark import FuelNormaliser
+        n = FuelNormaliser(self.now)
+        old = datetime(2025, 1, 10, tzinfo=ZoneInfo('Africa/Johannesburg'))
+        self.assertIsNone(n.adjust({'total_amount': 20000, 'fuel_price_used': None, 'created_at': old,
+                                    'company_id': None, 'vehicle_type': '', 'distance': 500}))

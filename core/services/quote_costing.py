@@ -214,6 +214,7 @@ def resolve_diesel(d):
     official = _pos(d.get('official_price'))
     override = _pos(d.get('override_price'))
     out = {'zone': zone, 'mode': mode, 'own_price': own, 'own_set_at': iso(d.get('own_set_at')),
+           'fuel_type': d.get('fuel_type') or 'Diesel',
            'official_price': official, 'official_effective_from': iso(d.get('official_effective_from')),
            'official_stale': bool(d.get('official_stale')) if official is not None else False}
     if override is not None:
@@ -233,9 +234,16 @@ def diesel_warnings(diesel, litres_total=None):
     out = []
     zone_txt = 'coastal' if diesel['zone'] == 'COASTAL' else 'inland'
     if diesel['source'] == 'missing':
-        out.append(warning('diesel_missing', 'block', 'No diesel price available',
-                           'No official price on record; set your own in settings.',
-                           actions=('retry_diesel', 'update_own')))
+        fuel = str(diesel.get('fuel_type') or 'Diesel').lower()
+        if fuel == 'diesel':
+            out.append(warning('diesel_missing', 'block', 'No diesel price available',
+                               'No official price on record; set your own in settings.',
+                               actions=('retry_diesel', 'update_own')))
+        else:
+            unit = 'kWh' if fuel == 'electric' else 'litre'
+            out.append(warning('diesel_missing', 'block', f'No {fuel} price set',
+                               f'Set your {fuel} price per {unit} in settings.', actions=('update_own',),
+                               fuel_type=fuel))
         return out
     if diesel['source'] == 'own' and diesel['official_price']:
         own, official = diesel['own_price'], diesel['official_price']
@@ -433,19 +441,24 @@ def compute(inputs):
         0.0 if nights == 0 else None)
     if user_amount is not None and user_amount >= 0:
         drv_amt, drv_source = cents(user_amount), 'user'
+    elif suggested is None and nights:
+        # Nights away but no allowance rate anywhere (company setting or an
+        # approved NBCRFLI figure): priced at R 0 and SAID so (warn), so long
+        # trips aren't all blocked where no rate is on record yet.
+        drv_amt, drv_source = 0.0, 'missing'
+        warnings.append(warning('driver_allowance_missing', 'warn', 'No driver allowance rate set',
+                                f'{nights} night{"s" if nights != 1 else ""} away priced at R 0; '
+                                'enter the driver cost or set a rate.',
+                                actions=('enter_driver_cost', 'update_allowance')))
     else:
         drv_amt, drv_source = suggested, 'suggested'
     if drv_amt is None:
-        if nights is None:
-            warnings.append(warning('driver_nights_unknown', 'block', 'Driving time is unknown',
-                                    'Enter the driver cost, or recalculate the route.',
-                                    actions=('enter_driver_cost', 'recalculate_route')))
-        else:
-            warnings.append(warning('driver_allowance_missing', 'block', 'Driver nights have no allowance',
-                                    f'{nights} night{"s" if nights != 1 else ""} away: enter the driver cost '
-                                    'or set a rate.', actions=('enter_driver_cost', 'update_allowance')))
+        warnings.append(warning('driver_nights_unknown', 'block', 'Driving time is unknown',
+                                'Enter the driver cost, or recalculate the route.',
+                                actions=('enter_driver_cost', 'recalculate_route')))
     add('driver', 'loaded', drv_amt,
         ('Your figure' if drv_source == 'user' else
+         f'{nights} night{"s" if nights != 1 else ""} at R 0: no allowance rate set' if drv_source == 'missing' else
          f'{nights} night{"s" if nights != 1 else ""} × {fmt_rand(rate, 2)}' if rate is not None and nights
          else 'No night away' if nights == 0 else 'Unknown'),
         nights=nights, suggested_nights=suggested_nights, rate_per_night=rate, suggested=suggested,
@@ -474,14 +487,16 @@ def compute(inputs):
             'Unknown' if ret_toll is None else f'{fmt_rand(ret_toll, 2)} home empty', one_way=ret_toll)
         return_nights = (nights_two - nights_one) if nights_one is not None else None
         dr_amt = (cents(return_nights * rate) if return_nights is not None and rate is not None
-                  else (0.0 if return_nights == 0 else None))
-        if dr_amt is None and drv_amt is not None:
-            warnings.append(warning('driver_allowance_missing', 'block', 'Driver nights have no allowance',
-                                    f'{return_nights} extra night{"s" if return_nights != 1 else ""} '
-                                    'coming home: set a rate per night.', actions=('update_allowance',)))
+                  else (0.0 if return_nights is not None else None))
+        if return_nights and rate is None and not any(w['code'] == 'driver_allowance_missing' for w in warnings):
+            warnings.append(warning('driver_allowance_missing', 'warn', 'No driver allowance rate set',
+                                    f'{return_nights} extra night{"s" if return_nights != 1 else ""} coming home '
+                                    'priced at R 0; set a rate per night.', actions=('update_allowance',)))
         add('driver_return', 'empty_return', dr_amt,
             (f'{return_nights} extra night{"s" if return_nights != 1 else ""} × {fmt_rand(rate, 2)}'
-             if rate is not None and return_nights else 'No extra night' if return_nights == 0 else 'Unknown'),
+             if rate is not None and return_nights else
+             f'{return_nights} extra night{"s" if return_nights != 1 else ""} at R 0: no allowance rate set'
+             if return_nights else 'No extra night' if return_nights == 0 else 'Unknown'),
             nights=return_nights, rate_per_night=rate)
 
     if op is None and distance is not None:
@@ -568,7 +583,8 @@ def suggest_vehicle(company, load_kg):
     from core.services.vehicle_types import visible_vehicle_types_queryset
     load_t = (_num(load_kg) or 0) / 1000
     best = None
-    for vt in visible_vehicle_types_queryset(company).filter(active=True):
+    # All types the vehicle-types API returns (active or not), as the clients list them.
+    for vt in visible_vehicle_types_queryset(company):
         cap = capacity_tonnes(vt.capacity)
         burn = _pos(vt.fuel_consumption_l_per_100km)
         if cap is None or burn is None or cap < load_t:
@@ -707,8 +723,18 @@ def build_inputs(payload, company, now=None, *, diesel_override=None):
     vt, how = resolve_vehicle(company, vehicle_type_id=payload.get('vehicle_type_id'),
                               name=payload.get('vehicle_type'), load_kg=load_kg)
 
+    fuel_type = (getattr(vt, 'fuel_type', None) or 'Diesel') if vt is not None else 'Diesel'
     if diesel_override is not None:
         diesel = diesel_override
+    elif fuel_type.lower() != 'diesel':
+        # Only diesel has an official price: other fuels use the company's
+        # own per-fuel price (Company.fuel_price_petrol / _electric / _hybrid).
+        own = _pos(getattr(company, f'fuel_price_{fuel_type.lower()}', None))
+        diesel = {'input': {'zone': getattr(company, 'fuel_zone', None) or 'INLAND', 'mode': 'OWN',
+                            'own_price': own, 'own_set_at': None, 'official_price': None,
+                            'official_effective_from': None, 'official_stale': False, 'use_official': False,
+                            'override_price': _pos(payload.get('fuel_price_override')), 'fuel_type': fuel_type},
+                  'source': 'own' if own else 'missing'}
     else:
         diesel = resolve_company_diesel(company, now, use_official=bool(_truthy(payload.get('use_official_fuel'))),
                                         override_price=_pos(payload.get('fuel_price_override')))
@@ -767,16 +793,23 @@ def build_inputs(payload, company, now=None, *, diesel_override=None):
         'target_margin_pct': target_margin(company),
         'price': price,
     }
-    context = {'vehicle_type': vt, 'vehicle_how': how, 'operating_cost': op, 'diesel': diesel,
+    suggested = vt if how == 'suggested' else suggest_vehicle(company, load_kg)
+    context = {'vehicle_type': vt, 'vehicle_how': how, 'suggested': suggested, 'operating_cost': op,
+               'diesel': diesel,
                'driver_rate_source': rate_source, 'now': now}
     return inputs, context
 
 
 def _context_out(context):
     d = dict(context['diesel'])
+    d.setdefault('mode', d.get('input', {}).get('mode'))
     d.pop('input', None)
     d.pop('warnings', None)
-    return {'vehicle_selection': context['vehicle_how'], 'operating_cost': context['operating_cost'],
+    vt = context.get('vehicle_type')
+    return {'vehicle_selection': context['vehicle_how'],
+            'vehicle_type_id': getattr(vt, 'id', None),
+            'suggested_vehicle_type_id': getattr(context.get('suggested'), 'id', None),
+            'operating_cost': context['operating_cost'],
             'driver_rate_source': context['driver_rate_source'], 'diesel_resolution': d}
 
 

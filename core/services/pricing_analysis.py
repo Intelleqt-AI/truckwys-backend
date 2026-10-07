@@ -76,6 +76,11 @@ OPERATING_COST_CLASSES = {
         ('Tyres', 1.30), ('Maintenance', 1.80), ('Overheads', 2.10)]),
 }
 DEFAULT_OPERATING_CLASS = 'tri_axle'   # the most common long-haul unit when nothing is known
+# Typical rated diesel burn (L/100km, full load) per class. Used ONLY to
+# estimate the litres of a historic quote with no fuel snapshot and no rated
+# vehicle type on record, for fuel-normalising market totals (QUOTE-RULES
+# §8: "km × class rated burn"). Never used to price a quote.
+CLASS_RATED_BURN = {'light': 18.0, 'rigid': 28.0, 'tri_axle': 38.0, 'reefer': 40.0, 'superlink': 42.0}
 # Expense categories that are operating cost (fuel, tolls and subcontracted
 # loads are excluded: the first two are their own lines, a subcontracted load
 # isn't run on the fleet's own trucks).
@@ -522,7 +527,7 @@ def _panel_lines(costing, fixed):
                    | {'amount': tolls['amount']})
     drv = by.get('driver')
     if drv is not None:
-        status = 'needs_input' if drv['amount'] is None else 'ok'
+        status = 'needs_input' if drv['amount'] is None or drv.get('source') == 'missing' else 'ok'
         src = (_source('user', 'Your figure') if drv.get('source') == 'user'
                else _source('user', 'Your setting') if (costing.get('resolution') or {}).get('driver_rate_source')
                == 'company_setting' else _source('official', 'Approved driver allowance'))
@@ -916,15 +921,33 @@ def customer_evidence(customer, company, origin, destination, exclude_quote_id=N
     recent = []
     price_sensitive = None
     if origin and destination:
-        lane_qs = base.filter(_lane_q('origin', origin), _lane_q('destination', destination))
+        # QUOTE-RULES §8: the customer's lane history under the market's
+        # filters — one-way, sent, last 180 days — with every price
+        # fuel-normalised to today's diesel (a quote that can't be is left out).
+        from datetime import timedelta
+        from core.services.lane_benchmark import MARKET_WINDOW_DAYS, FuelNormaliser
+        norm = FuelNormaliser()
+        lane_qs = (base.filter(_lane_q('origin', origin), _lane_q('destination', destination))
+                   .exclude(trip_type='ROUND_TRIP')
+                   .filter(created_at__gte=timezone.now() - timedelta(days=MARKET_WINDOW_DAYS)))
         lane_acceptance = {**counts(lane_qs), 'scope': 'this_lane'}
-        rows = lane_qs.order_by('-created_at')[:5]
+
+        def priced(qs, limit):
+            out = []
+            for q in qs.select_related('company'):
+                adj = norm.adjust(q)
+                if adj is not None:
+                    out.append((q, adj))
+                if len(out) >= limit:
+                    break
+            return out
         recent = [{'id': q.id, 'number': q.quote_number, 'date': timezone.localtime(q.created_at).date().isoformat(),
-                   'price': _rand(q.total_amount), 'outcome': _outcome_of(q)} for q in rows]
+                   'price': _rand(adj), 'quoted_price': _rand(q.total_amount), 'outcome': _outcome_of(q),
+                   'fuel_normalised': norm.active}
+                  for q, adj in priced(lane_qs.order_by('-created_at')[:20], 5)]
         if lane_acceptance['decided']:
-            decided_rows = (lane_qs.filter(won_quote_q() | lost_quote_q()).order_by('-created_at')
-                            .only('status', 'outcome', 'total_amount')[:10])
-            lane_decided = [(_outcome_of(q), _rand(q.total_amount)) for q in decided_rows]
+            decided = priced(lane_qs.filter(won_quote_q() | lost_quote_q()).order_by('-created_at')[:30], 10)
+            lane_decided = [(_outcome_of(q), _rand(adj)) for q, adj in decided]
             price_sensitive = price_sensitivity(lane_acceptance, lane_decided, market_median)
 
     risk = {'band': 'unknown', 'label': 'Not enough invoices to judge yet', 'basis': None, 'short_basis': None}
@@ -1285,11 +1308,13 @@ def _market_for_trip(market, legs, vt_name, basis=None):
     if tier == 'platform':
         label = f'TruckWys platform · {n} accepted {kind} quotes · last 180 days'
     elif tier == 'company':
-        label = f'Your accepted {kind} quotes on this lane · {n} in the last 12 months'
+        label = f'Your accepted {kind} quotes on this lane · {n} in the last 180 days'
     else:
         label = m.get('tier_label') or ''
     if m.get('vehicle_specific') and vt_name and tier in ('platform', 'company'):
         label += f' · {vt_name} only'
+    elif vt_name and tier in ('platform', 'company'):
+        label += ' · all trucks'      # QUOTE-RULES §8: too few of this class
     if legs == 2:
         for k in ('p25', 'median', 'p75'):
             if m.get(k) is not None:
