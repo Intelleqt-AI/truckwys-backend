@@ -1139,3 +1139,11 @@ class AiCheckFuelFloorTests(_Base):
         self.assertIsNone(base['detail']['benchmark_zar'])
         self.assertNotIn('36', base['reason'])
         self.assertEqual(base['verdict'], 'could_not_verify')
+
+
+class CostBreakdownSnapshotTimeTests(_Base):
+    def test_snapshot_timestamps_are_sast(self):
+        q = self.create()
+        body = self.api.post('/api/v1/quotes/cost-breakdown/', {'quote_id': q.id}, format='json').json()
+        self.assertTrue(body['snapshot']['priced_at'].endswith('+02:00'), body['snapshot']['priced_at'])
+        self.assertTrue(body['snapshot']['fuel_effective_from'].endswith('+02:00'))

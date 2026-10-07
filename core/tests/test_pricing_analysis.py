@@ -2085,3 +2085,24 @@ class BenchmarkAndOptimizePrivacyTests(_Base):
         self.assertIsNone(r['win_probability_at_optimal'])
         self.assertEqual(r['win_probability_source'], 'heuristic')
         self.assertTrue(all(pt['win_probability'] is None for pt in r['curve']))
+
+
+class MissingDriverTests(_Base):
+    def test_missing_names_driver_when_nights_unknown(self):
+        r = self.analyze(duration_minutes=None, include_return=False)
+        if 'driver_nights_unknown' in r['blocking']:
+            self.assertIn('driver', r['missing'])
+        else:
+            self.assertNotIn('driver', r['missing'])
+        from unittest import mock
+        real = pa.build_cost_floor
+
+        def with_unknown_nights(*a, **kw):
+            floor, costing = real(*a, **kw)
+            costing = {**costing, 'warnings': costing['warnings'] + [
+                {'code': 'driver_nights_unknown', 'severity': 'block', 'title': 't', 'detail': 'd',
+                 'impact_zar': None, 'actions': []}]}
+            return floor, costing
+        with mock.patch.object(pa, 'build_cost_floor', side_effect=with_unknown_nights):
+            r = self.analyze(include_return=False)
+        self.assertIn('driver', r['missing'])

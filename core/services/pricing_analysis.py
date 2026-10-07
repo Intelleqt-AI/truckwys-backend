@@ -1577,6 +1577,8 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
             missing.append('tolls')
         if 'border_costs_missing' in codes:
             missing.append('border')
+        if 'driver_nights_unknown' in codes:
+            missing.append('driver')
 
     your_price = _f(payload.get('your_price'))
     if your_price is not None and your_price <= 0:

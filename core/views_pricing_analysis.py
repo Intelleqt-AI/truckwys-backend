@@ -83,11 +83,13 @@ class QuoteCostBreakdownView(APIView):
                     quote.total_amount, quote.cost_floor, out['floor'], quote.priced_at)
                 from core.services.quote_snapshot import fuel_lines_delta
                 out['changes_since_priced']['fuel_delta_zar'] = fuel_lines_delta(quote, costing_now=out)
+                from core.services.quote_costing import iso
+                # Timestamps in SAST (+02:00), like every other rules timestamp.
                 out['snapshot'] = {
                     'fuel_price_used': quote.fuel_price_used, 'fuel_price_source': quote.fuel_price_source,
-                    'fuel_zone': quote.fuel_zone, 'fuel_effective_from': quote.fuel_effective_from,
+                    'fuel_zone': quote.fuel_zone, 'fuel_effective_from': iso(quote.fuel_effective_from),
                     'fuel_official_at_pricing': quote.fuel_official_at_pricing,
-                    'fuel_litres': quote.fuel_litres, 'priced_at': quote.priced_at,
+                    'fuel_litres': quote.fuel_litres, 'priced_at': iso(quote.priced_at),
                     'cost_floor': quote.cost_floor, 'empty_return_included': quote.empty_return_included,
                     'priced_vehicle_type': quote.priced_vehicle_type_id,
                 }
