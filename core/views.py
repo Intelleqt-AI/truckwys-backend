@@ -89,10 +89,13 @@ class CompanyFilterMixin:
         return qs
     
     def perform_create(self, serializer):
-        if hasattr(serializer.Meta.model, 'company_id'):
-            serializer.save(company=self.request.user.company)
-        else:
-            serializer.save()
+        # The creator is the actor: signals' company notifications skip them.
+        from core.services.notify import acting_as
+        with acting_as(self.request.user):
+            if hasattr(serializer.Meta.model, 'company_id'):
+                serializer.save(company=self.request.user.company)
+            else:
+                serializer.save()
 
 
 class BillingGateMixin:

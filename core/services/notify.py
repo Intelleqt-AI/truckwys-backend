@@ -146,3 +146,26 @@ def notify_company_billing_email(company_id, title: str, message: str = '', link
             send_billing_email(u.email, u.first_name or u.username, title, message, link)
     except Exception as exc:
         logger.warning('notify_company_billing_email failed: %s', exc)
+
+
+# The user acting in the current request/task, for signals that notify the
+# company about a save they can't see the request of (e.g. customer created).
+import contextlib as _contextlib
+import contextvars as _contextvars
+
+_acting_user_id = _contextvars.ContextVar('notify_acting_user_id', default=None)
+
+
+@_contextlib.contextmanager
+def acting_as(user):
+    """Within this block, company notifications from signals skip `user`
+    (nobody is told about their own action)."""
+    token = _acting_user_id.set(getattr(user, 'id', None))
+    try:
+        yield
+    finally:
+        _acting_user_id.reset(token)
+
+
+def acting_user_id():
+    return _acting_user_id.get()

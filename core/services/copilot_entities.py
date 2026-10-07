@@ -155,7 +155,7 @@ def _quote_execute_create(company, user, payload):
     payload = dict(payload)
     new_customer = payload.pop('_new_customer', None)
     if new_customer:
-        customer, _created = _resolve_customer(company, new_customer)
+        customer, _created = _resolve_customer(company, new_customer, user)
         payload['customer'] = customer.id
     if not payload.get('quote_number'):
         payload['quote_number'] = _gen_quote_number()

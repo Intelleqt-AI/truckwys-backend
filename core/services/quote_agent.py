@@ -84,7 +84,7 @@ def _gen_quote_number() -> str:
     return f"QT-{ts}-{uuid.uuid4().hex[:6]}"
 
 
-def _resolve_customer(company, name: str):
+def _resolve_customer(company, name: str, user=None):
     """Find an existing customer by name within the company, else auto-create a minimal one.
     Returns (customer, was_created)."""
     from core.models import Customer
@@ -99,10 +99,13 @@ def _resolve_customer(company, name: str):
         if existing:
             return existing, False
     email = f"{_slug(name)}.{uuid.uuid4().hex[:8]}@quote.local"
-    customer = Customer.objects.create(
+    customer = Customer(
         company=company, name=name or "New Customer", email=email,
         phone="", address="", city="", state="", zip_code="",
     )
+    if user is not None:
+        customer._notify_actor_id = getattr(user, 'id', None)   # no "new customer" toast to the creator
+    customer.save()
     return customer, True
 
 
@@ -130,7 +133,7 @@ def create_quote(company, user, *, customer_name, pickup_location, delivery_loca
     if weight > MAX_DECIMAL:
         raise ValueError("Weight is larger than the system can store.")
 
-    customer, customer_created = _resolve_customer(company, customer_name)
+    customer, customer_created = _resolve_customer(company, customer_name, user)
 
     fields = dict(
         company=company,

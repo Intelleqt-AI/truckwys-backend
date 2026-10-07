@@ -751,3 +751,25 @@ class FinalSettingsTests(_Base):
         self.company.save()
         inputs, _ = build_inputs({'distance_km': 50, 'weight': 1000, 'toll_cost': 0}, self.company)
         self.assertEqual(inputs['settings']['empty_return_min_km'], 0.0)
+
+
+class CustomerToastTests(_Base):
+    def test_creator_is_not_notified_of_their_own_customer(self):
+        from core.models import Notification
+        colleague = User.objects.create_user(username='colleague', password='x', company=self.company)
+        Notification.objects.all().delete()          # the setUp customer (no actor) notified everyone
+        r = self.api.post('/api/v1/customers/', {'name': 'Hornbill Foods', 'email': 'h@x.test', 'phone': '',
+                                                 'address': '', 'city': '', 'state': '', 'zip_code': ''},
+                          format='json')
+        self.assertEqual(r.status_code, 201, r.content)
+        mine = Notification.objects.filter(user=self.user, title='New customer added')
+        theirs = Notification.objects.filter(user=colleague, title='New customer added')
+        self.assertFalse(mine.exists())
+        self.assertTrue(theirs.exists())
+
+    def test_agent_created_customer_skips_the_creator(self):
+        from core.models import Notification
+        from core.services.quote_agent import _resolve_customer
+        Notification.objects.all().delete()
+        _resolve_customer(self.company, 'Brand New Co', self.user)
+        self.assertFalse(Notification.objects.filter(user=self.user, title='New customer added').exists())

@@ -555,6 +555,7 @@ def customer_saved(sender, instance, created, **kwargs):
         detail = instance.name or f'Customer {instance.id}'
         if getattr(instance, 'email', None):
             detail += f' · {instance.email}'
+        from core.services.notify import acting_user_id
         notify_company(
             company_id,
             'INFO',
@@ -562,6 +563,8 @@ def customer_saved(sender, instance, created, **kwargs):
             detail,
             link=f'/customers/{instance.id}',
             event='customer.created',
+            # Never toast the user who added it (API create, copilot, quote builder).
+            exclude_user_id=getattr(instance, '_notify_actor_id', None) or acting_user_id(),
         )
     except Exception:
         pass

@@ -38,6 +38,7 @@ Litres and burn are never rounded internally.
     driver       = cents(nights_loaded * allowance_per_night)  or the user's amount
     driver_return= cents((nights(2h) - nights(h)) * allowance_per_night)
     border       = cents(border_cost)
+    border_return= cents(border_cost) on an international trip with the empty return (crossing back)
     floor        = cents(sum of line amounts)   (null if any required line is unknown)
     target_price = max(cents(floor / (1 - target)), minimum_charge or 0)
     margin       = price - floor;  margin_pct = margin / price * 100
@@ -70,6 +71,7 @@ LINE_LABELS = {
     'operating_return': 'Operating costs, empty return',
     'tolls_return': 'Tolls, empty return',
     'driver_return': 'Driver nights, empty return',
+    'border_return': 'Border fees, empty return',
 }
 
 _MONTHS = ('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec')
@@ -549,6 +551,16 @@ def compute(inputs):
              f'{return_nights} extra night{"s" if return_nights != 1 else ""} at R 0: no allowance rate set'
              if return_nights else 'No extra night' if return_nights == 0 else 'Unknown'),
             nights=return_nights, rate_per_night=rate)
+        if dr_amt is None and not any(w['code'] == 'driver_nights_unknown' for w in warnings):
+            # The loaded driver line was entered, but without the driving time
+            # the return nights are unknown: a null line always blocks.
+            warnings.append(warning('driver_nights_unknown', 'block', 'Driving time is unknown',
+                                    'Enter the driver cost, or recalculate the route.',
+                                    actions=('enter_driver_cost', 'recalculate_route')))
+        if inputs.get('international') and border is not None and border > 0:
+            # The empty truck crosses the border(s) back: the same border,
+            # permit and non-SA toll costs per crossing as the loaded leg.
+            add('border_return', 'empty_return', cents(border), 'Border costs crossing back, empty')
 
     if op is None and distance is not None:
         complete = False
