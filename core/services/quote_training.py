@@ -63,6 +63,33 @@ def closed_outcomes():
             .exclude(quote__was_sent=False))
 
 
+def live_sample_count(scope: str, user_id=None, company_id=None) -> int:
+    """How many closed outcomes this scope could train from RIGHT NOW — the
+    same filters as build_win_training_matrix_for_scope, minus the feature
+    engineering, so a resolve()-time re-check is cheap (one COUNT query).
+
+    Used to catch a company/user that has fallen back below min_samples since
+    the cached model was trained (deleted quotes, a shrinking rolling window,
+    etc.) — a model's metadata['training_sample_count'] only ever reflects the
+    count at training time, so it alone can't detect that.
+    """
+    qs = closed_outcomes().filter(
+        Q(quote__company__ai_training_started_at__isnull=True)
+        | Q(created_at__gte=F('quote__company__ai_training_started_at'))
+    )
+    if scope == 'user':
+        if not user_id:
+            return 0
+        qs = qs.filter(created_by_id=user_id)
+    elif scope == 'company':
+        if not company_id:
+            return 0
+        qs = qs.filter(quote__company_id=company_id)
+    else:
+        qs = qs.filter(quote__company__pool_pricing_data=True)
+    return qs.count()
+
+
 def build_win_training_matrix_for_scope(scope: str, user_id=None, company_id=None):
     """Return (X, y, n, feature_names) engineered from QuoteOutcome. Never raises.
 

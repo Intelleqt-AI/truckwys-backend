@@ -393,6 +393,18 @@ def predict_optimal_margin(
 _MODEL_CACHE: Dict[Tuple[str, Optional[int]], Tuple[Any, float]] = {}
 
 
+def _live_sample_count(scope: str, key_id: Optional[int]) -> int:
+    """Live (not cached, not frozen-at-training-time) closed-outcome count for
+    a resolve() scope/key_id pair. Lazy import: quote_training doesn't import
+    this module, so this is only to keep the dependency one-directional."""
+    from core.services.quote_training import live_sample_count
+    if scope == 'company':
+        return live_sample_count('company', company_id=key_id)
+    if scope == 'user':
+        return live_sample_count('user', user_id=key_id)
+    return live_sample_count('global')
+
+
 class WinProbabilityModel:
     """
     Classifier that predicts P(quote accepted | features) — see
@@ -598,6 +610,14 @@ class WinProbabilityModel:
             n = int(model.metadata.get('training_sample_count') or 0)
             if n < min_samples:
                 return None, n
+            # training_sample_count is frozen at training time; re-check the
+            # LIVE count so a company/user that has since fallen below
+            # min_samples (deleted quotes, a shrinking rolling window) stops
+            # being served a stale model rather than it running indefinitely.
+            scope_, key_id = cache_key
+            live_n = _live_sample_count(scope_, key_id)
+            if live_n < min_samples:
+                return None, live_n
             return model, n
 
         if company_id:
