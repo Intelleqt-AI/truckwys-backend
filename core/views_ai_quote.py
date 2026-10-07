@@ -238,183 +238,69 @@ class FuelPriceCurrentView(APIView):
 # fixed for the features-dict interface, see win_prediction) rather than
 # deleted, since an external/internal caller could still curl it directly —
 # candidate for deletion in a future cleanup pass if that's confirmed unused.
+def _pricing_payload_from(data):
+    """The pricing-analysis payload from an older endpoint's body (its own
+    names mapped, the costing fields passed through)."""
+    p = {k: v for k, v in dict(data).items() if v is not None}
+    if 'distance' in p and 'distance_km' not in p:
+        p['distance_km'] = p['distance']
+    if 'load_weight' in p and 'weight' not in p:
+        p['weight'] = p['load_weight']
+    if 'client_id' in p and 'customer_id' not in p:
+        p['customer_id'] = p['client_id']
+    return p
+
+
+def _chance(likelihood):
+    """A model % as 0-1, else None (bands are not a probability)."""
+    if (likelihood or {}).get('level') == 'model' and likelihood.get('pct') is not None:
+        return round(likelihood['pct'] / 100.0, 2)
+    return None
+
+
 class AIQuoteSuggestionView(APIView):
-    """POST /api/v1/quotes/suggest/ — AI-suggested margin and price."""
+    """POST /api/v1/quotes/suggest/ — the suggested price, now the pricing
+    analysis' recommendation (QUOTE-RULES: the same floor, market, gates and
+    choices; no invented market or cost x 1,25 anchor). Old response keys kept:
+    suggested_price (null when the floor is incomplete or nothing is
+    recommended), margin_pct (true margin: (price - floor) / price),
+    margin_range, market_rate (the market median shown, or null),
+    win_probability only from a real model."""
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        """
-        Expects:
-        {
-          "distance_km": 1400,
-          "truck_type": 0,  # e.g., 0 = Flatbed
-          "load_type": 0,
-          "load_weight": 15000,
-          "fuel_cost": 5000,
-          "toll_cost": 1200,
-          "driver_cost": 800,
-          "actual_cost": 10000
-        }
-        Returns AI suggestion or 503 if model not trained.
-        """
+        from core.services.pricing_analysis import analyze_pricing
+        from core.views import resolve_user_company
+        company = resolve_user_company(request.user)
+        payload = _pricing_payload_from(request.data)
         try:
-            data = request.data
-            actual_cost = float(data.get('actual_cost', 0))
-            if actual_cost <= 0:
-                return Response({
-                    'success': False,
-                    'error': 'actual_cost must be > 0',
-                }, status=status.HTTP_400_BAD_REQUEST)
-
-            # The LightGBM margin model is OPTIONAL. If its libraries are missing or
-            # it isn't trained, we DON'T error — we ground the suggestion in the real
-            # cost breakdown + real lane market rate + the expected-profit optimiser,
-            # and let OpenAI produce/justify the price (validated so it stays real).
-            distance_km = _sg_float(data.get('distance_km'), 0.0)
-            fuel_cost = _sg_float(data.get('fuel_cost'), 0.0)
-            toll_cost = _sg_float(data.get('toll_cost'), 0.0)
-            driver_cost = _sg_float(data.get('driver_cost'), 0.0)
-            client_tier = _sg_int(data.get('client_tier'), 1)
-            days_until = _sg_int(data.get('days_until_departure'), 7)
-            hist = _sg_clamp(_sg_float(data.get('historical_acceptance_rate'), 0.5), 0.0, 1.0)
-
-            from core.views import resolve_user_company
-            company = resolve_user_company(request.user)
-
-            # 1) Real lane market rate (cross-platform -> own quotes -> SA estimate -> cost anchor).
-            origin = str(data.get('origin') or '').strip()
-            destination = str(data.get('destination') or '').strip()
-            vehicle_type = str(data.get('vehicle_type') or '').strip()
-            market_rate, market_rate_source = 0.0, 'none'
-            try:
-                from core.services.lane_benchmark import resolve_market_rate
-                rate, src = resolve_market_rate(origin, destination, vehicle_type or None, company=company,
-                                               one_way_only=True, sent_only=True)
-                if rate and rate > 0:
-                    market_rate, market_rate_source = float(rate), src
-            except Exception as exc:
-                logger.warning('suggest: market-rate resolve failed: %s', exc)
-            if market_rate <= 0:
-                market_rate = actual_cost * 1.25
-                market_rate_source = 'cost_anchor'
-
-            # 2) Deterministic, grounded expected-profit optimum (anchor + sane band).
-            from core.services.margin_optimizer import optimize_price, _route_popularity
-            opt = optimize_price(
-                total_cost=actual_cost, market_rate=market_rate,
-                client_tier=client_tier, days_until_departure=days_until,
-                historical_acceptance_rate=hist,
-                origin=origin or None, destination=destination or None,
-            )
-            anchor_price = _sg_float(opt.get('optimal_price'), 0.0) or round(actual_cost * 1.18, 2)
-            curve = opt.get('curve') or []
-            band_low = min((p['price'] for p in curve), default=round(actual_cost * 1.05, 2))
-            band_high = max((p['price'] for p in curve), default=round(actual_cost * 1.45, 2))
-
-            suggested_price = anchor_price
-            confidence = 0.7
-            rationale = ''
-            source = 'optimizer'
-
-            # 3) OpenAI layer — reasons over the REAL numbers; output validated + clamped.
-            try:
-                from core.services import agent as agent_svc
-                if agent_svc._provider():
-                    import json
-                    payload = {
-                        'actual_cost': round(actual_cost, 2),
-                        'distance_km': distance_km,
-                        'fuel_cost': round(fuel_cost, 2),
-                        'toll_cost': round(toll_cost, 2),
-                        'driver_cost': round(driver_cost, 2),
-                        'market_rate': round(market_rate, 2),
-                        'market_rate_source': market_rate_source,
-                        'optimizer_anchor_price': round(anchor_price, 2),
-                        'price_band': {'low': round(band_low, 2), 'high': round(band_high, 2)},
-                        'client_tier': client_tier,
-                        'days_until_departure': days_until,
-                    }
-                    sys_prompt = (
-                        "You are a pricing analyst for a South African road-freight operator. "
-                        "Suggest ONE quote price in ZAR that balances winning the load against margin, "
-                        "grounded ONLY in the numbers provided (real cost breakdown, real market rate, "
-                        "and the optimiser anchor/band). Never invent figures. The price MUST be >= "
-                        "actual_cost and SHOULD stay within price_band. Reply with STRICT JSON only: "
-                        '{"suggested_price": number, "confidence": number between 0 and 1, '
-                        '"rationale": "one or two sentences"}'
-                    )
-                    raw = agent_svc._llm_generate(
-                        sys_prompt, [{'role': 'user', 'content': json.dumps(payload)}]
-                    )
-                    parsed = _sg_extract_json(raw)
-                    if parsed and parsed.get('suggested_price') is not None:
-                        lo = max(actual_cost, band_low, anchor_price * 0.90)
-                        hi = max(lo, min(band_high, anchor_price * 1.10))
-                        suggested_price = _sg_clamp(_sg_float(parsed.get('suggested_price'), anchor_price), lo, hi)
-                        confidence = _sg_clamp(_sg_float(parsed.get('confidence'), 0.7), 0.3, 0.95)
-                        rationale = str(parsed.get('rationale') or '').strip()[:400]
-                        source = 'openai'
-            except Exception as exc:
-                logger.warning('suggest: OpenAI layer failed, using optimizer: %s', exc)
-
-            # 4) Win probabilities at the chosen price (and +/-5%). Resolves the
-            # same two-tier (user -> global -> heuristic) model as the live
-            # quote-creation flow — see core.services.win_prediction.
-            win_probability = win_low = win_high = None
-            prediction_ctx = None
-            try:
-                from core.services.win_prediction import resolve_prediction_context
-
-                _pop = _route_popularity(origin or None, destination or None)
-                prediction_ctx = resolve_prediction_context(request.user, company)
-
-                def _pw(price):
-                    ratio = (price / market_rate) if market_rate > 0 else 1.0
-                    features = {
-                        'price_ratio': ratio, 'client_tier': client_tier,
-                        'days_until_departure': days_until, 'historical_acceptance_rate': hist,
-                        'route_popularity': _pop,
-                    }
-                    return round(float(prediction_ctx.predict_proba(features)), 2)
-                win_probability = _pw(suggested_price)
-                win_low = _pw(suggested_price * 0.95)
-                win_high = _pw(suggested_price * 1.05)
-            except Exception as exc:
-                logger.warning('suggest: win-probability failed: %s', exc)
-
-            margin_pct = round((suggested_price - actual_cost) / actual_cost * 100, 1) if actual_cost else 0.0
-            margin_lower = round((band_low - actual_cost) / actual_cost * 100, 1) if actual_cost else 5.0
-            margin_upper = round((band_high - actual_cost) / actual_cost * 100, 1) if actual_cost else 45.0
-
-            response_data = {
-                'success': True,
-                'suggested_price': round(suggested_price, 2),
-                'margin_pct': margin_pct,
-                'confidence': round(confidence, 2),
-                'margin_range': {'lower': margin_lower, 'upper': margin_upper},
-                'source': source,
-                'rationale': rationale,
-                'market_rate': round(market_rate, 2),
-                'market_rate_source': market_rate_source,
-            }
-            if win_probability is not None:
-                response_data['win_probability'] = win_probability
-                response_data['win_probability_at_lower_price'] = win_low
-                response_data['win_probability_at_higher_price'] = win_high
-            # Additive honesty fields: `available` is False whenever the win
-            # probabilities above come from the heuristic, not a trained model.
-            model_ok = bool(prediction_ctx is not None and prediction_ctx.available)
-            response_data['available'] = model_ok
-            response_data['level'] = 'model' if model_ok else 'heuristic'
-            response_data['model_scope'] = prediction_ctx.scope if model_ok else None
-
-            return Response(response_data)
-
-        except Exception as e:
-            return Response({
-                'success': False,
-                'error': str(e),
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            r = analyze_pricing(payload, company=company, user=request.user)
+        except (TypeError, ValueError, KeyError, AttributeError):
+            return Response({'success': False, 'error': 'Check the quote details.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        choices = r.get('choices') or []
+        rec = next((c for c in choices if c.get('recommended')), None)
+        m = r.get('market') or {}
+        lk = r.get('likelihood') or {}
+        margins = [c['margin_pct'] for c in choices if c.get('margin_pct') is not None]
+        return Response({
+            'success': True,
+            'suggested_price': rec['price'] if rec and not r.get('blocking') else None,
+            'margin_pct': rec['margin_pct'] if rec else None,
+            'margin_range': {'lower': min(margins), 'upper': max(margins)} if margins else None,
+            'confidence': None,
+            'source': 'pricing_analysis',
+            'rationale': (r.get('recommendation') or {}).get('reason') or '',
+            'market_rate': m.get('median') if m.get('available') else None,
+            'market_rate_source': m.get('tier') if m.get('available') else 'none',
+            'cost_floor': (r.get('cost_floor') or {}).get('total'),
+            'blocking': r.get('blocking') or [],
+            'warnings': r.get('warnings') or [],
+            'available': lk.get('level') == 'model',
+            'level': 'model' if lk.get('level') == 'model' else 'bands',
+            'model_scope': (lk.get('model') or {}).get('scope'),
+            'win_probability': _chance(rec.get('likelihood')) if rec else None,
+        })
 
 
 class RevenueGuardView(APIView):
@@ -1784,120 +1670,45 @@ class QuoteBenchmarkView(APIView):
 # UNREACHABLE FROM LIVE UI — see the note above AIQuoteSuggestionView; same
 # reasoning applies here.
 class QuoteWinProbabilityView(APIView):
-    """POST /api/v1/quotes/win-probability/ — Predict win probability for a quote."""
+    """POST /api/v1/quotes/win-probability/ — the chance to win at `price`,
+    from the pricing analysis (same engine, features, gates and market as the
+    builder; no invented R43 800 market). A probability only from a real
+    model (`available`, level 'model'); otherwise null with the band
+    (Likely / Even chance / Less likely) where there is market evidence."""
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        """
-        Given quote parameters, predict win probability.
-        Body: {
-            "price": 42000,
-            "distance": 1580,
-            "vehicle_type": "interlink",
-            "client_id": 42,
-            "origin": "JHB",
-            "destination": "CPT",
-            "days_until_departure": 2
-        }
-        """
+        from core.services.pricing_analysis import analyze_pricing
+        from core.views import resolve_user_company
+        data = request.data
         try:
-            from core.services.win_prediction import resolve_prediction_context
-            from core.services.margin_optimizer import _route_popularity
+            price = float(data.get('price') or 0)
+        except (TypeError, ValueError):
+            price = 0
+        if price <= 0 or not data.get('client_id'):
+            return Response({'success': False, 'error': 'price and client_id are required'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        company = resolve_user_company(request.user)
+        base = _pricing_payload_from(data)
 
-            price = float(request.data.get('price', 0))
-            distance = float(request.data.get('distance', 0))
-            client_id = request.data.get('client_id')
-            days_until_departure = int(request.data.get('days_until_departure', 2))
-            origin = str(request.data.get('origin') or '').strip()
-            destination = str(request.data.get('destination') or '').strip()
-            vehicle_type = str(request.data.get('vehicle_type') or '').strip()
-
-            if not price or not client_id:
-                return Response({
-                    'success': False,
-                    'error': 'price and client_id are required'
-                }, status=status.HTTP_400_BAD_REQUEST)
-
-            from core.views import resolve_user_company
-            company = resolve_user_company(request.user)
-
-            # Real lane market rate (cross-platform -> own quotes -> SA
-            # estimate), falling back to the old hardcoded JHB-CPT interlink
-            # figure only when nothing real is resolvable.
-            market_rate = 43800.0
-            if origin and destination:
-                try:
-                    from core.services.lane_benchmark import resolve_market_rate
-                    rate, _src = resolve_market_rate(origin, destination, vehicle_type or None, company=company,
-                                               one_way_only=True, sent_only=True)
-                    if rate and rate > 0:
-                        market_rate = float(rate)
-                except Exception as exc:
-                    logger.warning('win-probability: market-rate resolve failed: %s', exc)
-            price_ratio = price / market_rate if market_rate > 0 else 1.0
-
-            # Get client historical acceptance rate
-            try:
-                customer = Customer.objects.get(id=client_id, company=company)
-                accepted_count = Quote.objects.filter(
-                    customer=customer,
-                    outcome='accepted'
-                ).count()
-                total_count = Quote.objects.filter(
-                    customer=customer,
-                    outcome__in=['accepted', 'rejected']
-                ).count()
-                historical_acceptance_rate = accepted_count / total_count if total_count > 0 else 0.7
-
-                # Determine client tier
-                if total_count >= 10:
-                    client_tier = 2  # VIP
-                elif total_count >= 3:
-                    client_tier = 1  # Regular
-                else:
-                    client_tier = 0  # New
-            except Exception:
-                historical_acceptance_rate = 0.7
-                client_tier = 0
-
-            route_popularity = _route_popularity(origin or None, destination or None)
-
-            # Predict win probability — resolves the same two-tier
-            # (user -> global -> heuristic) model as the live quote-creation flow.
-            prediction_ctx = resolve_prediction_context(request.user, company)
-
-            def _features(p):
-                return {
-                    'price_ratio': (p / market_rate) if market_rate > 0 else 1.0,
-                    'client_tier': client_tier,
-                    'days_until_departure': days_until_departure,
-                    'historical_acceptance_rate': historical_acceptance_rate,
-                    'route_popularity': route_popularity,
-                }
-
-            win_probability = prediction_ctx.predict_proba(_features(price))
-
-            # Calculate win probability at ±5%
-            price_lower = price * 0.95
-            price_higher = price * 1.05
-
-            win_probability_lower = prediction_ctx.predict_proba(_features(price_lower))
-            win_probability_higher = prediction_ctx.predict_proba(_features(price_higher))
-
-            return Response({
-                'success': True,
-                'win_probability': round(win_probability, 2),
-                'win_probability_lower': round(win_probability_lower, 2),
-                'win_probability_higher': round(win_probability_higher, 2),
-                # Additive: False / 'heuristic' when no trained model is behind
-                # these numbers (they are the hand-tuned sigmoid, not a prediction).
-                'available': bool(prediction_ctx.available),
-                'level': 'model' if prediction_ctx.available else 'heuristic',
-                'model_scope': prediction_ctx.scope if prediction_ctx.available else None,
-            })
-
-        except Exception as e:
-            return Response({
-                'success': False,
-                'error': str(e),
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        def at(p):
+            r = analyze_pricing({**base, 'your_price': p}, company=company, user=request.user)
+            return r, (r.get('your_price') or {}).get('likelihood')
+        r, lk = at(price)
+        model = (lk or {}).get('level') == 'model'
+        lower = _chance(at(price * 0.95)[1]) if model else None
+        higher = _chance(at(price * 1.05)[1]) if model else None
+        return Response({
+            'success': True,
+            'win_probability': _chance(lk),
+            'win_probability_lower': lower,
+            'win_probability_higher': higher,
+            'band': (lk or {}).get('band'),
+            'band_label': (lk or {}).get('label'),
+            'margin': (r.get('your_price') or {}).get('margin'),
+            'margin_pct': (r.get('your_price') or {}).get('margin_pct'),
+            'blocking': r.get('blocking') or [],
+            'available': model,
+            'level': 'model' if model else 'heuristic',
+            'model_scope': ((r.get('likelihood') or {}).get('model') or {}).get('scope') if model else None,
+        })

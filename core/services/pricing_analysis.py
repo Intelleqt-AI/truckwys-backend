@@ -1057,10 +1057,10 @@ def customer_evidence(customer, company, origin, destination, exclude_quote_id=N
     definition the company market tier uses."""
     from django.db.models import Count
     from core.models import Quote
-    from core.services.lane_benchmark import _lane_q, lost_quote_q, never_sent_q, won_quote_q
+    from core.services.lane_benchmark import _lane_q, lost_quote_q, sent_q, won_quote_q
 
     # Never-sent quotes (decided straight from DRAFT) are not evidence either.
-    base = Quote.objects.filter(company=company, customer=customer).exclude(status='DRAFT').exclude(never_sent_q())
+    base = Quote.objects.filter(company=company, customer=customer).exclude(status='DRAFT').filter(sent_q())
     if exclude_quote_id:
         base = base.exclude(id=exclude_quote_id)
 
@@ -1571,8 +1571,12 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
     market_out = market_display(market)
     market_out['your_position'] = _position(your_price, market_out)
 
+    # The customer's lane history is one-way prices: compare like for like
+    # with a return trip's market (scaled x2) — halve the median for the
+    # price-sensitivity test, double their prices for the bands.
+    trip_scale = 2 if market.get('legs_scaled') else 1
     cust = (customer_evidence(customer, company, origin, destination, quote_id,
-                              market_median=market_out['median'] if _market_usable(market) else None)
+                              market_median=(market_out['median'] / trip_scale) if _market_usable(market) else None)
             if customer is not None else None)
 
     choices = []
@@ -1581,7 +1585,11 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
     likelihood = {'level': 'rules', 'model': None, 'rules': None, 'reason': None, 'short': None,
                   'headline': None, 'reason_code': None}
     your = None
-    thresholds, rules_basis, raw_thresholds = rules_thresholds(market, cust, raw=True)
+    cust_for_bands = cust
+    if cust is not None and trip_scale != 1:
+        cust_for_bands = {**cust, 'recent_lane_quotes': [{**q, 'price': q['price'] * trip_scale}
+                                                         for q in cust.get('recent_lane_quotes') or []]}
+    thresholds, rules_basis, raw_thresholds = rules_thresholds(market, cust_for_bands, raw=True)
     likelihood['rules'] = ({'thresholds': thresholds, 'basis': rules_basis, 'raw_thresholds': raw_thresholds}
                            if thresholds else None)
 

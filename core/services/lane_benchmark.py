@@ -129,6 +129,13 @@ def never_sent_q():
     return Q(was_sent=False)
 
 
+def sent_q():
+    """Market and customer-history evidence: quotes KNOWN to have been sent
+    (Quote.was_sent is True). Unknown (legacy None) and never-sent quotes
+    are not evidence (QUOTE-RULES §8)."""
+    return Q(was_sent=True)
+
+
 def lost_quote_q():
     """A decided, lost quote: declined, or recorded rejected, on a sent quote."""
     return (Q(status='DECLINED') | (Q(outcome='rejected') & ~Q(status='DRAFT'))) & ~won_quote_q()
@@ -458,7 +465,7 @@ def compute_lane_benchmark(origin, destination, vehicle_type=None,
         if sent_only:
             # Additive (pricing analysis): a quote marked won without ever
             # being sent to the customer is not market evidence.
-            qs = qs.exclude(never_sent_q())
+            qs = qs.filter(sent_q())
         if exclude_quote_id:
             # Callers benchmarking a specific quote must not see that quote's
             # own price inside its benchmark (k-anonymity is re-checked below
@@ -705,7 +712,7 @@ def resolve_market_rate(origin, destination, vehicle_type=None, company=None,
             if one_way_only:
                 base = base.exclude(trip_type='ROUND_TRIP')
             if sent_only:
-                base = base.exclude(never_sent_q())
+                base = base.filter(sent_q())
 
             # QUOTE-RULES §8: fuel-normalised, same vehicle class when it has
             # >= 5 quotes (else all trucks), median with the outlier cap — not
@@ -795,7 +802,7 @@ def _company_lane_amounts(o, d, vt, company, exclude_quote_id=None, as_of=None, 
     base = Quote.objects.filter(
         won_quote_q(), _lane_q('origin', o), _lane_q('destination', d), company=company,
         created_at__gte=as_of - timedelta(days=COMPANY_FALLBACK_DAYS), created_at__lte=as_of,
-    ).exclude(total_amount__isnull=True).exclude(never_sent_q())
+    ).exclude(total_amount__isnull=True).filter(sent_q())
     # One-way prices only (default), or real return-trip prices only.
     base = base.filter(trip_type='ROUND_TRIP') if trip == 'round_trip' else base.exclude(trip_type='ROUND_TRIP')
     if exclude_quote_id:

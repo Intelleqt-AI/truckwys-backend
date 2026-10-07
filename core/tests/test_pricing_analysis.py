@@ -45,6 +45,7 @@ def base_payload(**over):
 
 
 def won_quotes(company, customer, n, *, start=24000, step=500, origin='JHB', destination='DBN', prefix='W', **extra):
+    extra.setdefault('was_sent', True)       # market / history evidence = quotes known to have been sent
     out = []
     for i in range(n):
         out.append(make_quote(company, customer, number=f'{prefix}-{company.id}-{i}', total=start + i * step,
@@ -1578,7 +1579,8 @@ class Round5Tests(_Base):
         prices = [26600, 28700, 25000, 25500, 26000, 27000, 27500, 24000]
         for i, p in enumerate(prices):     # newest last: created in this order
             make_quote(self.company, self.customer, number=f'PS-{i}', total=p, destination='DBN', status='DECLINED',
-                       outcome='rejected', pickup_location='Johannesburg', delivery_location='Durban')
+                       outcome='rejected', pickup_location='Johannesburg', delivery_location='Durban',
+                       was_sent=True)
         r = self.analyze(customer_id=self.customer.id)
         ps = [a for a in r['attention'] if a['code'] == 'price_sensitive']
         self.assertEqual(len(ps), 1)
@@ -2001,3 +2003,14 @@ class PlatformPrivacyTests(_Base):
         out = resolve_market_range('GBE', 'HRE', company=self.company)
         self.assertEqual(out['tier'], 'platform')
         self.assertTrue(all(out[k] % 500 == 0 for k in ('p25', 'median', 'p75')))
+
+
+class RoundTripLikeForLikeTests(_Base):
+    def test_customer_one_way_prices_doubled_for_round_trip_bands(self):
+        platform_market(self.company, self.customer)
+        one = self.analyze(customer_id=self.customer.id, include_return=False)
+        rt = self.analyze(customer_id=self.customer.id, legs=2, trip_type='ROUND_TRIP', distance_km=1136)
+        self.assertTrue(rt['market']['legs_scaled'])
+        th1, th2 = one['likelihood']['rules']['thresholds'], rt['likelihood']['rules']['thresholds']
+        # Both scaled together: the round-trip edges sit at about twice the one-way ones.
+        self.assertGreater(th2['likely_max'], 1.8 * th1['likely_max'])

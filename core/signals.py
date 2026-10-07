@@ -431,6 +431,10 @@ def quote_saved(sender, instance, created, **kwargs):
     # SENT (or leaving SENT) -> True; DRAFT straight to a decided status with
     # nothing known -> False (a never-sent quote is not market evidence).
     # A queryset update: no signals re-fired, no other field touched.
+    if created and instance.status == 'SENT' and getattr(instance, 'was_sent', None) is not True:
+        # Created straight as SENT: it was sent.
+        if sender.objects.filter(pk=instance.pk).update(was_sent=True):
+            instance.was_sent = True
     if not created:
         try:
             old = getattr(instance, '_old_status', None)
@@ -457,7 +461,9 @@ def quote_saved(sender, instance, created, **kwargs):
     # action, a plain status PATCH from the detail page's dropdown, or a
     # Kanban drag on the quotes board — so they all behave identically and
     # a quote is never "Sent" in the UI without actually having been sent.
-    if not created and instance.status == 'SENT' and getattr(instance, '_old_status', None) != 'SENT':
+    # Created straight as SENT goes the same way (it was sent): the email is
+    # queued on commit, so a create the send guard rolls back never emails.
+    if instance.status == 'SENT' and (created or getattr(instance, '_old_status', None) != 'SENT'):
         try:
             from django.db import transaction
             from core.services.quote_share import ensure_quote_token, send_quote_to_customer_email

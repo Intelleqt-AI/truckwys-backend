@@ -85,7 +85,7 @@ class OwnCompanyTierTests(TestCase):
             company or self.company, customer or self.customer,
             number=f'LB-{self._n:04d}', total=amount, origin=origin,
             destination=destination, status='ACCEPTED', outcome='accepted',
-            vehicle_type=vehicle_type, created_by=created_by or self.user,
+            vehicle_type=vehicle_type, created_by=created_by or self.user, was_sent=True,
         )
 
     def test_lane_level_retry_rescues_a_vehicle_type_split(self):

@@ -814,3 +814,46 @@ class FinalAnalysisFixTests(_Base):
         p = m.call_args.args[0]
         self.assertEqual((p['duration_minutes'], p['trip_type'], p['tolls_unknown'], p['vehicle_type_id']),
                          (440, 'ROUND_TRIP', True, self.vt.id))
+
+
+class SentEvidenceTests(_Base):
+    """M2: evidence = quotes known sent; created-as-SENT is a send; outcome is
+    set only by the outcome flow."""
+
+    def test_created_as_sent_records_was_sent_and_emails_on_commit(self):
+        with patch('core.services.quote_share.send_quote_to_customer_email',
+                   return_value=(True, 'a@x.test')) as send, \
+                self.captureOnCommitCallbacks(execute=True):
+            q = self.create(status='SENT')
+        q.refresh_from_db()
+        self.assertTrue(q.was_sent)
+        self.assertTrue(q.token)
+        self.assertEqual(send.call_count, 1)
+
+    def test_blocked_create_as_sent_never_emails(self):
+        with patch('core.services.quote_share.send_quote_to_customer_email',
+                   return_value=(True, 'a@x.test')) as send, \
+                self.captureOnCommitCallbacks(execute=True):
+            r = self.api.post('/api/v1/quotes/', self.quote_payload(status='SENT', costing_inputs={'tolls_unknown': True}),
+                              format='json')
+        self.assertEqual(r.status_code, 400)
+        send.assert_not_called()
+
+    def test_outcome_is_read_only_through_the_quote_api(self):
+        q = self.create()
+        r = self.api.patch(f'/api/v1/quotes/{q.id}/', {'outcome': 'accepted'}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        q.refresh_from_db()
+        self.assertNotEqual(q.outcome, 'accepted')
+        r = self.api.post('/api/v1/quotes/', self.quote_payload(outcome='rejected'), format='json')
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertNotEqual(Quote.objects.get(id=r.json()['id']).outcome, 'rejected')
+
+    def test_unknown_send_state_is_not_market_evidence(self):
+        from core.services.lane_benchmark import sent_q
+        from core.tests.test_price_analysis import make_quote
+        a = make_quote(self.company, self.customer, number='SE-1', status='ACCEPTED', outcome='accepted')
+        Quote.objects.filter(pk=a.pk).update(was_sent=None)
+        b = make_quote(self.company, self.customer, number='SE-2', status='ACCEPTED', outcome='accepted')
+        Quote.objects.filter(pk=b.pk).update(was_sent=True)
+        self.assertEqual(list(Quote.objects.filter(sent_q()).values_list('quote_number', flat=True)), ['SE-2'])

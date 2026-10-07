@@ -691,6 +691,8 @@ class LegacyEndpointPredictProbaRegressionTests(IsolatedModelStorageMixin, TestC
         data = resp.json()
         self.assertTrue(data.get('success'))
         self.assertIn('suggested_price', data)
+        self.assertNotEqual(data.get('market_rate_source'), 'cost_anchor')   # no invented market
+        self.assertIsNone(data['market_rate'])
 
     def test_win_probability_endpoint_does_not_500(self):
         resp = self.client_api.post('/api/v1/quotes/win-probability/', {
@@ -701,7 +703,9 @@ class LegacyEndpointPredictProbaRegressionTests(IsolatedModelStorageMixin, TestC
         data = resp.json()
         self.assertTrue(data.get('success'))
         self.assertIn('win_probability', data)
-        self.assertTrue(0.0 <= data['win_probability'] <= 1.0)
+        # No trained model, no market: no invented probability (QUOTE-RULES).
+        self.assertIsNone(data['win_probability'])
+        self.assertFalse(data['available'])
 
 
 class AnalyzeClientFeatureDerivationTests(TestCase):

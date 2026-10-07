@@ -45,7 +45,8 @@ def ensure_lane_market(origin='JHB', destination='CPT'):
                                        phone='', address='', city='', state='', zip_code='')
         for i, total in enumerate(totals[c_i * 3:(c_i + 1) * 3]):
             make_quote(donor, cust, number=f'MKT-{origin}{destination}-{c_i}-{i}', total=total,
-                       origin=origin, destination=destination, status='ACCEPTED', outcome='accepted')
+                       origin=origin, destination=destination, status='ACCEPTED', outcome='accepted',
+                       was_sent=True)
 
 
 def make_outcomes(company, customer, user, n_accepted, n_rejected=None, *, prefix='Q'):

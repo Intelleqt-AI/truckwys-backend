@@ -687,7 +687,11 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
                             # Pricing snapshot (QUOTE-RULES.md §9): server-set on save.
                             'fuel_price_used', 'fuel_price_source', 'fuel_zone', 'fuel_effective_from',
                             'fuel_official_at_pricing', 'fuel_litres', 'priced_at', 'priced_vehicle_type',
-                            'empty_return_included', 'cost_floor', 'costing_snapshot']
+                            'empty_return_included', 'cost_floor', 'costing_snapshot',
+                            # Only the outcome flow (record outcome / accept /
+                            # decline) sets it: a client-sent outcome is ignored,
+                            # so a PATCH cannot fake model / market evidence.
+                            'outcome']
 
     PRICING_DECISION_MAX_BYTES = 20_000
 
