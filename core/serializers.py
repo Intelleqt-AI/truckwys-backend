@@ -1451,6 +1451,27 @@ def _is_official_petrol(value):
     return False
 
 
+# Plain, SA-format wording for every bounded company setting: the same
+# sentence for an out-of-range value, a non-number, too many digits or
+# decimals — never a DRF default ("Ensure this value is ...").
+SETTINGS_MESSAGES = {
+    'fuel_price_own': 'Enter a diesel price between R 5 and R 100 per litre, or leave it blank.',
+    'fuel_price_per_litre': 'Enter a diesel price between R 5 and R 100 per litre, or leave it blank.',
+    'fuel_price_petrol': 'Enter a petrol price between R 5 and R 100 per litre, or leave it blank.',
+    'fuel_price_electric': 'Enter an electricity price above R 0 and up to R 20 per kWh, or leave it blank.',
+    'fuel_price_hybrid': 'Enter a price above R 0 and up to R 100 per litre, or leave it blank.',
+    'default_base_rate_per_km': 'Enter a default price per km between R 0 and R 1 000, or leave it blank.',
+    'default_toll_rate_per_km': 'Enter a toll rate between R 0 and R 50 per km.',
+    'minimum_charge': 'Enter a minimum charge between R 0 and R 5 000 000, or leave it blank.',
+    'empty_return_min_km': 'Enter a distance between 0 and 5 000 km.',
+    'operating_cost_per_km': 'Enter an operating cost between R 1 and R 200 per km, or leave it blank.',
+    'driver_allowance_per_night': 'Enter a driver allowance between R 1 and R 5 000 per night, or leave it blank.',
+    'margin_target_pct': 'Enter a target margin above 0% and below 100%.',
+}
+_SETTINGS_ERROR_KEYS = ('invalid', 'max_value', 'min_value', 'max_digits', 'max_decimal_places',
+                        'max_whole_digits', 'max_string_length')
+
+
 class CompanySerializer(serializers.ModelSerializer):
     logo_url = serializers.SerializerMethodField()
     
@@ -1542,7 +1563,7 @@ class CompanySerializer(serializers.ModelSerializer):
         if self._unchanged('fuel_price_own', value):
             return value
         if value is not None and not (Decimal('5') <= value <= Decimal('100')):
-            raise serializers.ValidationError('Enter a diesel price between R5 and R100 per litre, or leave it blank.')
+            raise serializers.ValidationError(SETTINGS_MESSAGES['fuel_price_own'])
         return value
 
     def _unchanged(self, field, value):
@@ -1561,15 +1582,14 @@ class CompanySerializer(serializers.ModelSerializer):
         if self._unchanged('minimum_charge', value):
             return value
         if value is not None and not (Decimal('0') <= value <= Decimal('5000000')):
-            raise serializers.ValidationError('Enter a minimum charge between R0 and R5 000 000, or leave it blank.')
+            raise serializers.ValidationError(SETTINGS_MESSAGES['minimum_charge'])
         return value or None
 
     def validate_fuel_price_electric(self, value):
         if self._unchanged('fuel_price_electric', value):
             return value
         if value is not None and not (Decimal('0') < value <= Decimal('20')):
-            raise serializers.ValidationError('Enter an electricity price above R0 and up to R20 per kWh, or leave it '
-                                              'blank.')
+            raise serializers.ValidationError(SETTINGS_MESSAGES['fuel_price_electric'])
         return value
 
     def validate_fuel_price_hybrid(self, value):
@@ -1578,21 +1598,21 @@ class CompanySerializer(serializers.ModelSerializer):
         if self._unchanged('fuel_price_hybrid', value):
             return value
         if value is not None and not (Decimal('0') < value <= Decimal('100')):
-            raise serializers.ValidationError('Enter a price above R0 and up to R100 per litre, or leave it blank.')
+            raise serializers.ValidationError(SETTINGS_MESSAGES['fuel_price_hybrid'])
         return value
 
     def validate_default_base_rate_per_km(self, value):
         if self._unchanged('default_base_rate_per_km', value):
             return value
         if value is not None and not (Decimal('0') <= value <= Decimal('1000')):
-            raise serializers.ValidationError('Enter a default price per km between R0 and R1 000, or leave it blank.')
+            raise serializers.ValidationError(SETTINGS_MESSAGES['default_base_rate_per_km'])
         return value
 
     def validate_empty_return_min_km(self, value):
         if self._unchanged('empty_return_min_km', value):
             return value
         if value is not None and not (Decimal('0') <= value <= Decimal('5000')):
-            raise serializers.ValidationError('Enter a distance between 0 and 5 000 km.')
+            raise serializers.ValidationError(SETTINGS_MESSAGES['empty_return_min_km'])
         return value
 
     def validate(self, attrs):
@@ -1624,7 +1644,7 @@ class CompanySerializer(serializers.ModelSerializer):
             if legacy is not None and not unchanged and not echo \
                     and not (Decimal('5') <= Decimal(str(legacy)) <= Decimal('100')):
                 raise serializers.ValidationError(
-                    {'fuel_price_per_litre': 'Enter a diesel price between R5 and R100 per litre, or leave it blank.'})
+                    {'fuel_price_per_litre': SETTINGS_MESSAGES['fuel_price_own']})
             if unchanged:
                 pass   # the old client echoed the own price back: nothing changed
             elif echo and zone_change:
@@ -1686,7 +1706,7 @@ class CompanySerializer(serializers.ModelSerializer):
         if self.instance is not None and value == getattr(self.instance, 'fuel_price_petrol', None):
             return value                     # an old client echoing a stored value back
         if not (Decimal('5') <= value <= Decimal('100')):
-            raise serializers.ValidationError('Enter a petrol price between R5 and R100 per litre, or leave it blank.')
+            raise serializers.ValidationError(SETTINGS_MESSAGES['fuel_price_petrol'])
         return value
 
     def get_margin_target_range(self, obj):
@@ -1703,19 +1723,26 @@ class CompanySerializer(serializers.ModelSerializer):
         except Exception:
             return None
 
+    def validate_default_toll_rate_per_km(self, value):
+        if self._unchanged('default_toll_rate_per_km', value):
+            return value
+        if value is not None and not (Decimal('0') <= value <= Decimal('50')):
+            raise serializers.ValidationError(SETTINGS_MESSAGES['default_toll_rate_per_km'])
+        return value
+
     def validate_margin_target_pct(self, value):
         # Only nonsense is refused (a margin on price can't reach 100%), so a
         # company already storing an unusual figure can still save its
         # profile; the pricing analysis itself clamps the target to 1–40%.
         if value is not None and not (Decimal('0') < value < Decimal('100')):
-            raise serializers.ValidationError('Enter a target margin above 0% and below 100%.')
+            raise serializers.ValidationError(SETTINGS_MESSAGES['margin_target_pct'])
         return value
 
     def validate_driver_allowance_per_night(self, value):
         if self._unchanged('driver_allowance_per_night', value):
             return value
         if value is not None and not (Decimal('1') <= value <= Decimal('5000')):
-            raise serializers.ValidationError('Enter a driver allowance between R1 and R5 000 per night, or leave it blank.')
+            raise serializers.ValidationError(SETTINGS_MESSAGES['driver_allowance_per_night'])
         return value
 
     def validate_operating_cost_per_km(self, value):
@@ -1724,7 +1751,7 @@ class CompanySerializer(serializers.ModelSerializer):
         if self._unchanged('operating_cost_per_km', value):
             return value
         if value is not None and not (Decimal('1') <= value <= Decimal('200')):
-            raise serializers.ValidationError('Enter an operating cost between R1 and R200 per km, or leave it blank.')
+            raise serializers.ValidationError(SETTINGS_MESSAGES['operating_cost_per_km'])
         return value
 
     def get_fields(self):
@@ -1733,6 +1760,10 @@ class CompanySerializer(serializers.ModelSerializer):
         # Defence in depth — if this serializer is ever reached by anyone else
         # the bank fields come back read-only instead of silently writable.
         fields = super().get_fields()
+        for name, message in SETTINGS_MESSAGES.items():
+            f = fields.get(name)
+            if f is not None and not f.read_only:
+                f.error_messages.update({k: message for k in _SETTINGS_ERROR_KEYS})
         request = self.context.get('request')
         user = getattr(request, 'user', None)
         can_edit = bool(user and getattr(user, 'is_authenticated', False) and (

@@ -44,13 +44,15 @@ FROM company_profile c WHERE EXISTS (SELECT 1 FROM vehicle_types v WHERE v.compa
 
 ```sql
 SELECT id, company_name, fuel_price_electric, fuel_price_hybrid, default_base_rate_per_km, minimum_charge,
-       fuel_price_per_litre, fuel_price_petrol, operating_cost_per_km, driver_allowance_per_night
+       fuel_price_per_litre, fuel_price_petrol, operating_cost_per_km, driver_allowance_per_night,
+       default_toll_rate_per_km
 FROM company_profile
 WHERE (fuel_price_electric IS NOT NULL AND (fuel_price_electric <= 0 OR fuel_price_electric > 20))
    OR (fuel_price_hybrid IS NOT NULL AND (fuel_price_hybrid <= 0 OR fuel_price_hybrid > 100))
    OR (default_base_rate_per_km IS NOT NULL AND (default_base_rate_per_km < 0 OR default_base_rate_per_km > 1000))
    OR (minimum_charge IS NOT NULL AND (minimum_charge < 0 OR minimum_charge > 5000000))
    OR (operating_cost_per_km IS NOT NULL AND (operating_cost_per_km < 1 OR operating_cost_per_km > 200))
+   OR (default_toll_rate_per_km IS NOT NULL AND (default_toll_rate_per_km < 0 OR default_toll_rate_per_km > 50))
    OR (driver_allowance_per_night IS NOT NULL AND (driver_allowance_per_night < 1 OR driver_allowance_per_night > 5000))
    OR (fuel_price_per_litre IS NOT NULL AND fuel_price_per_litre <> 0 AND (fuel_price_per_litre < 5 OR fuel_price_per_litre > 100))
    OR (fuel_price_petrol IS NOT NULL AND fuel_price_petrol <> 0 AND (fuel_price_petrol < 5 OR fuel_price_petrol > 100));

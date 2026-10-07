@@ -1294,3 +1294,25 @@ class Round4PolishTests(_Base):
             call_command('quote_diesel_audit', '--classification', stdout=out)
         self.assertIn('n/a before migrate', out.getvalue())
         self.assertNotIn('difference(s) between', out.getvalue())
+
+
+class SettingsPlainMessagesTests(_Base):
+    URL = '/api/v1/company/profile/'
+
+    def test_every_bounded_setting_uses_plain_wording(self):
+        from core.serializers import SETTINGS_MESSAGES
+        bad = {'fuel_price_own': ['3', '1000', 'abc', '30.123456'], 'fuel_price_petrol': ['200', 'x'],
+               'fuel_price_per_litre': ['500', 'x'], 'fuel_price_electric': ['25', 'x'],
+               'fuel_price_hybrid': ['150', 'x'], 'default_base_rate_per_km': ['5000', 'x'],
+               'default_toll_rate_per_km': ['60', 'x', '1000'], 'minimum_charge': ['9999999', 'x'],
+               'empty_return_min_km': ['9000', 'x'], 'operating_cost_per_km': ['0.5', 'x'],
+               'driver_allowance_per_night': ['9000', 'x'], 'margin_target_pct': ['100', '1000', 'x']}
+        for field, values in bad.items():
+            for v in values:
+                r = self.api.patch(self.URL, {field: v}, format='json')
+                self.assertEqual(r.status_code, 400, (field, v, r.content))
+                body = r.json()
+                msgs = body.get(field) or body.get('fuel_price_per_litre') or body
+                text = ' '.join(msgs) if isinstance(msgs, list) else str(msgs)
+                self.assertNotIn('Ensure', text, (field, v))
+                self.assertIn(SETTINGS_MESSAGES[field], text, (field, v, text))

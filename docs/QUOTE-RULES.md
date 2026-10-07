@@ -366,3 +366,6 @@ Copy the file into each client repo's test fixtures (keep identical).
   migrate. The staff manual price response says `in_force` (false + message when FIASA's price for the period
   is already recorded); while a manual price is in force, reads queue a FIASA re-check at most hourly.
   Golden vectors unchanged.
+  Every bounded company setting answers with one plain, SA-format sentence (out of range, not a number, too many
+  digits or decimals alike), e.g. "Enter a diesel price between R 5 and R 100 per litre, or leave it blank.";
+  the toll rate per km is now bounded R 0–R 50 (unchanged stored values always save).
