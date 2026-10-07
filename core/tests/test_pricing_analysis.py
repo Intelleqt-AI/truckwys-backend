@@ -59,9 +59,16 @@ class _Base(IsolatedModelStorageMixin, TestCase):
         cache.clear()
         pa._MARKET_MEMO.clear()
         self.addCleanup(pa._MARKET_MEMO.clear)
-        self.company = Company.objects.create(company_name='Bluegum Haulage', margin_target_pct=Decimal('10'))
+        self.company = Company.objects.create(company_name='Bluegum Haulage', margin_target_pct=Decimal('10'),
+                                              driver_allowance_per_night=Decimal('450'))
         self.user = User.objects.create_user(username='bluegum', password='x', company=self.company)
         self.customer = make_customer(self.company)
+        # QUOTE-RULES.md: the floor is priced on an official diesel price in
+        # force and the company's own vehicle type (never the client's lines).
+        from core.tests.quote_rules_fixtures import official_price_now
+        official_price_now()
+        self.vt = VehicleType.objects.create(company=self.company, name='Tautliner', capacity=34, max_distance=3000,
+                                             base_rate=20, fuel_consumption_l_per_100km=38)
         self.api = APIClient()
         self.api.force_authenticate(user=self.user)
 
@@ -103,9 +110,9 @@ class ColdStartTests(_Base):
             self.assertEqual(c['likelihood']['level'], 'rules')
             self.assertNotIn('pct', c['likelihood'])
             self.assertIsNone(c['likelihood']['band'])
-            self.assertEqual(c['margin'], c['price'] - floor)
+            self.assertAlmostEqual(c['margin'], c['price'] - floor, places=2)
         self.assertTrue(all(c['price'] % 50 == 0 for c in r['choices']))
-        self.assertEqual(sum(ln['amount'] for ln in r['cost_floor']['lines']), floor)
+        self.assertAlmostEqual(sum(ln['amount'] for ln in r['cost_floor']['lines']), floor, places=2)
 
     def test_estimate_lane_is_labelled_and_not_priced_from(self):
         r = self.analyze(your_price=25000)
@@ -125,26 +132,34 @@ class ColdStartTests(_Base):
         r = self.post(distance_km=0, fuel_cost=None, toll_cost=None, your_price=None, vehicle_type='')
         self.assertTrue(r['success'])
         self.assertEqual(r['missing'][0], 'route')
-        self.assertIn('vehicle', r['missing'])
+        # QUOTE-RULES §3: no truck chosen -> the suggested truck for the load.
+        self.assertNotIn('vehicle', r['missing'])
+        self.assertEqual(r['costing']['resolution']['vehicle_selection'], 'suggested')
         self.assertIn('customer', r['missing'])
         self.assertIsNone(r['cost_floor'])
         self.assertEqual(r['choices'], [])
-        self.assertIn('no_route', {w['code'] for w in r['warnings']})
+        self.assertIn('distance_missing', {w['code'] for w in r['warnings']})
+        self.assertIn('distance_missing', r['blocking'])
 
     def test_unauthenticated_is_refused(self):
         self.assertEqual(APIClient().post(URL, base_payload(), format='json').status_code, 401)
 
 
 class CostFloorTests(_Base):
-    def test_builder_lines_are_consumed_not_recomputed(self):
-        r = self.analyze()
+    def test_floor_is_the_quote_rules_costing(self):
+        # QUOTE-RULES.md: the builder's fuel figure is NOT consumed; fuel is
+        # recomputed from the truck, load and the official price in force.
+        from core.services.quote_costing import compute
+        r = self.analyze(include_return=False)
         lines = {ln['key']: ln for ln in r['cost_floor']['lines']}
-        self.assertEqual(lines['fuel']['amount'], 6500)
+        costing = r['costing']
+        self.assertEqual(r['cost_floor']['total'], compute(costing['inputs'])['floor'])
+        litres = 568 * (38 * (0.70 + 0.30 * 28 / 34)) / 100
+        self.assertAlmostEqual(lines['fuel']['litres'], litres)
+        self.assertEqual(lines['fuel']['amount'], round(litres * 32.7989 + 1e-9, 2))
         self.assertEqual(lines['tolls']['amount'], 1200)
-        self.assertEqual(lines['tolls']['source']['kind'], 'official')
-        self.assertIn('SANRAL', lines['tolls']['source']['label'])
-        # No VehicleType row: 'Tautliner' -> tri-axle class estimate, R14.50/km.
-        self.assertEqual(lines['fixed_cost']['amount'], round(568 * 14.50))
+        # 'Tautliner' VehicleType -> tri-axle class estimate, R14.50/km.
+        self.assertEqual(lines['fixed_cost']['amount'], round(568 * 14.50, 2))
         self.assertEqual(lines['fixed_cost']['label'], 'Operating costs')
         self.assertIn('tri-axle', lines['fixed_cost']['source']['label'])
         self.assertEqual(r['cost_floor']['fixed_cost_per_km']['class'], 'tri_axle')
@@ -193,6 +208,8 @@ class CostFloorTests(_Base):
                                     unit='per_night', effective_from=date(date.today().year, 3, 1)
                                     if date.today() >= date(date.today().year, 3, 1) else date(date.today().year - 1, 3, 1),
                                     status='approved', source_url='https://example.test/nbcrfli')
+        self.company.driver_allowance_per_night = None   # no company figure: the approved rate
+        self.company.save()
         # 20 h one way -> 3 driving days -> 2 nights away.
         r = self.analyze(duration_minutes=1200)
         line = next(ln for ln in r['cost_floor']['lines'] if ln['key'] == 'driver_allowance')
@@ -207,25 +224,31 @@ class CostFloorTests(_Base):
         self.assertEqual(line['source']['kind'], 'user')
         self.assertEqual(line['suggested'], 1000)
 
-    def test_no_approved_allowance_warns(self):
-        r = self.analyze()
-        self.assertIn('no_driver_allowance', {w['code'] for w in r['warnings']})
+    def test_no_allowance_blocks_until_entered(self):
+        self.company.driver_allowance_per_night = None
+        self.company.save()
+        r = self.analyze(duration_minutes=1200, include_return=False)
+        self.assertIn('driver_allowance_missing', r['blocking'])
+        self.assertFalse(r['cost_floor']['complete'])
+        r = self.analyze(duration_minutes=1200, include_return=False, driver_cost=900)
+        self.assertNotIn('driver_allowance_missing', r['blocking'])
 
     def test_empty_return_toggle_and_company_default(self):
-        VehicleType.objects.create(company=self.company, name='Tautliner', capacity=Decimal('34'),
-                                   max_distance=Decimal('2000'), base_rate=Decimal('20'),
-                                   fuel_consumption_l_per_100km=Decimal('38'))
-        off = self.analyze()
+        # QUOTE-RULES §5: one-way >= 300 km includes the empty return by default.
+        self.assertTrue(self.analyze()['cost_floor']['include_return'])
+        self.assertFalse(self.analyze(distance_km=250, one_way_distance_km=250)['cost_floor']['include_return'])
+        off = self.analyze(include_return=False)
         on = self.analyze(include_return=True)
         ret = next(ln for ln in on['cost_floor']['lines'] if ln['key'] == 'return_leg')
         self.assertTrue(on['cost_floor']['include_return'])
-        self.assertEqual(on['cost_floor']['total'], off['cost_floor']['total'] + ret['amount'])
+        self.assertAlmostEqual(on['cost_floor']['total'], off['cost_floor']['total'] + ret['amount'], places=2)
         # Empty running burns less than the loaded leg; tolls the same plazas.
         self.assertLess(ret['amount'], off['cost_floor']['total'])
         self.assertIn('back empty', ret['basis'])
-        self.company.pricing_include_empty_return = True
+        self.company.include_empty_return_default = False
         self.company.save()
-        self.assertTrue(self.analyze()['cost_floor']['include_return'])
+        self.assertFalse(self.analyze()['cost_floor']['include_return'])
+        self.assertTrue(self.analyze(include_return=True)['cost_floor']['include_return'])
         self.assertFalse(self.analyze(include_return=False)['cost_floor']['include_return'])
         # Round trips never add a second return.
         self.assertFalse(self.analyze(legs=2, include_return=True)['cost_floor']['include_return'])
@@ -240,7 +263,7 @@ class RulesWithMarketTests(_Base):
         won_quotes(other, other_cust, 4, start=25500, prefix='B')
 
     def test_platform_tier_drives_choices_and_bands(self):
-        r = self.analyze(your_price=26000, customer_id=self.customer.id)
+        r = self.analyze(your_price=26000, customer_id=self.customer.id, include_return=False)
         m = r['market']
         self.assertEqual(m['tier'], 'platform')
         self.assertFalse(m['is_estimate'])
@@ -301,17 +324,17 @@ class MarginConsistencyTests(_Base):
         r = self.post(your_price=26000)
         floor = r['cost_floor']['total']
         for c in r['choices']:
-            self.assertEqual(c['margin'], c['price'] - floor)
+            self.assertAlmostEqual(c['margin'], c['price'] - floor, places=2)
             self.assertEqual(c['margin_pct'], round((c['price'] - floor) / c['price'] * 100))
-        self.assertEqual(r['your_price']['margin'], 26000 - floor)
-        # The guard's additive floor fields agree when given the same inputs.
+        self.assertAlmostEqual(r['your_price']['margin'], 26000 - floor, places=2)
+        # The guard's additive floor fields use the same margin definition on
+        # the direct cost it is given (+ operating cost per km).
         direct = 6500 + 1200 + 0 + 0   # fuel + tolls + driver + border
         g = self.api.post('/api/v1/quotes/guard/', {'total_cost': direct, 'quote_price': 26000,
                                                      'distance_km': 568, 'customer_id': self.customer.id},
                           format='json').json()
-        self.assertEqual(g['full_cost_floor'], floor)
-        self.assertEqual(g['margin_vs_floor'], r['your_price']['margin'])
-        self.assertEqual(g['margin_floor_pct'], r['your_price']['margin_pct'])
+        self.assertEqual(g['margin_vs_floor'], pa.margin_against_floor(26000, g['full_cost_floor'])['margin'])
+        self.assertEqual(g['margin_floor_pct'], pa.margin_against_floor(26000, g['full_cost_floor'])['margin_pct'])
         # Old fields keep their meaning (direct-cost margin) for existing clients.
         self.assertAlmostEqual(g['margin_pct'], round((26000 - direct) / 26000 * 100, 2))
 
@@ -328,8 +351,13 @@ class _ModelMixin:
         # JHB->CPT: the lane make_outcomes prices (16k-29k against the 38,900
         # SA estimate the training market rate resolves to).
         # Floor ≈ 5 000 + 700 + 1 000 km × R11,50 = R17 200 -> choices ≈ R19k–R23k.
+        # QUOTE-RULES: a tri-axle at 15,55 L/100km rated, no empty return ->
+        # floor ≈ R20 200 (fuel 4 998 + tolls 700 + 1 000 km × R14,50).
+        VehicleType.objects.get_or_create(company=self.company, name='Model Tri-axle', defaults=dict(
+            capacity=30, max_distance=3000, base_rate=10, fuel_consumption_l_per_100km=Decimal('15.55')))
         p = dict(origin='JHB', destination='CPT', fuel_cost=5000, toll_cost=700, distance_km=1000,
-                 one_way_distance_km=1000, duration_minutes=480, vehicle_type='', route={})
+                 one_way_distance_km=1000, duration_minutes=480, vehicle_type='Model Tri-axle', route={},
+                 include_return=False)
         p.update(over)
         return p
 
@@ -366,7 +394,7 @@ class ModelLevelTests(_ModelMixin, _Base):
 
     def test_out_of_range_falls_back_to_rules(self):
         # A floor far above anything the model has seen on this lane.
-        r = self.analyze(**self.model_payload(fuel_cost=90000, your_price=120000))
+        r = self.analyze(**self.model_payload(driver_cost=90000, your_price=120000))
         self.assertEqual(r['likelihood']['level'], 'rules')
         self.assertIsNone(r['likelihood']['model'])
         for c in r['choices']:
@@ -697,19 +725,16 @@ class Round1FixTests(_Base):
         VehicleType.objects.create(company=self.company, name='Tautliner', capacity=Decimal('34'),
                                    max_distance=Decimal('2000'), base_rate=Decimal('20'),
                                    fuel_consumption_l_per_100km=Decimal('38'))
-        # 568 km at 30.0049 R/L; 9 h each way -> one way 0 nights, round trip 1.
+        # 568 km at the official R32,7989 (unrounded); 9 h each way -> one way
+        # 0 nights, round trip 1. Empty burn = rated × 0.70 (QUOTE-RULES §4).
         r = self.analyze(include_return=True, fuel_price_used=30.0049, fuel_usage_litres=216.6,
                          fuel_cost=6499, duration_minutes=540)
         fuel = next(ln for ln in r['cost_floor']['lines'] if ln['key'] == 'fuel')
-        self.assertAlmostEqual(fuel['price_per_litre'], 30.0049)
-        ret = next(ln for ln in r['cost_floor']['lines'] if ln['key'] == 'return_leg')
-        from core.services.pricing_analysis import _builder_consumption
-        vt = VehicleType.objects.get(name='Tautliner', company=self.company)
-        expected = round(568 * _builder_consumption(vt, 0) / 100 * 30.0049)
-        fuel_detail = next(d for d in ret['details'] if d['label'] == 'Fuel')['value']
-        self.assertIn(f'R\u00a0{expected:,}'.replace(',', '\u00a0'), fuel_detail)
-        nights = next(d for d in ret['details'] if d['label'] == 'Extra driver nights')['value']
-        self.assertIn('1 extra night, no approved rate', nights)
+        self.assertAlmostEqual(fuel['price_per_litre'], 32.7989)
+        by = {ln['key']: ln for ln in r['costing']['lines']}
+        from core.services.quote_costing import cents
+        self.assertEqual(by['fuel_return']['amount'], cents(568 * 38 * 0.70 / 100 * 32.7989))
+        self.assertEqual(by['driver_return']['nights'], 1)
 
     # Drafts and one definition of won
     def test_drafts_and_the_edited_quote_are_not_customer_evidence(self):
@@ -769,6 +794,8 @@ class Round1FixTests(_Base):
         self.assertIsNone(r['your_price']['likelihood'])
 
     def test_driver_line_needs_input_when_nights_and_no_rate(self):
+        self.company.driver_allowance_per_night = None
+        self.company.save()
         r = self.analyze(duration_minutes=1200)
         line = next(ln for ln in r['cost_floor']['lines'] if ln['key'] == 'driver_allowance')
         self.assertEqual(line['status'], 'needs_input')
@@ -900,20 +927,22 @@ class Round3Tests(_ModelMixin, _Base):
         self.assertEqual(self.analyze()['market']['n'], before)
 
     def test_vehicle_filter_is_named_in_the_label(self):
+        VehicleType.objects.create(company=self.company, name='Superlink', capacity=34, max_distance=3000,
+                                   base_rate=20, fuel_consumption_l_per_100km=42)
         self._platform(n_own=3, n_other=3, vehicle_type='Superlink')
         r = self.analyze(vehicle_type='Superlink')
         self.assertTrue(r['market']['vehicle_specific'])
         self.assertIn('Superlink only', r['market']['tier_label'])
 
     def test_empty_return_context_always_present(self):
-        r = self.analyze()
+        r = self.analyze(include_return=False)
         f = r['cost_floor']
         self.assertFalse(f['include_return'])
-        self.assertEqual(f['floor_with_return'], f['total'] + f['return_leg_amount'])
+        self.assertAlmostEqual(f['floor_with_return'], f['total'] + f['return_leg_amount'], places=2)
         for c in r['choices']:
             self.assertEqual(c['margin_pct_if_empty_return'],
                              round((c['price'] - f['floor_with_return']) / c['price'] * 100))
-        rt = self.analyze(legs=2)
+        rt = self.analyze(legs=2, trip_type='ROUND_TRIP')
         self.assertIsNone(rt['cost_floor']['floor_with_return'])
         self.assertIsNone(rt['choices'][0]['margin_pct_if_empty_return'])
 
@@ -1139,7 +1168,8 @@ class Round4Tests(_Base):
         self.assertEqual(msg, 'This lane pays less than your full cost when the truck returns empty. '
                               'Price for a backload or charge for the empty return.')
         # Not raised for a one-way price without the return in the floor.
-        self.assertNotIn('empty_return_unpaid', [a['code'] for a in self.analyze()['attention']])
+        self.assertNotIn('empty_return_unpaid',
+                         [a['code'] for a in self.analyze(include_return=False)['attention']])
 
     def test_empty_return_unpaid_says_target_margin_when_p75_covers_the_cost(self):
         # r5 L1: p75 above the full cost (with the return) but within the
@@ -1171,7 +1201,7 @@ class Round4Tests(_Base):
 
     # 4
     def test_per_km_is_per_km_driven(self):
-        one = self.analyze()['cost_floor']
+        one = self.analyze(include_return=False)['cost_floor']
         self.assertEqual(one['per_km'], round(one['total'] / 568, 2))
         self.assertEqual(one['per_km_label'], 'per km driven')
         self.assertEqual(one['floor_with_return_per_km'], round(one['floor_with_return'] / 1136, 2))
@@ -1202,6 +1232,8 @@ class Round4Tests(_Base):
 
     # 5b + 8
     def test_round_trip_nights_and_company_allowance_setting(self):
+        self.company.driver_allowance_per_night = None
+        self.company.save()
         r = self.analyze(legs=2, trip_type='ROUND_TRIP', distance_km=1136, duration_minutes=420)
         line = next(ln for ln in r['cost_floor']['lines'] if ln['key'] == 'driver_allowance')
         self.assertEqual(line['nights'], 1)                 # 14 h driving over both legs
@@ -1213,13 +1245,14 @@ class Round4Tests(_Base):
         self.assertEqual((line['amount'], line['suggested'], line['status']), (650, 650, 'ok'))
         self.assertEqual(line['source'], {'kind': 'user', 'label': 'Your setting', 'url': None, 'as_of': None})
         self.assertNotIn('no_driver_allowance', {w['code'] for w in r['warnings']})
-        # An approved allowance on record still wins over the setting.
+        # QUOTE-RULES §6: nights × the COMPANY allowance; an approved
+        # allowance on record is used only when the company has none.
         from unittest import mock
         with mock.patch('core.services.quote_ai_pricing.stored_allowance',
                         return_value={'rate_per_night': 500, 'label': 'NBCRFLI driver allowance'}):
             r = self.analyze(legs=2, trip_type='ROUND_TRIP', distance_km=1136, duration_minutes=420)
         line = next(ln for ln in r['cost_floor']['lines'] if ln['key'] == 'driver_allowance')
-        self.assertEqual((line['amount'], line['source']['kind']), (500, 'official'))
+        self.assertEqual((line['amount'], line['source']['kind']), (650, 'user'))
 
     # 6
     def test_market_display_rounding_keeps_raw_values(self):
@@ -1279,6 +1312,8 @@ class Round4Tests(_Base):
     # 8: company profile
     def test_company_profile_pricing_fields(self):
         from core.serializers import CompanySerializer
+        self.company.driver_allowance_per_night = None
+        self.company.save()
         data = CompanySerializer(self.company).data
         self.assertIsNone(data['driver_allowance_per_night'])
         use = data['operating_cost_in_use']
@@ -1597,9 +1632,9 @@ class Round5Tests(_Base):
         if fuel['source']['kind'] == 'official':
             self.assertTrue(fuel['source']['label'].endswith('(your fuel zone setting)'), fuel['source'])
         self.assertTrue(fuel['source']['zone_from_setting'])
+        # QUOTE-RULES §1: the zone is the company's; a payload zone can't change it.
         other = next(ln for ln in self.analyze(fuel_zone='INLAND')['cost_floor']['lines'] if ln['key'] == 'fuel')
-        self.assertFalse(other['source']['zone_from_setting'])
-        self.assertNotIn('your fuel zone setting', other['source']['label'])
+        self.assertIn('coastal', other['source']['label'])
 
     def test_floor_working_never_reads_as_wrong_arithmetic(self):
         f = self.analyze(distance_km=605.8, one_way_distance_km=605.8, fuel_cost=7524, fuel_usage_litres=254.56,
@@ -1797,3 +1832,54 @@ class Round5NeverSentClosedQuoteTests(_ModelMixin, _Base):
         self.assertEqual(lk['model']['n_closed'], 40)
         self.assertTrue(lk['model']['basis_label'].startswith('40 closed quotes'), lk['model']['basis_label'])
         self.assertEqual(lk['headline'], f"Chance to win from {lk['model']['basis_label']}.")
+
+
+class QuoteRulesFloorTests(_Base):
+    """QUOTE-RULES.md §3, §6, §7, §10 through the pricing analysis."""
+
+    def test_no_vehicle_types_blocks_never_a_generic_class(self):
+        VehicleType.objects.all().delete()
+        r = self.analyze(vehicle_type='')
+        self.assertIn('vehicle', r['missing'])
+        self.assertIn('no_vehicle', r['blocking'])
+        self.assertFalse(r['cost_floor']['complete'])
+        self.assertEqual(r['choices'], [])
+        self.assertIsNone(r['cost_floor']['fixed_cost_per_km'])
+
+    def test_choices_never_below_minimum_charge_or_target(self):
+        self.company.minimum_charge = Decimal('60000')
+        self.company.save()
+        r = self.analyze(include_return=False)
+        self.assertTrue(all(c['price'] >= 60000 for c in r['choices']))
+        r = self.analyze(include_return=False, your_price=30000)
+        self.assertIn('below_minimum_charge', r['blocking'])
+
+    def test_warnings_have_the_contract_shape(self):
+        r = self.analyze(your_price=1000, toll_cost=None, tolls_unknown=True)
+        for w in r['warnings']:
+            for key in ('code', 'severity', 'title', 'detail', 'impact_zar', 'actions', 'message'):
+                self.assertIn(key, w)
+            self.assertIn(w['severity'], ('block', 'warn'))
+        self.assertIn('tolls_unknown', r['blocking'])
+        self.assertIn('tolls', r['missing'])
+
+    def test_own_diesel_off_warns_with_impact(self):
+        self.company.fuel_price_mode, self.company.fuel_price_own = 'OWN', Decimal('29.00')
+        self.company.save()
+        r = self.analyze(include_return=False)
+        w = next(w for w in r['warnings'] if w['code'] == 'diesel_own_off')
+        self.assertLess(w['impact_zar'], 0)
+        fuel = next(ln for ln in r['cost_floor']['lines'] if ln['key'] == 'fuel')
+        self.assertEqual(fuel['price_per_litre'], 29.0)
+        self.assertEqual(fuel['source']['kind'], 'user')
+
+    def test_kg_capacity_and_per_class_operating_cost(self):
+        VehicleType.objects.create(company=self.company, name='Rigid 8t', capacity=8000, max_distance=1000,
+                                   base_rate=10, fuel_consumption_l_per_100km=24)
+        self.company.operating_cost_per_km = Decimal('14.50')   # the fleet's (tri-axle) figure
+        self.company.save()
+        r = self.analyze(vehicle_type='Rigid 8t', weight=6000, include_return=False)
+        self.assertEqual(r['costing']['vehicle']['capacity_t'], 8.0)
+        # rigid class: the fleet (tri-axle) figure scaled by 11.00 / 14.50 -> R11,00/km
+        self.assertEqual(r['cost_floor']['fixed_cost_per_km']['class'], 'rigid')
+        self.assertEqual(r['cost_floor']['fixed_cost_per_km']['value'], 11.0)

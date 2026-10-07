@@ -618,7 +618,12 @@ def fleet_reference_class(company):
                          .select_related('vehicle_type'))
         if not counts:
             counts = Counter(vehicle_class(vt) for vt in VehicleType.objects.filter(company=company))
-        return counts.most_common(1)[0][0] if counts else None
+        if not counts:
+            return None
+        from core.services.pricing_analysis import _class_default
+        # Most trucks wins; a tie goes to the heavier class (its figure is
+        # then never scaled UP onto a smaller truck by a guess).
+        return max(counts, key=lambda c: (counts[c], _class_default(c)[0]))
     except Exception:
         return None
 
@@ -690,10 +695,11 @@ def build_inputs(payload, company, now=None, *, diesel_override=None):
     round_trip = trip == 'ROUND_TRIP' or legs == 2
     legs = 2 if round_trip else 1
 
-    one_way = _pos(payload.get('one_way_distance_km'))
-    if one_way is None:
-        total = _pos(payload.get('distance_km'))
-        one_way = total / legs if total is not None else None
+    if payload.get('distance_km') not in (None, ''):
+        total = _pos(payload.get('distance_km'))      # all legs; 0 / blank = no route yet
+        one_way = (_pos(payload.get('one_way_distance_km')) or total / legs) if total is not None else None
+    else:
+        one_way = _pos(payload.get('one_way_distance_km'))
 
     load_kg = _num(payload.get('load_kg'))
     if load_kg is None:
@@ -718,7 +724,10 @@ def build_inputs(payload, company, now=None, *, diesel_override=None):
     driver_amount = _num(payload.get('driver_cost'))
     if driver_amount is None:
         driver_amount = _num(payload.get('driver_allowance'))
-    if _truthy(payload.get('driver_cost_is_override')) is False:
+    # A 0 from the builder is its default, not a figure the user entered,
+    # unless it says so (driver_cost_is_override); saved quotes say so.
+    override_flag = _truthy(payload.get('driver_cost_is_override'))
+    if override_flag is False or (driver_amount == 0 and not override_flag):
         driver_amount = None
 
     include = payload.get('include_empty_return')
@@ -739,10 +748,9 @@ def build_inputs(payload, company, now=None, *, diesel_override=None):
         'load_kg': load_kg,
         'vehicle': vehicle_input(vt),
         'diesel': diesel['input'],
-        'operating_cost_per_km': op['value'] if op else (
-            _pos(getattr(company, 'operating_cost_per_km', None))),
-        'operating_cost_source': op['source'] if op else ('company_setting' if _pos(
-            getattr(company, 'operating_cost_per_km', None)) else None),
+        # No truck => no class => no operating cost (never a generic class).
+        'operating_cost_per_km': op['value'] if op else None,
+        'operating_cost_source': op['source'] if op else None,
         'tolls': {'one_way': toll_one_way, 'empty_return': _num(payload.get('toll_cost_empty_return')),
                   'lookup_failed': tolls_unknown,
                   'confirmed_none': bool(_truthy(payload.get('tolls_confirmed_none')))},
@@ -812,6 +820,7 @@ def quote_payload(quote):
         'tolls_confirmed_none': ci.get('tolls_confirmed_none'),
         'toll_cost_empty_return': ci.get('tolls_empty_return'),
         'driver_cost': _num(quote.driver_allowance),
+        'driver_cost_is_override': True,     # the stored figure is the user's
         'driver_nights': ci.get('driver_nights'),
         'cross_border_cost': 0.0,
         'include_empty_return': ci.get('include_empty_return'),

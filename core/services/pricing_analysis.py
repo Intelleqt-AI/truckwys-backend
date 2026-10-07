@@ -94,9 +94,8 @@ def vehicle_class(vt, name=None):
                        ('tri_axle', ('tautliner', 'flatbed', 'tri-axle', 'triaxle', 'semi', 'tanker', 'side tipper'))):
         if any(w in text for w in words):
             return key
-    cap = _f(getattr(vt, 'capacity', None)) or 0.0
-    if cap > 999:
-        cap /= 1000.0
+    from core.services.quote_costing import capacity_tonnes
+    cap = capacity_tonnes(getattr(vt, 'capacity', None)) or 0.0   # > 100 = kg (QUOTE-RULES §3)
     if cap <= 0:
         return DEFAULT_OPERATING_CLASS
     if cap <= 8:
@@ -232,10 +231,12 @@ def margin_against_floor(price, floor) -> dict:
     """THE margin definition: margin = price − full cost floor; margin % =
     margin / price (excl. VAT). Shared by the pricing analysis, the Revenue
     Guard's additive floor fields and anything else that reports margin."""
+    from core.services.quote_costing import cents
     price, floor = _f(price, 0.0), _f(floor, 0.0)
     margin = price - floor
     return {
-        'margin': _rand(margin),
+        # To the cent: the floor is to the cent (QUOTE-RULES §4/§7).
+        'margin': cents(margin),
         'margin_pct': pct_half_up(price - floor, price) if price > 0 else None,
     }
 
@@ -347,207 +348,10 @@ def _vehicle_type(payload, company):
     return None
 
 
-def _builder_consumption(vt, weight_kg):
-    """The builder's weight-adjusted L/100km (QuoteBuilder.tsx fuelConsumption):
-    the type's consumption scaled by (1 + sensitivity)^(tonnes − capacity) when
-    the type has a reference capacity; only used when the client did not send
-    its own fuel figure."""
-    ref = _f(getattr(vt, 'fuel_consumption_l_per_100km', None)) or 32.0
-    cap = _f(getattr(vt, 'capacity', None)) or 0.0
-    if cap > 999:      # capacity rows in kg (same heuristic as the builder)
-        cap = cap / 1000.0
-    sens = (_f(getattr(vt, 'fuel_consumption_sensitivity_pct', None)) or 2.0) / 100.0
-    tonnes = (_f(weight_kg) or 0.0) / 1000.0
-    return ref * math.pow(1 + sens, tonnes - cap) if cap > 0 else ref
-
-
 # ---------------------------------------------------------------------------
-# Cost floor lines
+# Cost floor lines: core.services.quote_costing is THE calculation
+# (QUOTE-RULES.md §3-§7); this maps its lines to the panel's line shape.
 # ---------------------------------------------------------------------------
-
-def _fuel_line(payload, distance, company, vt, today, warnings):
-    from core.services.quote_ai_pricing import (FIASA_URL, FUEL_TOLERANCE, MANUAL_FUEL_TITLE,
-                                                official_fuel_price)
-    fuel_type = payload.get('fuel_type') or getattr(vt, 'fuel_type', None) or 'Diesel'
-    company_zone = getattr(company, 'fuel_zone', None)
-    zone = payload.get('fuel_zone') or company_zone or 'INLAND'
-    # The builder sends the company's zone setting; say so on the label (the
-    # zone logic itself is the fuel engine's and is not changed here).
-    zone_from_setting = bool(company_zone) and str(zone).upper() == str(company_zone).upper()
-    official = official_fuel_price(fuel_type, zone, today)
-    off_price = _f(official.get('price_per_litre'))
-    manual = official.get('source') == 'MANUAL'
-    zone_name = official.get('zone') or str(zone).lower()
-    off_label = (MANUAL_FUEL_TITLE if manual else f'FIASA {zone_name} diesel 50ppm'
-                 + (' (your fuel zone setting)' if zone_from_setting else ''))
-    off_url = None if manual else FIASA_URL
-
-    fuel_cost = _f(payload.get('fuel_cost'))
-    litres = _f(payload.get('fuel_usage_litres'))
-    ppl = _f(payload.get('fuel_price_used'))
-    cons = _f(payload.get('fuel_consumption_l_per_100km'))
-    computed = False
-    if fuel_cost is None or fuel_cost <= 0:
-        # Not sent: price it the builder's way from the official price.
-        if cons is None and vt is not None:
-            cons = _builder_consumption(vt, payload.get('weight'))
-        if cons and distance > 0 and off_price:
-            litres = distance * cons / 100.0
-            ppl = off_price
-            fuel_cost = litres * ppl
-            computed = True
-        else:
-            return None
-    if litres is None and ppl:
-        litres = fuel_cost / ppl
-    if ppl is None and litres:
-        ppl = fuel_cost / litres
-
-    details = []
-    if off_price:
-        eff = official.get('effective_date')
-        details.append({'label': 'Official price', 'value': f'{_fmt2(off_price)}/L ({zone_name}'
-                        + (f', from {_date(eff)}' if eff else '') + ')'})
-    if cons:
-        details.append({'label': 'Consumption', 'value': f'{_num(cons, 1)} L/100km for this load'})
-    if official.get('error'):
-        details.append({'label': 'Official price', 'value': f'not available: {official["error"]}'})
-
-    if off_price and ppl and abs(ppl - off_price) <= FUEL_TOLERANCE * off_price:
-        source = _source('official', off_label, off_url, official.get('effective_date'))
-    elif computed:
-        source = _source('official', off_label, off_url, official.get('effective_date'))
-    else:
-        source = _source('user', 'Your fuel price' if fuel_type.lower() == 'diesel' else f'Your {fuel_type.lower()} price')
-        if off_price and ppl:
-            diff = ppl - off_price
-            details.append({'label': 'Difference', 'value': f'{_fmt2(abs(diff))}/L '
-                            + ('above' if diff > 0 else 'below') + ' the official price'})
-    source['zone_from_setting'] = zone_from_setting
-    if off_price and official.get('current') is False:
-        warnings.append({'code': 'stale_fuel_price',
-                         'message': f'The latest official fuel price on record is from {_date(official.get("effective_date"))}; '
-                                    'this month\'s may not be loaded yet.'})
-    basis = (_approx(litres, 0, ppl, fuel_cost) + f'{_num(litres)} L × {_fmt2(ppl)}/L' if litres and ppl
-             else f'{_fmt(fuel_cost)} from the quote')
-    if cons and distance:
-        basis += f' ({_num(distance)} km at {_num(cons, 1)} L/100km)'
-    # litres / price_per_litre are kept unrounded (4 dp): the empty-return
-    # line prices from them, and a 2-dp R/L put it a rand off.
-    return _line('fuel', 'Fuel', fuel_cost, source, basis, details,
-                 litres=round(litres, 3) if litres else None, price_per_litre=round(ppl, 4) if ppl else None)
-
-
-def _tolls_line(payload, company, today):
-    from core.services.quote_ai_pricing import _route_plazas, _toll_schedule_start, stored_tolls
-    toll_cost = _f(payload.get('toll_cost'))
-    if toll_cost is None:
-        return None
-    legs = _legs(payload)
-    plazas = _route_plazas(payload)
-    if not plazas:
-        label = 'Route toll estimate' if toll_cost > 0 else 'No toll plazas on this route'
-        return _line('tolls', 'Tolls', toll_cost, _source('calculated', label),
-                     'No SANRAL plazas listed for this route' if toll_cost <= 0
-                     else 'Estimated from distance (no plaza list for this route)')
-    stored = stored_tolls(payload, company)
-    class_label = stored.get('class_label') or 'class unknown'
-    verified = [p for p in (stored.get('plazas') or []) if p.get('found') and p.get('verified_at')]
-    as_of = min((p['verified_at'] for p in verified), default=None)
-    url = next((p.get('source_url') for p in verified if p.get('source_url')), None)
-    if as_of is None:
-        as_of = _toll_schedule_start(today)
-    details = [{'label': p['plaza'], 'value': (_fmt2(p['tariff_zar']) + ' excl. VAT') if p.get('tariff_zar') is not None
-                else 'tariff not listed'} for p in plazas]
-    basis = f'{len(plazas)} plaza{"s" if len(plazas) != 1 else ""}' + (' × 2 legs' if legs == 2 else '') + f', {class_label}'
-    return _line('tolls', 'Tolls', toll_cost, _source('official', f'SANRAL {class_label}', url, as_of), basis, details)
-
-
-def _driver_line(payload, today, warnings, company=None):
-    from core.services.quote_ai_pricing import (DRIVER_DRIVING_HOURS_PER_DAY, DRIVER_RATE_MAX_PER_DAY,
-                                                _nights_away, stored_allowance)
-    legs = _legs(payload)
-    minutes = _f(payload.get('duration_minutes'))
-    driving_hours = (minutes * legs / 60.0) if minutes else None
-    days, nights = _nights_away(driving_hours)
-    nights_override = _i(payload.get('driver_nights'))
-    if nights_override is not None and nights_override >= 0:
-        nights = nights_override
-    allowance = stored_allowance(today)
-    rate = _f((allowance or {}).get('rate_per_night'))
-    if rate is not None and not (0 < rate <= DRIVER_RATE_MAX_PER_DAY):
-        rate = None
-    # No approved allowance on record: the company's own figure, if set
-    # (Company.driver_allowance_per_night, company settings).
-    from_setting = False
-    if rate is None:
-        own = _f(getattr(company, 'driver_allowance_per_night', None))
-        if own is not None and 0 < own <= DRIVER_RATE_MAX_PER_DAY:
-            rate, from_setting = own, True
-            allowance = {'label': 'Your setting', 'source_url': None, 'effective_from': None}
-    suggested = _rand(rate * nights) if (rate is not None and nights is not None) else None
-    label = (allowance or {}).get('label') or 'Driver allowance'
-
-    driver_cost = _f(payload.get('driver_cost'))
-    if driver_cost is None:
-        driver_cost = _f(payload.get('driver_allowance'))
-    is_override = bool(payload.get('driver_cost_is_override')) or (driver_cost is not None and driver_cost > 0)
-
-    details = []
-    if rate is not None:
-        details.append({'label': 'Your rate' if from_setting else 'Approved rate',
-                        'value': (f'{_fmt2(rate)} per night away (company settings)' if from_setting
-                                  else f'{_fmt2(rate)} per night away ({label})')})
-    if nights is not None:
-        details.append({'label': 'Nights away', 'value': str(nights) + (
-            f' ({_num(driving_hours, 1)} driving hours at {DRIVER_DRIVING_HOURS_PER_DAY:g} h/day)'
-            if driving_hours and nights_override is None else ' (set by you)' if nights_override is not None else '')})
-
-    if is_override and driver_cost is not None:
-        amount = driver_cost
-        source = _source('user', 'Your figure')
-        basis = f'{_fmt(amount)} entered on the quote'
-        if suggested is not None and abs(amount - suggested) > 1:
-            details.append({'label': 'Your setting' if from_setting else 'Approved allowance',
-                            'value': f'{_fmt(suggested)} for this trip'})
-    elif suggested is not None:
-        amount = suggested
-        source = (_source('user', 'Your setting') if from_setting else
-                  _source('official', label, (allowance or {}).get('source_url'),
-                          (allowance or {}).get('effective_from')))
-        basis = (f'{_fmt2(rate)} × {nights} night{"s" if nights != 1 else ""} away' if nights
-                 else 'No night away: the trip fits in one driving day')
-    else:
-        amount = 0.0
-        if rate is None:
-            source = _source('estimate', 'No approved allowance on record')
-            basis = ('No approved driver allowance on record yet' if not nights
-                     else f'{nights} night{"s" if nights != 1 else ""} away: enter the allowance you pay')
-            warnings.append({'code': 'no_driver_allowance',
-                             'message': ('No approved driver allowance is on record, so the floor has none. '
-                                         + (f'This trip has {nights} night{"s" if nights != 1 else ""} away: '
-                                            'enter what you pay the driver, or set a rate per night in '
-                                            'company settings.' if nights
-                                            else 'Enter the driver allowance on the quote if you pay one.'))})
-        else:
-            source = _source('estimate', label)
-            basis = 'Driving time unknown, so nights away can\'t be worked out'
-    # 'needs_input': nights away but no approved figure and none entered, so
-    # the floor carries R0 for a cost the trip will have (UI marks it amber).
-    status = 'needs_input' if (nights and rate is None and not (is_override and driver_cost)) else 'ok'
-    return _line('driver_allowance', 'Driver allowance', amount, source, basis, details, editable=True,
-                 suggested=suggested, nights=nights, rate_per_night=rate, status=status)
-
-
-def _border_line(payload):
-    cost = _f(payload.get('cross_border_cost'), 0.0) or 0.0
-    international = bool(payload.get('is_international')) or bool((payload.get('route') or {}).get('cross_border'))
-    if cost <= 0 and not international:
-        return None
-    legs = _legs(payload)
-    return _line('border', 'Border fees', cost, _source('calculated', 'Border fees from the route calculation'),
-                 f'Border, permit and non-SA toll costs, {legs} leg{"s" if legs != 1 else ""}')
-
 
 def company_operating_cost(company, use_cache=True):
     """All-in operating cost per km from the company's own books, last 12
@@ -597,31 +401,40 @@ def company_operating_cost(company, use_cache=True):
 
 
 def fixed_cost_per_km(company, vt=None, vt_name=None):
-    """Operating cost per km (excl. fuel and tolls), with provenance:
-    'company_setting' (Company.operating_cost_per_km) > 'company_actuals'
-    (company_operating_cost) > 'vehicle_default' (class estimate).
-    {'value', 'source', 'trips', 'window', 'min_trips', 'parts', 'class', 'class_label', 'actuals'}."""
-    setting = _f(getattr(company, 'operating_cost_per_km', None))
+    """Operating cost per km (excl. fuel and tolls) for this vehicle's class
+    (QUOTE-RULES.md §6), with provenance: 'company_setting'
+    (Company.operating_cost_per_km) > 'company_actuals' (company_operating_cost)
+    > 'vehicle_default' (class estimate). A company-wide figure is scaled by
+    the class ratio when the fleet's main class differs (quote_costing.
+    operating_cost_for). {'value', 'source', 'trips', 'window', 'min_trips',
+    'parts', 'class', 'class_label', 'actuals', 'scaled_from'}."""
+    from core.services.quote_costing import operating_cost_for
     actual = company_operating_cost(company)
-    cls = vehicle_class(vt, vt_name)
-    base = {'trips': actual.get('trips', 0), 'window': 'last 12 months', 'min_trips': OPERATING_MIN_TRIPS,
-            'class': cls, 'class_label': OPERATING_COST_CLASSES[cls][0], 'actuals': actual, 'parts': None}
-    if setting and setting > 0:
-        return {**base, 'value': round(setting, 2), 'source': 'company_setting'}
-    if actual.get('value'):
-        return {**base, 'value': actual['value'], 'source': 'company_actuals'}
-    value, label, parts = _class_default(cls)
-    return {**base, 'value': value, 'source': 'vehicle_default', 'parts': parts}
+    if vt is None and vt_name:
+        class _Named:
+            name = vt_name
+            capacity = None
+        vt = _Named()
+    op = operating_cost_for(company, vt)
+    cls = op['class']
+    parts = _class_default(cls)[2] if op['source'] == 'vehicle_default' else None
+    return {'value': op['value'], 'source': op['source'], 'trips': actual.get('trips', 0),
+            'window': 'last 12 months', 'min_trips': OPERATING_MIN_TRIPS, 'class': cls,
+            'class_label': op['class_label'], 'actuals': actual, 'parts': parts, 'scaled_from': op['scaled_from']}
 
 
 def operating_cost_in_use(company):
     """What the pricing analysis uses for operating cost per km right now,
     for company settings ("Now using R 13,99/km from 37 trips"):
     {value, source: 'setting'|'company_actuals'|'vehicle_default', trips,
-    min_trips, window, label, estimates}. With no vehicle known, the estimate
-    is the default class (tri-axle); `estimates` lists every class's R/km
-    (each quote uses its own vehicle's). Cheap: company actuals are cached."""
-    fixed = fixed_cost_per_km(company)
+    min_trips, window, label, estimates}. With no vehicle known, the figure
+    for the fleet's main class (else a tri-axle); `estimates` lists every
+    class's R/km (each quote uses its own vehicle's). Cheap: company actuals
+    are cached."""
+    from core.services.quote_costing import fleet_reference_class
+    ref = fleet_reference_class(company) or DEFAULT_OPERATING_CLASS
+    fixed = fixed_cost_per_km(company, vt_name={'light': 'light', 'rigid': 'rigid', 'tri_axle': 'tri-axle',
+                                                'reefer': 'reefer', 'superlink': 'superlink'}[ref])
     source = {'company_setting': 'setting'}.get(fixed['source'], fixed['source'])
     v = _fmt2(fixed['value'])
     if source == 'setting':
@@ -642,146 +455,180 @@ INCLUDED_TEXT = 'Driver wages, finance, insurance, licences, tyres, maintenance 
 EXCLUDED_TEXT = 'Fuel and tolls (own lines), night-out allowance (own line), subcontracted loads'
 
 
-def _fixed_line(fixed, distance):
-    details = []
-    if fixed['source'] == 'company_setting':
-        source = _source('user', 'Your setting')
-        details.append({'label': 'Set in', 'value': 'Company settings: operating cost per km'})
-    elif fixed['source'] == 'company_actuals':
-        a = fixed['actuals']
-        source = _source('company_actuals', f'Your costs, {fixed["trips"]} completed trips, last 12 months')
-        details += [{'label': 'Trip costs', 'value': f'{_fmt(a["trip_linked"])} excl. VAT'},
-                    {'label': 'Company costs', 'value': f'{_fmt(a["company_level"])} excl. VAT (not linked to a trip)'},
-                    {'label': 'Spread over', 'value': f'{_num(a["km"], 0)} km driven on completed trips'}]
-    else:
-        source = _source('estimate', f'Estimate: typical SA operating cost for a {fixed["class_label"]}, '
-                                     'excl. fuel and tolls')
-        details += [{'label': name, 'value': f'{_fmt2(v)}/km'} for name, v in fixed['parts']]
-        details.append({'label': 'Why an estimate', 'value': f'{fixed["trips"]} completed trips with costs on record; '
-                        f'your own figure is used from {fixed["min_trips"]}, or set one in company settings'})
-    details += [{'label': 'Included', 'value': INCLUDED_TEXT}, {'label': 'Not included', 'value': EXCLUDED_TEXT}]
-    km_dp = 0 if abs(distance - round(distance)) < 0.05 else 1
-    return _line('fixed_cost', 'Operating costs', fixed['value'] * distance, source,
-                 _approx(distance, km_dp, fixed['value'], fixed['value'] * distance)
-                 + f'{_num(distance, km_dp)} km × {_fmt2(fixed["value"])}/km', details)
+def warning_item(code, message, severity='warn', title=None, detail=None, impact_zar=None, actions=()):
+    """A pricing-analysis warning in the QUOTE-RULES §10 shape, keeping the
+    old `message` for existing clients."""
+    from core.services.quote_costing import ACTION_LABELS
+    return {'code': code, 'severity': severity, 'title': title or message.split('. ')[0].rstrip('.'),
+            'detail': detail if detail is not None else message, 'impact_zar': impact_zar,
+            'actions': [{'id': a, 'label': ACTION_LABELS.get(a, a)} for a in actions], 'message': message}
 
 
-def _return_line(payload, lines_by_key, fixed, one_way_km, vt):
-    """The empty run home for a one-way quote: fuel at EMPTY consumption (the
-    builder's own weight curve at 0 t when the vehicle type has a reference
-    capacity, else the loaded litres per km — conservative), the same tolls
-    (same plazas and class), only the EXTRA nights away a round trip adds
-    (no double count of the outbound night), and fixed cost/km for the km."""
-    from core.services.quote_ai_pricing import _nights_away
-    fuel_line = lines_by_key.get('fuel') or {}
-    ppl = fuel_line.get('price_per_litre')
-    loaded_litres = fuel_line.get('litres')
-    distance = _f(payload.get('distance_km'), 0.0) or 0.0
-    cap = _f(getattr(vt, 'capacity', None)) or 0.0
-    if vt is not None and cap > 0 and ppl:
-        empty_cons = _builder_consumption(vt, 0)
-        litres = one_way_km * empty_cons / 100.0
-        fuel = litres * ppl
-        fuel_basis = f'{_num(litres)} L empty ({_num(empty_cons, 1)} L/100km) × {_fmt2(ppl)}/L'
-    elif loaded_litres and ppl and distance:
-        litres = loaded_litres / distance * one_way_km
-        fuel = litres * ppl
-        fuel_basis = f'{_num(litres)} L (loaded rate; no empty figure for this vehicle) × {_fmt2(ppl)}/L'
-    else:
-        fuel = (fuel_line.get('amount') or 0) * (one_way_km / distance if distance else 1)
-        fuel_basis = 'same as the loaded leg'
-    fuel = _rand(fuel)
-    legs = _legs(payload)
-    tolls = _rand(((lines_by_key.get('tolls') or {}).get('amount') or 0) / max(legs, 1))
-    driver = lines_by_key.get('driver_allowance') or {}
-    minutes = _f(payload.get('duration_minutes'))
-    extra, extra_nights = 0, 0
-    rate = driver.get('rate_per_night')
-    if minutes:
-        # Counted whether or not an allowance rate is on record: the nights
-        # are a fact of the trip, the rate is what may be missing.
-        hours = minutes / 60.0
-        extra_nights = max((_nights_away(hours * 2)[1] or 0) - (_nights_away(hours)[1] or 0), 0)
-        if rate:
-            extra = _rand(rate * extra_nights)
-    nights_txt = f'{extra_nights} extra night{"s" if extra_nights != 1 else ""}'
-    if extra_nights and not rate:
-        nights_txt += ', no approved rate on record'
-    fixed_zar = _rand(fixed['value'] * one_way_km)
-    total = fuel + tolls + extra + fixed_zar
-    details = [{'label': 'Fuel', 'value': f'{_fmt(fuel)} ({fuel_basis})'},
-               {'label': 'Tolls', 'value': f'{_fmt(tolls)} (same plazas home)'},
-               {'label': 'Extra driver nights', 'value': f'{_fmt(extra)} ({nights_txt})'},
-               {'label': 'Operating costs', 'value': f'{_fmt(fixed_zar)} ({_num(one_way_km)} km × {_fmt2(fixed["value"])}/km)'}]
-    return _line('return_leg', 'Empty return', total, _source('estimate', 'Same route home, empty'),
-                 f'{_num(one_way_km)} km back empty: fuel, tolls, operating costs'
-                 + (f', {extra_nights} extra night' + ('s' if extra_nights != 1 else '') if extra_nights else ''),
-                 details)
+def _from_costing_warning(w):
+    out = dict(w)
+    out['message'] = f'{w["title"]}. {w["detail"]}'
+    return out
 
 
-def build_cost_floor(payload, *, company, vt, distance, today, include_return, warnings):
-    """(cost_floor dict, complete: bool)."""
-    lines = []
-    fuel = _fuel_line(payload, distance, company, vt, today, warnings)
-    if fuel:
-        lines.append(fuel)
-    tolls = _tolls_line(payload, company, today)
-    if tolls:
-        lines.append(tolls)
-    lines.append(_driver_line(payload, today, warnings, company))
-    border = _border_line(payload)
-    if border:
-        lines.append(border)
-    fixed = fixed_cost_per_km(company, vt, payload.get('vehicle_type'))
-    lines.append(_fixed_line(fixed, distance))
-    if fixed['source'] == 'vehicle_default':
-        warnings.append({'code': 'estimate_fixed_cost',
-                         'message': f'Operating costs use a typical SA figure for a {fixed["class_label"]} '
-                                    f'({_fmt2(fixed["value"])}/km) until {fixed["min_trips"]} completed trips '
-                                    f'have costs recorded (you have {fixed["trips"]}). You can set your own in '
-                                    'company settings.'})
-    legs = _legs(payload)
-    ret = None
-    one_way = distance
-    if legs == 1:
-        # Always worked out for a one-way trip, so the UI can say what the
-        # margin would be if the truck comes home empty, even when it isn't
-        # priced in.
-        one_way = _f(payload.get('one_way_distance_km')) or distance
-        by_key = {ln['key']: ln for ln in lines}
-        ret = _return_line(payload, by_key, fixed, one_way, vt)
-    base_total = sum(ln['amount'] for ln in lines)
-    if include_return and ret is not None:
-        lines.append(ret)
-    total = sum(ln['amount'] for ln in lines)
-    # Per km DRIVEN: with the empty run home in the floor, the truck drives
-    # both legs, so the floor is spread over both (never "R/km" on one-way km
-    # for a floor that includes the return).
-    returning = bool(include_return and ret is not None)
-    km_driven = distance + (one_way if returning else 0.0)
-    fwr = (base_total + ret['amount']) if ret is not None else None
+def _fuel_source(costing, company):
+    from core.services.quote_ai_pricing import FIASA_URL, MANUAL_FUEL_TITLE
+    d = costing['diesel']
+    zone = 'coastal' if d['zone'] == 'COASTAL' else 'inland'
+    if d['source'] == 'own':
+        return _source('user', 'Your diesel price (company settings)', None, d.get('own_set_at'))
+    if d['source'] == 'override':
+        return _source('user', 'Diesel price for this quote')
+    res = (costing.get('resolution') or {}).get('diesel_resolution') or {}
+    official = res.get('official') if isinstance(res, dict) else None
+    manual = (official or {}).get('source') == 'MANUAL'
+    src = _source('official', MANUAL_FUEL_TITLE if manual else f'FIASA {zone} diesel 50ppm (your fuel zone setting)',
+                  None if manual else FIASA_URL, (d.get('official_effective_from') or '')[:10] or None)
+    src['zone_from_setting'] = True
+    return src
+
+
+def _km_dp(km):
+    return 0 if km is None or abs(km - round(km)) < 0.05 else 1
+
+
+def _panel_lines(costing, fixed):
+    """quote_costing lines -> the panel's line shape (amounts to the cent)."""
+    by = {ln['key']: ln for ln in costing['lines']}
+    out = []
+    d = costing['diesel']
+    fuel = by.get('fuel')
+    if fuel is not None and fuel['amount'] is not None:
+        details = []
+        if d.get('official_price'):
+            details.append({'label': 'Official price', 'value': f'{_fmt2(d["official_price"])}/L '
+                            f'({"coastal" if d["zone"] == "COASTAL" else "inland"}'
+                            + (f', from {_date((d.get("official_effective_from") or "")[:10])}'
+                               if d.get('official_effective_from') else '') + ')'})
+        if fuel.get('burn_l_per_100km'):
+            details.append({'label': 'Consumption', 'value': f'{_num(fuel["burn_l_per_100km"], 1)} L/100km for this load'})
+        out.append(_line('fuel', 'Fuel', 0, _fuel_source(costing, None),
+                         _approx(fuel['litres'], 0, fuel['price_per_litre'], fuel['amount'])
+                         + f'{_num(fuel["litres"])} L × {_fmt2(fuel["price_per_litre"])}/L '
+                         f'({_num(fuel["km"], _km_dp(fuel["km"]))} km at {_num(fuel["burn_l_per_100km"], 1)} L/100km)',
+                         details,
+                         litres=fuel['litres'], price_per_litre=fuel['price_per_litre'])
+                   | {'amount': fuel['amount']})
+    tolls = by.get('tolls')
+    if tolls is not None and tolls['amount'] is not None:
+        legs = tolls.get('legs') or 1
+        basis = ('No tolls on this route' if not tolls['amount']
+                 else f'{_fmt2(tolls["one_way"])} one way' + (' × 2 legs' if legs == 2 else ''))
+        out.append(_line('tolls', 'Tolls', 0, _source('calculated', 'Route toll calculation'), basis)
+                   | {'amount': tolls['amount']})
+    drv = by.get('driver')
+    if drv is not None:
+        status = 'needs_input' if drv['amount'] is None else 'ok'
+        src = (_source('user', 'Your figure') if drv.get('source') == 'user'
+               else _source('user', 'Your setting') if (costing.get('resolution') or {}).get('driver_rate_source')
+               == 'company_setting' else _source('official', 'Approved driver allowance'))
+        details = []
+        if drv.get('rate_per_night') is not None:
+            details.append({'label': 'Rate', 'value': f'{_fmt2(drv["rate_per_night"])} per night away'})
+        if drv.get('nights') is not None:
+            details.append({'label': 'Nights away', 'value': str(drv['nights'])})
+        out.append(_line('driver_allowance', 'Driver allowance', 0, src, drv['basis'], details, editable=True,
+                         suggested=drv.get('suggested'), nights=drv.get('nights'),
+                         rate_per_night=drv.get('rate_per_night'), status=status)
+                   | {'amount': drv['amount'] if drv['amount'] is not None else 0.0})
+    border = by.get('border')
+    if border is not None:
+        out.append(_line('border', 'Border fees', 0, _source('calculated', 'Border fees from the route calculation'),
+                         border['basis']) | {'amount': border['amount']})
+    op = by.get('operating')
+    if op is not None and op['amount'] is not None:
+        details = []
+        if fixed['source'] == 'company_setting':
+            src = _source('user', 'Your setting')
+            details.append({'label': 'Set in', 'value': 'Company settings: operating cost per km'})
+        elif fixed['source'] == 'company_actuals':
+            src = _source('company_actuals', f'Your costs, {fixed["trips"]} completed trips, last 12 months')
+        else:
+            src = _source('estimate', f'Estimate: typical SA operating cost for a {fixed["class_label"]}, '
+                                      'excl. fuel and tolls')
+            details += [{'label': name, 'value': f'{_fmt2(v)}/km'} for name, v in (fixed['parts'] or [])]
+        if fixed.get('scaled_from'):
+            details.append({'label': 'Scaled', 'value': f'from your fleet figure for a '
+                            f'{OPERATING_COST_CLASSES[fixed["scaled_from"]][0]}'})
+        details += [{'label': 'Included', 'value': INCLUDED_TEXT}, {'label': 'Not included', 'value': EXCLUDED_TEXT}]
+        km, rate = op['km'], op['rate_per_km']
+        basis = _approx(km, _km_dp(km), rate, op['amount']) + f'{_num(km, _km_dp(km))} km × {_fmt2(rate)}/km'
+        out.append(_line('fixed_cost', 'Operating costs', 0, src, basis, details) | {'amount': op['amount']})
+    ret = [ln for ln in costing['lines'] if ln['leg'] == 'empty_return']
+    if ret:
+        known = [ln['amount'] for ln in ret if ln['amount'] is not None]
+        total = round(sum(known), 2)
+        out.append(_line('return_leg', 'Empty return', 0, _source('estimate', 'Same route home, empty'),
+                         f'{_num(costing["trip"]["km_empty"])} km back empty: fuel, tolls, operating costs, driver',
+                         [{'label': ln['label'], 'value': (_fmt2(ln['amount']) if ln['amount'] is not None
+                                                            else 'unknown') + f' ({ln["basis"]})'} for ln in ret])
+                   | {'amount': total})
+    return out
+
+
+def build_cost_floor(payload, *, company, today=None, include_return=None, warnings=None, now=None):
+    """The cost floor (QUOTE-RULES.md §3-§7) from quote_costing, in the
+    panel's shape, plus the full authoritative output under `costing`.
+    Returns (floor dict, costing)."""
+    from core.services import quote_costing as qc
+    p = dict(payload or {})
+    p['include_empty_return'] = include_return
+    p.pop('include_return', None)
+    inputs, context = qc.build_inputs(p, company, now)
+    costing = qc.compute(inputs)
+    costing['inputs'] = inputs
+    costing['resolution'] = qc._context_out(context)
+    fixed = fixed_cost_per_km(company, context['vehicle_type']) if context['vehicle_type'] is not None else None
+    lines = _panel_lines(costing, fixed or {'source': None, 'parts': None, 'class_label': '', 'trips': 0})
+    trip = costing['trip']
+    one_way = trip['type'] == 'ONE_WAY'
+    # The floor if the truck comes home empty (one-way), for "what if".
+    fwr = ret_amt = None
+    if one_way and trip['distance_km']:
+        alt = costing if trip['empty_return_included'] else qc.compute({**inputs, 'include_empty_return': True})
+        fwr = alt['floor']
+        ret_lines = [ln['amount'] for ln in alt['lines'] if ln['leg'] == 'empty_return']
+        ret_amt = round(sum(a for a in ret_lines if a is not None), 2) if ret_lines else None
+    total = costing['floor'] if costing['floor'] is not None else costing['floor_known']
+    km_driven = trip['km_driven'] or 0.0
     floor = {
         'total': total,
-        # Additive: the floor if the truck returns empty (one-way only; null
-        # for a round trip, which already drives home loaded-priced).
         'floor_with_return': fwr,
-        'return_leg_amount': ret['amount'] if ret is not None else None,
+        'return_leg_amount': ret_amt,
         'per_km': round(total / km_driven, 2) if km_driven > 0 else None,
-        # The whole-rand figure every sentence uses ("R 31 per km driven"):
-        # half-up from the unrounded ratio, never from the 2-dp per_km.
         'per_km_rand': _half_up(total / km_driven) if km_driven > 0 else None,
         'per_km_label': 'per km driven',
         'km_driven': round(km_driven, 1),
-        'floor_with_return_per_km': (round(fwr / (distance + one_way), 2)
-                                     if fwr is not None and distance + one_way > 0 else None),
-        'include_return': bool(include_return and legs == 1),
-        'distance_km': round(distance, 1),
-        'complete': fuel is not None,
+        'floor_with_return_per_km': (round(fwr / (2 * trip['distance_km']), 2)
+                                     if fwr is not None and trip['distance_km'] else None),
+        'include_return': bool(trip['empty_return_included']),
+        'empty_return_default': bool(trip['empty_return_default']),
+        'distance_km': round((trip['km_loaded'] or 0.0), 1),
+        'complete': costing['floor'] is not None,
         'lines': lines,
-        'fixed_cost_per_km': {'value': fixed['value'], 'source': fixed['source'], 'trips': fixed['trips'],
-                              'window': fixed['window'], 'class': fixed['class']},
+        'target_price': costing['target_price'],
+        'minimum_charge': costing['minimum_charge'],
+        'fixed_cost_per_km': ({'value': fixed['value'], 'source': fixed['source'], 'trips': fixed['trips'],
+                               'window': fixed['window'], 'class': fixed['class']} if fixed else None),
+        'vehicle': costing['vehicle'],
+        'vehicle_selection': costing['resolution']['vehicle_selection'],
+        'costing': costing,
     }
-    return floor
+    if warnings is not None:
+        warnings.extend(_from_costing_warning(w) for w in costing['warnings'])
+        if fixed and fixed['source'] == 'vehicle_default':
+            warnings.append(warning_item(
+                'estimate_fixed_cost',
+                f'Operating costs use a typical SA figure for a {fixed["class_label"]} '
+                f'({_fmt2(fixed["value"])}/km) until {fixed["min_trips"]} completed trips have costs recorded '
+                f'(you have {fixed["trips"]}). You can set your own in company settings.',
+                title='Operating cost is an estimate',
+                detail=f'Typical {fixed["class_label"]} figure until you have {fixed["min_trips"]} costed trips.'))
+    return floor, costing
 
 
 # ---------------------------------------------------------------------------
@@ -794,11 +641,14 @@ def _market_usable(market):
     return bool(market.get('available')) and not market.get('is_estimate')
 
 
-def build_choices(floor_total, market, target):
+def build_choices(floor_total, market, target, minimum=None):
     """[{key, price, margin, margin_pct, summary, raw_basis}] — prices rounded
-    up to whole R50/R100, margins computed from the ROUNDED price."""
+    up to whole R50/R100, margins computed from the ROUNDED price. Never
+    below floor / (1 − target) nor the company's minimum charge (§6-§7)."""
     t = target / 100.0
     target_price = price_for_margin(floor_total, t)
+    if minimum and minimum > target_price:
+        target_price = float(minimum)
     usable = _market_usable(market)
     if usable:
         raw = {'safe': max(target_price, market['p25']),
@@ -807,7 +657,7 @@ def build_choices(floor_total, market, target):
         clamped = {'safe': market['p25'] < target_price, 'balanced': market['median'] < target_price,
                    'stretch': market['p75'] < target_price}
     else:
-        raw = {k: price_for_margin(floor_total, t + pp / 100.0)
+        raw = {k: max(price_for_margin(floor_total, t + pp / 100.0), target_price)
                for k, pp in zip(('safe', 'balanced', 'stretch'), NO_MARKET_STEPS_PP)}
         clamped = {k: False for k in raw}
 
@@ -1509,15 +1359,27 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
         missing.append('customer')
 
     origin, destination = _resolve_lane(payload)
-    vt = _vehicle_type(payload, company)
-    vt_name = (getattr(vt, 'name', None) or str(payload.get('vehicle_type') or '').strip()) or None
-    if not vt_name:
-        missing.append('vehicle')
-
-    distance = _f(payload.get('distance_km'), 0.0) or 0.0
-    include_return = payload.get('include_return')
-    include_return = (bool(getattr(company, 'pricing_include_empty_return', False)) if include_return is None
+    include_return = payload.get('include_return', payload.get('include_empty_return'))
+    include_return = (None if include_return in (None, '')
                       else str(include_return).lower() in ('1', 'true', 'yes', 'on'))
+    # THE cost floor (core.services.quote_costing): a real vehicle type (the
+    # selected one, else the suggested truck for the load; never a generic
+    # class), the company's diesel price, the empty run home by the §5 rule.
+    floor, costing = build_cost_floor(payload, company=company, include_return=include_return,
+                                      warnings=warnings)
+    vt_name = ((costing.get('vehicle') or {}).get('name') or str(payload.get('vehicle_type') or '').strip()) or None
+    codes = {w['code'] for w in costing['warnings']}
+    if costing.get('vehicle') is None:
+        missing.append('vehicle')
+    if costing['trip']['distance_km'] is None:
+        missing.insert(0, 'route')
+        floor = None
+    else:
+        if 'diesel_missing' in codes or costing['diesel']['price'] is None:
+            missing.append('fuel')
+        if 'tolls_unknown' in codes:
+            missing.append('tolls')
+
     your_price = _f(payload.get('your_price'))
     if your_price is not None and your_price <= 0:
         your_price = None
@@ -1532,18 +1394,6 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
                               market_median=market_out['median'] if _market_usable(market) else None)
             if customer is not None else None)
 
-    floor = None
-    if distance <= 0:
-        missing.insert(0, 'route')
-        warnings.append({'code': 'no_route', 'message': 'Add collection and delivery so the route and costs can be worked out.'})
-    else:
-        floor = build_cost_floor(payload, company=company, vt=vt, distance=distance, today=today,
-                                 include_return=include_return, warnings=warnings)
-        if not floor['complete']:
-            missing.append('fuel')
-        if _f(payload.get('toll_cost')) is None:
-            missing.append('tolls')
-
     choices = []
     attention = []
     recommendation = None
@@ -1556,7 +1406,7 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
 
     if floor is not None and floor['complete']:
         floor_total = floor['total']
-        choices = build_choices(floor_total, market, target)
+        choices = build_choices(floor_total, market, target, minimum=floor.get('minimum_charge'))
 
         # --- likelihood: model level only when everything checks out ---
         try:
@@ -1609,9 +1459,10 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
             reason_code = 'outside_range'
             for c in choices:
                 c['likelihood'] = _rules_likelihood(c['price'], thresholds, outside_model_range=True)
-            warnings.append({'code': 'outside_model_range',
-                             'message': 'These prices are outside the range your model has seen, so Likely, Even '
-                                        'chance or Less likely is shown instead of a %.'})
+            warnings.append(warning_item(
+                'outside_model_range', 'These prices are outside the range your model has seen, so Likely, Even '
+                                       'chance or Less likely is shown instead of a %.',
+                title='Prices outside what your model has seen', detail='Chance to win is shown in bands.'))
         raw_p = {}
         if model_block is not None:
             likelihood.update({'level': 'model', 'model': model_block, 'reason': None,
@@ -1662,6 +1513,8 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
         if your_price is not None:
             m = margin_against_floor(your_price, floor_total)
             target_price = price_for_margin(floor_total, target / 100.0)
+            if floor.get('minimum_charge') and floor['minimum_charge'] > target_price:
+                target_price = float(floor['minimum_charge'])
             below = your_price < floor_total
             # The exact price asked about (2 dp), never rounded: the client
             # matches its live reading on it.
@@ -1670,29 +1523,40 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
                     # No likelihood for a loss-making price: "Likely" next to a loss reads as advice.
                     'likelihood': None if below else likelihood_at(your_price),
                     'market_position': _position(your_price, market_out)}
+            # quote_costing already added below_floor (same rule); keep one,
+            # with the panel's sentence as `message`.
+            warnings[:] = [w for w in warnings if w['code'] != 'below_floor']
             if your['below_floor']:
-                warnings.append({'code': 'below_floor',
-                                 'message': f'At {_fmt(your_price)} this trip loses {_fmt(floor_total - your_price)}.'})
+                warnings.append(warning_item(
+                    'below_floor', f'At {_fmt(your_price)} this trip loses {_fmt(floor_total - your_price)}.',
+                    title='Price is below your costs', detail=f'This trip loses {_fmt(floor_total - your_price)}.',
+                    impact_zar=round(your_price - floor_total, 2)))
             elif your['below_target']:
-                warnings.append({'code': 'below_target',
-                                 'message': f'{_fmt(your_price)} is under your {target:g}% target margin '
-                                            f'({_fmt(round_price(target_price))} or more).'})
+                warnings.append(warning_item(
+                    'below_target', f'{_fmt(your_price)} is under your {target:g}% target margin '
+                                    f'({_fmt(round_price(target_price))} or more).',
+                    title='Price is under your target margin',
+                    detail=f'{_fmt(round_price(target_price))} or more keeps {target:g}%.'))
 
         if _market_usable(market) and market['median'] < floor_total:
-            warnings.append({'code': 'market_below_floor',
-                             'message': 'This lane usually pays less than your full cost for this trip.'})
+            warnings.append(warning_item('market_below_floor',
+                                         'This lane usually pays less than your full cost for this trip.',
+                                         title='This lane pays less than your costs'))
 
     if market.get('is_estimate') and floor is not None and floor.get('complete') \
             and _f(market.get('p75')) is not None and market['p75'] < 1.1 * floor['total']:
-        warnings.append({'code': 'estimate_below_floor',
-                         'message': 'This rough estimate looks low against your cost floor, so it isn\'t used. '
-                                    'Price from your floor.'})
+        warnings.append(warning_item('estimate_below_floor',
+                                     'This rough estimate looks low against your cost floor, so it isn\'t used. '
+                                     'Price from your floor.', title='Rough estimate looks low',
+                                     detail='It isn\'t used; price from your floor.'))
     if market['tier'] == 'estimate':
-        warnings.append({'code': 'estimate_market',
-                         'message': 'The range shown is a rough South African estimate, not real quotes, so it is '
-                                    'not used for the choices.'})
+        warnings.append(warning_item('estimate_market',
+                                     'The range shown is a rough South African estimate, not real quotes, so it is '
+                                     'not used for the choices.', title='Market range is a rough estimate',
+                                     detail='Not real quotes, so not used for the choices.'))
     elif not market['available']:
-        warnings.append({'code': 'no_market', 'message': 'No market data for this lane yet.'})
+        warnings.append(warning_item('no_market', 'No market data for this lane yet.',
+                                     title='No market data for this lane'))
     if cust and cust['payment_risk']['band'] in ('medium', 'high'):
         risk = cust['payment_risk']
         advice = ('Ask for a deposit (e.g. 50% upfront) or shorter terms.' if risk['band'] == 'high'
@@ -1702,7 +1566,8 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
             msg = f'{cust["name"]} {risk["label"].lower()}. {advice}'
         attention.append({'code': 'payment_risk', 'level': risk['band'], 'message': msg})
         if risk['band'] == 'high':
-            warnings.append({'code': 'customer_payment_risk', 'message': msg})
+            warnings.append(warning_item('customer_payment_risk', msg, title='Customer often pays late',
+                                         detail=advice))
     if cust and cust.get('price_sensitive'):
         attention.append({'code': 'price_sensitive', 'level': 'info',
                           'message': _price_sensitive_message(cust['name'], cust['price_sensitive'])})
@@ -1725,6 +1590,10 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
         'reasoning': [it['text'] for it in reasoning_items],     # old clients
         'reasoning_items': reasoning_items,
         'warnings': warnings,
+        # QUOTE-RULES.md: the authoritative costing behind cost_floor (lines,
+        # floor, target price, warnings) and whether the quote may be sent.
+        'costing': (floor or {}).get('costing') or costing,
+        'blocking': [w['code'] for w in warnings if w.get('severity') == 'block'],
     }
 
 
