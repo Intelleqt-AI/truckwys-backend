@@ -1539,16 +1539,34 @@ class CompanySerializer(serializers.ModelSerializer):
         return data
 
     def validate_fuel_price_own(self, value):
+        if self._unchanged('fuel_price_own', value):
+            return value
         if value is not None and not (Decimal('5') <= value <= Decimal('100')):
             raise serializers.ValidationError('Enter a diesel price between R5 and R100 per litre, or leave it blank.')
         return value
 
+    def _unchanged(self, field, value):
+        """An old client echoing a stored value back: never rejected, so a
+        company whose existing value is outside the new range is not locked
+        out of saving its other settings."""
+        if self.instance is None or value is None:
+            return False
+        stored = getattr(self.instance, field, None)
+        try:
+            return stored is not None and Decimal(str(stored)) == Decimal(str(value))
+        except Exception:
+            return False
+
     def validate_minimum_charge(self, value):
+        if self._unchanged('minimum_charge', value):
+            return value
         if value is not None and not (Decimal('0') <= value <= Decimal('5000000')):
             raise serializers.ValidationError('Enter a minimum charge between R0 and R5 000 000, or leave it blank.')
         return value or None
 
     def validate_fuel_price_electric(self, value):
+        if self._unchanged('fuel_price_electric', value):
+            return value
         if value is not None and not (Decimal('0') < value <= Decimal('20')):
             raise serializers.ValidationError('Enter an electricity price above R0 and up to R20 per kWh, or leave it '
                                               'blank.')
@@ -1557,16 +1575,22 @@ class CompanySerializer(serializers.ModelSerializer):
     def validate_fuel_price_hybrid(self, value):
         # Hybrid trucks price on the PETROL setting; this old field is only
         # stored for old screens (QUOTE_RULES_DEPLOY.md).
+        if self._unchanged('fuel_price_hybrid', value):
+            return value
         if value is not None and not (Decimal('0') < value <= Decimal('100')):
             raise serializers.ValidationError('Enter a price above R0 and up to R100 per litre, or leave it blank.')
         return value
 
     def validate_default_base_rate_per_km(self, value):
+        if self._unchanged('default_base_rate_per_km', value):
+            return value
         if value is not None and not (Decimal('0') <= value <= Decimal('1000')):
             raise serializers.ValidationError('Enter a default price per km between R0 and R1 000, or leave it blank.')
         return value
 
     def validate_empty_return_min_km(self, value):
+        if self._unchanged('empty_return_min_km', value):
+            return value
         if value is not None and not (Decimal('0') <= value <= Decimal('5000')):
             raise serializers.ValidationError('Enter a distance between 0 and 5 000 km.')
         return value
@@ -1589,15 +1613,18 @@ class CompanySerializer(serializers.ModelSerializer):
                 mode = 'LIVE'
             attrs['fuel_price_mode'] = mode
         elif legacy is not serializers.empty:
-            if legacy is not None and not (Decimal('5') <= Decimal(str(legacy)) <= Decimal('100')):
-                raise serializers.ValidationError(
-                    {'fuel_price_per_litre': 'Enter a diesel price between R5 and R100 per litre, or leave it blank.'})
             current_own = getattr(instance, 'fuel_price_own', None)
             unchanged = (legacy is not None and current_own is not None
                          and abs(Decimal(str(legacy)) - current_own) <= Decimal('0.00001'))
             zone_change = ('fuel_zone' in attrs and instance is not None
                            and attrs['fuel_zone'] != getattr(instance, 'fuel_zone', None))
             echo = _is_live_echo(legacy)
+            # A stored value echoed back (own or official) always passes, so an
+            # existing company is never locked out by the new range.
+            if legacy is not None and not unchanged and not echo \
+                    and not (Decimal('5') <= Decimal(str(legacy)) <= Decimal('100')):
+                raise serializers.ValidationError(
+                    {'fuel_price_per_litre': 'Enter a diesel price between R5 and R100 per litre, or leave it blank.'})
             if unchanged:
                 pass   # the old client echoed the own price back: nothing changed
             elif echo and zone_change:

@@ -34,8 +34,25 @@ FROM company_profile c WHERE EXISTS (SELECT 1 FROM vehicle_types v WHERE v.compa
   (`petrol_95_coastal` / `petrol_93_coastal` only exist after migration 0153; before it, check `petrol_95` and
   `petrol_93` only.) After step 3, the row in force must have `petrol_95` and `petrol_95_coastal` set.
 - Dry-run the LIVE/OWN classification that migration 0150 will apply:
-  `python manage.py quote_diesel_audit --classification` (read-only; run it on the new code before `migrate`
-  on a copy, or straight after migrate to review).
+  `python manage.py quote_diesel_audit --classification` (read-only raw SQL; run it on the new code BEFORE
+  `migrate` — it detects which columns exist, so the old schema without `fuel_price_mode` / `petrol_95_coastal`
+  is fine — and again after migrate to review). Rows marked `FLAG: matches an old backup price` are own prices
+  equal to a FALLBACK / non-official row: likely not typed by the fleet; ask them before trusting it (the rule
+  still makes them OWN).
+- Stored settings outside the new validation ranges (they are NOT a lock-out: an unchanged value echoed back
+  by a client always saves; only a changed value is checked). Review them:
+
+```sql
+SELECT id, company_name, fuel_price_electric, fuel_price_hybrid, default_base_rate_per_km, minimum_charge,
+       fuel_price_per_litre, fuel_price_petrol
+FROM company_profile
+WHERE (fuel_price_electric IS NOT NULL AND (fuel_price_electric <= 0 OR fuel_price_electric > 20))
+   OR (fuel_price_hybrid IS NOT NULL AND (fuel_price_hybrid <= 0 OR fuel_price_hybrid > 100))
+   OR (default_base_rate_per_km IS NOT NULL AND (default_base_rate_per_km < 0 OR default_base_rate_per_km > 1000))
+   OR (minimum_charge IS NOT NULL AND (minimum_charge < 0 OR minimum_charge > 5000000))
+   OR (fuel_price_per_litre IS NOT NULL AND fuel_price_per_litre <> 0 AND (fuel_price_per_litre < 5 OR fuel_price_per_litre > 100))
+   OR (fuel_price_petrol IS NOT NULL AND fuel_price_petrol <> 0 AND (fuel_price_petrol < 5 OR fuel_price_petrol > 100));
+```
 - Dry-run the fuel-history repair: `python manage.py repair_fuel_history` (prints what it would change).
 - bs4 and lxml are in requirements.txt (the FIASA parser needs them): `python -c "import bs4, lxml"`.
 
@@ -125,3 +142,8 @@ empty values back to 10.00 first.
 - A diesel write from an old client is a "live echo" (no OWN change) when it equals the official 50ppm price of
   either zone in the current or previous period; a zone change never flips OWN to LIVE, and switching to LIVE
   keeps the own price on record.
+- Old web builds save an empty "default price per km" as R10/km (the old model default). It is harmless unless
+  R10/km × km is above the target price: the default price is max(rate price, target price), so it only shows
+  when it is the higher of the two. Fleets that never set it can clear it in settings.
+- Migration 0156 makes `quotes.margin_percentage` nullable and sets a stored 0 to null on quotes with no cost
+  floor (no floor = no margin). Rollback: `migrate core 0155` sets nulls back to 0 first.

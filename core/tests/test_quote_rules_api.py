@@ -546,6 +546,29 @@ class ClassificationAndEchoTests(_Base):
         self.assertIn('matches FIASA inland', text.split('Echo')[1].split('\n')[0])
         self.assertIn('Dry run', text)
 
+    def test_classification_flags_backup_prices_and_runs_on_the_old_schema(self):
+        from io import StringIO
+        from django.core.management import call_command
+        from django.db import connection
+        FuelPrice.objects.create(date=date(2025, 3, 1), diesel_inland=Decimal('21.1800'),
+                                 diesel_coastal=Decimal('20.5600'), source='FALLBACK')
+        Company.objects.create(company_name='Backup', fuel_price_per_litre=Decimal('21.18'))
+        # The production schema before migrate: none of the new columns.
+        new_cols = {'fuel_price_mode', 'fuel_price_own', 'fuel_price_own_set_at', 'fuel_price_petrol_mode',
+                    'fuel_price_petrol_set_at', 'fuel_price_petrol_grade', 'petrol_95_coastal', 'petrol_93_coastal',
+                    'effective_from', 'diesel_500ppm_inland', 'diesel_500ppm_coastal', 'diesel_grade'}
+        real = connection.introspection.get_table_description
+
+        def old_schema(cursor, table):
+            return [c for c in real(cursor, table) if c.name not in new_cols]
+        out = StringIO()
+        with patch.object(connection.introspection, 'get_table_description', side_effect=old_schema):
+            call_command('quote_diesel_audit', '--classification', stdout=out)
+        text = out.getvalue()
+        self.assertIn('before migration 0149', text)
+        self.assertIn('old backup price', text.split('Backup')[1].split('\n')[0])
+        self.assertIn('Dry run', text)
+
 
 class SaveSemanticsTests(_Base):
     def test_echoing_same_values_does_not_reprice(self):
@@ -1147,3 +1170,21 @@ class CostBreakdownSnapshotTimeTests(_Base):
         body = self.api.post('/api/v1/quotes/cost-breakdown/', {'quote_id': q.id}, format='json').json()
         self.assertTrue(body['snapshot']['priced_at'].endswith('+02:00'), body['snapshot']['priced_at'])
         self.assertTrue(body['snapshot']['fuel_effective_from'].endswith('+02:00'))
+
+
+class StoredSettingsNotLockedOutTests(_Base):
+    URL = '/api/v1/company/profile/'
+
+    def test_unchanged_out_of_range_values_still_save(self):
+        from core.models import Company
+        Company.objects.filter(pk=self.company.pk).update(
+            fuel_price_electric=Decimal('35.00'), fuel_price_hybrid=Decimal('150.00'),
+            default_base_rate_per_km=Decimal('1500.00'), fuel_price_own=Decimal('3.5000'), fuel_price_mode='OWN')
+        body = self.api.get(self.URL).json()
+        echo = {k: body[k] for k in ('fuel_price_electric', 'fuel_price_hybrid', 'default_base_rate_per_km',
+                                     'fuel_price_per_litre')}
+        r = self.api.patch(self.URL, {**echo, 'company_name': 'Rules Haulage Renamed'}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        # A changed value is still validated.
+        r = self.api.patch(self.URL, {'fuel_price_electric': '36'}, format='json')
+        self.assertEqual(r.status_code, 400)
