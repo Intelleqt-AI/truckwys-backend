@@ -55,10 +55,60 @@ def snapshot_fields(costing, now):
         'costing_snapshot': {k: costing.get(k) for k in SNAPSHOT_KEYS},
     }
     if costing.get('margin_pct') is not None:
-        # Server-side margin % on the stored floor and price (margin on
-        # price); left as it was when the floor is unknown.
+        # Server-side margin % on the stored floor and price (margin on price).
         out['margin_percentage'] = _dec(max(min(costing['margin_pct'], 999.99), -999.99), '0.01')
+    elif not costing.get('floor_known'):
+        # No floor, no margin: null, never a 0,00 that reads as "no margin".
+        out['margin_percentage'] = None
     return out
+
+
+ITEMISED_FIELDS = ('base_rate', 'base_rate_per_km', 'fuel_surcharge', 'toll_charges', 'driver_allowance',
+                   'additional_charges')
+
+
+def itemise_quote(quote, now=None):
+    """Re-itemise a saved quote's line fields from compute(), exactly as the
+    quote builder saves them: fuel / tolls / driver / border from the costing
+    lines (the stored figure where a line is unknown), base rate = price less
+    those pass-throughs (it carries operating cost and margin), a price below
+    the pass-throughs leaves the (negative) shortfall in additional_charges
+    with the border. Then re-snapshots. Used where a price or input changes
+    without new line items (the copilot), so the lines always add up to the
+    price with today's fuel. Returns the costing, or None on failure."""
+    from decimal import Decimal
+    from core.models import Quote
+    from core.services.quote_costing import cents, costing_for_quote
+    now = now or timezone.now()
+    try:
+        costing = costing_for_quote(quote, now)
+    except Exception:
+        logger.exception('quote %s: itemise failed', getattr(quote, 'pk', None))
+        return None
+    by = {ln['key']: ln['amount'] for ln in costing['lines'] if ln.get('leg') == 'loaded'}
+
+    def line(key, stored):
+        v = by.get(key)
+        return float(v) if v is not None else float(stored or 0)
+    fuel = line('fuel', quote.fuel_surcharge)
+    tolls = line('tolls', quote.toll_charges)
+    driver = line('driver', quote.driver_allowance)
+    border = float(by['border']) if by.get('border') is not None else 0.0
+    total = float(quote.total_amount or 0)
+    pass_through = fuel + tolls + driver + border
+    base = max(0.0, total - pass_through)
+    shortfall = min(0.0, total - pass_through)
+    km = float(quote.distance or 0)
+    fields = {
+        'fuel_surcharge': Decimal(str(cents(fuel))), 'toll_charges': Decimal(str(cents(tolls))),
+        'driver_allowance': Decimal(str(cents(driver))), 'base_rate': Decimal(str(cents(base))),
+        'additional_charges': Decimal(str(cents(border + shortfall))),
+        'base_rate_per_km': Decimal(str(cents(base / km))) if km > 0 else quote.base_rate_per_km,
+    }
+    Quote.objects.filter(pk=quote.pk).update(**fields)
+    for k, v in fields.items():
+        setattr(quote, k, v)
+    return snapshot_quote(quote, now) or costing
 
 
 def snapshot_quote(quote, now=None):

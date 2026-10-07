@@ -675,6 +675,11 @@ def proposal_public(proposal) -> dict:
         spec = ENTITY_REGISTRY.get(proposal.table, {})
         label = f"{proposal.operation.title()} {spec.get('label', proposal.table)}"
         confirm_text = f"{_CONFIRM_TEXT.get(proposal.operation, 'Save')} {spec.get('label', '')}".strip()
+    sends = proposal_sends(proposal)
+    if sends and proposal.table == 'quotes':
+        # Executing it sends the quote to the customer: say so.
+        label = 'Send Quote'
+        confirm_text = 'Send quote'
     return {
         'id': proposal.id,
         'table': proposal.table,
@@ -690,7 +695,26 @@ def proposal_public(proposal) -> dict:
         # any of them is executed only with acknowledge_price_warnings=true.
         'price_warnings': ((proposal.payload or {}).get(PRICE_CHECK_KEY) or {}).get('warnings') or [],
         'requires_acknowledgement': bool(((proposal.payload or {}).get(PRICE_CHECK_KEY) or {}).get('requires_ack')),
+        # True when executing it sends the quote (or email) to the customer.
+        'sends': sends,
     }
+
+
+def proposal_sends(proposal) -> bool:
+    """Whether executing this proposal sends something to the customer."""
+    if proposal.table == 'email':
+        return True
+    if proposal.table != 'quotes' or proposal.operation not in ('CREATE', 'UPDATE'):
+        return False
+    if (proposal.payload or {}).get('status') != 'SENT':
+        return False
+    if proposal.operation == 'CREATE':
+        return True
+    check = (proposal.payload or {}).get(PRICE_CHECK_KEY)
+    if isinstance(check, dict) and 'sends' in check:
+        return bool(check['sends'])
+    from core.models import Quote
+    return Quote.objects.filter(pk=proposal.target_id).exclude(status='SENT').exists()
 
 
 # ---------------------------------------------------------------------------
@@ -774,6 +798,18 @@ def _execute_email_proposal(proposal, request_user, company):
     return True, {'result': proposal.result, 'message': f"Email sent to {name} ({email}).", 'action': None}
 
 
+
+def _reprice_quote(quote, payload):
+    """A copilot write that changes a quote's price or pricing inputs
+    re-prices it as the builder does: line items (fuel at today's price,
+    tolls, driver, border, base rate = price less those) recomputed through
+    compute() and re-snapshotted, so the lines always add up to the price
+    (never old lines plus a "Not itemised" remainder)."""
+    from core.services.quote_snapshot import PRICING_FIELDS, itemise_quote
+    if PRICING_FIELDS & set(payload or {}):
+        itemise_quote(quote)
+
+
 def execute_proposal(proposal, request_user, company, acknowledged=False):
     """Perform the confirmed write. Returns (ok, payload_for_response).
 
@@ -845,6 +881,7 @@ def _execute_write_proposal(proposal, request_user, company):
 
     hooks = spec.get('hooks', {})
     label = spec['label']
+    previous_status = None
     if PRICE_CHECK_KEY in (proposal.payload or {}):
         proposal.payload = {k: v for k, v in proposal.payload.items() if k != PRICE_CHECK_KEY}
     try:
@@ -869,18 +906,25 @@ def _execute_write_proposal(proposal, request_user, company):
                     instance = serializer.save(**save_kwargs)
                 instance._request_user = request_user
                 _audit('CREATE', instance, request_user, proposal)
+                if proposal.table == 'quotes':
+                    _reprice_quote(instance, proposal.payload)
 
             elif proposal.operation == 'UPDATE':
                 instance = scoped_queryset(request_user, company, proposal.table).filter(
                     pk=proposal.target_id).first()
                 if instance is None:
                     raise ToolError(f"The {label} no longer exists.")
+                previous_status = getattr(instance, 'status', None)
                 serializer = spec['serializer'](instance, data=proposal.payload, partial=True)
                 if not serializer.is_valid():
                     raise ToolError(_serializer_error_text(serializer))
                 instance._request_user = request_user
+                if proposal.table == 'quotes':
+                    instance._notify_actor_id = request_user.id
                 instance = serializer.save()
                 _audit('UPDATE', instance, request_user, proposal)
+                if proposal.table == 'quotes':
+                    _reprice_quote(instance, proposal.payload)
 
             else:  # DELETE
                 instance = scoped_queryset(request_user, company, proposal.table).filter(
@@ -925,6 +969,16 @@ def _execute_write_proposal(proposal, request_user, company):
         proposal.result = {'error': f'Unexpected error: {str(e)[:200]}'}
         proposal.save(update_fields=['status', 'result'])
         return False, {'error': proposal.result['error']}
+
+    if proposal.table == 'quotes' and proposal.operation in ('CREATE', 'UPDATE'):
+        prev = previous_status if proposal.operation == 'UPDATE' else None
+        if instance.status != prev and instance.status in ('ACCEPTED', 'DECLINED'):
+            # A decision is a training label, recorded exactly as the PATCH /
+            # update_status paths do.
+            from core.services.quote_outcome_capture import record_quote_outcome
+            record_quote_outcome(instance, 'accepted' if instance.status == 'ACCEPTED' else 'rejected',
+                                 rejection_reason=(instance.rejection_reason or '')
+                                 if instance.status == 'DECLINED' else '')
 
     number = getattr(instance, spec['id_display'], None) if proposal.operation != 'DELETE' else proposal.target_id
     route = _nav_route(spec, instance) if proposal.operation != 'DELETE' else None

@@ -1008,3 +1008,73 @@ class CopilotPriceWarningTests(_Base):
         self.assertNotIn('price_warnings', out)
         ok, body = tools.execute_proposal(CopilotProposal.objects.get(id=out['proposal_id']), self.user, self.company)
         self.assertTrue(ok, body)
+
+
+class CopilotQuoteWriteTests(_Base):
+    """Round 3: copilot decisions record the outcome, a price change
+    re-itemises through compute(), and a send is labelled Send."""
+
+    def _update(self, q, fields, ack=False):
+        from core.models import CopilotProposal
+        from core.services import copilot_tools as tools
+        out = tools.propose_update(self.company, self.user, None,
+                                   {'table': 'quotes', 'record_id': q.id, 'fields': fields})
+        self.assertIn('proposal_id', out, out)
+        proposal = CopilotProposal.objects.get(id=out['proposal_id'])
+        return proposal, tools.execute_proposal(proposal, self.user, self.company, acknowledged=ack)
+
+    def test_accept_and_decline_record_the_outcome(self):
+        from core.models import QuoteOutcome
+        q = self.create(status='SENT')
+        _p, (ok, body) = self._update(q, {'status': 'ACCEPTED'})
+        self.assertTrue(ok, body)
+        q.refresh_from_db()
+        self.assertEqual(q.outcome, 'accepted')
+        self.assertEqual(QuoteOutcome.objects.get(quote=q).outcome, 'accepted')
+        q2 = self.create(status='SENT')
+        _p, (ok, body) = self._update(q2, {'status': 'DECLINED', 'rejection_reason': 'Too dear'})
+        self.assertTrue(ok, body)
+        self.assertEqual(QuoteOutcome.objects.get(quote=q2).outcome, 'rejected')
+
+    def test_price_change_reitemises_through_compute(self):
+        from core.services.quote_costing import costing_for_quote
+        q = self.create()
+        _p, (ok, body) = self._update(q, {'total_amount': '35000'})
+        self.assertTrue(ok, body)
+        q.refresh_from_db()
+        c = costing_for_quote(q)
+        fuel = next(ln['amount'] for ln in c['lines'] if ln['key'] == 'fuel')
+        self.assertAlmostEqual(float(q.fuel_surcharge), fuel, places=2)
+        lines = q.base_rate + q.fuel_surcharge + q.toll_charges + q.driver_allowance + q.additional_charges
+        self.assertEqual(lines, q.total_amount)
+        self.assertEqual(q.total_amount, Decimal('35000'))
+        # A fuel price change updates the fuel amount, not just the price.
+        _p, (ok, body) = self._update(q, {'costing_inputs': {**(q.costing_inputs or {}), 'fuel_price_override': 25}})
+        self.assertTrue(ok, body)
+        before = float(q.fuel_surcharge)
+        q.refresh_from_db()
+        fuel = next(ln['amount'] for ln in costing_for_quote(q)['lines'] if ln['key'] == 'fuel')
+        self.assertAlmostEqual(float(q.fuel_surcharge), fuel, places=2)
+        self.assertLess(float(q.fuel_surcharge), before)
+        lines = q.base_rate + q.fuel_surcharge + q.toll_charges + q.driver_allowance + q.additional_charges
+        self.assertEqual(lines, q.total_amount)
+
+    def test_send_proposal_is_labelled_send(self):
+        from core.models import CopilotProposal
+        from core.services import copilot_tools as tools
+        q = self.create()
+        out = tools.propose_update(self.company, self.user, None,
+                                   {'table': 'quotes', 'record_id': q.id, 'fields': {'status': 'SENT'}})
+        pub = tools.proposal_public(CopilotProposal.objects.get(id=out['proposal_id']))
+        self.assertTrue(pub['sends'])
+        self.assertEqual((pub['label'], pub['confirm_text']), ('Send Quote', 'Send quote'))
+        out = tools.propose_update(self.company, self.user, None,
+                                   {'table': 'quotes', 'record_id': q.id, 'fields': {'notes': 'x'}})
+        CopilotProposal.objects.filter(status='PENDING').exclude(id=out.get('proposal_id')).update(status='DISMISSED')
+        pub = tools.proposal_public(CopilotProposal.objects.get(id=out['proposal_id']))
+        self.assertFalse(pub['sends'])
+
+    def test_no_floor_means_null_margin(self):
+        q = self.create(vehicle_type='Nope', weight='99000')
+        q.refresh_from_db()
+        self.assertIsNone(q.margin_percentage)

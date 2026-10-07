@@ -102,7 +102,10 @@ class Quote(models.Model):
     additional_charges = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     total_amount = models.DecimalField(max_digits=10, decimal_places=2)
     
-    margin_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=0, help_text="Profit margin %")
+    # Margin on price over the full cost floor; null when the floor is unknown
+    # (never a 0,00 that reads as "no margin").
+    margin_percentage = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True, default=None,
+                                            help_text="Profit margin %")
     
     confidence = models.CharField(max_length=20, choices=CONFIDENCE_CHOICES, default='MEDIUM')
 
