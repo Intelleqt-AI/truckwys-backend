@@ -307,6 +307,7 @@ def _market_analysis(origin, destination, vehicle_type, company, market_rate, qu
             rate, src = resolve_market_rate(
                 origin, destination, vehicle_type or None, company=company,
                 exclude_created_by_user_id=getattr(user, 'id', None),
+                one_way_only=True, sent_only=True,   # QUOTE-RULES §8
             )
             if rate and rate > 0:
                 out['market_rate'] = round(float(rate), 2)

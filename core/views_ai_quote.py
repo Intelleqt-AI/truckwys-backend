@@ -253,7 +253,8 @@ class AIQuoteSuggestionView(APIView):
             market_rate, market_rate_source = 0.0, 'none'
             try:
                 from core.services.lane_benchmark import resolve_market_rate
-                rate, src = resolve_market_rate(origin, destination, vehicle_type or None, company=company)
+                rate, src = resolve_market_rate(origin, destination, vehicle_type or None, company=company,
+                                               one_way_only=True, sent_only=True)
                 if rate and rate > 0:
                     market_rate, market_rate_source = float(rate), src
             except Exception as exc:
@@ -1763,7 +1764,8 @@ class QuoteWinProbabilityView(APIView):
             if origin and destination:
                 try:
                     from core.services.lane_benchmark import resolve_market_rate
-                    rate, _src = resolve_market_rate(origin, destination, vehicle_type or None, company=company)
+                    rate, _src = resolve_market_rate(origin, destination, vehicle_type or None, company=company,
+                                               one_way_only=True, sent_only=True)
                     if rate and rate > 0:
                         market_rate = float(rate)
                 except Exception as exc:

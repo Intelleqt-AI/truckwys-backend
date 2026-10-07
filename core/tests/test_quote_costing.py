@@ -7,7 +7,7 @@ from pathlib import Path
 from django.test import SimpleTestCase
 
 from core.services import quote_costing as qc
-from core.tests.quote_golden_cases import CASES, EFFECTIVE, INLAND, base, long_trip, official
+from core.tests.quote_golden_cases import CASES, REOPEN_CASES, EFFECTIVE, INLAND, base, long_trip, official
 
 GOLDEN_PATH = Path(__file__).parent / 'fixtures' / 'quote_golden.json'
 
@@ -49,6 +49,12 @@ def build_golden():
         'rules': RULES,
         'cases': [{'name': name, 'description': desc, 'inputs': inputs, 'expected': qc.compute(inputs)}
                   for name, desc, inputs in CASES],
+        # Reopen notice (§11): quote_costing.changes_since_priced(price,
+        # floor_then, floor_now, priced_at). Added after the cases; the cases
+        # above are unchanged.
+        'reopen_rules': qc.changes_since_priced.__doc__.strip(),
+        'reopen_cases': [{'name': name, 'inputs': inputs, 'expected': qc.changes_since_priced(**inputs)}
+                         for name, inputs in REOPEN_CASES],
     }
 
 
@@ -193,3 +199,19 @@ class PriceTests(SimpleTestCase):
         self.assertIn(('below_minimum_charge', 'block'), _codes(out))
         self.assertNotIn('below_minimum_charge', [c for c, _ in _codes(qc.compute(base(minimum_charge=15000.0,
                                                                                          price=15000.0)))])
+
+
+class ReopenTests(SimpleTestCase):
+    def test_costs_up_keeps_margin(self):
+        out = qc.changes_since_priced(20000, 17200, 18250, '2026-09-02T10:00:00Z')
+        self.assertEqual(out['delta_zar'], 1050)
+        self.assertAlmostEqual(out['margin_then'], 14.0)
+        self.assertAlmostEqual(out['margin_now'], 8.75)
+        self.assertEqual(out['repriced_price_keep_margin'], qc.cents(18250 / 0.86))
+        self.assertEqual(out['notice'], 'Costs up R 1 050 since 2 Sep. Margin 14% → 9%.')
+
+    def test_unchanged_and_unknown(self):
+        self.assertFalse(qc.changes_since_priced(20000, 17200, 17200.4)['changed'])
+        out = qc.changes_since_priced(20000, None, 18000)
+        self.assertIsNone(out['delta_zar'])
+        self.assertIsNone(out['repriced_price_keep_margin'])

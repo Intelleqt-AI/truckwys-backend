@@ -90,6 +90,7 @@ class AIPriceOptimizeView(APIView):
                     rate, src = resolve_market_rate(
                         origin, destination, vehicle_type or None,
                         company=resolve_user_company(request.user),
+                        one_way_only=True, sent_only=True,   # QUOTE-RULES §8
                     )
                     if rate and rate > 0:
                         market_rate = float(rate)

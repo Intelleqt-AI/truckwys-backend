@@ -6,7 +6,7 @@ or (within half a cent) any stored FuelPrice figure — inland/coastal, 50 or
 500ppm — is not a price the fleet chose: LIVE. Anything else was typed in:
 OWN at that value, set_at = the company's updated_at.
 
-queryset.update() so updated_at is not touched. Reverse: clears the new
+bulk_update of the three fields only, so updated_at is not touched. Reverse: clears the new
 fields (fuel_price_per_litre is never modified, so nothing is lost).
 """
 from decimal import Decimal
@@ -33,13 +33,22 @@ def forwards(apps, schema_editor):
             return True
         return any(abs(value - k) <= TOLERANCE for k in known)
 
-    for c in Company.objects.only('id', 'fuel_price_per_litre', 'updated_at').iterator():
+    # Iterate in chunks and write with bulk_update (portable: sqlite and
+    # Postgres; no raw SQL). updated_at is auto_now, but bulk_update writes
+    # only the listed fields, so it is not bumped.
+    batch = []
+    fields = ['fuel_price_mode', 'fuel_price_own', 'fuel_price_own_set_at']
+    for c in Company.objects.only('id', 'fuel_price_per_litre', 'updated_at').order_by('id').iterator(chunk_size=500):
         if is_live(c.fuel_price_per_litre):
-            Company.objects.filter(pk=c.pk).update(fuel_price_mode='LIVE', fuel_price_own=None,
-                                                   fuel_price_own_set_at=None)
+            c.fuel_price_mode, c.fuel_price_own, c.fuel_price_own_set_at = 'LIVE', None, None
         else:
-            Company.objects.filter(pk=c.pk).update(fuel_price_mode='OWN', fuel_price_own=c.fuel_price_per_litre,
-                                                   fuel_price_own_set_at=c.updated_at)
+            c.fuel_price_mode, c.fuel_price_own, c.fuel_price_own_set_at = 'OWN', c.fuel_price_per_litre, c.updated_at
+        batch.append(c)
+        if len(batch) >= 500:
+            Company.objects.bulk_update(batch, fields)
+            batch = []
+    if batch:
+        Company.objects.bulk_update(batch, fields)
 
 
 def backwards(apps, schema_editor):

@@ -437,3 +437,34 @@ class AnalyzeAndAlertTests(_Base):
         body = self.api.post('/api/v1/fuel-prices/surcharge-check/', {'quote_id': q.id}, format='json').json()
         self.assertTrue(body['unknown'])
         self.assertFalse(body['surcharge_required'])
+
+
+class ReopenEndpointTests(_Base):
+    def test_cost_breakdown_returns_changes_since_priced(self):
+        with patch('django.utils.timezone.now', return_value=sast(2026, 10, 1, 9)):
+            q = self.create()
+        body = self.api.post('/api/v1/quotes/cost-breakdown/', {'quote_id': q.id}, format='json').json()
+        ch = body['changes_since_priced']
+        self.assertEqual(ch['floor_then'], float(q.cost_floor))
+        self.assertEqual(ch['floor_now'], body['floor'])
+        self.assertGreater(ch['delta_zar'], 0)                  # diesel went up on 7 Oct
+        self.assertTrue(ch['changed'])
+        self.assertTrue(ch['notice'].startswith('Costs up R '))
+        self.assertGreater(ch['repriced_price_keep_margin'], 36000)
+
+
+class DieselAuditCommandTests(_Base):
+    def test_lists_own_companies_and_cheap_quotes(self):
+        from io import StringIO
+        from django.core.management import call_command
+        self.company.fuel_price_mode, self.company.fuel_price_own = 'OWN', Decimal('30.00')
+        self.company.fuel_price_own_set_at = sast(2026, 9, 10)
+        self.company.save()
+        self.create()
+        out = StringIO()
+        call_command('quote_diesel_audit', stdout=out)
+        text = out.getvalue()
+        self.assertIn('Rules Haulage', text)
+        self.assertIn('30.0000', text)
+        self.assertIn('-8.5%', text)
+        self.assertIn('1', text.split('Rules Haulage')[1].split('\n')[0])

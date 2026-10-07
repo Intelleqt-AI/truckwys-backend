@@ -151,3 +151,18 @@ CASES = [
      'Cross-border costs as their own line.',
      long_trip(border_cost=3875.5, include_empty_return=False)),
 ]
+
+
+# (name, changes_since_priced kwargs)
+REOPEN_CASES = [
+    ('costs_up', {'price': 20000.0, 'floor_then': 17200.0, 'floor_now': 18250.0,
+                  'priced_at': '2026-09-02T08:00:00Z'}),
+    ('costs_down', {'price': 31500.0, 'floor_then': 28000.0, 'floor_now': 26412.37,
+                    'priced_at': '2026-09-10T08:00:00Z'}),
+    ('unchanged', {'price': 12500.0, 'floor_then': 7430.63, 'floor_now': 7430.63,
+                   'priced_at': '2026-10-07T08:00:00Z'}),
+    ('floor_unknown_then', {'price': 12500.0, 'floor_then': None, 'floor_now': 7430.63,
+                            'priced_at': None}),
+    ('loss_making_then', {'price': 9000.0, 'floor_then': 9500.0, 'floor_now': 9800.55,
+                          'priced_at': '2026-09-15T08:00:00Z'}),
+]

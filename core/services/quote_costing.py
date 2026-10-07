@@ -891,3 +891,37 @@ def costing_for_quote(quote, now=None, *, use_snapshot_diesel=False):
         'vehicle_selection': context['vehicle_how'], 'operating_cost': context['operating_cost'],
         'driver_rate_source': context['driver_rate_source'], 'diesel_resolution': 'snapshot'}
     return out
+
+
+# ---------------------------------------------------------------------------
+# Reopen notice (QUOTE-RULES §11) — PURE, mirrored by the clients.
+# ---------------------------------------------------------------------------
+
+def changes_since_priced(price, floor_then, floor_now, priced_at=None):
+    """What changed since a saved quote was priced, for the reopen notice.
+
+      delta_zar      = cents(floor_now − floor_then)
+      margin_then    = (price − floor_then) / price × 100   (unrounded)
+      margin_now     = (price − floor_now) / price × 100
+      repriced_price_keep_margin = cents(floor_now / (1 − margin_then / 100))
+                       ("Re-price (keeps margin)"; null when margin_then >= 100)
+      changed        = |delta_zar| >= 1
+    Any unknown input -> the figures that need it are null."""
+    price, floor_then, floor_now = _pos(price), _num(floor_then), _num(floor_now)
+    delta = cents(floor_now - floor_then) if floor_then is not None and floor_now is not None else None
+    m_then = (price - floor_then) / price * 100 if price and floor_then is not None else None
+    m_now = (price - floor_now) / price * 100 if price and floor_now is not None else None
+    keep = (cents(floor_now / (1 - m_then / 100)) if m_then is not None and floor_now is not None and m_then < 100
+            else None)
+    changed = delta is not None and abs(delta) >= 1
+    notice = None
+    if changed:
+        when = sa_date(priced_at)
+        notice = (f'Costs {"up" if delta > 0 else "down"} {fmt_rand(abs(delta))}'
+                  + (f' since {when.rsplit(" ", 1)[0]}' if when else '') + '.'
+                  + (f' Margin {math.floor(m_then + 0.5)}% → {math.floor(m_now + 0.5)}%.'
+                     if m_then is not None and m_now is not None else ''))
+    return {'priced_at': iso(priced_at), 'price': price, 'floor_then': floor_then, 'floor_now': floor_now,
+            'delta_zar': delta, 'margin_then': m_then, 'margin_now': m_now,
+            'repriced_price_keep_margin': keep, 'changed': changed, 'notice': notice,
+            'actions': [{'id': a, 'label': ACTION_LABELS[a]} for a in ('keep_price', 'reprice')] if changed else []}

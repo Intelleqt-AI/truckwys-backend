@@ -64,6 +64,9 @@ class QuoteCostBreakdownView(APIView):
                                     status=status.HTTP_404_NOT_FOUND)
                 out = costing_for_quote(quote)
                 out['send_check'] = send_check(quote)
+                from core.services.quote_costing import changes_since_priced
+                out['changes_since_priced'] = changes_since_priced(
+                    quote.total_amount, quote.cost_floor, out['floor'], quote.priced_at)
                 out['snapshot'] = {
                     'fuel_price_used': quote.fuel_price_used, 'fuel_price_source': quote.fuel_price_source,
                     'fuel_zone': quote.fuel_zone, 'fuel_effective_from': quote.fuel_effective_from,

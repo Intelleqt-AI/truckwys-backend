@@ -4186,5 +4186,145 @@
         "can_send": true
       }
     }
+  ],
+  "reopen_rules": "What changed since a saved quote was priced, for the reopen notice.\n\n  delta_zar      = cents(floor_now − floor_then)\n  margin_then    = (price − floor_then) / price × 100   (unrounded)\n  margin_now     = (price − floor_now) / price × 100\n  repriced_price_keep_margin = cents(floor_now / (1 − margin_then / 100))\n                   (\"Re-price (keeps margin)\"; null when margin_then >= 100)\n  changed        = |delta_zar| >= 1\nAny unknown input -> the figures that need it are null.",
+  "reopen_cases": [
+    {
+      "name": "costs_up",
+      "inputs": {
+        "price": 20000.0,
+        "floor_then": 17200.0,
+        "floor_now": 18250.0,
+        "priced_at": "2026-09-02T08:00:00Z"
+      },
+      "expected": {
+        "priced_at": "2026-09-02T08:00:00Z",
+        "price": 20000.0,
+        "floor_then": 17200.0,
+        "floor_now": 18250.0,
+        "delta_zar": 1050.0,
+        "margin_then": 14.000000000000002,
+        "margin_now": 8.75,
+        "repriced_price_keep_margin": 21220.93,
+        "changed": true,
+        "notice": "Costs up R 1 050 since 2 Sep. Margin 14% → 9%.",
+        "actions": [
+          {
+            "id": "keep_price",
+            "label": "Keep price"
+          },
+          {
+            "id": "reprice",
+            "label": "Re-price"
+          }
+        ]
+      }
+    },
+    {
+      "name": "costs_down",
+      "inputs": {
+        "price": 31500.0,
+        "floor_then": 28000.0,
+        "floor_now": 26412.37,
+        "priced_at": "2026-09-10T08:00:00Z"
+      },
+      "expected": {
+        "priced_at": "2026-09-10T08:00:00Z",
+        "price": 31500.0,
+        "floor_then": 28000.0,
+        "floor_now": 26412.37,
+        "delta_zar": -1587.63,
+        "margin_then": 11.11111111111111,
+        "margin_now": 16.15120634920635,
+        "repriced_price_keep_margin": 29713.92,
+        "changed": true,
+        "notice": "Costs down R 1 588 since 10 Sep. Margin 11% → 16%.",
+        "actions": [
+          {
+            "id": "keep_price",
+            "label": "Keep price"
+          },
+          {
+            "id": "reprice",
+            "label": "Re-price"
+          }
+        ]
+      }
+    },
+    {
+      "name": "unchanged",
+      "inputs": {
+        "price": 12500.0,
+        "floor_then": 7430.63,
+        "floor_now": 7430.63,
+        "priced_at": "2026-10-07T08:00:00Z"
+      },
+      "expected": {
+        "priced_at": "2026-10-07T08:00:00Z",
+        "price": 12500.0,
+        "floor_then": 7430.63,
+        "floor_now": 7430.63,
+        "delta_zar": 0.0,
+        "margin_then": 40.55496,
+        "margin_now": 40.55496,
+        "repriced_price_keep_margin": 12500.0,
+        "changed": false,
+        "notice": null,
+        "actions": []
+      }
+    },
+    {
+      "name": "floor_unknown_then",
+      "inputs": {
+        "price": 12500.0,
+        "floor_then": null,
+        "floor_now": 7430.63,
+        "priced_at": null
+      },
+      "expected": {
+        "priced_at": null,
+        "price": 12500.0,
+        "floor_then": null,
+        "floor_now": 7430.63,
+        "delta_zar": null,
+        "margin_then": null,
+        "margin_now": 40.55496,
+        "repriced_price_keep_margin": null,
+        "changed": false,
+        "notice": null,
+        "actions": []
+      }
+    },
+    {
+      "name": "loss_making_then",
+      "inputs": {
+        "price": 9000.0,
+        "floor_then": 9500.0,
+        "floor_now": 9800.55,
+        "priced_at": "2026-09-15T08:00:00Z"
+      },
+      "expected": {
+        "priced_at": "2026-09-15T08:00:00Z",
+        "price": 9000.0,
+        "floor_then": 9500.0,
+        "floor_now": 9800.55,
+        "delta_zar": 300.55,
+        "margin_then": -5.555555555555555,
+        "margin_now": -8.894999999999992,
+        "repriced_price_keep_margin": 9284.73,
+        "changed": true,
+        "notice": "Costs up R 301 since 15 Sep. Margin -6% → -9%.",
+        "actions": [
+          {
+            "id": "keep_price",
+            "label": "Keep price"
+          },
+          {
+            "id": "reprice",
+            "label": "Re-price"
+          }
+        ]
+      }
+    }
   ]
 }
