@@ -334,6 +334,25 @@ def invoice_saved(sender, instance, created, **kwargs):
 
 
 @receiver(post_save, sender='core.Quote')
+def quote_pricing_decision_superseded(sender, instance, created, update_fields=None, **kwargs):
+    """Pricing analysis: a quote whose price changed without a new analysis
+    (an older client, the API, the admin) no longer matches its stored
+    pricing decision. Mark that decision superseded so no screen restores or
+    shows its price, margin or chance (core.services.pricing_decisions)."""
+    if created or (update_fields is not None and 'total_amount' not in update_fields):
+        return
+    import logging
+    from django.db import transaction
+    try:
+        # Own savepoint: a failure here can't break the caller's transaction.
+        with transaction.atomic():
+            from core.services.pricing_decisions import supersede_if_price_changed
+            supersede_if_price_changed(instance)
+    except Exception:
+        logging.getLogger(__name__).exception('pricing decision supersede check failed for quote %s', instance.pk)
+
+
+@receiver(post_save, sender='core.Quote')
 def quote_saved(sender, instance, created, **kwargs):
     """Fire webhook when quote is accepted."""
     from core.services.webhook_dispatcher import dispatch_webhook
@@ -432,11 +451,25 @@ def quote_saved(sender, instance, created, **kwargs):
     # a quote is never "Sent" in the UI without actually having been sent.
     if not created and instance.status == 'SENT' and getattr(instance, '_old_status', None) != 'SENT':
         try:
+            from django.db import transaction
             from core.services.quote_share import ensure_quote_token, send_quote_to_customer_email
             ensure_quote_token(instance)
-            email_sent, recipient = send_quote_to_customer_email(instance)
-            instance._share_email_sent = email_sent
-            instance._share_recipient = recipient
+
+            def _send_email():
+                # Only once the save is committed: a save that is rolled back
+                # (e.g. QuoteSerializer's transaction when the pricing decision
+                # fails) must not have emailed the customer a quote that is
+                # still a draft, and the database isn't held open during SMTP.
+                # Outside a transaction this runs at once, so send_to_customer
+                # still reads the result straight after quote.save().
+                try:
+                    email_sent, recipient = send_quote_to_customer_email(instance)
+                    instance._share_email_sent = email_sent
+                    instance._share_recipient = recipient
+                except Exception:
+                    pass
+
+            transaction.on_commit(_send_email)
         except Exception:
             pass
 

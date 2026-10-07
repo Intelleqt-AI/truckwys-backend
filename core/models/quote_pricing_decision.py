@@ -35,6 +35,11 @@ class QuotePricingDecision(models.Model):
     model_version = models.CharField(max_length=60, blank=True)
     market_tier = models.CharField(max_length=20, blank=True)
     payload = models.JSONField(default=dict, blank=True)
+    # Set when the quote's total stopped matching final_price (the price was
+    # changed without a new analysis: an older client, the API, the admin).
+    # The record then no longer describes the quote: screens don't restore
+    # or show its price, margin or chance. Cleared when a new decision is saved.
+    superseded_at = models.DateTimeField(null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

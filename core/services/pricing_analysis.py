@@ -81,6 +81,15 @@ DEFAULT_OPERATING_CLASS = 'tri_axle'   # the most common long-haul unit when not
 # isn't run on the fleet's own trucks).
 OPERATING_COST_CATEGORIES = ('MAINTENANCE', 'INSURANCE', 'OVERHEAD', 'OTHER', 'DRIVER_COST')
 OPERATING_MIN_TRIPS = 10
+# Words that show a Driver cost / Other expense holds a cost the floor also
+# prices as its own line (night-out allowance, border fees): the operating
+# cost may then count it twice. Matched case-insensitively in descriptions.
+OVERLAP_WORDS = {
+    'night-out allowance': ('s&t', 'night out', 'night-out', 'nights out', 'nights-out', 'subsistence',
+                            'sleep out', 'sleep-out', 'sleepout', 'overnight allowance'),
+    'border fees': ('border', 'clearing', 'customs', 'c-brta', 'cbrta', 'cross-border permit'),
+}
+OVERLAP_CATEGORIES = ('DRIVER_COST', 'OTHER')
 
 
 def vehicle_class(vt, name=None):
@@ -446,10 +455,16 @@ def _tolls_line(payload, company, today):
     legs = _legs(payload)
     plazas = _route_plazas(payload)
     if not plazas:
-        label = 'Route toll estimate' if toll_cost > 0 else 'No toll plazas on this route'
-        return _line('tolls', 'Tolls', toll_cost, _source('calculated', label),
-                     'No SANRAL plazas listed for this route' if toll_cost <= 0
-                     else 'Estimated from distance (no plaza list for this route)')
+        if toll_cost <= 0:
+            # R0 means the route calculation found no plazas, not that the
+            # road has none (some corridors have no toll data yet): say so,
+            # and ask the user to check, never state it as a fact.
+            return _line('tolls', 'Tolls', 0, _source('calculated', 'No tolls found for this route'),
+                         'The route calculation found no toll plazas on this route. '
+                         'Check this if the trip uses toll roads, and add them in the build-up.',
+                         status='check')
+        return _line('tolls', 'Tolls', toll_cost, _source('calculated', 'Route toll estimate'),
+                     'Estimated from distance (no plaza list for this route)')
     stored = stored_tolls(payload, company)
     class_label = stored.get('class_label') or 'class unknown'
     verified = [p for p in (stored.get('plazas') or []) if p.get('found') and p.get('verified_at')]
@@ -545,6 +560,13 @@ def _border_line(payload):
     if cost <= 0 and not international:
         return None
     legs = _legs(payload)
+    if cost <= 0:
+        # An international trip always has border costs (often R5 000+):
+        # without them the floor is badly low, so no prices are built.
+        return _line('border', 'Border fees', 0, _source('calculated', 'Border costs not worked out yet'),
+                     'This is an international trip, but its border, permit and non-SA toll costs '
+                     'are not worked out yet. Add them in the build-up to see prices.',
+                     status='needs_input')
     return _line('border', 'Border fees', cost, _source('calculated', 'Border fees from the route calculation'),
                  f'Border, permit and non-SA toll costs, {legs} leg{"s" if legs != 1 else ""}')
 
@@ -557,11 +579,11 @@ def company_operating_cost(company, use_cache=True):
     trips in the same window. {'value'|None, 'trips', 'km', 'trip_linked',
     'company_level'}; value None below OPERATING_MIN_TRIPS completed trips.
     Cached 10 minutes. Never raises."""
-    empty = {'value': None, 'trips': 0, 'km': 0.0, 'trip_linked': 0.0, 'company_level': 0.0}
+    empty = {'value': None, 'trips': 0, 'km': 0.0, 'trip_linked': 0.0, 'company_level': 0.0, 'overlap': None}
     if company is None or not getattr(company, 'id', None):
         return empty
     from django.core.cache import cache
-    key = f'pa_opcost_{company.id}'
+    key = f'pa_opcost_v2_{company.id}'
     if use_cache:
         hit = cache.get(key)
         if hit is not None:
@@ -590,10 +612,36 @@ def company_operating_cost(company, use_cache=True):
             total = out['trip_linked'] + out['company_level']
             if total > 0:
                 out['value'] = round(total / out['km'], 2)
+                out['overlap'] = _expense_overlap(company, since.date())
     except Exception as exc:
         logger.warning('pricing analysis: operating cost aggregate failed: %s', exc)
     cache.set(key, out, 600)
     return out
+
+
+def _expense_overlap(company, since):
+    """Driver cost / Other expenses in the window whose description names a
+    night-out allowance or border fees (OVERLAP_WORDS), or None. Those costs
+    are also their own floor lines, so the operating cost may count them
+    twice; the floor flags it rather than guessing an amount to remove.
+    {'kinds': [...], 'count', 'amount' (excl. VAT), 'example'}."""
+    from django.db.models import F, Q
+    from core.models import Expense
+    words = {w for ws in OVERLAP_WORDS.values() for w in ws}
+    match = Q()
+    for w in words:
+        match |= Q(description__icontains=w)
+    rows = list(Expense.objects.filter(match, company=company, category__in=OVERLAP_CATEGORIES,
+                                       expense_date__gte=since)
+                .exclude(status='REJECTED')
+                .annotate(net=F('amount') - F('vat_amount'))
+                .order_by('-expense_date').values_list('description', 'net'))
+    if not rows:
+        return None
+    kinds = [kind for kind, ws in OVERLAP_WORDS.items()
+             if any(w in (d or '').lower() for d, _ in rows for w in ws)]
+    return {'kinds': kinds, 'count': len(rows), 'amount': round(sum(float(n or 0) for _, n in rows), 2),
+            'example': (rows[0][0] or '')[:120]}
 
 
 def fixed_cost_per_km(company, vt=None, vt_name=None):
@@ -652,7 +700,15 @@ def _fixed_line(fixed, distance):
         source = _source('company_actuals', f'Your costs, {fixed["trips"]} completed trips, last 12 months')
         details += [{'label': 'Trip costs', 'value': f'{_fmt(a["trip_linked"])} excl. VAT'},
                     {'label': 'Company costs', 'value': f'{_fmt(a["company_level"])} excl. VAT (not linked to a trip)'},
-                    {'label': 'Spread over', 'value': f'{_num(a["km"], 0)} km driven on completed trips'}]
+                    {'label': 'Spread over', 'value': f'{_num(a["km"], 0)} km driven on completed trips'},
+                    {'label': 'Built from', 'value': 'Your Driver cost, Maintenance, Insurance, Overhead and Other '
+                                                     'expenses'}]
+        overlap = a.get('overlap')
+        if overlap:
+            details.append({'label': 'Check', 'value': (
+                f'{overlap["count"]} Driver cost or Other expense{"s" if overlap["count"] != 1 else ""} '
+                f'({_fmt(overlap["amount"])} excl. VAT) mention {" and ".join(overlap["kinds"])}, e.g. '
+                f'"{overlap["example"]}". These are also their own lines, so they may be counted twice.')})
     else:
         source = _source('estimate', f'Estimate: typical SA operating cost for a {fixed["class_label"]}, '
                                      'excl. fuel and tolls')
@@ -661,9 +717,10 @@ def _fixed_line(fixed, distance):
                         f'your own figure is used from {fixed["min_trips"]}, or set one in company settings'})
     details += [{'label': 'Included', 'value': INCLUDED_TEXT}, {'label': 'Not included', 'value': EXCLUDED_TEXT}]
     km_dp = 0 if abs(distance - round(distance)) < 0.05 else 1
+    extra = {'status': 'check'} if fixed['source'] == 'company_actuals' and fixed['actuals'].get('overlap') else {}
     return _line('fixed_cost', 'Operating costs', fixed['value'] * distance, source,
                  _approx(distance, km_dp, fixed['value'], fixed['value'] * distance)
-                 + f'{_num(distance, km_dp)} km × {_fmt2(fixed["value"])}/km', details)
+                 + f'{_num(distance, km_dp)} km × {_fmt2(fixed["value"])}/km', details, **extra)
 
 
 def _return_line(payload, lines_by_key, fixed, one_way_km, vt):
@@ -732,8 +789,21 @@ def build_cost_floor(payload, *, company, vt, distance, today, include_return, w
     border = _border_line(payload)
     if border:
         lines.append(border)
+    needs = [k for k, gap in (('fuel', fuel is None), ('tolls', tolls is None),
+                              ('border', bool(border) and border.get('status') == 'needs_input')) if gap]
+    if tolls is not None and tolls.get('status') == 'check':
+        warnings.append({'code': 'tolls_none_found',
+                         'message': 'No tolls were found for this route. If it uses toll roads, add them in the '
+                                    'build-up so the cost floor is right.'})
     fixed = fixed_cost_per_km(company, vt, payload.get('vehicle_type'))
     lines.append(_fixed_line(fixed, distance))
+    overlap = fixed['actuals'].get('overlap') if fixed['source'] == 'company_actuals' else None
+    if overlap:
+        warnings.append({'code': 'operating_cost_overlap',
+                         'message': f'Your Driver cost or Other expenses seem to include '
+                                    f'{" and ".join(overlap["kinds"])}. These are also added as their own lines, '
+                                    'so your operating cost may count them twice and your prices come out high. '
+                                    'Check it, or set your own operating cost per km in Settings › Pricing.'})
     if fixed['source'] == 'vehicle_default':
         warnings.append({'code': 'estimate_fixed_cost',
                          'message': f'Operating costs use a typical SA figure for a {fixed["class_label"]} '
@@ -776,7 +846,10 @@ def build_cost_floor(payload, *, company, vt, distance, today, include_return, w
                                      if fwr is not None and distance + one_way > 0 else None),
         'include_return': bool(include_return and legs == 1),
         'distance_km': round(distance, 1),
-        'complete': fuel is not None,
+        # Prices are only built from a floor with fuel, a toll figure and,
+        # on an international trip, its border costs.
+        'complete': not needs,
+        'needs': needs,
         'lines': lines,
         'fixed_cost_per_km': {'value': fixed['value'], 'source': fixed['source'], 'trips': fixed['trips'],
                               'window': fixed['window'], 'class': fixed['class']},
@@ -1539,10 +1612,7 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
     else:
         floor = build_cost_floor(payload, company=company, vt=vt, distance=distance, today=today,
                                  include_return=include_return, warnings=warnings)
-        if not floor['complete']:
-            missing.append('fuel')
-        if _f(payload.get('toll_cost')) is None:
-            missing.append('tolls')
+        missing.extend(floor['needs'])
 
     choices = []
     attention = []

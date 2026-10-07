@@ -657,6 +657,9 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
             d = obj.pricing_decision
         except Exception:
             return None
+        # A superseded decision was for an earlier price: no margin from it.
+        if d.superseded_at is not None:
+            return None
         price, floor = d.final_price, d.floor
         if not price or floor is None or price <= 0:
             return None

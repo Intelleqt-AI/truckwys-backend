@@ -3,6 +3,8 @@ and the honest Quote.win_probability that follows from it."""
 import logging
 from decimal import Decimal, InvalidOperation
 
+from django.utils import timezone
+
 logger = logging.getLogger(__name__)
 
 LOSS_REASONS = ('price', 'timing', 'capacity', 'relationship', 'other')
@@ -183,14 +185,52 @@ def save_pricing_decision(quote, decision: dict, *, user=None, scored=None):
         'model_version': str(scored.get('model_version') or '')[:60],
         'market_tier': str(market.get('tier') or '')[:20],
         'payload': payload,
+        # Current unless the decided price already differs from the quote's
+        # total (a client that sent figures for an earlier price).
+        'superseded_at': None if _matches_total(scored['final_price'] or quote.total_amount, quote.total_amount)
+        else timezone.now(),
     }
     row, _ = QuotePricingDecision.objects.update_or_create(quote=quote, defaults=fields)
     quote.pricing_decision = row   # refresh the cached relation (select_related) for the response
 
-    win_probability = Decimal(pct) if pct is not None else None
+    # No chance is kept for a decision that doesn't describe the saved price.
+    win_probability = Decimal(pct) if pct is not None and row.superseded_at is None else None
     if quote.win_probability != win_probability:
         quote.win_probability = win_probability
         quote.save(update_fields=['win_probability', 'updated_at'])
+
+
+# A decision describes the quote while its final price equals the quote's
+# total to within this (the quote detail page's own rule, pricingDecision.ts).
+PRICE_MATCH_TOLERANCE = Decimal('0.5')
+
+
+def _matches_total(final_price, total) -> bool:
+    if final_price is None or total is None:
+        return False
+    try:
+        return abs(Decimal(str(final_price)) - Decimal(str(total))) <= PRICE_MATCH_TOLERANCE
+    except (ArithmeticError, ValueError, InvalidOperation):
+        return False
+
+
+def supersede_if_price_changed(quote) -> bool:
+    """Called after every quote save. When the quote's total no longer
+    matches its current decision's final price (the price was changed
+    without a new analysis), mark the decision superseded and clear the
+    quote's win_probability, which was the chance at the old price. True
+    when it did. A decision saved in the same request clears the mark again
+    (save_pricing_decision runs after the quote's own save)."""
+    from core.models import QuotePricingDecision, Quote
+    row = (QuotePricingDecision.objects.filter(quote_id=quote.pk, superseded_at__isnull=True)
+           .values_list('pk', 'final_price').first())
+    if row is None or _matches_total(row[1], quote.total_amount):
+        return False
+    QuotePricingDecision.objects.filter(pk=row[0]).update(superseded_at=timezone.now())
+    if quote.win_probability is not None:
+        Quote.objects.filter(pk=quote.pk).update(win_probability=None)
+        quote.win_probability = None
+    return True
 
 
 def decision_representation(quote):
@@ -208,6 +248,9 @@ def decision_representation(quote):
         'likelihood_at_final_pct': d.likelihood_at_final_pct,
         'floor_lines': payload.get('floor_lines') or [],
         'saved_at': d.updated_at.isoformat() if d.updated_at else None,
+        # The price was changed after this was saved: screens must not
+        # restore or show its price, margin or chance as the quote's.
+        'stale': d.superseded_at is not None,
     })
     return payload
 
@@ -247,6 +290,9 @@ def agreed_margin_representation(agreed_price, decision):
     = agreed price − the decision's cost floor (/ agreed price). Both null
     when the agreed price or the floor is missing. Display only."""
     from core.services.pricing_analysis import _rand, pct_half_up
+    # A stale decision's floor was worked out for an earlier version of the quote.
+    if isinstance(decision, dict) and decision.get('stale'):
+        return {'agreed_margin': None, 'agreed_margin_pct': None}
     floor = (decision or {}).get('floor') if isinstance(decision, dict) else None
     try:
         agreed, floor = float(agreed_price), float(floor)

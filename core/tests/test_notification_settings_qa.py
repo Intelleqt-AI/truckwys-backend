@@ -200,7 +200,10 @@ class EmailGatingTests(NotifQABase):
     def test_quote_events_gated_for_users_customer_email_untouched(self):
         def trigger():
             c, qid = self._make_quote_via_api()
-            r = c.post(f"/api/v1/quotes/{qid}/send_to_customer/")
+            # The customer email goes out once the save commits (on_commit);
+            # a TestCase never commits, so run those callbacks here.
+            with self.captureOnCommitCallbacks(execute=True):
+                r = c.post(f"/api/v1/quotes/{qid}/send_to_customer/")
             assert r.status_code == 200, r.content
         off = self.observe(ALL_OFF, trigger)
         self.assertEqual(off["user_emails"], 0)          # toggles honored
