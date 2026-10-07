@@ -1675,8 +1675,11 @@ class _HistoryBuilder:
             if not (lm <= timezone.localtime(ld.actual_delivered_at).date() <= last_month_end):
                 continue
             key = f'{ld.pickup_city} → {ld.delivery_city}'
-            res = calculate_true_margin({'distance_km': float(ld.distance)}, truck_type='articulated',
-                                        load_type='general', quote_price=Decimal(str(ld.total_amount)))
+            try:
+                res = calculate_true_margin({'distance_km': float(ld.distance)}, truck_type='articulated',
+                                            load_type='general', quote_price=Decimal(str(ld.total_amount)))
+            except ValueError:
+                continue    # no official diesel price on record: no modelled cost
             lanes[key]['loads'] += 1
             lanes[key]['revenue'] += ld.total_amount
             lanes[key]['cost'] += Decimal(str(res.true_cost))

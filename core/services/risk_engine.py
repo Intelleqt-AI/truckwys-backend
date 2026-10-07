@@ -160,7 +160,6 @@ class RiskEngine:
     # SA defaults for macro factors (will be API-driven in v2)
     SARB_REPO_RATE = 8.25
     ZAR_USD_RATE = 18.5
-    FUEL_PRICE_ZAR = 24.0
 
     def __init__(self, invoice: Invoice, facility: Facility):
         """Initialize risk engine with invoice and facility."""

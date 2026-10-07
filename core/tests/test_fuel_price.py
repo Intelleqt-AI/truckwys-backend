@@ -13,7 +13,6 @@ from django.test import TestCase
 
 from core.models import FuelPrice
 from core.services.fuel_price import (
-    _FALLBACK_PRICES,
     _check_price_alert,
     _fetch_from_dmre,
     _fetch_from_sapia,
@@ -36,12 +35,9 @@ class ToDecimalTests(TestCase):
 
 
 class FetchFuelPricesTests(TestCase):
-    """Tests for fetch_fuel_prices() — hermetic: HTTP is patched at the
-    requests.get boundary (serving the recorded FIASA page, or failing like a
-    timeout) and the clock is frozen at 2026-09-28 10:00 SAST. These used to
-    patch only the AA/SAPIA/DMRE scrapers, so FIASA was fetched from the real
-    internet and its *current* price was stored under whatever target_date the
-    test asked for (review finding F3) — the three failures on main."""
+    """fetch_fuel_prices(): hermetic (recorded FIASA page / offline), clock at
+    2026-09-28 10:00 SAST. Only FIASA columns are stored, under their
+    effective date; nothing is ever taken from a fallback table."""
 
     NOW = datetime(2026, 9, 28, 10, 0, tzinfo=ZoneInfo('Africa/Johannesburg'))
     FIASA_HTML = (Path(__file__).parent / 'fixtures' / 'fiasa_2026-09-28.html').read_text(encoding='utf-8')
@@ -60,38 +56,18 @@ class FetchFuelPricesTests(TestCase):
         self.http_mock.return_value = None
         self.http_mock.side_effect = requests.ConnectionError('offline (test)')
 
-    def test_creates_new_record_from_fallback(self):
-        # FIASA is up but its page only carries 2026: March 2024 must come
-        # from the fallback table, not be stamped with today's price.
-        target = date(2024, 3, 1)
-        fp = fetch_fuel_prices(target_date=target)
+    def test_old_month_not_on_fiasa_stores_nothing(self):
+        self.assertIsNone(fetch_fuel_prices(target_date=date(2024, 3, 1)))
+        self.assertFalse(FuelPrice.objects.exists())
 
-        self.assertEqual(fp.date, target)
-        self.assertEqual(fp.diesel_inland, Decimal('22.1000'))
-        self.assertEqual(fp.diesel_coastal, Decimal('21.4700'))
-        self.assertEqual(fp.source, 'FALLBACK')
-
-    def test_returns_existing_without_update(self):
-        target = date(2024, 6, 1)
-        fp1 = fetch_fuel_prices(target_date=target)
-        fp2 = fetch_fuel_prices(target_date=target)
-
+    def test_month_on_fiasa_is_stored_once_under_its_effective_date(self):
+        fp1 = fetch_fuel_prices(target_date=date(2026, 7, 1))
+        fp2 = fetch_fuel_prices(target_date=date(2026, 7, 1), force_update=True)
         self.assertEqual(fp1.pk, fp2.pk)
-        self.assertEqual(FuelPrice.objects.filter(date=target).count(), 1)
-
-    def test_force_update_overwrites_record(self):
-        target = date(2024, 7, 1)
-        fp1 = fetch_fuel_prices(target_date=target)
-        original_pk = fp1.pk
-
-        # Force an update with the same fallback — pk must stay the same
-        fp2 = fetch_fuel_prices(target_date=target, force_update=True)
-        self.assertEqual(fp2.pk, original_pk)
+        self.assertEqual(fp1.source, 'FIASA')
+        self.assertEqual(FuelPrice.objects.count(), 1)
 
     def test_defaults_to_the_official_price_in_force(self):
-        # QUOTE-RULES §2: no target date = the current official price, stored
-        # under its effective date (2 Sep 2026 on the recorded page) and never
-        # a fallback-table row when the source is down.
         fp = fetch_fuel_prices()
         self.assertEqual(fp.date, date(2026, 9, 2))
         self.assertEqual(fp.source, 'FIASA')
@@ -100,43 +76,8 @@ class FetchFuelPricesTests(TestCase):
         self.assertIsNone(fetch_fuel_prices())
         self.assertFalse(FuelPrice.objects.exists())
 
-    def test_falls_back_to_latest_when_key_missing(self):
-        # Use a future date not in _FALLBACK_PRICES
-        target = date(2099, 1, 1)
-        self._go_offline()
-        with patch('core.services.fuel_price._fetch_from_aa_sa', return_value=None), \
-             patch('core.services.fuel_price._fetch_from_sapia', return_value=None), \
-             patch('core.services.fuel_price._fetch_from_dmre', return_value=None):
-            fp = fetch_fuel_prices(target_date=target)
-
-        latest_key = max(_FALLBACK_PRICES.keys())
-        di, dc, p95, p93 = _FALLBACK_PRICES[latest_key]
-        self.assertEqual(fp.diesel_inland, Decimal(di))
-        self.assertEqual(fp.source, 'FALLBACK_LATEST')
-
-    def test_live_source_data_is_used_when_available(self):
-        # The secondary live scrapers only ever see *today's* price, so they
-        # are consulted for the current month only (was: 2024-09-01, which
-        # stored today's price under a past month — F3). FIASA is offline
-        # here so the chain reaches SAPIA.
-        target = date(2026, 9, 1)
-        self._go_offline()
-        mock_data = {
-            'diesel_inland': Decimal('20.00'),
-            'diesel_coastal': Decimal('19.50'),
-            'petrol_95': Decimal('21.00'),
-            'petrol_93': Decimal('20.30'),
-            'source': 'SAPIA',
-        }
-        with patch('core.services.fuel_price._fetch_from_sapia', return_value=mock_data):
-            fp = fetch_fuel_prices(target_date=target)
-
-        self.assertEqual(fp.diesel_inland, Decimal('20.00'))
-        self.assertEqual(fp.source, 'SAPIA')
-
     def test_fiasa_is_used_for_the_current_month(self):
         fp = fetch_fuel_prices(target_date=date(2026, 9, 1))
-
         self.assertEqual(fp.source, 'FIASA')
         self.assertEqual(fp.diesel_inland, Decimal('29.5551'))   # Diesel 0.005% Gauteng
         self.assertEqual(fp.diesel_coastal, Decimal('28.6831'))  # Diesel 0.005% Coastal
@@ -227,18 +168,3 @@ class PriceAlertTests(TestCase):
 
         coastal_alerts = [m for m in cm.output if 'diesel_coastal' in m]
         self.assertEqual(len(coastal_alerts), 1)
-
-
-class FallbackDataTests(TestCase):
-    def test_fallback_table_has_expected_months(self):
-        self.assertIn((2025, 3), _FALLBACK_PRICES)
-        self.assertIn((2024, 1), _FALLBACK_PRICES)
-
-    def test_fallback_values_are_plausible(self):
-        for (year, month), (di, dc, p95, p93) in _FALLBACK_PRICES.items():
-            self.assertGreater(Decimal(di), Decimal('10'))
-            self.assertLess(Decimal(di), Decimal('50'))
-            self.assertGreater(Decimal(dc), Decimal('10'))
-            self.assertLess(Decimal(dc), Decimal('50'))
-            # Inland diesel >= coastal diesel
-            self.assertGreaterEqual(Decimal(di), Decimal(dc))

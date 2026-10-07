@@ -16,9 +16,10 @@ class FuelPrice(models.Model):
     DIESEL_GRADE_CHOICES = [('50ppm', 'Diesel 50ppm (0.005% S)'), ('500ppm', 'Diesel 500ppm (0.05% S)')]
 
     date = models.DateField(
-        unique=True,
-        help_text='Calendar month this row belongs to (always the 1st). The '
-                  'moment the stored price took effect is effective_from.',
+        db_index=True,
+        help_text='The SAST day the price took effect (legacy rows: the 1st of their month). The exact '
+                  'moment is effective_from. One row per (date, source): a FIASA and a MANUAL price can '
+                  'exist for the same day, and neither ever overwrites the other.',
     )
     diesel_inland = models.DecimalField(
         max_digits=8, decimal_places=4,
@@ -89,6 +90,7 @@ class FuelPrice(models.Model):
     class Meta:
         db_table = 'fuel_prices'
         ordering = ['-date']
+        constraints = [models.UniqueConstraint(fields=['date', 'source'], name='fuel_prices_date_source_uniq')]
 
     def __str__(self):
         return (

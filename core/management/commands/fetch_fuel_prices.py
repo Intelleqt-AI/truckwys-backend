@@ -39,11 +39,11 @@ class Command(BaseCommand):
             '--backfill',
             action='store_true',
             default=False,
-            help='Backfill all known historical prices from the fallback table.',
+            help='Backfill the official FIASA prices for every month since Jan 2024 that FIASA still shows.',
         )
 
     def handle(self, *args, **options):
-        from core.services.fuel_price import fetch_fuel_prices, _FALLBACK_PRICES
+        from core.services.fuel_price import fetch_fuel_prices  # noqa: F401
 
         force = options['force']
 
@@ -53,8 +53,10 @@ class Command(BaseCommand):
             # its figures are not used for pricing (QUOTE-RULES §1).
             self.stdout.write('Backfilling official fuel prices from FIASA…')
             stored = missing = 0
-            for (year, month) in sorted(_FALLBACK_PRICES.keys()):
-                target = date(year, month, 1)
+            today = date.today()
+            months = [date(y, m, 1) for y in range(2024, today.year + 1) for m in range(1, 13)
+                      if date(y, m, 1) <= today]
+            for target in months:
                 fp = self._store_month(target)
                 if fp is None:
                     missing += 1
@@ -85,8 +87,10 @@ class Command(BaseCommand):
                                    '(see docs/QUOTE_RULES_DEPLOY.md).')
             self.stdout.write(self.style.SUCCESS(
                 f'Official price in force: {fp.source} {fp.diesel_grade or ""} inland R{fp.diesel_inland} '
-                f'coastal R{fp.diesel_coastal}, effective {row_effective_from(fp):%Y-%m-%d %H:%M %Z}'
-                + (f' (last check FAILED at {fp.fetch_failed_at:%Y-%m-%d %H:%M})' if fp.fetch_failed_at else '')))
+                f'coastal R{fp.diesel_coastal}, effective '
+                f'{timezone.localtime(row_effective_from(fp)):%Y-%m-%d %H:%M} SAST'
+                + (f' (last check FAILED at {timezone.localtime(fp.fetch_failed_at):%Y-%m-%d %H:%M} SAST)'
+                   if fp.fetch_failed_at else '')))
             return
 
         self.stdout.write(f'Fetching the official fuel price in force during {target:%B %Y}…')

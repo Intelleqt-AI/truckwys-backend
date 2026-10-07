@@ -41,7 +41,7 @@ class Command(BaseCommand):
             eff_day = timezone.localtime(row.effective_from).date()
             if eff_day == row.date or row.source not in ('FIASA', 'MANUAL'):
                 continue
-            other = FuelPrice.objects.filter(date=eff_day).exclude(pk=row.pk).first()
+            other = FuelPrice.objects.filter(date=eff_day, source=row.source).exclude(pk=row.pk).first()
             if other is None:
                 self.stdout.write(f'  {row.date}  {row.source} R{row.diesel_inland}: re-key to {eff_day} (effective date)')
                 moved += 1

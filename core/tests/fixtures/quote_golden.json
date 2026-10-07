@@ -109,7 +109,7 @@
           "own_set_at": null,
           "fuel_type": "Diesel",
           "official_price": 32.7989,
-          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
           "official_stale": false,
           "price": 32.7989,
           "source": "official"
@@ -262,10 +262,10 @@
           "zone": "INLAND",
           "mode": "OWN",
           "own_price": 30.0,
-          "own_set_at": "2026-09-10T08:00:00Z",
+          "own_set_at": "2026-09-10T10:00:00+02:00",
           "fuel_type": "Diesel",
           "official_price": 32.7989,
-          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
           "official_stale": false,
           "price": 30.0,
           "source": "own"
@@ -455,10 +455,10 @@
           "zone": "INLAND",
           "mode": "OWN",
           "own_price": 32.5,
-          "own_set_at": "2026-10-07T06:30:00Z",
+          "own_set_at": "2026-10-07T08:30:00+02:00",
           "fuel_type": "Diesel",
           "official_price": 32.7989,
-          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
           "official_stale": false,
           "price": 32.5,
           "source": "own"
@@ -611,10 +611,10 @@
           "zone": "INLAND",
           "mode": "OWN",
           "own_price": 30.0,
-          "own_set_at": "2026-09-10T08:00:00Z",
+          "own_set_at": "2026-09-10T10:00:00+02:00",
           "fuel_type": "Diesel",
           "official_price": 32.7989,
-          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
           "official_stale": false,
           "price": 32.7989,
           "source": "official"
@@ -770,7 +770,7 @@
           "own_set_at": null,
           "fuel_type": "Diesel",
           "official_price": 32.7989,
-          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
           "official_stale": false,
           "price": 33.1,
           "source": "override"
@@ -1102,7 +1102,7 @@
           "own_set_at": null,
           "fuel_type": "Diesel",
           "official_price": 31.2471,
-          "official_effective_from": "2026-09-01T22:01:00Z",
+          "official_effective_from": "2026-09-02T00:01:00+02:00",
           "official_stale": true,
           "price": 31.2471,
           "source": "official"
@@ -1276,7 +1276,7 @@
           "own_set_at": null,
           "fuel_type": "Diesel",
           "official_price": 31.9269,
-          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
           "official_stale": false,
           "price": 31.9269,
           "source": "official"
@@ -1432,7 +1432,7 @@
           "own_set_at": null,
           "fuel_type": "Diesel",
           "official_price": 32.7989,
-          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
           "official_stale": false,
           "price": 32.7989,
           "source": "official"
@@ -1588,7 +1588,7 @@
           "own_set_at": null,
           "fuel_type": "Diesel",
           "official_price": 32.7989,
-          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
           "official_stale": false,
           "price": 32.7989,
           "source": "official"
@@ -1795,7 +1795,7 @@
           "own_set_at": null,
           "fuel_type": "Diesel",
           "official_price": 32.7989,
-          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
           "official_stale": false,
           "price": 32.7989,
           "source": "official"
@@ -1951,7 +1951,7 @@
           "own_set_at": null,
           "fuel_type": "Diesel",
           "official_price": 32.7989,
-          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
           "official_stale": false,
           "price": 32.7989,
           "source": "official"
@@ -2107,7 +2107,7 @@
           "own_set_at": null,
           "fuel_type": "Diesel",
           "official_price": 32.7989,
-          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
           "official_stale": false,
           "price": 32.7989,
           "source": "official"
@@ -2263,7 +2263,7 @@
           "own_set_at": null,
           "fuel_type": "Diesel",
           "official_price": 32.7989,
-          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
           "official_stale": false,
           "price": 32.7989,
           "source": "official"
@@ -2439,7 +2439,7 @@
           "own_set_at": null,
           "fuel_type": "Diesel",
           "official_price": 32.7989,
-          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
           "official_stale": false,
           "price": 32.7989,
           "source": "official"
@@ -2595,7 +2595,7 @@
           "own_set_at": null,
           "fuel_type": "Diesel",
           "official_price": 32.7989,
-          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
           "official_stale": false,
           "price": 32.7989,
           "source": "official"
@@ -2771,7 +2771,7 @@
           "own_set_at": null,
           "fuel_type": "Diesel",
           "official_price": 32.7989,
-          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
           "official_stale": false,
           "price": 32.7989,
           "source": "official"
@@ -2927,7 +2927,7 @@
           "own_set_at": null,
           "fuel_type": "Diesel",
           "official_price": 32.7989,
-          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
           "official_stale": false,
           "price": 32.7989,
           "source": "official"
@@ -3099,7 +3099,7 @@
           "own_set_at": null,
           "fuel_type": "Diesel",
           "official_price": 32.7989,
-          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
           "official_stale": false,
           "price": 32.7989,
           "source": "official"
@@ -3269,7 +3269,7 @@
           "own_set_at": null,
           "fuel_type": "Diesel",
           "official_price": 32.7989,
-          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
           "official_stale": false,
           "price": 32.7989,
           "source": "official"
@@ -3425,7 +3425,7 @@
           "own_set_at": null,
           "fuel_type": "Diesel",
           "official_price": 32.7989,
-          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
           "official_stale": false,
           "price": 32.7989,
           "source": "official"
@@ -3601,7 +3601,7 @@
           "own_set_at": null,
           "fuel_type": "Diesel",
           "official_price": 32.7989,
-          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
           "official_stale": false,
           "price": 32.7989,
           "source": "official"
@@ -3773,7 +3773,7 @@
           "own_set_at": null,
           "fuel_type": "Diesel",
           "official_price": 32.7989,
-          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
           "official_stale": false,
           "price": 32.7989,
           "source": "official"
@@ -3947,7 +3947,7 @@
           "own_set_at": null,
           "fuel_type": "Diesel",
           "official_price": 32.7989,
-          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
           "official_stale": false,
           "price": 32.7989,
           "source": "official"
@@ -4103,7 +4103,7 @@
           "own_set_at": null,
           "fuel_type": "Diesel",
           "official_price": 32.7989,
-          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
           "official_stale": false,
           "price": 32.7989,
           "source": "official"
@@ -4268,7 +4268,7 @@
           "own_set_at": null,
           "fuel_type": "Diesel",
           "official_price": 32.7989,
-          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
           "official_stale": false,
           "price": 32.7989,
           "source": "official"
@@ -4431,7 +4431,7 @@
           "own_set_at": null,
           "fuel_type": "Diesel",
           "official_price": 32.7989,
-          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
           "official_stale": false,
           "price": 32.7989,
           "source": "official"
@@ -4638,7 +4638,7 @@
           "own_set_at": null,
           "fuel_type": "Diesel",
           "official_price": 32.7989,
-          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
           "official_stale": false,
           "price": 32.7989,
           "source": "official"
@@ -4845,7 +4845,7 @@
           "own_set_at": null,
           "fuel_type": "Diesel",
           "official_price": 32.7989,
-          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
           "official_stale": false,
           "price": 32.7989,
           "source": "official"
@@ -5052,7 +5052,7 @@
           "own_set_at": null,
           "fuel_type": "Diesel",
           "official_price": 32.7989,
-          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
           "official_stale": false,
           "price": 32.7989,
           "source": "official"
@@ -5226,7 +5226,7 @@
           "own_set_at": null,
           "fuel_type": "Diesel",
           "official_price": 32.7989,
-          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
           "official_stale": false,
           "price": 32.7989,
           "source": "official"
@@ -5406,7 +5406,7 @@
           "own_set_at": null,
           "fuel_type": "Diesel",
           "official_price": 32.7989,
-          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
           "official_stale": false,
           "price": 32.7989,
           "source": "official"
@@ -5569,7 +5569,7 @@
           "own_set_at": null,
           "fuel_type": "Diesel",
           "official_price": 32.7989,
-          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
           "official_stale": false,
           "price": 32.7989,
           "source": "official"
@@ -5789,7 +5789,7 @@
           "own_set_at": null,
           "fuel_type": "Petrol",
           "official_price": 30.25,
-          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
           "official_stale": false,
           "grade": "95",
           "price": 30.25,
@@ -5945,10 +5945,10 @@
           "zone": "INLAND",
           "mode": "OWN",
           "own_price": 27.0,
-          "own_set_at": "2026-10-07T06:30:00Z",
+          "own_set_at": "2026-10-07T08:30:00+02:00",
           "fuel_type": "Petrol",
           "official_price": 30.25,
-          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
           "official_stale": false,
           "grade": "95",
           "price": 27.0,
@@ -6308,7 +6308,7 @@
           "own_set_at": null,
           "fuel_type": "Petrol",
           "official_price": 29.38,
-          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
           "official_stale": false,
           "grade": "95",
           "price": 29.38,
@@ -6567,7 +6567,7 @@
         "priced_at": "2026-09-02T08:00:00Z"
       },
       "expected": {
-        "priced_at": "2026-09-02T08:00:00Z",
+        "priced_at": "2026-09-02T10:00:00+02:00",
         "price": 20000.0,
         "floor_then": 17200.0,
         "floor_now": 18250.0,
@@ -6598,7 +6598,7 @@
         "priced_at": "2026-09-10T08:00:00Z"
       },
       "expected": {
-        "priced_at": "2026-09-10T08:00:00Z",
+        "priced_at": "2026-09-10T10:00:00+02:00",
         "price": 31500.0,
         "floor_then": 28000.0,
         "floor_now": 26412.37,
@@ -6629,7 +6629,7 @@
         "priced_at": "2026-10-07T08:00:00Z"
       },
       "expected": {
-        "priced_at": "2026-10-07T08:00:00Z",
+        "priced_at": "2026-10-07T10:00:00+02:00",
         "price": 12500.0,
         "floor_then": 7430.63,
         "floor_now": 7430.63,
@@ -6673,7 +6673,7 @@
         "priced_at": "2026-09-15T08:00:00Z"
       },
       "expected": {
-        "priced_at": "2026-09-15T08:00:00Z",
+        "priced_at": "2026-09-15T10:00:00+02:00",
         "price": 9000.0,
         "floor_then": 9500.0,
         "floor_now": 9800.55,

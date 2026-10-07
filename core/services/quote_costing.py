@@ -134,8 +134,13 @@ def parse_dt(value):
 
 
 def iso(dt):
+    """ISO 8601 in SAST with its offset ('2026-10-07T00:01:00+02:00'): one
+    timestamp style across the API."""
     dt = parse_dt(dt)
-    return dt.astimezone(dt_timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ') if dt else None
+    if dt is None:
+        return None
+    from zoneinfo import ZoneInfo
+    return dt.astimezone(ZoneInfo('Africa/Johannesburg')).replace(microsecond=0).isoformat()
 
 
 def sa_date(value):

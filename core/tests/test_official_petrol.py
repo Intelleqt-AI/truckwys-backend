@@ -43,10 +43,14 @@ class FiasaPetrolTests(TestCase):
 
     def test_regex_scraper_never_invents_petrol(self):
         from bs4 import BeautifulSoup
-        html = '<table><tr><td>Diesel inland</td><td>32.80</td></tr></table>'
+        html = ('<table><tr><td>Diesel inland</td><td>32.80</td></tr>'
+                '<tr><td>Diesel coastal</td><td>31.92</td></tr></table>')
         out = fps._extract_prices_from_soup(BeautifulSoup(html, 'lxml'))
         self.assertIsNone(out['petrol_95'])
         self.assertIsNone(out['petrol_93'])
+        # ...and never derives coastal diesel from inland either.
+        html = '<table><tr><td>Diesel inland</td><td>32.80</td></tr></table>'
+        self.assertIsNone(fps._extract_prices_from_soup(BeautifulSoup(html, 'lxml')))
 
     def test_current_row_without_coastal_petrol_is_re_read_once(self):
         # A row stored before petrol was kept per zone: refresh reads FIASA again.

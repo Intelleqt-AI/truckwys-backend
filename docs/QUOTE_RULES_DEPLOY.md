@@ -72,15 +72,19 @@ Add the petrol figures as published when you have them: `"petrol_95_inland"`, `"
 uses the newest official row that has it). `fetch_fuel_prices` (no args) re-reads FIASA and fills the coastal
 petrol columns on the current row.
 
-That stores a `MANUAL` row (effective now, keyed by today's SAST date). A later FIASA row with a newer
-effective date replaces it automatically. Staff can also force a FIASA re-check with
+Both diesel figures are required (coastal is never copied from inland), each R5–R100/L; optional
+`petrol_95_inland`, `petrol_93_inland`, `petrol_95_coastal`, `petrol_93_coastal` (same bounds). Anything else
+is a 400 with per-field errors. It stores its OWN `MANUAL` row (effective now, keyed by today's SAST date; a
+second post the same day corrects that row). It never overwrites or replaces a FIASA row — rows are unique
+per (date, source) since migration 0155 — and a later FIASA row (newer effective date) supersedes it.
+Reversing 0155 needs no two rows on one date (delete the duplicate MANUAL row first). Staff can also force a FIASA re-check with
 `GET /api/v1/fuel-prices/current/?force=true` (ignored for non-staff).
 
 The `refresh_fuel_price` Celery beat task keeps it current; a stale read queues one refresh (never blocks a
 request). Celery workers + beat must be running.
 
-`FUEL_PRICE_DAILY_SCRAPER_ENABLED=True` enables the legacy regex scraper (`manage.py fetch_fuel_price_daily`).
-Leave it off unless FIASA is down for a long time: its rows are not official and are never used for pricing.
+The legacy regex daily scraper (`fetch_fuel_price_daily`) has been removed: remove any cron that still runs it
+(it now fails as an unknown command). Only FIASA and staff MANUAL prices exist.
 
 ## 4. After deploy
 
@@ -113,3 +117,11 @@ holding the 2 Sep column), duplicates, rows without an effective date (left out 
 
 Migration 0152 makes `default_base_rate_per_km` nullable (values kept). Rollback: `migrate core 0151` sets
 empty values back to 10.00 first.
+
+## Settings notes (final)
+
+- Old clients' "hybrid" price field is ignored for pricing: hybrid trucks price on the PETROL setting
+  (official or own petrol). The field is still stored for old screens.
+- A diesel write from an old client is a "live echo" (no OWN change) when it equals the official 50ppm price of
+  either zone in the current or previous period; a zone change never flips OWN to LIVE, and switching to LIVE
+  keeps the own price on record.

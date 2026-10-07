@@ -151,7 +151,7 @@ class FuelPriceCurrentView(APIView):
                 'inland_price': num(row.diesel_inland),
                 'coastal_price': num(row.diesel_coastal),
                 'last_updated': row.date.isoformat(),
-                'last_checked_at': row.fetched_at.isoformat() if row.fetched_at else None,
+                'last_checked_at': timezone.localtime(row.fetched_at).isoformat() if row.fetched_at else None,
                 'is_stale': stale or stale_flag or failed_at is not None,
                 'stale': stale,
                 'source': row.source,
@@ -159,8 +159,8 @@ class FuelPriceCurrentView(APIView):
                 'date': row.date.isoformat(),
                 'diesel_inland': num(row.diesel_inland),
                 'diesel_coastal': num(row.diesel_coastal),
-                'petrol_95': num(row.petrol_95) or 0,
-                'petrol_93': num(row.petrol_93) or 0,
+                'petrol_95': num(row.petrol_95),      # null when not published (never 0)
+                'petrol_93': num(row.petrol_93),
                 'zone': zone,
                 'zone_price': zone_price,
                 'diesel_grade': row.diesel_grade,
@@ -181,57 +181,56 @@ class FuelPriceCurrentView(APIView):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     def post(self, request):
-        """Admin override: POST {diesel_inland, diesel_coastal} to set current month's price.
-        Optional petrol (as published, never derived): petrol_95_inland,
-        petrol_93_inland, petrol_95_coastal, petrol_93_coastal. Petrol left
-        out stays unset on the row; petrol pricing then uses the newest
-        official row that has it."""
+        """Staff override: POST {diesel_inland, diesel_coastal} (both required,
+        R5-R100/L), optional petrol_95_inland, petrol_93_inland,
+        petrol_95_coastal, petrol_93_coastal (same bounds, as published, never
+        derived). Stored as its OWN row (source MANUAL, effective now, keyed by
+        today's SAST date): it never overwrites or replaces a FIASA row, and a
+        later FIASA row (newer effective date) supersedes it."""
         if not request.user.is_staff:
             return Response({'error': 'Staff only'}, status=status.HTTP_403_FORBIDDEN)
 
-        diesel_inland = request.data.get('diesel_inland')
-        diesel_coastal = request.data.get('diesel_coastal')
-        if not diesel_inland:
-            return Response({'error': 'diesel_inland is required'}, status=status.HTTP_400_BAD_REQUEST)
-
-        from decimal import Decimal
-        from datetime import date
+        from decimal import Decimal, InvalidOperation
         from core.models.fuel_price import FuelPrice
 
-        def petrol_value(*keys):
-            for k in keys:
-                v = request.data.get(k)
-                if v not in (None, ''):
-                    return Decimal(str(v))
-            return None
+        errors, values = {}, {}
+
+        def bounded(key, required):
+            raw = request.data.get(key)
+            if raw in (None, ''):
+                if required:
+                    errors[key] = 'Required: the price in R per litre (R5 to R100).'
+                return None
+            try:
+                v = Decimal(str(raw).strip().replace(',', '.'))
+            except (InvalidOperation, ValueError):
+                errors[key] = 'Enter a number in R per litre (R5 to R100).'
+                return None
+            if not v.is_finite() or not (Decimal('5') <= v <= Decimal('100')):
+                errors[key] = 'Enter a price between R5 and R100 per litre.'
+                return None
+            return v.quantize(Decimal('0.0001'))
+
+        values['diesel_inland'] = bounded('diesel_inland', True)
+        values['diesel_coastal'] = bounded('diesel_coastal', True)      # never copied from inland
+        values['petrol_95'] = bounded('petrol_95_inland', False) or bounded('petrol_95', False)
+        values['petrol_93'] = bounded('petrol_93_inland', False) or bounded('petrol_93', False)
+        values['petrol_95_coastal'] = bounded('petrol_95_coastal', False)
+        values['petrol_93_coastal'] = bounded('petrol_93_coastal', False)
+        if errors:
+            return Response({'error': 'Check the prices.', 'fields': errors}, status=status.HTTP_400_BAD_REQUEST)
 
         now = timezone.now()
-        # Keyed by the SAST day it was entered: earlier prices stay on record.
         today = timezone.localdate(now)
-        # A staff override is the price in force from now until a person
-        # replaces it: automated refreshes never overwrite a MANUAL row (see
-        # fetch_fuel_prices). Every provenance field is reset so nothing from
-        # the scraped row it replaces (grade, 500ppm figures, failure flag)
-        # is left behind looking as if it described the typed price.
         FuelPrice.objects.update_or_create(
-            date=today,
-            defaults={
-                'diesel_inland': Decimal(str(diesel_inland)),
-                'diesel_coastal': Decimal(str(diesel_coastal or diesel_inland)),
-                'source': 'MANUAL',
-                'fetched_at': now,
-                'effective_from': now,
-                'fetch_failed_at': None,
-                'diesel_grade': None,
-                'diesel_500ppm_inland': None,
-                'diesel_500ppm_coastal': None,
-                'petrol_95': petrol_value('petrol_95_inland', 'petrol_95'),
-                'petrol_93': petrol_value('petrol_93_inland', 'petrol_93'),
-                'petrol_95_coastal': petrol_value('petrol_95_coastal'),
-                'petrol_93_coastal': petrol_value('petrol_93_coastal'),
-            }
+            date=today, source='MANUAL',
+            defaults={**values, 'fetched_at': now, 'effective_from': now, 'fetch_failed_at': None,
+                      'diesel_grade': None, 'diesel_500ppm_inland': None, 'diesel_500ppm_coastal': None},
         )
-        return Response({'success': True, 'date': today.isoformat(), 'diesel_inland': float(diesel_inland)})
+        return Response({'success': True, 'date': today.isoformat(), 'source': 'MANUAL',
+                         'effective_from': timezone.localtime(now).isoformat(),
+                         'diesel_inland': float(values['diesel_inland']),
+                         'diesel_coastal': float(values['diesel_coastal'])})
 
 
 # UNREACHABLE FROM LIVE UI — no reference in frontend/src as of the two-tier

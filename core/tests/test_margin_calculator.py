@@ -13,7 +13,6 @@ from core.services.margin_calculator import (
     DEFAULT_MAINTENANCE_PER_KM,
     DEFAULT_TYRE_WEAR_PER_KM,
     MarginResult,
-    _FALLBACK_DIESEL_PRICE,
     calculate_true_margin,
 )
 
@@ -23,8 +22,10 @@ class MarginCalculatorTestCase(TestCase):
 
     def setUp(self):
         self.diesel_price = Decimal('21.18')
-        self.fuel_price = FuelPrice.objects.create(
-            date=date(2025, 3, 1),
+        from datetime import timedelta
+        from django.utils import timezone
+        self.fuel_price = FuelPrice.objects.create(       # an official price in force now
+            date=timezone.localdate(), source='MANUAL', effective_from=timezone.now() - timedelta(hours=1),
             diesel_inland=self.diesel_price,
             diesel_coastal=Decimal('20.56'),
             petrol_95=Decimal('22.44'),
@@ -271,15 +272,11 @@ class MarginCalculatorTestCase(TestCase):
     # Fallback diesel price
     # ------------------------------------------------------------------
 
-    def test_fallback_diesel_price_when_no_fuel_records(self):
+    def test_no_official_price_is_unknown_never_a_hard_coded_figure(self):
         FuelPrice.objects.all().delete()
-        result = calculate_true_margin(
-            route={'distance_km': 1000},
-            truck_type='articulated',
-            load_type='general',
-            quote_price=Decimal('20000'),
-        )
-        self.assertEqual(result.fuel_price_used, _FALLBACK_DIESEL_PRICE)
+        with self.assertRaises(ValueError):
+            calculate_true_margin(route={'distance_km': 1000}, truck_type='articulated', load_type='general',
+                                  quote_price=Decimal('20000'))
 
     # ------------------------------------------------------------------
     # Interface compatibility

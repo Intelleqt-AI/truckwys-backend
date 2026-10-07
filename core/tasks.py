@@ -72,13 +72,18 @@ def send_login_otp_email_task(email: str, code: str, first_name: str) -> bool:
         logger.error('send_login_otp_email failed for %s: %s', email, exc)
         return False
 
-# South African diesel price (ZAR/litre). Override via settings.FUEL_PRICE_ZAR.
-_DEFAULT_FUEL_PRICE = Decimal('22.50')
-
-
-def _fuel_price() -> Decimal:
-    from django.conf import settings
-    return Decimal(str(getattr(settings, 'FUEL_PRICE_ZAR', _DEFAULT_FUEL_PRICE)))
+def _fuel_price(company=None):
+    """The company's diesel R/L in use (own or official zone price), else the
+    official inland price in force; None when unknown — never a hard-coded
+    figure (QUOTE-RULES §1). Callers then leave the fuel-based figures as they
+    were."""
+    from core.services.fuel_price import company_diesel_price, price_in_force
+    if company is not None:
+        p = company_diesel_price(company)
+        if p is not None:
+            return p
+    rec = price_in_force('INLAND')
+    return Decimal(str(rec['price'])) if rec else None
 
 
 # ---------------------------------------------------------------------------
@@ -243,7 +248,9 @@ def _economics(vehicle, loads) -> tuple:
 
     completed = [l for l in loads if l.status in ('DELIVERED', 'INVOICED')]
     fuel_per_km = vehicle.fuel_consumption_per_km or Decimal('0.35')
-    fp = _fuel_price()
+    fp = _fuel_price(getattr(vehicle, 'company', None))
+    if fp is None:
+        return None, None       # diesel price unknown: fuel-based economics not worked out
 
     # Total km from completed loads
     total_km = sum(Decimal(str(l.distance or 0)) for l in completed)
@@ -308,21 +315,15 @@ def compute_vehicle_scores(vehicle_id: int):
             age          * 0.15
         )
 
-        Vehicle.objects.filter(pk=vehicle_id).update(
-            maintenance_score=maint,
-            uptime_score=uptime_score,
-            uptime_percentage=uptime_pct,
-            fuel_efficiency_score=fuel,
-            cost_per_km=cost_per_km,
-            margin_per_trip=margin_per_trip,
-            ai_health_score=ai_health,
-        )
+        updates = dict(maintenance_score=maint, uptime_score=uptime_score, uptime_percentage=uptime_pct,
+                       fuel_efficiency_score=fuel, ai_health_score=ai_health)
+        if cost_per_km is not None:
+            updates.update(cost_per_km=cost_per_km, margin_per_trip=margin_per_trip)
+        Vehicle.objects.filter(pk=vehicle_id).update(**updates)
 
         logger.info(
-            'Vehicle %s scored: health=%d maint=%d uptime=%d(%s%%) '
-            'fuel=%d age=%d cost/km=%.2f margin/trip=%.2f',
-            vehicle.plate, ai_health, maint, uptime_score, uptime_pct,
-            fuel, age, cost_per_km, margin_per_trip,
+            'Vehicle %s scored: health=%d maint=%d uptime=%d(%s%%) fuel=%d age=%d cost/km=%s margin/trip=%s',
+            vehicle.plate, ai_health, maint, uptime_score, uptime_pct, fuel, age, cost_per_km, margin_per_trip,
         )
 
     except Exception as exc:
@@ -377,10 +378,12 @@ def _driver_fuel_efficiency(loads) -> int:
 
 def _driver_margin_per_trip(loads):
     from decimal import Decimal
-    fp = _fuel_price()
     completed = [l for l in loads if l.status in ('DELIVERED', 'INVOICED')]
     if not completed:
         return Decimal('0')
+    fp = _fuel_price(getattr(completed[0], 'company', None))
+    if fp is None:
+        return None     # diesel price unknown
     margins = []
     for load in completed:
         revenue = Decimal(str(load.total_amount or 0))
@@ -432,7 +435,7 @@ def compute_driver_scores(driver_id: int):
             trips_this_month=trips_this_month,
             revenue_generated=round(total_revenue, 2),
             avg_revenue_per_trip=avg_rev,
-            margin_per_trip=margin,
+            **({'margin_per_trip': margin} if margin is not None else {}),
         )
 
         logger.info(

@@ -262,3 +262,67 @@ class RepairAndCommandTests(TestCase):
             call_command('fetch_fuel_prices', '--date', '2026-06-01', stdout=StringIO())
         self.assertTrue(FuelPrice.objects.filter(date=date(2026, 6, 3), source='FIASA').exists())
         self.assertFalse(FuelPrice.objects.filter(date=date(2026, 6, 1)).exists())
+
+
+class FinalFuelFixTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        staff = get_user_model().objects.create_user(username='ops', email='ops@x.test', password='x', is_staff=True)
+        self.api = APIClient()
+        self.api.force_authenticate(staff)
+
+    def post(self, **data):
+        return self.api.post('/api/v1/fuel-prices/current/', data, format='json')
+
+    def test_manual_post_is_its_own_row_and_never_replaces_fiasa(self):
+        fiasa = row(date(2026, 10, 7), 32.7989, 31.9269, eff=sast(2026, 10, 7, 0, 1))
+        with at(sast(2026, 10, 7, 9)):
+            r = self.post(diesel_inland='33.10', diesel_coastal='32.20', petrol_95_inland='27.50')
+        self.assertEqual(r.status_code, 200, r.content)
+        fiasa.refresh_from_db()
+        self.assertEqual((fiasa.source, fiasa.diesel_inland), ('FIASA', Decimal('32.7989')))
+        manual = FuelPrice.objects.get(source='MANUAL')
+        self.assertEqual((manual.date, manual.diesel_coastal, manual.petrol_95),
+                         (date(2026, 10, 7), Decimal('32.2000'), Decimal('27.5000')))
+        with at(sast(2026, 10, 7, 10)):
+            self.assertEqual(fps.price_in_force('INLAND')['source'], 'MANUAL')      # newer effective time
+        row(date(2026, 11, 4), 31.0, 30.1, eff=sast(2026, 11, 4, 0, 1))
+        with at(sast(2026, 11, 5)):
+            self.assertEqual(fps.price_in_force('INLAND')['source'], 'FIASA')       # a later FIASA supersedes
+
+    def test_manual_post_validation(self):
+        for data in ({'diesel_inland': 'abc', 'diesel_coastal': '30'}, {'diesel_inland': 'NaN', 'diesel_coastal': '30'},
+                     {'diesel_inland': '3', 'diesel_coastal': '30'}, {'diesel_inland': '30'},
+                     {'diesel_inland': '30', 'diesel_coastal': '30', 'petrol_95_inland': '500'}):
+            r = self.post(**data)
+            self.assertEqual(r.status_code, 400, (data, r.content))
+        self.assertFalse(FuelPrice.objects.exists())
+
+    def test_unpublished_coastal_93_does_not_trigger_a_refresh(self):
+        row(date(2026, 10, 7), 32.7989, 31.9269, eff=sast(2026, 10, 7, 0, 1))
+        with override_settings(FUEL_PRICE_READ_REFRESH=True), at(sast(2026, 10, 7, 9)), \
+                patch('core.services.fuel_price.enqueue_refresh') as q:
+            out = fps.resolve_official('COASTAL', product='petrol_93')
+        q.assert_not_called()
+        self.assertIsNone(out['price'])
+
+    def test_january_label_moves_to_the_first_wednesday(self):
+        self.assertEqual(fps._fiasa_effective_from('1-Jan-26'), sast(2026, 1, 7, 0, 1))
+        self.assertEqual(fps._fiasa_effective_from('1-Jan-27'), sast(2027, 1, 6, 0, 1))
+        self.assertEqual(fps._fiasa_effective_from('2-Sep-26'), sast(2026, 9, 2, 0, 1))
+
+    def test_implausible_columns_are_rejected(self):
+        self.assertIsNone(fps.implausible({'diesel_inland': Decimal('32.80'), 'diesel_coastal': Decimal('31.92')}))
+        self.assertIn('outside', fps.implausible({'diesel_inland': Decimal('3280'), 'diesel_coastal': Decimal('31')}))
+        self.assertIn('below coastal', fps.implausible({'diesel_inland': Decimal('31'), 'diesel_coastal': Decimal('32')}))
+        self.assertIn('outside', fps.implausible({'diesel_inland': Decimal('32'), 'diesel_coastal': Decimal('31'),
+                                                  'petrol_95': Decimal('2.7')}))
+
+    def test_petrol_history_needs_an_effective_date(self):
+        FuelPrice.objects.create(date=date(2026, 8, 1), diesel_inland=Decimal('28'), diesel_coastal=Decimal('27'),
+                                 source='MANUAL', petrol_95=Decimal('25'))
+        self.assertIsNone(fps.price_in_force('INLAND', sast(2026, 8, 20), strict_grade=False, product='petrol_95'))
+
+    def test_api_timestamps_are_sast(self):
+        from core.services.quote_costing import iso
+        self.assertEqual(iso('2026-10-06T22:01:00Z'), '2026-10-07T00:01:00+02:00')
