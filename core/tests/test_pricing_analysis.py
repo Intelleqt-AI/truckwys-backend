@@ -83,7 +83,7 @@ class ColdStartTests(_Base):
         self.assertFalse(r['market']['available'])
         self.assertEqual(r['likelihood']['level'], 'rules')
         self.assertIsNone(r['likelihood']['model'])
-        self.assertIn('you have 0 so far', r['likelihood']['reason'])
+        self.assertIn('you have 0 won and 0 lost so far', r['likelihood']['reason'])
         # The level reason is not repeated in the reasoning sentences.
         self.assertFalse(any('0 so far' in t for t in r['reasoning']))
         codes = {w['code'] for w in r['warnings']}
