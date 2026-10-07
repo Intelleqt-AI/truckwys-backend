@@ -4,6 +4,7 @@ from .vehicle import Vehicle, VehicleLog, VehicleType
 from .load import Load
 from .quote import Quote
 from .quote_outcome import QuoteOutcome
+from .quote_pricing_decision import QuotePricingDecision
 from .driver import Driver
 from .customer import Customer
 from .invoice import Invoice
@@ -66,6 +67,7 @@ __all__ = [
     'Load',
     'Quote',
     'QuoteOutcome',
+    'QuotePricingDecision',
     'Driver',
     'Customer',
     'Invoice',

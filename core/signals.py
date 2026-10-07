@@ -400,6 +400,30 @@ def quote_saved(sender, instance, created, **kwargs):
         except Exception:
             pass
 
+    # Pricing analysis (additive): remember whether the quote was ever sent.
+    # SENT (or leaving SENT) -> True; DRAFT straight to a decided status with
+    # nothing known -> False (a never-sent quote is not market evidence).
+    # A queryset update: no signals re-fired, no other field touched.
+    if not created:
+        try:
+            old = getattr(instance, '_old_status', None)
+            flag = None
+            if instance.status == 'SENT' or old == 'SENT':
+                flag = True
+            elif old == 'DRAFT' and instance.status in ('ACCEPTED', 'DECLINED', 'IT', 'COMPLETED') \
+                    and getattr(instance, 'was_sent', None) is None:
+                flag = False
+            if flag is not None and getattr(instance, 'was_sent', None) is not flag:
+                rows = sender.objects.filter(pk=instance.pk)
+                if flag is False:
+                    # Never overwrite a recorded send (checked in the DB, not
+                    # on a possibly stale instance).
+                    rows = rows.filter(was_sent__isnull=True)
+                if rows.update(was_sent=flag):
+                    instance.was_sent = flag
+        except Exception:
+            pass
+
     # SENT transition — the actual customer-facing side effect (share
     # token + email), not just the in-app notification above. Fires on
     # ANY path that lands a quote on SENT — the dedicated send_to_customer

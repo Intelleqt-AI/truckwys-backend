@@ -43,7 +43,22 @@ _CITY_ALIASES = {
     'PRETORIA': 'PTA',
     'PORT ELIZABETH': 'PE', 'GQEBERHA': 'PE',
     'BLOEMFONTEIN': 'BFN',
+    # Added for the pricing analysis: regional / cross-border lanes that
+    # previously derived no code at all (Quote.save stored ''), so their
+    # quotes never matched any market tier or customer lane history.
+    'POLOKWANE': 'PLK', 'PIETERSBURG': 'PLK',
+    'MBOMBELA': 'MBM', 'NELSPRUIT': 'MBM',
+    'BEITBRIDGE': 'BBR',
+    'GABORONE': 'GBE',
+    'MAPUTO': 'MPM',
+    'HARARE': 'HRE',
 }
+
+
+# Codes the aliases above added for the pricing analysis. Older endpoints
+# (GET /quotes/benchmark/) keep their previous answer for these lanes when
+# there is no data (before, these places derived no code at all).
+LANE_CODES_ADDED_FOR_PRICING = frozenset({'PLK', 'MBM', 'BBR', 'GBE', 'MPM', 'HRE'})
 
 
 def canon_code(code):
@@ -97,6 +112,46 @@ def derive_lane_code(*candidates):
                 return city
 
     return ''
+
+
+def won_quote_q():
+    """ONE definition of a won quote for the pricing analysis' company tier and
+    customer acceptance: status says won (ACCEPTED / IT / COMPLETED), or the
+    outcome was recorded as accepted on a quote that was actually sent (never
+    a DRAFT)."""
+    return Q(status__in=WON_STATUSES) | (Q(outcome='accepted') & ~Q(status='DRAFT'))
+
+
+def never_sent_q():
+    """Quotes known to have been decided without ever being sent to the
+    customer (Quote.was_sent is False: it went straight from DRAFT to a won or
+    lost status). Older rows (was_sent unknown) are not excluded."""
+    return Q(was_sent=False)
+
+
+def lost_quote_q():
+    """A decided, lost quote: declined, or recorded rejected, on a sent quote."""
+    return (Q(status='DECLINED') | (Q(outcome='rejected') & ~Q(status='DRAFT'))) & ~won_quote_q()
+
+
+# Display city and province for each canonical code (bookings created from
+# a quote). Province '' outside South Africa.
+LANE_PLACES = {
+    'JHB': ('Johannesburg', 'GP'), 'PTA': ('Pretoria', 'GP'), 'DBN': ('Durban', 'KZN'),
+    'CPT': ('Cape Town', 'WC'), 'PE': ('Gqeberha', 'EC'), 'BFN': ('Bloemfontein', 'FS'),
+    'PLK': ('Polokwane', 'LP'), 'MBM': ('Mbombela', 'MP'), 'BBR': ('Beitbridge', 'LP'),
+    'GBE': ('Gaborone', ''), 'MPM': ('Maputo', ''), 'HRE': ('Harare', ''),
+}
+
+
+def lane_place(code, address=''):
+    """(city, province) for a quote's lane code, else the first part of the
+    address and a blank province — never a guessed one."""
+    known = LANE_PLACES.get(canon_code(code))
+    if known:
+        return known
+    first = (address or '').split(',')[0].strip()[:100]
+    return (first or (code or '').strip()[:100]), ''
 
 
 def _code_variants(code):
@@ -175,7 +230,8 @@ def _seasonality_for(values_with_months):
 
 def compute_lane_benchmark(origin, destination, vehicle_type=None,
                            k_anonymity=5, days=180, exclude_quote_id=None,
-                           exclude_created_by_user_id=None, as_of=None):
+                           exclude_created_by_user_id=None, as_of=None, one_way_only=False,
+                           round_trip_only=False, sent_only=False):
     """
     Compute an anonymized, cross-platform benchmark for a single lane.
 
@@ -245,6 +301,19 @@ def compute_lane_benchmark(origin, destination, vehicle_type=None,
         )
         if vehicle_type:
             qs = qs.filter(vehicle_type__icontains=vehicle_type)
+        if one_way_only:
+            # Additive (pricing analysis): a round-trip quote's total covers
+            # two legs, so it is not the same thing as a one-way lane price.
+            # Default False keeps every existing caller unchanged.
+            qs = qs.exclude(trip_type='ROUND_TRIP')
+        if round_trip_only:
+            # Additive (pricing analysis): real return-trip prices for a
+            # return-trip quote, when enough of them exist.
+            qs = qs.filter(trip_type='ROUND_TRIP')
+        if sent_only:
+            # Additive (pricing analysis): a quote marked won without ever
+            # being sent to the customer is not market evidence.
+            qs = qs.exclude(never_sent_q())
         if exclude_quote_id:
             # Callers benchmarking a specific quote must not see that quote's
             # own price inside its benchmark (k-anonymity is re-checked below
@@ -381,8 +450,21 @@ def lookup_sa_estimate(origin, destination, vehicle_type=None):
 
 def resolve_market_rate(origin, destination, vehicle_type=None, company=None,
                         exclude_quote_id=None, exclude_created_by_user_id=None,
-                        as_of=None):
+                        as_of=None, one_way_only=False, sent_only=False):
     """Resolve a REAL market/benchmark rate for a lane, with provenance.
+
+    sent_only (additive, default False = unchanged): leave quotes decided
+    without ever being sent (Quote.was_sent False) out of every real-quote
+    tier. Passed by the win model's market reference — live scoring, the
+    outcome snapshot and feature reconstruction alike — so never-sent quotes
+    are not evidence for the chance to win either.
+
+    one_way_only (additive, default False = unchanged for every existing
+    caller): leave round-trip quotes out of every real-quote tier, the same
+    one-way definition the pricing analysis' market range uses. Passed by the
+    win model's market reference (live scoring in the pricing analysis and
+    the outcome snapshot / feature reconstruction it is trained on), so the
+    model's price ratio never mixes two-leg totals into a one-way market.
 
     Cascade (most-trustworthy first): cross-platform anonymized benchmark ->
     lane-level cross-platform -> this operator's own won quotes (last
@@ -416,12 +498,14 @@ def resolve_market_rate(origin, destination, vehicle_type=None, company=None,
     try:
         b = compute_lane_benchmark(
             o, d, vt, exclude_quote_id=exclude_quote_id,
-            exclude_created_by_user_id=exclude_created_by_user_id, as_of=as_of)
+            exclude_created_by_user_id=exclude_created_by_user_id, as_of=as_of, one_way_only=one_way_only,
+            sent_only=sent_only)
         if b.get('available') and b.get('market_median_rate'):
             return float(b['market_median_rate']), 'platform'
         b = compute_lane_benchmark(
             o, d, exclude_quote_id=exclude_quote_id,
-            exclude_created_by_user_id=exclude_created_by_user_id, as_of=as_of)
+            exclude_created_by_user_id=exclude_created_by_user_id, as_of=as_of, one_way_only=one_way_only,
+            sent_only=sent_only)
         if b.get('available') and b.get('market_median_rate'):
             return float(b['market_median_rate']), 'platform_lane'
     except Exception as exc:  # never raise
@@ -443,6 +527,10 @@ def resolve_market_rate(origin, destination, vehicle_type=None, company=None,
             if exclude_created_by_user_id:
                 base = base.exclude(created_by_id=exclude_created_by_user_id)
             base = base.exclude(total_amount__isnull=True)
+            if one_way_only:
+                base = base.exclude(trip_type='ROUND_TRIP')
+            if sent_only:
+                base = base.exclude(never_sent_q())
 
             # Vehicle-specific first, then lane-level — the same degradation
             # tiers 1 and 2 already use. Without the second attempt this tier
@@ -510,3 +598,116 @@ def lane_index(days=180, k_anonymity=5):
     except Exception as exc:  # never raise
         logger.warning('lane_index failed: %s', exc)
         return []
+
+
+# ---------------------------------------------------------------------------
+# Market RANGE (pricing analysis) — additive; resolve_market_rate above is
+# unchanged and still prices the win-model features.
+# ---------------------------------------------------------------------------
+
+# Fewest own won quotes on a lane before their spread is shown as a range.
+# Below this a p25/p75 is two or three numbers, not a distribution.
+COMPANY_RANGE_MIN_QUOTES = 5
+PLATFORM_WINDOW_DAYS = 180
+
+
+def _company_lane_amounts(o, d, vt, company, exclude_quote_id=None, as_of=None, trip='one_way'):
+    """This company's own won-quote totals on the lane (last
+    COMPANY_FALLBACK_DAYS), vehicle-specific first then lane-level — the
+    same degradation resolve_market_rate's company tier uses. Never other
+    tenants' rows. Returns (amounts, vehicle_specific: bool)."""
+    from core.models import Quote
+
+    as_of = as_of or timezone.now()
+    base = Quote.objects.filter(
+        won_quote_q(), _lane_q('origin', o), _lane_q('destination', d), company=company,
+        created_at__gte=as_of - timedelta(days=COMPANY_FALLBACK_DAYS), created_at__lte=as_of,
+    ).exclude(total_amount__isnull=True).exclude(never_sent_q())
+    # One-way prices only (default), or real return-trip prices only.
+    base = base.filter(trip_type='ROUND_TRIP') if trip == 'round_trip' else base.exclude(trip_type='ROUND_TRIP')
+    if exclude_quote_id:
+        base = base.exclude(id=exclude_quote_id)
+    attempts = [(base.filter(vehicle_type__icontains=vt), True), (base, False)] if vt else [(base, False)]
+    for qs, specific in attempts:
+        amounts = sorted(float(a) for a in qs.values_list('total_amount', flat=True))
+        if amounts:
+            # Same order-of-magnitude sanity cap as the platform benchmark.
+            med = _percentile(amounts, 0.5)
+            if med and med > 0:
+                amounts = [a for a in amounts if med / 10 <= a <= med * 10]
+        if len(amounts) >= COMPANY_RANGE_MIN_QUOTES:
+            return amounts, specific
+    return [], False
+
+
+def resolve_market_range(origin, destination, vehicle_type=None, company=None, exclude_quote_id=None,
+                         as_of=None, trip='one_way'):
+    """p25 / median / p75 for a lane, with honest provenance. Never raises.
+
+    Tiers, most trustworthy first:
+      platform  cross-platform won quotes, k-anonymous (>= 5 quotes from >= 2
+                operators, compute_lane_benchmark), vehicle-specific then lane;
+      company   this company's own won quotes on the lane (>= 5, last 365 days);
+                never another tenant's rows;
+      estimate  the coarse SA table (low / avg / high) — NOT market data, and
+                labelled as such (is_estimate=True);
+      none      nothing.
+
+    `trip`: 'one_way' (default) uses one-way quotes only; 'round_trip' uses
+    real return-trip quotes only and never falls back to the estimate (the
+    caller then scales the one-way range instead). Quotes decided without ever
+    being sent (never_sent_q) are never evidence.
+    """
+    round_trip = trip == 'round_trip'
+    out = {'available': False, 'tier': 'none', 'p25': None, 'median': None, 'p75': None, 'n': 0,
+           'is_estimate': False, 'tier_label': 'No market data for this lane yet', 'window_days': None,
+           'vehicle_specific': False}
+    o, d = canon_code(origin), canon_code(destination)
+    if not o or not d or o == d:
+        return out
+    vt = (vehicle_type or '').strip().lower() or None
+
+    try:
+        for vt_try in ([vt, None] if vt else [None]):
+            b = compute_lane_benchmark(o, d, vt_try, days=PLATFORM_WINDOW_DAYS,
+                                       exclude_quote_id=exclude_quote_id, as_of=as_of,
+                                       one_way_only=not round_trip, round_trip_only=round_trip, sent_only=True)
+            if b.get('available') and b.get('market_median_rate'):
+                n = int(b['sample_size'])
+                out.update({
+                    'available': True, 'tier': 'platform', 'n': n,
+                    'p25': float(b['p25']), 'median': float(b['market_median_rate']), 'p75': float(b['p75']),
+                    'window_days': PLATFORM_WINDOW_DAYS, 'vehicle_specific': vt_try is not None,
+                    'tier_label': f'TruckWys platform, {n} accepted quotes, last {PLATFORM_WINDOW_DAYS} days',
+                })
+                return out
+    except Exception as exc:  # never raise
+        logger.warning('resolve_market_range: platform lookup failed: %s', exc)
+
+    if company is not None:
+        try:
+            amounts, specific = _company_lane_amounts(o, d, vt, company, exclude_quote_id, as_of,
+                                                      trip='round_trip' if round_trip else 'one_way')
+            if amounts:
+                n = len(amounts)
+                out.update({
+                    'available': True, 'tier': 'company', 'n': n,
+                    'p25': round(_percentile(amounts, 0.25), 2), 'median': round(_percentile(amounts, 0.5), 2),
+                    'p75': round(_percentile(amounts, 0.75), 2),
+                    'window_days': COMPANY_FALLBACK_DAYS, 'vehicle_specific': specific,
+                    'tier_label': f'Your accepted quotes on this lane, {n} in the last 12 months',
+                })
+                return out
+        except Exception as exc:  # never raise
+            logger.warning('resolve_market_range: company lookup failed: %s', exc)
+
+    if round_trip:
+        return out
+    est = lookup_sa_estimate(o, d, vt)
+    if est:
+        out.update({
+            'available': True, 'tier': 'estimate', 'n': 0, 'is_estimate': True,
+            'p25': float(est['low']), 'median': float(est['avg']), 'p75': float(est['high']),
+            'tier_label': 'Rough South African estimate for this lane, not market data',
+        })
+    return out

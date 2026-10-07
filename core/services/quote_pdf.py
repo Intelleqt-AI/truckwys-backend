@@ -14,6 +14,40 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from core.formatting import format_zar
 
 
+# Words that name a truck or its body, never a cargo (mirrors the frontend's
+# src/lib/cargo.ts so the PDF and the quote detail agree).
+_TRUCK_WORDS = {
+    'superlink', 'tautliner', 'tautliners', 'tri', 'axle', 'triaxle', 'rigid', 'interlink', 'semi', 'trailer',
+    'truck', 'horse', 'flatbed', 'flat', 'deck', 'reefer', 'refrigerated', 'tanker', 'box', 'curtainsider',
+    'curtain', 'side', 'sider', 'tipper', 'lowbed', 'ldv', 'light', 'medium', 'heavy', 'vehicle', 'tonnes',
+    'tonne', 'ton', 't', 'x', '6x4', '4x2', '8x4', 'and',
+}
+
+
+def _only_truck_words(text):
+    import re
+    text = re.sub(r'\([^)]*\)', ' ', text.lower())
+    text = re.sub(r'[&/–—-]', ' ', text)
+    words = [w for w in re.split(r'[^a-z0-9x]+', text) if w and not w.isdigit()]
+    return bool(words) and all(w in _TRUCK_WORDS for w in words)
+
+
+def quote_cargo_text(cargo, vehicle_type=None):
+    """The cargo as the operator described it, or None. The builder saves
+    "<weight>t <vehicle type>" when Cargo is left blank; that names the
+    truck, not the cargo. Never falls back to the vehicle type."""
+    import re
+    c = str(cargo or '').strip()
+    if not c:
+        return None
+    m = re.match(r'^\d+(?:[.,]\d+)?\s*t(?:\s+(.*))?$', c, re.IGNORECASE)
+    if m:
+        rest = (m.group(1) or '').strip().lower()
+        vt = str(vehicle_type or '').strip().lower()
+        if not rest or (vt and rest == vt) or _only_truck_words(rest):
+            return None
+    return c[:1].upper() + c[1:]
+
 def generate_quote_pdf_bytes(quote) -> bytes:
     """Generate the PDF quote document and return its raw bytes."""
     buf = io.BytesIO()
@@ -100,11 +134,16 @@ def generate_quote_pdf_bytes(quote) -> bytes:
 
     # Quote meta table — customer-facing fields only (no internal status/confidence)
     cname = quote.customer.name if quote.customer else 'Direct Customer'
+    # House date format ("13 Oct 2026"), as everywhere else in the app.
+    def _d(value):
+        if not value:
+            return None
+        return f'{value.day} {value:%b %Y}'
     meta = [
         ['Customer', cname, 'Vehicle Type', quote.vehicle_type or 'Standard'],
-        ['Collection Date', str(quote.pickup_date) if quote.pickup_date else 'To be confirmed',
-         'Delivery Date', str(quote.delivery_date) if quote.delivery_date else 'To be confirmed'],
-        ['Valid Until', str(quote.valid_until) if quote.valid_until else 'N/A', 'Quote Date', str(quote.created_at.date())],
+        ['Collection Date', _d(quote.pickup_date) or 'To be confirmed',
+         'Delivery Date', _d(quote.delivery_date) or 'To be confirmed'],
+        ['Valid Until', _d(quote.valid_until) or 'N/A', 'Quote Date', _d(quote.created_at.date())],
     ]
     meta_table = Table(meta, colWidths=[35*mm, 65*mm, 35*mm, 35*mm])
     meta_table.setStyle(TableStyle([
@@ -130,12 +169,28 @@ def generate_quote_pdf_bytes(quote) -> bytes:
     from core.formatting import format_number
     cell = ParagraphStyle('routecell', fontName='Helvetica', fontSize=9, leading=11, textColor=dark)
     wrap = lambda text: Paragraph(escape(str(text)), cell)
+    round_trip = getattr(quote, 'trip_type', '') == 'ROUND_TRIP'
     distance = f'{format_number(quote.distance, 1)} km' if quote.distance else '—'
+    if round_trip and quote.distance:
+        # Display only: the price covers both legs of a return trip.
+        distance = f'{format_number(quote.distance, 1)} km each way (return trip)'
     weight = f'{format_number(quote.weight)} kg' if quote.weight else '—'
+    cargo_text = quote_cargo_text(quote.cargo_description, quote.vehicle_type)
+    cargo_cell_label = 'Cargo'
+    vehicle_text = (f'{quote.vehicle.make} {quote.vehicle.model}'.strip() if getattr(quote, 'vehicle', None)
+                    else 'To be assigned')
     route_data = [
         ['Pickup', wrap(quote.pickup_location or quote.origin or '—'), 'Distance', wrap(distance)],
         ['Delivery', wrap(quote.delivery_location or quote.destination or '—'), 'Weight', wrap(weight)],
-        ['Cargo', wrap(quote.cargo_description or '—'), 'Vehicle', wrap(quote.vehicle_type or 'Standard')],
+        *([['Return', wrap(quote.return_location or quote.pickup_location or quote.origin or '—'),
+            'Trip', wrap('Return trip')]] if round_trip else []),
+        # The type is already in the meta table; this row names the actual
+        # truck only once one is assigned (it used to repeat the type). The
+        # cargo is the operator's own text (same rule as the app's cargo.ts):
+        # the builder's "<weight>t <vehicle type>" placeholder is not cargo,
+        # so with no real cargo the Cargo cell is left out entirely.
+        ([cargo_cell_label, wrap(cargo_text), 'Vehicle', wrap(vehicle_text)] if cargo_text
+         else ['Vehicle', wrap(vehicle_text), '', '']),
     ]
     route_table = Table(route_data, colWidths=[30*mm, 80*mm, 30*mm, 30*mm])
     route_table.setStyle(TableStyle([
@@ -148,6 +203,8 @@ def generate_quote_pdf_bytes(quote) -> bytes:
         ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#E2E8F0')),
         ('PADDING', (0,0), (-1,-1), 6),
         ('VALIGN', (0,0), (-1,-1), 'TOP'),
+        # No cargo: the Vehicle value spans the row (no empty label cell).
+        *([] if cargo_text else [('SPAN', (1, -1), (3, -1)), ('BACKGROUND', (2, -1), (2, -1), colors.white)]),
     ]))
     story.append(route_table)
     story.append(Spacer(1, 6*mm))
@@ -215,7 +272,7 @@ def generate_quote_pdf_bytes(quote) -> bytes:
     story.append(Paragraph('Terms & Conditions', ParagraphStyle('tc', fontSize=9, textColor=mid, fontName='Helvetica-Bold', spaceAfter=2)))
     story.append(Paragraph(
         'This quote is valid for the period indicated. Prices subject to fuel surcharge adjustments. '
-        'Payment terms: 30 days from invoice date. All amounts in South African Rand (ZAR).',
+        f'Payment terms: {_terms_days(quote)} days from invoice date. All amounts in South African Rand (ZAR).',
         ParagraphStyle('tcbody', fontSize=8, textColor=mid)
     ))
 
@@ -229,3 +286,13 @@ def generate_quote_pdf_bytes(quote) -> bytes:
     doc.build(story)
     buf.seek(0)
     return buf.read()
+
+
+def _terms_days(quote) -> int:
+    """The customer's own payment terms in days (the same terms the invoice
+    will use — core.services.invoice_lines.customer_terms), 30 by default."""
+    try:
+        from core.services.invoice_lines import customer_terms, terms_days_for
+        return terms_days_for(customer_terms(quote.customer))
+    except Exception:
+        return 30

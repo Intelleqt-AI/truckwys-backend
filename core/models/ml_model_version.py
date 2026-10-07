@@ -15,6 +15,7 @@ from django.db.models import Q
 class MLModelVersion(models.Model):
     SCOPE_CHOICES = [
         ('user', 'Per-User'),
+        ('company', 'Per-Company'),
         ('global', 'Global'),
     ]
     STATUS_CHOICES = [
@@ -30,6 +31,12 @@ class MLModelVersion(models.Model):
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,
         on_delete=models.SET_NULL, related_name='ml_model_versions',
+    )
+    # Set iff scope == 'company' (the per-company tier, trained only on that
+    # company's own decided quotes).
+    company = models.ForeignKey(
+        'Company', null=True, blank=True,
+        on_delete=models.CASCADE, related_name='ml_model_versions',
     )
     status = models.CharField(max_length=12, choices=STATUS_CHOICES, default='candidate', db_index=True)
 
@@ -74,10 +81,16 @@ class MLModelVersion(models.Model):
                 condition=Q(status='active', user__isnull=False),
                 name='unique_active_model_per_user',
             ),
+            models.UniqueConstraint(
+                fields=['scope', 'company'],
+                condition=Q(status='active', company__isnull=False),
+                name='unique_active_model_per_company',
+            ),
         ]
 
     def __str__(self):
-        who = f'user={self.user_id}' if self.scope == 'user' else 'global'
+        who = (f'user={self.user_id}' if self.scope == 'user'
+               else f'company={self.company_id}' if self.scope == 'company' else 'global')
         return f'MLModelVersion({who}, {self.status}, n={self.training_sample_count})'
 
 

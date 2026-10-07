@@ -2791,7 +2791,7 @@ class QuoteFilterSet(django_filters.FilterSet):
 
 
 class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
-    queryset = Quote.objects.all().select_related('company').prefetch_related('loads')
+    queryset = Quote.objects.all().select_related('company', 'pricing_decision').prefetch_related('loads')
     serializer_class = QuoteSerializer
     permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
@@ -2826,7 +2826,15 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         # blocked for a suspended/cancelled company — TruckWys_Fee_Billing_Spec.pdf §5.
         if self._billing_blocked(request):
             return self._billing_blocked_response()
-        return super().update(request, *args, **kwargs)
+        from django.db import DatabaseError
+        try:
+            return super().update(request, *args, **kwargs)
+        except DatabaseError:
+            # The quote and its pricing decision save in one transaction
+            # (QuoteSerializer.update), so nothing was written: say so plainly.
+            _exc_logger.exception('quote update failed')
+            return Response({'error': 'The quote could not be saved just now. Nothing was changed; please try again.'},
+                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
     def perform_update(self, serializer):
         # IT/COMPLETED describe an Order's delivery progress, not the quote
@@ -2841,13 +2849,27 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
                 'status': 'Quotes no longer track In-Transit/Completed directly — '
                           'use "Convert to booking" to create the Order, which tracks delivery status.'
             })
-        serializer.save()
+        previous_status = serializer.instance.status if serializer.instance is not None else None
+        quote = serializer.save()
+        # A status change to Accepted / Declined through the plain PATCH (the
+        # status menu and board drags use it) is a decision too: record it as
+        # the ML outcome label exactly like update_status does. Previously
+        # only update_status did, so those quotes stayed outcome='pending'.
+        new_status = quote.status
+        if new_status != previous_status and new_status in ('ACCEPTED', 'DECLINED'):
+            from core.services.quote_outcome_capture import record_quote_outcome
+            data = self.request.data
+            record_quote_outcome(
+                quote, 'accepted' if new_status == 'ACCEPTED' else 'rejected',
+                rejection_reason=(quote.rejection_reason or '') if new_status == 'DECLINED' else '',
+                loss_reason=data.get('loss_reason') or '', loss_reason_note=data.get('loss_reason_note') or '',
+            )
 
     def create(self, request, *args, **kwargs):
         if self._billing_blocked(request):
             return self._billing_blocked_response()
         company = getattr(request.user, 'company', None)
-        from django.db import IntegrityError, transaction
+        from django.db import DatabaseError, IntegrityError, transaction
         from rest_framework.exceptions import ValidationError as DRFValidationError
         try:
             if company and company.is_demo:
@@ -2897,6 +2919,10 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
             return Response({'error': detail}, status=status.HTTP_400_BAD_REQUEST)
         except DRFValidationError:
             raise
+        except DatabaseError:
+            _exc_logger.exception('quote create failed')
+            return Response({'error': 'The quote could not be saved just now. Nothing was saved; please try again.'},
+                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
         except Exception as exc:
             return Response(
                 {'error': f'Could not create quote: {exc}'},
@@ -2983,6 +3009,8 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
                 quote,
                 'accepted' if new_status in ('ACCEPTED', 'IT') else 'rejected',
                 rejection_reason=quote.rejection_reason if new_status == 'DECLINED' else '',
+                loss_reason=request.data.get('loss_reason') or '',
+                loss_reason_note=request.data.get('loss_reason_note') or '',
             )
 
         if new_status in ('ACCEPTED', 'IT'):
@@ -3060,6 +3088,30 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
                 return None
             return timezone.make_aware(datetime.combine(d, datetime.min.time()))
 
+        from core.services.lane_benchmark import lane_place
+        pickup_city, pickup_state = lane_place(quote.origin, quote.pickup_location)
+        delivery_city, delivery_state = lane_place(quote.destination, quote.delivery_location)
+
+        # Optional dates from the booking dialog (YYYY-MM-DD). Absent -> the
+        # quote's own dates, else the old +2/+4 day placeholders (unchanged).
+        def _req_date(key):
+            raw = request.data.get(key)
+            if raw in (None, ''):
+                return None, None
+            try:
+                return datetime.strptime(str(raw)[:10], '%Y-%m-%d').date(), None
+            except ValueError:
+                return None, f'{key} must be a date (YYYY-MM-DD)'
+        req_pickup, err1 = _req_date('pickup_date')
+        req_delivery, err2 = _req_date('delivery_date')
+        if err1 or err2:
+            return Response({'error': err1 or err2}, status=status.HTTP_400_BAD_REQUEST)
+        eff_pickup = req_pickup or quote.pickup_date
+        eff_delivery = req_delivery or quote.delivery_date
+        if (req_pickup or req_delivery) and eff_pickup and eff_delivery and eff_delivery < eff_pickup:
+            return Response({'error': 'The delivery date cannot be before the collection date.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
         # Create load from quote (stamp the company so it's tenant-scoped/visible)
         load = Load.objects.create(
             load_number=load_number,
@@ -3070,21 +3122,23 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
             vehicle=vehicle,
             pickup_location=quote.pickup_location,
             delivery_location=quote.delivery_location,
-            pickup_city=quote.origin or 'TBD',
-            pickup_state='GP',
-            pickup_zip='0000',
+            # City/province from the lane code (blank when unknown) instead of
+            # the old hardcoded 'GP' / '0000', which put Cape Town in Gauteng.
+            pickup_city=pickup_city or 'TBD',
+            pickup_state=pickup_state,
+            pickup_zip='',
             pickup_lat=quote.pickup_lat,
             pickup_lng=quote.pickup_lng,
             # Use the quote's own dates when it has them (now reliably
             # captured via the AI/voice quote flow) instead of always
             # discarding them for a generic +2/+4 day placeholder.
-            pickup_date=_date_to_aware_datetime(quote.pickup_date) or (timezone.now() + timedelta(days=2)),
-            delivery_city=quote.destination or 'TBD',
-            delivery_state='GP',
-            delivery_zip='0000',
+            pickup_date=_date_to_aware_datetime(eff_pickup) or (timezone.now() + timedelta(days=2)),
+            delivery_city=delivery_city or 'TBD',
+            delivery_state=delivery_state,
+            delivery_zip='',
             delivery_lat=quote.delivery_lat,
             delivery_lng=quote.delivery_lng,
-            delivery_date=_date_to_aware_datetime(quote.delivery_date) or (timezone.now() + timedelta(days=4)),
+            delivery_date=_date_to_aware_datetime(eff_delivery) or (timezone.now() + timedelta(days=4)),
             # Same list, verbatim — the order's route must show identically
             # to what the customer actually quoted/accepted.
             stops=quote.stops,
@@ -3094,6 +3148,8 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
             distance=quote.distance,
             rate=quote.base_rate,
             fuel_surcharge=quote.fuel_surcharge,
+            toll_charges=quote.toll_charges or 0,
+            driver_allowance=quote.driver_allowance or 0,
             is_international=quote.is_international,
             additional_charges=quote.additional_charges,
             total_amount=quote.total_amount,
@@ -3232,6 +3288,10 @@ class PublicQuoteView(APIView):
                 **public_quote_vat_fields(quote),
                 'valid_until': str(quote.valid_until),
                 'status': quote.status,
+                # Additive: whether Accept / Decline should be offered (never
+                # on a draft that was not sent, nor once decided or expired).
+                'can_respond': quote.status in ('SENT',) and not (
+                    quote.valid_until and quote.valid_until < timezone.now().date()),
                 'sla_hours': quote.sla_hours,
                 'trip_type': quote.trip_type,
                 'return_location': quote.return_location,
@@ -3295,6 +3355,19 @@ class PublicQuoteRespondView(APIView):
                     status=status.HTTP_410_GONE
                 )
 
+            # A draft was never sent: its link exists (the token is issued on
+            # save) but the customer has nothing to accept or decline yet.
+            if quote.status == 'DRAFT':
+                return Response(
+                    {
+                        'error': "This quote hasn't been sent yet, so it can't be accepted or declined. "
+                                 'Please contact your transporter.',
+                        'status': quote.status,
+                        'not_sent': True,
+                    },
+                    status=status.HTTP_409_CONFLICT
+                )
+
             action = request.data.get('action')
             if action not in ['accept', 'decline']:
                 return Response(
@@ -3342,6 +3415,10 @@ class PublicQuoteRespondView(APIView):
                 record_quote_outcome(
                     quote, 'rejected',
                     rejection_reason=quote.rejection_reason,
+                    # Optional: the customer's structured reason, when the
+                    # decline form offers one (price|timing|capacity|relationship|other).
+                    loss_reason=request.data.get('loss_reason') or '',
+                    loss_reason_note=request.data.get('loss_reason_note') or '',
                 )
                 return Response({
                     'message': 'Quote declined',

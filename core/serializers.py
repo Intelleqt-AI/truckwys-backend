@@ -1,4 +1,5 @@
 import json
+from decimal import Decimal
 import re
 from rest_framework import serializers
 from django.db.models import Avg, Q  # ADD THIS IMPORT
@@ -642,13 +643,104 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
     # VAT and total incl. VAT (core.services.quote_vat; same figures as the
     # PDF, emails and online quote page). Used for the WhatsApp message.
     customer_price = serializers.SerializerMethodField()
+    # Pricing analysis (additive): what the pricing panel showed and what the
+    # operator picked, stored as QuotePricingDecision. Write-only here; the
+    # quote DETAIL response carries it back read-only (to_representation).
+    pricing_decision = serializers.JSONField(required=False, allow_null=True, write_only=True)
+    # Additive, list + detail: margin % against the full cost floor from the
+    # stored pricing decision (null when the quote has none). The viewset
+    # select_related's the decision, so this costs no extra query.
+    pricing_margin_pct = serializers.SerializerMethodField()
+
+    def get_pricing_margin_pct(self, obj):
+        try:
+            d = obj.pricing_decision
+        except Exception:
+            return None
+        price, floor = d.final_price, d.floor
+        if not price or floor is None or price <= 0:
+            return None
+        from core.services.pricing_analysis import pct_half_up
+        return pct_half_up(float(price - floor), float(price))   # half away from zero, as the panel
 
     class Meta:
         model = Quote
         fields = '__all__'
         # 'company' read-only (2026-09): a PATCH could move a quote into
         # another tenant. Create paths set it server-side via save(company=).
-        read_only_fields = ['id', 'company', 'created_at', 'updated_at', 'created_by']
+        # 'win_probability' read-only (pricing analysis): the server sets it
+        # from pricing_decision — the model likelihood at the FINAL price when
+        # a real model priced the quote, else null. A client-sent figure (the
+        # old flow sent the heuristic at a price the operator never saw) is
+        # ignored, not rejected, so older clients keep working.
+        read_only_fields = ['id', 'company', 'created_at', 'updated_at', 'created_by', 'win_probability']
+
+    PRICING_DECISION_MAX_BYTES = 20_000
+
+    def validate_pricing_decision(self, value):
+        if value in (None, ''):
+            return None
+        if not isinstance(value, dict):
+            raise serializers.ValidationError('pricing_decision must be a JSON object.')
+        size = len(json.dumps(value, separators=(',', ':'), default=str).encode('utf-8'))
+        if size > self.PRICING_DECISION_MAX_BYTES:
+            raise serializers.ValidationError(
+                f'pricing_decision is {size:,} bytes; the limit is {self.PRICING_DECISION_MAX_BYTES:,}.')
+        picked = value.get('picked_choice')
+        lines = value.get('floor_lines')
+        if lines is not None and not isinstance(lines, list):
+            raise serializers.ValidationError('floor_lines must be a list.')
+        if picked not in (None, '', 'safe', 'balanced', 'stretch', 'custom'):
+            raise serializers.ValidationError('picked_choice must be safe, balanced, stretch or custom.')
+        level = value.get('likelihood_level')
+        if level not in (None, '', 'model', 'rules'):
+            raise serializers.ValidationError('likelihood_level must be model or rules.')
+        for key in ('final_price', 'floor', 'likelihood_at_final_pct', 'price_adjustment'):
+            v = value.get(key)
+            if v is not None:
+                try:
+                    float(v)
+                except (TypeError, ValueError):
+                    raise serializers.ValidationError(f'{key} must be a number.')
+        return value
+
+    def create(self, validated_data):
+        from django.db import transaction
+        decision = validated_data.pop('pricing_decision', None)
+        # Score the final price FIRST, outside the write transaction (no
+        # SQLite write lock held while the model runs)...
+        scored = self._score_decision(None, validated_data, decision) if decision else None
+        # ...then one transaction: a quote saved with a decision either stores
+        # both or neither — never a 201 that claims a decision the DB doesn't hold.
+        with transaction.atomic():
+            instance = super().create(validated_data)
+            if decision:
+                self._save_pricing_decision(instance, decision, scored)
+        return instance
+
+    def update(self, instance, validated_data):
+        from django.db import transaction
+        decision = validated_data.pop('pricing_decision', None)
+        scored = self._score_decision(instance, validated_data, decision) if decision else None
+        with transaction.atomic():
+            instance = super().update(instance, validated_data)
+            if decision:
+                self._save_pricing_decision(instance, decision, scored)
+        return instance
+
+    def _request_user(self):
+        return getattr(self.context.get('request'), 'user', None)
+
+    def _score_decision(self, instance, validated_data, decision):
+        from core.services.pricing_decisions import quote_fields, score_final_price
+        company = validated_data.get('company') or getattr(instance, 'company', None) \
+            or getattr(self._request_user(), 'company', None)
+        return score_final_price(quote_fields(instance, validated_data), decision,
+                                 company=company, user=self._request_user())
+
+    def _save_pricing_decision(self, quote, decision, scored=None):
+        from core.services.pricing_decisions import save_pricing_decision
+        save_pricing_decision(quote, decision, user=self._request_user(), scored=scored)
 
     def _first_load(self, obj):
         # .all() so a prefetch_related('loads') on the viewset serves it.
@@ -707,6 +799,19 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
         data = super().to_representation(instance)
         if isinstance(self.parent, serializers.ListSerializer):
             data.pop('route_snapshot', None)
+        else:
+            # Detail only (one extra query each; never on list pages).
+            from core.services.pricing_decisions import (agreed_price_representation, decision_representation,
+                                                         loss_reason_representation)
+            data['pricing_decision'] = decision_representation(instance)
+            data['loss_reason'] = loss_reason_representation(instance)
+            # Read-only, display only: the price agreed when the quote was won
+            # at a figure other than its total (billing is unchanged).
+            data['agreed_price'] = agreed_price_representation(instance)
+            # R5 (K-8): the margin at the agreed price, against the cost floor
+            # stored with the pricing decision (null when either is missing).
+            from core.services.pricing_decisions import agreed_margin_representation
+            data.update(agreed_margin_representation(data['agreed_price'], data['pricing_decision']))
         return data
 
     def _converted_load(self, obj):
@@ -1211,8 +1316,53 @@ class CompanySerializer(serializers.ModelSerializer):
             'ai_optimizer_min_margin_pct', 'ai_optimizer_min_win_probability_pct',
             'ai_optimizer_max_market_deviation_pct',
             'default_toll_rate_per_km',
+            # Pricing analysis (additive): empty-return default and global-model opt-in.
+            'pricing_include_empty_return', 'pool_pricing_data', 'operating_cost_per_km',
+            # Round 4 (additive): allowance per night (used when no approved
+            # allowance is on record) and the operating cost the pricing
+            # analysis is using right now (read-only).
+            'driver_allowance_per_night', 'operating_cost_in_use',
+            # Round 5 (read-only): the target margin range the analysis uses (it clamps to it).
+            'margin_target_range',
             'onboarding_completed_at',
         ] + list(BANK_FIELDS)
+
+    operating_cost_in_use = serializers.SerializerMethodField()
+    margin_target_range = serializers.SerializerMethodField()
+
+    def get_margin_target_range(self, obj):
+        from core.services.pricing_analysis import MARGIN_TARGET_RANGE
+        return list(MARGIN_TARGET_RANGE)
+
+    def get_operating_cost_in_use(self, obj):
+        """{value, source: setting|company_actuals|vehicle_default, trips,
+        window, label} — what pricing analysis uses for operating cost per km
+        right now (company actuals are cached 10 minutes). Never raises."""
+        try:
+            from core.services.pricing_analysis import operating_cost_in_use
+            return operating_cost_in_use(obj)
+        except Exception:
+            return None
+
+    def validate_margin_target_pct(self, value):
+        # Only nonsense is refused (a margin on price can't reach 100%), so a
+        # company already storing an unusual figure can still save its
+        # profile; the pricing analysis itself clamps the target to 1–40%.
+        if value is not None and not (Decimal('0') < value < Decimal('100')):
+            raise serializers.ValidationError('Enter a target margin above 0% and below 100%.')
+        return value
+
+    def validate_driver_allowance_per_night(self, value):
+        if value is not None and not (Decimal('1') <= value <= Decimal('5000')):
+            raise serializers.ValidationError('Enter a driver allowance between R1 and R5 000 per night, or leave it blank.')
+        return value
+
+    def validate_operating_cost_per_km(self, value):
+        # Blank clears it (back to the figure from expenses); otherwise a
+        # plausible R/km, so a typo can't price every quote at R0.10 or R10 000/km.
+        if value is not None and not (Decimal('1') <= value <= Decimal('200')):
+            raise serializers.ValidationError('Enter an operating cost between R1 and R200 per km, or leave it blank.')
+        return value
 
     def get_fields(self):
         # Banking details follow the company-edit permission: only a company

@@ -184,7 +184,9 @@ class LaneCodeDerivationTests(TestCase):
 
     def test_city_name_inside_a_word_is_not_a_match(self):
         # The 'PE' -> Port Elizabeth substring bug.
-        self.assertEqual(derive_lane_code('', '14 PEPPER STREET, Nelspruit'), '')
+        # (Nelspruit itself is a known lane city since the pricing analysis:
+        # it must resolve to Mbombela, never to Port Elizabeth.)
+        self.assertEqual(derive_lane_code('', '14 PEPPER STREET, Nelspruit'), 'MBM')
         self.assertEqual(derive_lane_code('', 'Speedway Industrial Park'), '')
 
     def test_unknown_city_yields_blank_not_junk(self):

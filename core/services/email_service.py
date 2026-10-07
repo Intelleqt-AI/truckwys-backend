@@ -611,6 +611,8 @@ def send_quote_share_email(quote, share_url: str) -> bool:
     summary = _quote_summary_box([
         ('From', quote.pickup_location or quote.origin or '—'),
         ('To', quote.delivery_location or quote.destination or '—'),
+        # Display only: a round trip is priced for both legs, so say so.
+        *([('Trip', 'Return trip (there and back)')] if getattr(quote, 'trip_type', '') == 'ROUND_TRIP' else []),
         ('Cargo', quote.cargo_description or '—'),
         ('Weight', _fmt_weight(quote.weight)),
         ('Collection date', str(quote.pickup_date) if quote.pickup_date else 'To be confirmed'),

@@ -54,6 +54,11 @@ class Load(models.Model):
     rate = models.DecimalField(max_digits=10, decimal_places=2)
     fuel_surcharge = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     additional_charges = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    # Copied from the quote by convert_to_load so a booking itemises the same
+    # lines the quote priced (previously tolls and the driver allowance were
+    # dropped and showed as "Not itemised"). Already inside total_amount.
+    toll_charges = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    driver_allowance = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     total_amount = models.DecimalField(max_digits=10, decimal_places=2)
     
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='PENDING')

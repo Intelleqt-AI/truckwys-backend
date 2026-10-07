@@ -32,3 +32,14 @@ class UserWriteRateThrottle(UserRateThrottle):
         if request.method in SAFE_METHODS:
             return True
         return super().allow_request(request, view)
+
+
+class PricingAnalysisRateThrottle(UserRateThrottle):
+    """Own per-user bucket for POST /quotes/pricing-analysis/.
+
+    The quote builder calls the analysis debounced as the price or costs change,
+    so it is read-like traffic sent as a POST. Counting it in 'user_write' would
+    let a busy pricing session 429 the quote Save. The view sets this as its only
+    throttle, so analysis calls never touch the read or write buckets.
+    """
+    scope = 'pricing_analysis'
