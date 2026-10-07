@@ -1970,7 +1970,7 @@ class QuotesPipelineOverviewView(APIView):
             'filters': {
                 'customer': {
                     'current': customer_filter,
-                    'options': ['all', 'Makana Foods', 'Tiger Brands', 'Pick n Pay']
+                    'options': ['all', 'Makana Foods', 'Marula Pantry Foods', 'Kestrel Grocers']
                 },
                 'lane': {
                     'current': lane_filter,
@@ -3877,7 +3877,10 @@ class RouteCalculatorView(APIView):
         # Toll cost — matched PER ROUTE via point-to-polyline plaza matching.
         # SANRAL class: the VehicleType's explicit sanral_toll_class when set,
         # else a guess from the name (resolve_toll_class reports which).
-        toll_class = resolve_toll_class(vehicle_type, getattr(request.user, 'company', None))
+        # The selected truck (vehicle_type_id) decides the toll class when
+        # given; the name is only a fallback for old clients.
+        toll_class = resolve_toll_class(vt_obj.name if vt_obj is not None else vehicle_type,
+                                        getattr(request.user, 'company', None))
         toll_truck_type = toll_class.truck_type
 
         _TOLL_UNAVAILABLE_MESSAGES = {

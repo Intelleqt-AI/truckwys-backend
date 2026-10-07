@@ -122,8 +122,10 @@ class OwnCompanyTierTests(TestCase):
         rate, source = resolve_market_rate(
             'CPT', 'JHB', 'Heavy Truck (8-16 tonnes)', company=self.company,
         )
-        self.assertEqual(source, 'estimate')  # the mirrored JHB->CPT truck rate
-        self.assertEqual(rate, 38900.0)
+        # Below the company floor and no platform tier: no market rate (the
+        # hard-coded lane estimate is not market evidence).
+        self.assertEqual(source, 'none')
+        self.assertIsNone(rate)
 
     def test_no_data_and_no_estimate_reports_none(self):
         rate, source = resolve_market_rate(
@@ -159,7 +161,7 @@ class OwnCompanyTierTests(TestCase):
         rate, source = resolve_market_rate(
             'CPT', 'JHB', 'Heavy Truck (8-16 tonnes)', company=self.company,
         )
-        self.assertEqual(source, 'estimate')  # not 'company' — all too old
+        self.assertEqual(source, 'none')  # not 'company' — all too old
 
 
 class LaneCodeDerivationTests(TestCase):

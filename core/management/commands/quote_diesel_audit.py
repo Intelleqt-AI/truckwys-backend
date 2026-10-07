@@ -69,7 +69,8 @@ class Command(BaseCommand):
                 f'{(f"{off:.4f}" if off else "-"):>8} {gap:>7}  '
                 f'{str(below.get(c.id, 0)) + " of " + str(totals.get(c.id, 0)):>16}')
         self.stdout.write(f'\n{count} compan{"y" if count == 1 else "ies"}. Official in force: '
-                          + ', '.join(f'{z} {v["price"]} (from {v["effective_from"]:%Y-%m-%d})' if v['price']
+                          + ', '.join(f'{z} {v["price"]} (from {timezone.localtime(v["effective_from"]):%Y-%m-%d} SAST)'
+                                      if v['price']
                                       else f'{z} none' for z, v in official.items())
                           + '. Read-only: nothing was changed.')
 

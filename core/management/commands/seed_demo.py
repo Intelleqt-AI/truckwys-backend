@@ -56,11 +56,11 @@ class Command(BaseCommand):
 
         # Create SA customers
         customers_data = [
-            {'name': 'Transnet Freight', 'email': 'logistics@transnetfreight.co.za', 'phone': '+27 11 308 3000', 'payment_terms_default': 'NET30'},
-            {'name': 'Tiger Brands Distribution', 'email': 'distribution@tigerbrands.com', 'phone': '+27 11 840 4000', 'payment_terms_default': 'NET30'},
-            {'name': 'Shoprite Holdings', 'email': 'logistics@shoprite.co.za', 'phone': '+27 21 980 4000', 'payment_terms_default': 'NET45'},
-            {'name': 'Sasol Chemicals', 'email': 'freight@sasol.com', 'phone': '+27 17 610 1111', 'payment_terms_default': 'NET30'},
-            {'name': 'Pick n Pay Logistics', 'email': 'supply@pnp.co.za', 'phone': '+27 21 658 1000', 'payment_terms_default': 'NET30'},
+            {'name': 'Rail Link Freight (fictional)', 'email': 'logistics@raillink.example', 'phone': '+27 11 308 3000', 'payment_terms_default': 'NET30'},
+            {'name': 'Marula Pantry Distribution', 'email': 'distribution@marulapantry.example', 'phone': '+27 11 840 4000', 'payment_terms_default': 'NET30'},
+            {'name': 'Karoo Fresh Markets', 'email': 'logistics@karoofresh.example', 'phone': '+27 21 980 4000', 'payment_terms_default': 'NET45'},
+            {'name': 'Highveld Chemworks', 'email': 'freight@highveldchem.example', 'phone': '+27 17 610 1111', 'payment_terms_default': 'NET30'},
+            {'name': 'Kestrel Grocers Logistics', 'email': 'supply@kestrelgrocers.example', 'phone': '+27 21 658 1000', 'payment_terms_default': 'NET30'},
         ]
         customers = []
         for cust_data in customers_data:
@@ -335,7 +335,7 @@ class Command(BaseCommand):
             ('system', 'System: webhook dispatched to partner endpoint', '', None),
             ('load', 'Load #3 assigned to driver', 'Load', 3),
             ('advance', 'Advance R55000 disbursed', 'AdvanceRequest', 2),
-            ('quote', 'New quote request from Transnet Freight', 'Quote', 2),
+            ('quote', 'New quote request from Rail Link Freight (fictional)', 'Quote', 2),
         ]
         for ev_type, title, entity_type, entity_id in events_data:
             ActivityEvent.objects.get_or_create(

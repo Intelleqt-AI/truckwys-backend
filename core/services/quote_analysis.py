@@ -265,7 +265,9 @@ def _fuel_analysis(fuel_cost, fuel_usage_litres, fuel_price_used, quote_total, c
         current = (res or {}).get('price')
         official = (res or {}).get('official') or {}
         out['current_price'] = round(current, 2) if current else None
-        out['last_updated'] = (official.get('effective_from') or '')[:10] or None
+        from core.services.quote_costing import parse_dt
+        eff = parse_dt(official.get('effective_from'))
+        out['last_updated'] = timezone.localtime(eff).date().isoformat() if eff else None   # SAST date
         out['source'] = (res or {}).get('source')
         if official.get('stale'):
             out['is_stale'] = True

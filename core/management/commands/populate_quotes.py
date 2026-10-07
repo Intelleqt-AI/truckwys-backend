@@ -19,10 +19,10 @@ class Command(BaseCommand):
         # Get or create customers
         customers_data = [
             {'name': 'Makana Foods', 'email': 'contact@makanafoods.co.za'},
-            {'name': 'Tiger Brands', 'email': 'info@tigerbrands.com'},
-            {'name': 'Pick n Pay', 'email': 'logistics@pnp.co.za'},
-            {'name': 'Shoprite', 'email': 'logistics@shoprite.co.za'},
-            {'name': 'Woolworths', 'email': 'transport@woolworths.co.za'},
+            {'name': 'Marula Pantry Foods', 'email': 'info@marulapantry.example'},
+            {'name': 'Kestrel Grocers', 'email': 'logistics@kestrelgrocers.example'},
+            {'name': 'Karoo Fresh Markets', 'email': 'logistics@karoofresh.example'},
+            {'name': 'Fynbos Home & Food', 'email': 'transport@fynbos.example'},
         ]
         
         customers = {}
@@ -60,7 +60,7 @@ class Command(BaseCommand):
             },
             {
                 'quote_number': 'Q-1002',
-                'customer': customers['Tiger Brands'],
+                'customer': customers['Marula Pantry Foods'],
                 'origin': 'DUR',
                 'destination': 'JHB',
                 'pickup_location': 'Durban',
@@ -74,7 +74,7 @@ class Command(BaseCommand):
             },
             {
                 'quote_number': 'Q-1003',
-                'customer': customers['Pick n Pay'],
+                'customer': customers['Kestrel Grocers'],
                 'origin': 'CPT',
                 'destination': 'PE',
                 'pickup_location': 'Cape Town',
@@ -88,7 +88,7 @@ class Command(BaseCommand):
             },
             {
                 'quote_number': 'Q-1004',
-                'customer': customers['Shoprite'],
+                'customer': customers['Karoo Fresh Markets'],
                 'origin': 'JHB',
                 'destination': 'DBN',
                 'pickup_location': 'Johannesburg',
@@ -102,7 +102,7 @@ class Command(BaseCommand):
             },
             {
                 'quote_number': 'Q-1005',
-                'customer': customers['Woolworths'],
+                'customer': customers['Fynbos Home & Food'],
                 'origin': 'PE',
                 'destination': 'CPT',
                 'pickup_location': 'Port Elizabeth',
@@ -116,7 +116,7 @@ class Command(BaseCommand):
             },
             {
                 'quote_number': 'Q-1006',
-                'customer': customers['Tiger Brands'],
+                'customer': customers['Marula Pantry Foods'],
                 'origin': 'JHB',
                 'destination': 'CPT',
                 'pickup_location': 'Johannesburg',
@@ -144,7 +144,7 @@ class Command(BaseCommand):
             },
             {
                 'quote_number': 'Q-1008',
-                'customer': customers['Shoprite'],
+                'customer': customers['Karoo Fresh Markets'],
                 'origin': 'CPT',
                 'destination': 'JHB',
                 'pickup_location': 'Cape Town',

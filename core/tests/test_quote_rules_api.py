@@ -84,9 +84,17 @@ class CompanyDieselModeTests(_Base):
         self.assertEqual(body['fuel_price_per_litre'], '32.7989')
 
     def test_old_client_echoing_live_or_default_stays_live(self):
-        for value in ('32.7989', '23.50', '29.5551', '29.1111'):
+        # in force now (7 Oct) or the previous period (2 Sep), inland; the 23.50 default
+        for value in ('32.7989', '23.50', '29.5551'):
             body = self.api.patch(self.URL, {'fuel_price_per_litre': value}, format='json').json()
             self.assertEqual(body['fuel_price_mode'], 'LIVE', value)
+
+    def test_old_500ppm_or_other_zone_figure_is_own(self):
+        body = self.api.patch(self.URL, {'fuel_price_per_litre': '29.1111'}, format='json').json()
+        self.assertEqual((body['fuel_price_mode'], body['fuel_price_own']), ('OWN', '29.1111'))
+        self.api.patch(self.URL, {'fuel_price_own': None}, format='json')
+        body = self.api.patch(self.URL, {'fuel_price_per_litre': '31.9269'}, format='json').json()   # coastal
+        self.assertEqual(body['fuel_price_mode'], 'OWN')
 
     def test_old_client_typed_price_becomes_own(self):
         body = self.api.patch(self.URL, {'fuel_price_per_litre': '30.40'}, format='json').json()
@@ -593,3 +601,51 @@ class SaveSemanticsTests(_Base):
             with self.assertRaises(QuoteSendBlocked):
                 q.save()
         email.assert_not_called()
+
+
+class TruckSuggestionTests(_Base):
+    def _vt(self, name, cap, burn=30):
+        return VehicleType.objects.create(company=self.company, name=name, capacity=cap, max_distance=3000,
+                                          base_rate=10, fuel_consumption_l_per_100km=burn)
+
+    def test_specialised_bodies_only_for_matching_cargo(self):
+        from core.services.quote_costing import suggest_vehicle
+        VehicleType.objects.filter(company__isnull=True).delete()
+        reefer = self._vt('Refrigerated truck (Reefer)', 16, 26)
+        flat = self._vt('Flatbed 18t', 18, 30)
+        self.assertEqual(suggest_vehicle(self.company, 15000, 'Steel coils'), flat)
+        self.assertEqual(suggest_vehicle(self.company, 15000, 'Frozen chicken'), reefer)
+
+    def test_no_load_no_suggestion(self):
+        from core.services.quote_costing import suggest_vehicle
+        self.assertIsNone(suggest_vehicle(self.company, None))
+        body = self.api.post('/api/v1/quotes/cost-breakdown/', {'distance_km': 100, 'toll_cost': 0},
+                             format='json').json()
+        self.assertIsNone(body['vehicle'])
+        self.assertEqual(body['resolution']['suggestion_reason'], 'load_missing')
+
+    def test_tie_goes_to_most_used_then_lowest_burn(self):
+        from core.services.quote_costing import suggest_vehicle
+        VehicleType.objects.filter(company__isnull=True).delete()
+        VehicleType.objects.filter(company=self.company).delete()
+        a = self._vt('Tautliner A', 34, 40)
+        b = self._vt('Tautliner B', 34, 44)
+        self.assertEqual(suggest_vehicle(self.company, 20000), a)
+        for i in range(2):
+            self.create(vehicle_type='Tautliner B', quote_number=f'TB-{i}')
+        self.assertEqual(suggest_vehicle(self.company, 20000), b)
+
+
+class SavedQuoteInputsTests(_Base):
+    def test_saved_zero_driver_keeps_allowance_rules_and_border_counts(self):
+        from core.services.quote_costing import costing_for_quote
+        self.company.driver_allowance_per_night = None
+        self.company.save()
+        q = self.create(estimated_duration_minutes=1200, costing_inputs={'border_cost': 3875.5,
+                                                                         'include_empty_return': False})
+        out = costing_for_quote(q)
+        self.assertIn('driver_allowance_missing', [w['code'] for w in out['warnings']])
+        self.assertEqual(next(ln for ln in out['lines'] if ln['key'] == 'border')['amount'], 3875.5)
+        q.refresh_from_db()
+        self.assertEqual(q.margin_percentage,
+                         Decimal(str(round((36000 - float(q.cost_floor)) / 36000 * 100, 2))))

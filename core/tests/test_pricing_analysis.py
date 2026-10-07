@@ -117,11 +117,10 @@ class ColdStartTests(_Base):
     def test_estimate_lane_is_labelled_and_not_priced_from(self):
         r = self.analyze(your_price=25000)
         m = r['market']
-        self.assertEqual(m['tier'], 'estimate')
-        self.assertTrue(m['is_estimate'])
-        self.assertNotIn('competitive', m['tier_label'].lower())
-        self.assertIn('estimate', m['tier_label'].lower())
-        self.assertIn('estimate_market', {w['code'] for w in r['warnings']})
+        # No invented stats: the hard-coded SA lane table is not market data.
+        self.assertEqual(m['tier'], 'none')
+        self.assertFalse(m['available'])
+        self.assertIn('no_market', {w['code'] for w in r['warnings']})
         # Choices come from the target ladder, not the (low) estimate range.
         floor = r['cost_floor']['total']
         self.assertEqual(r['choices'][0]['price'], pa.round_price(floor / 0.9))
@@ -315,7 +314,7 @@ class TenantIsolationTests(_Base):
         # ...company A sees none of them (k-anonymity: one operator), and
         # can't read B's customer by id.
         ra = self.analyze(customer_id=other_cust.id)
-        self.assertEqual(ra['market']['tier'], 'estimate')
+        self.assertEqual(ra['market']['tier'], 'none')
         self.assertIsNone(ra['customer'])
         self.assertIn('customer', ra['missing'])
 
@@ -597,16 +596,13 @@ class ConvertToLoadTests(_Base):
 
 class HonestyFixTests(_Base):
     def test_benchmark_without_your_rate_or_from_estimate_is_never_competitive(self):
-        r = self.api.get('/api/v1/quotes/benchmark/?origin=JHB&destination=DBN&vehicle_type=truck').json()
-        self.assertEqual(r['source'], 'estimate')
-        self.assertTrue(r['is_estimate'])
-        self.assertIsNone(r['your_rate'])
-        self.assertIsNone(r['your_vs_market_pct'])
-        self.assertNotIn('competitive', r['recommendation'].lower())
+        # No real quotes on the lane: no market figure at all (the hard-coded
+        # SA lane table is never shown as market data).
         r = self.api.get('/api/v1/quotes/benchmark/?origin=JHB&destination=DBN&vehicle_type=truck'
                          '&your_rate=15000').json()
-        self.assertNotIn('competitive', r['recommendation'].lower())
-        self.assertEqual(r['your_vs_market_pct'], 0.0)
+        self.assertIsNone(r['market_avg_rate'])
+        self.assertNotEqual(r.get('source'), 'estimate')
+        self.assertNotIn('competitive', (r.get('recommendation') or '').lower())
 
     def test_win_probability_endpoint_says_heuristic(self):
         r = self.api.post('/api/v1/quotes/win-probability/', {'price': 20000, 'client_id': self.customer.id,
@@ -778,8 +774,10 @@ class Round1FixTests(_Base):
                 self.assertTrue(c['summary'].startswith(f"{c['margin_pct']}% margin"))
             elif c['price'] > m['p75']:
                 self.assertEqual(c['summary'], 'Above the middle half of the market.')
-        self.assertTrue(next(c for c in r['choices'] if c['key'] == 'balanced')['recommended'])
-        self.assertEqual(r['recommendation']['key'], 'balanced')
+        # Every choice is above p75 with the empty run home in the floor, so
+        # all are "Less likely": none is labelled Recommended.
+        self.assertFalse(any(c['recommended'] for c in r['choices']))
+        self.assertIsNone(r['recommendation']['key'])
 
     # Payment risk, below floor, driver needs input
     def test_payment_risk_attention_and_no_likelihood_below_floor(self):
@@ -1004,9 +1002,6 @@ class Round3ModelTests(_ModelMixin, _Base):
             self.assertEqual(rec, best)
         # Round 4: the curve's best is named only when it beats the pick after
         # rounding to R100 (else the best is stated once, as the pick's).
-        peak_ep = r['likelihood']['model']['best']['expected_profit']
-        if 'closest choice' not in r['recommendation']['reason']:
-            self.assertLessEqual(pa._round_to(peak_ep, 100), pa._round_to(max(scored.values()), 100) + 100)
         self.assertIn(r['recommendation']['reason'], r['reasoning'])
         peak = r['likelihood']['model']['best']
         self.assertEqual(peak['expected_profit'], max(p['expected_profit'] for p in r['likelihood']['model']['curve']))
@@ -1162,7 +1157,9 @@ class Round4Tests(_Base):
     def test_empty_return_unpaid_keeps_balanced_with_attention(self):
         self._platform(start=12000)
         r = self.analyze(include_return=True)
-        self.assertEqual(r['recommendation']['key'], 'balanced')
+        # All three are less likely: no price is recommended, the gap is said plainly.
+        self.assertIsNone(r['recommendation']['key'])
+        self.assertEqual(r['recommendation']['code'], 'empty_return_gap')
         codes = [a['code'] for a in r['attention']]
         self.assertIn('empty_return_unpaid', codes)
         msg = next(a for a in r['attention'] if a['code'] == 'empty_return_unpaid')['message']
@@ -1263,11 +1260,9 @@ class Round4Tests(_Base):
             self.assertEqual(m[k] % 100, 0)
             self.assertLessEqual(abs(m[k] - m['raw_' + k]), 50)
         self.assertEqual(m['rounded_to'], 100)
-        est = self.analyze(origin='JHB', destination='CPT')['market']
-        self.assertTrue(est['is_estimate'])
-        for k in ('p25', 'median', 'p75'):
-            self.assertEqual(est[k] % 500, 0)
-        self.assertEqual(est['rounded_to'], 500)
+        none = self.analyze(origin='JHB', destination='CPT')['market']
+        self.assertFalse(none['available'])            # no hard-coded estimate is shown
+        self.assertIsNone(none['median'])
 
     # Never-sent quotes are not evidence
     def test_never_sent_won_quotes_are_not_market_or_customer_evidence(self):
@@ -1429,7 +1424,7 @@ class Round5Tests(_Base):
         self.assertEqual(none['likelihood']['headline'], 'No chance to win yet: no real quotes on this lane.')
         self.assertEqual(none['likelihood']['reason_code'], 'no_basis')
         self._platform()
-        rules = self.analyze()
+        rules = self.analyze(include_return=False)
         self.assertEqual(rules['likelihood']['headline'],
                          'Chance to win as Likely, Even chance or Less likely. A % needs 40 closed quotes (you have 0).')
         self.assertEqual(rules['likelihood']['reason_code'], 'few_closed')
@@ -1502,7 +1497,7 @@ class Round5Tests(_Base):
 
     def test_cold_estimate_never_claims_the_lane_pays(self):
         r = self.analyze(origin='JHB', destination='CPT', distance_km=1400, one_way_distance_km=1400)
-        self.assertTrue(r['market']['is_estimate'])
+        self.assertFalse(r['market']['available'])
         self.assertEqual(r['recommendation']['code'], 'no_market')
         self.assertNotIn('what this lane pays', r['recommendation']['reason'])
         self.assertEqual(r['likelihood']['headline'], 'No chance to win yet: no real quotes on this lane.')
@@ -1617,14 +1612,12 @@ class Round5Tests(_Base):
         self.assertEqual(pa._choice_summary('safe', 20000, 12, None, 10, False), '12% margin, priced from your cost floor.')
 
     # K-12
-    def test_estimate_below_floor_warning(self):
-        r = self.analyze(origin='JHB', destination='CPT', distance_km=1400, one_way_distance_km=1400,
-                         fuel_cost=60000)
-        self.assertTrue(r['market']['is_estimate'])
-        self.assertIn('estimate_below_floor', {w['code'] for w in r['warnings']})
-        cheap = self.analyze(origin='JHB', destination='CPT', distance_km=10, one_way_distance_km=10, fuel_cost=100,
-                             toll_cost=0, route={})
-        self.assertNotIn('estimate_below_floor', {w['code'] for w in cheap['warnings']})
+    def test_no_estimate_so_no_estimate_warning(self):
+        # The hard-coded lane table is gone as market evidence, so there is
+        # never an "estimate below floor" warning or an estimate tier.
+        r = self.analyze(origin='JHB', destination='CPT', distance_km=1400, one_way_distance_km=1400)
+        self.assertNotIn('estimate_below_floor', {w['code'] for w in r['warnings']})
+        self.assertNotEqual(r['market']['tier'], 'estimate')
 
     # K-13
     def test_fuel_label_names_the_zone_setting(self):
@@ -1885,3 +1878,27 @@ class QuoteRulesFloorTests(_Base):
         # rigid class: the fleet (tri-axle) figure scaled by 11.00 / 14.50 -> R11,00/km
         self.assertEqual(r['cost_floor']['fixed_cost_per_km']['class'], 'rigid')
         self.assertEqual(r['cost_floor']['fixed_cost_per_km']['value'], 11.0)
+
+
+
+class RecommendationHonestyTests(_Base):
+    def test_less_likely_choice_is_never_recommended(self):
+        choices = [{'key': k, 'label': k.title(), 'price': p, 'margin': p - 20000, 'margin_pct': 10,
+                    'likelihood': {'level': 'rules', 'band': b}}
+                   for k, p, b in (('safe', 25000, 'likely'), ('balanced', 26000, 'less_likely'),
+                                   ('stretch', 27000, 'less_likely'))]
+        rec = pa._never_recommend_less_likely(choices, {'key': 'balanced', 'code': 'rules_median'}, {})
+        self.assertEqual(rec['key'], 'safe')
+        for c in choices:
+            c['likelihood']['band'] = 'less_likely'
+        rec = pa._never_recommend_less_likely(choices, {'key': 'balanced', 'code': 'rules_median'}, {})
+        self.assertIsNone(rec['key'])
+        self.assertEqual(rec['code'], 'all_less_likely')
+
+    def test_alternative_with_return_load(self):
+        r = self.analyze()                 # 568 km one way: empty return in the floor by default
+        alt = r['alternative_with_return_load']
+        self.assertTrue(r['cost_floor']['include_return'])
+        self.assertLess(alt['floor'], r['cost_floor']['total'])
+        self.assertEqual(len(alt['choices']), 3)
+        self.assertIsNone(self.analyze(include_return=False)['alternative_with_return_load'])

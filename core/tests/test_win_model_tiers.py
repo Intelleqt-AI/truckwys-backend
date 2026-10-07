@@ -23,6 +23,25 @@ from core.tests.test_price_analysis import IsolatedModelStorageMixin, make_quote
 User = get_user_model()
 
 
+def ensure_lane_market(origin='JHB', destination='CPT'):
+    """Real won quotes on the lane from two other (fictional) operators, so
+    the win model's market reference is market data. The hard-coded SA lane
+    estimate (38 900 on JHB->CPT) used to stand in for it; it is no longer
+    market evidence (QUOTE-RULES / no invented stats), so the fixture now
+    carries a real k-anonymous platform sample in the lane's price band."""
+    from core.models import Company, Customer
+    if Quote.objects.filter(quote_number__startswith=f'MKT-{origin}{destination}-').exists():
+        return
+    totals = (20000, 21000, 22000, 23000, 24000, 25000)
+    for c_i in range(2):
+        donor = Company.objects.create(company_name=f'Market Donor {origin}{destination} {c_i}')
+        cust = Customer.objects.create(company=donor, name=f'Donor Customer {c_i}', email=f'd{c_i}@x.test',
+                                       phone='', address='', city='', state='', zip_code='')
+        for i, total in enumerate(totals[c_i * 3:(c_i + 1) * 3]):
+            make_quote(donor, cust, number=f'MKT-{origin}{destination}-{c_i}-{i}', total=total,
+                       origin=origin, destination=destination, status='ACCEPTED', outcome='accepted')
+
+
 def make_outcomes(company, customer, user, n, *, accepted_ratio=0.5, prefix='Q'):
     """Directly creates n Quote+QuoteOutcome pairs (bypassing
     record_quote_outcome's Celery scheduling, which isn't the point of these
@@ -37,6 +56,7 @@ def make_outcomes(company, customer, user, n, *, accepted_ratio=0.5, prefix='Q')
     quote_training gained its price-sensitivity gate, such a model is
     correctly refused. Real outcomes carry price variation; these now do too.
     """
+    ensure_lane_market()
     n_accepted = round(n * accepted_ratio)
     for i in range(n):
         accepted = i < n_accepted

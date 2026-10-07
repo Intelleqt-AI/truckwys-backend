@@ -544,6 +544,8 @@ def compute_lane_benchmark(origin, destination, vehicle_type=None,
 # Coarse SA market averages (ZAR) used only as a last-resort honest estimate
 # when there's no real won-quote data on a lane yet. Single source of truth —
 # the benchmark API view imports this too. Keys are CANONICAL codes (canon_code).
+# NOT market data and never used as such any more (QUOTE-RULES / owner rule:
+# no invented stats). Kept only for lookup_sa_estimate's existing tests.
 SA_MARKET_ESTIMATES = {
     ('JHB', 'CPT', 'interlink'): {'avg': 43800, 'low': 38000, 'high': 52000},
     ('JHB', 'DBN', 'interlink'): {'avg': 17000, 'low': 14000, 'high': 20000},
@@ -700,9 +702,8 @@ def resolve_market_rate(origin, destination, vehicle_type=None, company=None,
             logger.warning('resolve_market_rate: company lookup failed: %s', exc)
 
     # 4) Coarse SA estimate (honest last resort).
-    est = lookup_sa_estimate(o, d, vt)
-    if est:
-        return float(est['avg']), 'estimate'
+    # 4) No hard-coded lane estimate: it is not market evidence (owner rule:
+    #    no invented stats). No real quotes => no market rate.
 
     return None, 'none'
 
@@ -855,11 +856,5 @@ def resolve_market_range(origin, destination, vehicle_type=None, company=None, e
 
     if round_trip:
         return out
-    est = lookup_sa_estimate(o, d, vt)
-    if est:
-        out.update({
-            'available': True, 'tier': 'estimate', 'n': 0, 'is_estimate': True,
-            'p25': float(est['low']), 'median': float(est['avg']), 'p75': float(est['high']),
-            'tier_label': 'Rough South African estimate for this lane, not market data',
-        })
+    # No hard-coded estimate tier (owner rule: no invented stats).
     return out

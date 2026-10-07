@@ -596,25 +596,72 @@ def vehicle_input(vt):
             'rated_burn_l_per_100km': _num(vt.fuel_consumption_l_per_100km)}
 
 
-def suggest_vehicle(company, load_kg):
-    """§3: the smallest-capacity visible vehicle type that carries the load
-    (tie: lowest rated burn), else None."""
+# §3 suggestion: specialised bodies are only suggested when the cargo asks
+# for them (QUOTE-RULES Backend decisions).
+SPECIALISED_BODIES = {
+    'reefer': (('reefer', 'refrig', 'fridge', 'cold'),
+               ('frozen', 'chilled', 'refrigerat', 'cold', 'fresh produce', 'meat', 'dairy', 'ice cream', 'vaccine')),
+    'tanker': (('tanker',), ('fuel', 'liquid', 'diesel', 'petrol', 'chemical', 'water', 'oil', 'milk')),
+    'tipper': (('tipper',), ('sand', 'gravel', 'stone', 'coal', 'ore', 'aggregate', 'soil', 'rubble')),
+    'car_carrier': (('car carrier', 'car-carrier', 'car transporter', 'auto carrier'),
+                    ('car ', 'cars', 'vehicles', 'bakkies')),
+    'lowbed': (('lowbed', 'low bed', 'low-bed', 'abnormal'),
+               ('machinery', 'excavator', 'abnormal', 'plant', 'earthmoving', 'transformer')),
+}
+
+
+def body_type(name):
+    """The specialised body of a vehicle type name, or None (general freight)."""
+    text = f' {(name or "").lower()} '
+    for body, (words, _cargo) in SPECIALISED_BODIES.items():
+        if any(w in text for w in words):
+            return body
+    return None
+
+
+def cargo_fits_body(body, cargo):
+    if body is None:
+        return True
+    text = f' {(cargo or "").lower()} '
+    return any(w in text for w in SPECIALISED_BODIES[body][1])
+
+
+def suggest_vehicle(company, load_kg, cargo=None):
+    """§3: the suggested truck for the load, or None.
+
+    No load entered -> no suggestion. Eligible: every visible vehicle type
+    (as the vehicle-types API lists them) with a known capacity >= the load
+    and a rated burn, excluding specialised bodies (reefer, tanker, tipper,
+    car carrier, lowbed) unless the cargo description calls for that body.
+    Among eligible: smallest capacity, then the company's most-quoted type,
+    then the lowest rated burn."""
+    from django.db.models import Count
+    from core.models import Quote
     from core.services.vehicle_types import visible_vehicle_types_queryset
-    load_t = (_num(load_kg) or 0) / 1000
+    load = _num(load_kg)
+    if load is None or load <= 0:
+        return None
+    load_t = load / 1000
+    usage = {}
+    if company is not None:
+        for row in (Quote.objects.filter(company=company).exclude(vehicle_type='')
+                    .values('vehicle_type').annotate(n=Count('id'))):
+            usage[(row['vehicle_type'] or '').strip().lower()] = row['n']
     best = None
-    # All types the vehicle-types API returns (active or not), as the clients list them.
     for vt in visible_vehicle_types_queryset(company):
         cap = capacity_tonnes(vt.capacity)
         burn = _pos(vt.fuel_consumption_l_per_100km)
         if cap is None or burn is None or cap < load_t:
             continue
-        key = (cap, burn, vt.id)
+        if not cargo_fits_body(body_type(vt.name), cargo):
+            continue
+        key = (cap, -usage.get((vt.name or '').strip().lower(), 0), burn, vt.id)
         if best is None or key < best[0]:
             best = (key, vt)
     return best[1] if best else None
 
 
-def resolve_vehicle(company, *, vehicle_type_id=None, name=None, load_kg=None, suggest=True):
+def resolve_vehicle(company, *, vehicle_type_id=None, name=None, load_kg=None, suggest=True, cargo=None):
     """(VehicleType | None, how): 'selected' (id), 'by_name', 'suggested' or
     None. Only types this company can see (never another tenant's)."""
     from core.services.vehicle_types import visible_vehicle_types_queryset
@@ -632,7 +679,7 @@ def resolve_vehicle(company, *, vehicle_type_id=None, name=None, load_kg=None, s
         if row is not None:
             return row, 'by_name'
     if suggest:
-        row = suggest_vehicle(company, load_kg)
+        row = suggest_vehicle(company, load_kg, cargo)
         if row is not None:
             return row, 'suggested'
     return None, None
@@ -739,8 +786,9 @@ def build_inputs(payload, company, now=None, *, diesel_override=None):
     load_kg = _num(payload.get('load_kg'))
     if load_kg is None:
         load_kg = _num(payload.get('weight'))
+    cargo = payload.get('cargo_description') or payload.get('cargo')
     vt, how = resolve_vehicle(company, vehicle_type_id=payload.get('vehicle_type_id'),
-                              name=payload.get('vehicle_type'), load_kg=load_kg)
+                              name=payload.get('vehicle_type'), load_kg=load_kg, cargo=cargo)
 
     fuel_type = (getattr(vt, 'fuel_type', None) or 'Diesel') if vt is not None else 'Diesel'
     if diesel_override is not None:
@@ -812,8 +860,9 @@ def build_inputs(payload, company, now=None, *, diesel_override=None):
         'target_margin_pct': target_margin(company),
         'price': price,
     }
-    suggested = vt if how == 'suggested' else suggest_vehicle(company, load_kg)
+    suggested = vt if how == 'suggested' else suggest_vehicle(company, load_kg, cargo)
     context = {'vehicle_type': vt, 'vehicle_how': how, 'suggested': suggested, 'operating_cost': op,
+               'inputs': {'load_kg': load_kg},
                'diesel': diesel,
                'driver_rate_source': rate_source, 'now': now}
     return inputs, context
@@ -828,6 +877,9 @@ def _context_out(context):
     return {'vehicle_selection': context['vehicle_how'],
             'vehicle_type_id': getattr(vt, 'id', None),
             'suggested_vehicle_type_id': getattr(context.get('suggested'), 'id', None),
+            'suggestion_reason': (None if context.get('suggested') is not None
+                                  else 'load_missing' if not (_num((context.get('inputs') or {}).get('load_kg')) or 0) > 0
+                                  else 'no_truck_carries_the_load'),
             'operating_cost': context['operating_cost'],
             'driver_rate_source': context['driver_rate_source'], 'diesel_resolution': d}
 
@@ -850,6 +902,7 @@ COSTING_INPUT_KEYS = {
     'tolls_confirmed_none': bool, 'include_empty_return': bool, 'use_official_fuel': bool,
     'tolls_empty_return': float, 'fuel_price_override': float, 'vehicle_type_id': int,
     'driver_nights': int, 'duration_minutes': float, 'toll_cost_one_way': float,
+    'driver_cost_is_override': bool, 'border_cost': float,
 }
 
 
@@ -887,10 +940,18 @@ def quote_payload(quote):
         'tolls_unknown': ci.get('tolls_unknown'),
         'tolls_confirmed_none': ci.get('tolls_confirmed_none'),
         'toll_cost_empty_return': ci.get('tolls_empty_return'),
+        'cargo_description': quote.cargo_description,
         'driver_cost': _num(quote.driver_allowance),
-        'driver_cost_is_override': True,     # the stored figure is the user's
+        # A stored driver figure counts as entered only when the client said
+        # so (costing_inputs.driver_cost_is_override), or when it is > 0; a
+        # saved R 0 keeps driver_nights_unknown / driver_allowance_missing.
+        'driver_cost_is_override': (ci['driver_cost_is_override'] if 'driver_cost_is_override' in ci
+                                    else bool(_num(quote.driver_allowance))),
         'driver_nights': ci.get('driver_nights'),
-        'cross_border_cost': 0.0,
+        # Border costs: the builder's figure from costing_inputs (Quote.
+        # additional_charges also carries empty return / top-ups, so it can't
+        # be read back as the border line).
+        'cross_border_cost': ci.get('border_cost') or 0.0,
         'include_empty_return': ci.get('include_empty_return'),
         'distance_estimated': ci.get('distance_estimated'),
         'distance_confirmed': ci.get('distance_confirmed'),

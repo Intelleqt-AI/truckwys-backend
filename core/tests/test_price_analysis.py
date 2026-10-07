@@ -521,11 +521,12 @@ class MarketRateResolutionTests(TestCase):
     def test_durban_codes_canonicalize_to_estimate(self):
         from core.services.lane_benchmark import resolve_market_rate
 
-        # 'DUR' (the code the frontend historically stored) must hit the
-        # JHB->DBN estimate.
+        # 'DUR' still canonicalises (lookup_sa_estimate), but the hard-coded
+        # table is never a market rate any more.
+        from core.services.lane_benchmark import lookup_sa_estimate
+        self.assertEqual(lookup_sa_estimate('JHB', 'DUR', 'interlink')['avg'], 17000)
         rate, source = resolve_market_rate('JHB', 'DUR', 'interlink', company=None)
-        self.assertEqual(source, 'estimate')
-        self.assertEqual(rate, 17000.0)
+        self.assertEqual((rate, source), (None, 'none'))
 
     def test_company_fallback_matches_stored_dur_quotes(self):
         from core.services.lane_benchmark import resolve_market_rate

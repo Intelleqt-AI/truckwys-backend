@@ -41,7 +41,7 @@ def snapshot_fields(costing, now):
     priced = d['price'] is not None
     vehicle = costing.get('vehicle') or {}
     litres = (costing.get('litres') or {}).get('total')
-    return {
+    out = {
         'fuel_price_used': _dec(d['price']) if priced else None,
         'fuel_price_source': d['source'] if priced else '',
         'fuel_zone': d['zone'],
@@ -54,6 +54,11 @@ def snapshot_fields(costing, now):
         'cost_floor': _dec(costing['floor'], '0.01') if costing['floor'] is not None else None,
         'costing_snapshot': {k: costing.get(k) for k in SNAPSHOT_KEYS},
     }
+    if costing.get('margin_pct') is not None:
+        # Server-side margin % on the stored floor and price (margin on
+        # price); left as it was when the floor is unknown.
+        out['margin_percentage'] = _dec(max(min(costing['margin_pct'], 999.99), -999.99), '0.01')
+    return out
 
 
 def snapshot_quote(quote, now=None):

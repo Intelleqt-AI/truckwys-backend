@@ -475,6 +475,14 @@ def _from_costing_warning(w):
     return out
 
 
+def _sast_iso_date(value):
+    """ISO date of a datetime in SAST (never the UTC date: 7 Oct 00:01 SAST
+    is 6 Oct in UTC)."""
+    from core.services.quote_costing import parse_dt
+    dt = parse_dt(value)
+    return timezone.localtime(dt).date().isoformat() if dt else None
+
+
 def _fuel_source(costing, company):
     from core.services.quote_ai_pricing import FIASA_URL, MANUAL_FUEL_TITLE
     d = costing['diesel']
@@ -487,7 +495,7 @@ def _fuel_source(costing, company):
     official = res.get('official') if isinstance(res, dict) else None
     manual = (official or {}).get('source') == 'MANUAL'
     src = _source('official', MANUAL_FUEL_TITLE if manual else f'FIASA {zone} diesel 50ppm (your fuel zone setting)',
-                  None if manual else FIASA_URL, (d.get('official_effective_from') or '')[:10] or None)
+                  None if manual else FIASA_URL, _sast_iso_date(d.get('official_effective_from')))
     src['zone_from_setting'] = True
     return src
 
@@ -498,6 +506,7 @@ def _km_dp(km):
 
 def _panel_lines(costing, fixed):
     """quote_costing lines -> the panel's line shape (amounts to the cent)."""
+    from core.services.quote_costing import sa_date
     by = {ln['key']: ln for ln in costing['lines']}
     out = []
     d = costing['diesel']
@@ -507,7 +516,7 @@ def _panel_lines(costing, fixed):
         if d.get('official_price'):
             details.append({'label': 'Official price', 'value': f'{_fmt2(d["official_price"])}/L '
                             f'({"coastal" if d["zone"] == "COASTAL" else "inland"}'
-                            + (f', from {_date((d.get("official_effective_from") or "")[:10])}'
+                            + (f', from {sa_date(d.get("official_effective_from"))}'
                                if d.get('official_effective_from') else '') + ')'})
         if fuel.get('burn_l_per_100km'):
             details.append({'label': 'Consumption', 'value': f'{_num(fuel["burn_l_per_100km"], 1)} L/100km for this load'})
@@ -598,14 +607,16 @@ def build_cost_floor(payload, *, company, today=None, include_return=None, warni
         fwr = alt['floor']
         ret_lines = [ln['amount'] for ln in alt['lines'] if ln['leg'] == 'empty_return']
         ret_amt = round(sum(a for a in ret_lines if a is not None), 2) if ret_lines else None
-    total = costing['floor'] if costing['floor'] is not None else costing['floor_known']
+    # Incomplete (diesel missing, tolls unknown, no truck...): no floor figure
+    # anywhere — null + the blocking warning, never a partial sum.
+    total = costing['floor']
     km_driven = trip['km_driven'] or 0.0
     floor = {
         'total': total,
         'floor_with_return': fwr,
         'return_leg_amount': ret_amt,
-        'per_km': round(total / km_driven, 2) if km_driven > 0 else None,
-        'per_km_rand': _half_up(total / km_driven) if km_driven > 0 else None,
+        'per_km': round(total / km_driven, 2) if km_driven > 0 and total is not None else None,
+        'per_km_rand': _half_up(total / km_driven) if km_driven > 0 and total is not None else None,
         'per_km_label': 'per km driven',
         'km_driven': round(km_driven, 1),
         'floor_with_return_per_km': (round(fwr / (2 * trip['distance_km']), 2)
@@ -814,6 +825,41 @@ def _recommend(choices, cust, model_block=None, raw_p=None, hold=None, market=No
         return out('balanced', 'within_ep', short, reason)
     short = f'the highest expected profit of the three, {_ep_txt(ep(pick))} per quote.'
     return out(pick['key'], 'highest_ep', short, head + 'the highest of the three.')
+
+
+def _is_less_likely(c, raw_p):
+    lk = c.get('likelihood') or {}
+    if lk.get('level') == 'model':
+        return raw_p.get(c['key'], (lk.get('pct') or 0) / 100.0) < MIN_RECOMMEND_CHANCE
+    return lk.get('band') == 'less_likely'
+
+
+def _never_recommend_less_likely(choices, recommendation, raw_p):
+    """A choice that is "Less likely" (or under 25% at model level) is never
+    labelled Recommended. Switch to the best expected profit among the
+    others (rules level: the highest margin that isn't less likely); if all
+    three are less likely, recommend none and say so plainly."""
+    by_key = {c['key']: c for c in choices}
+    pick = by_key.get(recommendation.get('key'))
+    if pick is None or not _is_less_likely(pick, raw_p or {}):
+        return recommendation
+    ok = [c for c in choices if not _is_less_likely(c, raw_p or {})]
+    if not ok and recommendation.get('code') == 'empty_return_gap':
+        # The empty-return gap already says plainly what to do; keep it, but
+        # recommend no price.
+        return {**recommendation, 'key': None}
+    if not ok:
+        short = 'all three prices are less likely to win on this lane; consider a lower price or a return load.'
+        return {'key': None, 'code': 'all_less_likely', 'short': short,
+                'reason': 'No price is recommended: ' + short}
+
+    def ep(c):
+        p = (raw_p or {}).get(c['key'])
+        return (p if p is not None else 1.0) * c['margin']
+    best = max(ok, key=ep)
+    short = f'{pick["label"]} is less likely to win; {best["label"]} has the best expected profit of the rest.'
+    return {'key': best['key'], 'code': 'less_likely_avoided', 'short': short,
+            'reason': f'{best["label"]} is recommended: {short}'}
 
 
 def _choice_summary(key, price, margin_pct, market, target, held_at_target):
@@ -1526,6 +1572,9 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
                               'message': unpaid + ' Price for a backload or charge for the empty return.'})
         recommendation = _recommend(choices, cust, model_block, raw_p=raw_p, hold=hold,
                                     market=market_out if _market_usable(market) else None, target=target)
+        recommendation = _never_recommend_less_likely(choices, recommendation, raw_p)
+        if recommendation['key'] is None:
+            likelihood['headline'] = 'All three prices are less likely to win on this lane.'
         fwr = floor.get('floor_with_return')
         for c in choices:
             # What this price would leave if the truck came home empty
@@ -1599,6 +1648,21 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
 
     reasoning_items = _reasoning(floor, market_out, choices, likelihood, cust, your, target, recommendation)
 
+    # The empty return stays in the floor by default (honest), and the same
+    # quote WITH a return load booked is returned alongside so clients can
+    # show "With a return load: R 25 100" and toggle.
+    alternative = None
+    if floor is not None and floor.get('include_return') and floor['complete']:
+        alt_floor, alt_costing = build_cost_floor(payload, company=company, include_return=False)
+        if alt_floor['complete']:
+            alt_choices = build_choices(alt_floor['total'], market, target, minimum=alt_floor.get('minimum_charge'))
+            alternative = {
+                'floor': alt_floor['total'], 'target_price': alt_floor['target_price'],
+                'choices': [{k: c[k] for k in ('key', 'label', 'price', 'margin', 'margin_pct')}
+                            for c in alt_choices],
+                'label': 'With a return load booked',
+            }
+
     return {
         'success': True, 'version': VERSION,
         'computed_ms': int((time.monotonic() - started) * 1000),
@@ -1614,6 +1678,7 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
         'attention': attention,
         'reasoning': [it['text'] for it in reasoning_items],     # old clients
         'reasoning_items': reasoning_items,
+        'alternative_with_return_load': alternative,
         'warnings': warnings,
         # QUOTE-RULES.md: the authoritative costing behind cost_floor (lines,
         # floor, target price, warnings) and whether the quote may be sent.

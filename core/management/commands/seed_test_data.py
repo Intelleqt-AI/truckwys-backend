@@ -113,13 +113,13 @@ class Command(BaseCommand):
         return fac
 
     def _customers(self, company, n):
-        names = ['Shoprite Holdings Ltd', 'Tiger Brands Ltd', 'Pioneer Foods (Pty) Ltd',
-                 'Massmart Holdings Ltd', 'Bidvest Group Ltd', 'SA Steel Mills (Pty) Ltd',
-                 'Pick n Pay Stores Ltd', 'Woolworths Holdings Ltd', 'Sasol Ltd', 'Distell Group Ltd',
-                 'Coca-Cola Beverages SA', 'Clover Industries Ltd', 'AVI Limited', 'RCL Foods Ltd',
-                 'Astral Foods Ltd', 'Imperial Logistics Ltd', 'Super Group Ltd', 'Famous Brands Ltd',
-                 'Nampak Ltd', 'Consol Glass (Pty) Ltd', 'Bidcorp Ltd', 'Mondi SA', 'Sappi Ltd',
-                 'ArcelorMittal SA', 'Aspen Pharmacare']
+        names = ['Karoo Fresh Markets Ltd', 'Marula Pantry Foods Ltd', 'Baobab Mills (Pty) Ltd',
+                 'Sable Wholesale Ltd', 'Kudu Group Ltd', 'SA Steel Mills (Pty) Ltd',
+                 'Kestrel Grocers Ltd', 'Fynbos Home & Food Ltd', 'Highveld Chemworks Ltd', 'Cederberg Cellars Ltd',
+                 'Gemsbok Beverages (fictional)', 'Aloe Dairy Ltd', 'Springbok Snacks Ltd', 'Mopane Foods Ltd',
+                 'Hadeda Poultry Ltd', 'Impala Freight Partners Ltd', 'Eland Fleet Group Ltd', 'Protea Eateries Ltd',
+                 'Tin Can Packaging Ltd', 'Vaal Glassworks (Pty) Ltd', 'Kudu Foodservice Ltd', 'Paper Crane Mills', 'Sabie Pulp Ltd',
+                 'Iron Ridge Steel', 'Acacia Pharma']
         out = []
         for i in range(n):
             name = names[i % len(names)] if i < len(names) else f'Demo Customer {i+1}'

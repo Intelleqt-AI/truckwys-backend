@@ -1599,8 +1599,9 @@ class QuoteBenchmarkView(APIView):
             source = 'company'
             distinct_operators = None
 
-            # Hardcoded SA market averages live in lane_benchmark (single source).
-            sa_estimate = lookup_sa_estimate(origin, destination, vehicle_type)
+            # No invented stats (owner rule): the hard-coded SA lane table is
+            # never shown as market data. No real quotes = "No market data".
+            sa_estimate = None
 
             if platform.get('available'):
                 # Real cross-platform benchmark (preferred)

@@ -1390,24 +1390,32 @@ BANK_FIELDS = (
 )
 
 
-def _is_live_echo(value):
-    """True when an old client's fuel_price_per_litre write is not a price
-    the fleet chose: empty, the 23.50 factory default, or within half a cent
-    of any stored FuelPrice figure (the same rule as migration 0149)."""
+def _is_live_echo(value, zone='INLAND'):
+    """True when an old client's fuel_price_per_litre WRITE is not a price the
+    fleet chose: empty, the 23.50 factory default, or within half a cent of
+    the official price for the company's zone that a client could have been
+    shown recently — the one in force now or the one in force before it
+    (previous period). Any other value (e.g. an old 500ppm figure) is OWN.
+    Migration 0149 uses the wider historic rule for the one-off backfill."""
     if value is None:
         return True
     value = Decimal(str(value))
     if abs(value - Decimal('23.50')) <= Decimal('0.00001'):
         return True
-    from core.models import FuelPrice
-    tol = Decimal('0.005')
-    from django.db.models import Q
-    q = Q()
-    for field in ('diesel_inland', 'diesel_coastal', 'diesel_500ppm_inland', 'diesel_500ppm_coastal'):
-        q |= Q(**{f'{field}__gte': value - tol, f'{field}__lte': value + tol})
-    # Only official rows (FIASA / MANUAL): prices a client could have been
-    # served as the live price — never the FALLBACK table.
-    return FuelPrice.objects.filter(source__in=('FIASA', 'MANUAL')).filter(q).exists()
+    from datetime import timedelta
+    from core.services.fuel_price import official_row_in_force, row_effective_from
+    current = official_row_in_force()
+    rows = [current]
+    if current is not None:
+        rows.append(official_row_in_force(row_effective_from(current) - timedelta(microseconds=1)))
+    coastal = str(zone or '').upper() == 'COASTAL'
+    for row in rows:
+        if row is None:
+            continue
+        price = row.diesel_coastal if coastal else row.diesel_inland
+        if price is not None and abs(value - price) <= Decimal('0.005'):
+            return True
+    return False
 
 
 class CompanySerializer(serializers.ModelSerializer):
@@ -1516,7 +1524,7 @@ class CompanySerializer(serializers.ModelSerializer):
                          and abs(Decimal(str(legacy)) - current_own) <= Decimal('0.00001'))
             if unchanged:
                 pass   # the old client echoed the own price back: nothing changed
-            elif _is_live_echo(legacy):
+            elif _is_live_echo(legacy, attrs.get('fuel_zone') or getattr(instance, 'fuel_zone', 'INLAND')):
                 attrs['fuel_price_mode'] = 'LIVE'   # live price / factory default echoed back
             else:
                 attrs['fuel_price_mode'] = 'OWN'
