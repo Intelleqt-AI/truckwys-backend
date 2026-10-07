@@ -182,21 +182,16 @@ def assess_revenue_guard(*, total_cost, quote_price, distance_km=0.0,
         explanations.append(f"Cost-per-km on this route is R{cost_per_km:.2f} — above the fleet average of R{fleet_avg_cpk:.2f}")
         suggestions.append("Review your cost model — this route may need a base rate increase")
 
-    # Fuel-delta analysis for an already-saved quote.
+    # Fuel-delta analysis for an already-saved quote: like-for-like zone
+    # against its pricing snapshot (QUOTE-RULES §9).
     if quote is not None:
         try:
-            from core.services.fuel_price import fetch_fuel_prices
-
-            if getattr(quote, 'fuel_price_at_creation', None):
-                fuel_at_creation = _f(quote.fuel_price_at_creation)
-                if fuel_at_creation > 0:
-                    fuel_current = _f(fetch_fuel_prices().diesel_inland)
-                    delta_pct = ((fuel_current - fuel_at_creation) / fuel_at_creation) * 100
-                    if delta_pct > 3:
-                        delta_zar = fuel_current - fuel_at_creation
-                        explanations.append(f"Fuel has risen R{delta_zar:.2f}/L since this quote was created")
-                        surcharge = int(fuel_cost * (delta_pct / 100))
-                        suggestions.append(f"Add a fuel surcharge of R{surcharge} to protect the margin")
+            from core.services.quote_snapshot import fuel_change_since_pricing
+            change = fuel_change_since_pricing(quote)
+            if change and change['delta_pct'] > 3:
+                explanations.append(f"Fuel has risen R{change['delta']:.2f}/L since this quote was priced")
+                surcharge = int(change['impact_zar'] or fuel_cost * (change['delta_pct'] / 100))
+                suggestions.append(f"Add a fuel surcharge of R{surcharge} to protect the margin")
         except Exception as exc:  # never break the assessment
             logger.warning('revenue-guard fuel analysis failed: %s', exc)
 
@@ -249,7 +244,7 @@ def assess_revenue_guard(*, total_cost, quote_price, distance_km=0.0,
 # ---------------------------------------------------------------------------
 # Section builders
 # ---------------------------------------------------------------------------
-def _fuel_analysis(fuel_cost, fuel_usage_litres, fuel_price_used, quote_total):
+def _fuel_analysis(fuel_cost, fuel_usage_litres, fuel_price_used, quote_total, company=None):
     """Current diesel price + freshness, and this quote's fuel usage/cost."""
     out = {
         'fuel_cost_zar': round(fuel_cost, 2),
@@ -263,21 +258,26 @@ def _fuel_analysis(fuel_cost, fuel_usage_litres, fuel_price_used, quote_total):
         'price_note': None,
     }
     try:
-        from core.services.fuel_price import fetch_fuel_prices
-        fp = fetch_fuel_prices()
-        current = _f(fp.diesel_inland)
-        days_old = (timezone.now().date() - fp.date).days
-        out['current_price'] = round(current, 2)
-        out['last_updated'] = fp.date.isoformat()
-        out['source'] = fp.source
-        if days_old > 7:
+        # The company's own price in force (official zone price or its own),
+        # freshness by the first-Wednesday period (QUOTE-RULES §1-§2).
+        from core.services.fuel_price import resolve_company_diesel
+        res = resolve_company_diesel(company) if company is not None else None
+        current = (res or {}).get('price')
+        official = (res or {}).get('official') or {}
+        out['current_price'] = round(current, 2) if current else None
+        out['last_updated'] = (official.get('effective_from') or '')[:10] or None
+        out['source'] = (res or {}).get('source')
+        if official.get('stale'):
             out['is_stale'] = True
-            out['stale_warning'] = f"Diesel price last updated {days_old} days ago — consider refreshing."
-        # Flag a meaningful gap between the price used and the live price.
+            out['stale_warning'] = 'The official diesel price for this month is not loaded yet.'
+        if current is None:
+            out['is_stale'] = True
+            out['stale_warning'] = 'No diesel price is available right now.'
+        # Flag a meaningful gap between the price used and the price in use.
         if fuel_price_used and current and abs(current - fuel_price_used) / current > 0.02:
             direction = 'higher' if current > fuel_price_used else 'lower'
             out['price_note'] = (
-                f"The price used (R{fuel_price_used:.2f}/L) is {direction} than the live price "
+                f"The price used (R{fuel_price_used:.2f}/L) is {direction} than your current price "
                 f"(R{current:.2f}/L) — fuel cost may be off."
             )
     except Exception as exc:
@@ -360,9 +360,12 @@ def _optimization(cost_basis, market_rate, client_tier, days,
         return optimize_price(**kwargs)
     except Exception as exc:
         logger.warning('price optimization failed: %s', exc)
+        # No invented +15%: the company's target margin over the cost floor.
+        t = min(max(_f(getattr(company, 'margin_target_pct', None), 10.0) or 10.0, 1.0), 40.0)
+        price = round(cost_basis / (1 - t / 100), 2) if cost_basis else None
         return {
-            'optimal_price': round(cost_basis * 1.15, 2) if cost_basis else 0.0,
-            'optimal_margin_pct': 15.0,
+            'optimal_price': price,
+            'optimal_margin_pct': t if price else None,
             'win_probability_at_optimal': None,
             'expected_profit': 0.0,
             'curve': [],
@@ -422,6 +425,46 @@ def _llm_narrative(structured):
     except Exception as exc:
         logger.warning('LLM narrative failed, using rule-based: %s', exc)
         return None
+
+
+_NUM_RE = None
+
+
+def _numbers_in(value, out):
+    if isinstance(value, bool) or value is None:
+        return
+    if isinstance(value, (int, float)):
+        out.append(float(value))
+    elif isinstance(value, dict):
+        for v in value.values():
+            _numbers_in(v, out)
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            _numbers_in(v, out)
+
+
+def narrative_numbers_ok(text, structured):
+    """True when every number the narrative states is one of ours: a figure
+    in `structured` (also as a %, i.e. ×100, and in thousands 'k'), within
+    rounding. Small counts (<= 10) are allowed (sentences, nights)."""
+    import re
+    known = []
+    _numbers_in(structured, known)
+    known += [k * 100 for k in known if abs(k) <= 1]
+    for m in re.finditer(r'(\d[\d\s,]*(?:\.\d+)?)\s*(k|%)?', text):
+        raw = m.group(1).replace(' ', '').replace('\u00a0', '').replace(',', '')
+        try:
+            v = float(raw)
+        except ValueError:
+            continue
+        if m.group(2) == 'k':
+            v *= 1000
+        if v <= 10:
+            continue
+        tol = max(1.0, abs(v) * 0.006) if m.group(2) != 'k' else max(500.0, abs(v) * 0.05)
+        if not any(abs(abs(k) - v) <= tol for k in known):
+            return False
+    return True
 
 
 def _build_ai_prediction(opt, real_market_rate, prediction_ctx):
@@ -502,9 +545,25 @@ def analyze_quote(payload, company=None, user=None):
     if quote_total <= 0:
         return {'success': False, 'error': 'quote_total must be > 0'}
 
-    # Expected profit must be computed against what the job COSTS, not the
-    # price being asked — otherwise the optimum is forced above the current total.
-    cost_basis = direct_cost or quote_total
+    # Expected profit is computed against what the job COSTS: THE cost floor
+    # (core.services.quote_costing, QUOTE-RULES §3-§7). Never the quote total
+    # itself. If the floor can't be worked out, the client's own direct cost
+    # is used and labelled; with neither there is no cost basis.
+    costing = None
+    if company is not None:
+        try:
+            from core.services.quote_costing import costing_for_payload
+            p = dict(payload)
+            p.setdefault('price', quote_total)
+            costing = costing_for_payload(p, company)
+        except Exception as exc:
+            logger.warning('analyze: cost floor failed: %s', exc)
+    if costing is not None and costing['floor'] is not None:
+        cost_basis, cost_basis_source = costing['floor'], 'cost_floor'
+    elif direct_cost > 0:
+        cost_basis, cost_basis_source = direct_cost, 'client_direct_cost'
+    else:
+        cost_basis, cost_basis_source = 0.0, 'none'
 
     customer = None
     if payload.get('customer_id') and company is not None:
@@ -555,7 +614,8 @@ def analyze_quote(payload, company=None, user=None):
         logger.warning('analyze_quote: base_features build failed: %s', exc)
         base_features = None
 
-    opt = _optimization(
+    opt = {'optimal_price': None, 'optimal_margin_pct': None, 'win_probability_at_optimal': None,
+           'expected_profit': 0.0, 'curve': []} if cost_basis <= 0 else _optimization(
         cost_basis, real_market_rate, client_tier, days,
         historical_acceptance_rate=hist_rate, origin=origin, destination=destination,
         company=company, prediction_ctx=prediction_ctx, base_features=base_features,
@@ -576,7 +636,7 @@ def analyze_quote(payload, company=None, user=None):
         nearest = min(curve, key=lambda p: abs(_f(p.get('price')) - target_price)) if curve else None
         p_win = nearest.get('win_probability') if nearest else None
         opt['optimal_price'] = target_price
-        opt['optimal_margin_pct'] = round((target_price - cost_basis) / cost_basis * 100, 1)
+        opt['optimal_margin_pct'] = round((target_price - cost_basis) / target_price * 100, 1)   # margin on price
         opt['win_probability_at_optimal'] = p_win
         opt['expected_profit'] = round(
             (target_price - cost_basis) * (p_win if p_win is not None else 1.0), 2)
@@ -586,9 +646,12 @@ def analyze_quote(payload, company=None, user=None):
         distance_km=distance_km, fuel_cost=fuel_cost, company=company,
         customer=customer,
     )
-    fuel = _fuel_analysis(fuel_cost, fuel_usage_litres, fuel_price_used, quote_total)
+    fuel = _fuel_analysis(fuel_cost, fuel_usage_litres, fuel_price_used, quote_total, company)
 
-    suggested_price = _f(opt.get('optimal_price')) or round(quote_total * 1.15, 2)
+    suggested_price = _f(opt.get('optimal_price')) if cost_basis > 0 else 0.0
+    target_price = (costing or {}).get('target_price')
+    if suggested_price and target_price and suggested_price < target_price:
+        suggested_price = target_price      # never below floor / (1 − target) or the minimum charge
 
     structured = {
         'route': f"{origin} → {destination}" if origin and destination else None,
@@ -597,7 +660,11 @@ def analyze_quote(payload, company=None, user=None):
         'fuel_analysis': fuel,
         'price_optimization': opt,
         'market_analysis': market,
-        'suggested_price': round(suggested_price, 2),
+        'suggested_price': round(suggested_price, 2) if suggested_price else None,
+        'cost_basis': round(cost_basis, 2) if cost_basis else None,
+        'cost_basis_source': cost_basis_source,
+        'cost_floor': ({k: costing.get(k) for k in ('floor', 'floor_known', 'target_price', 'minimum_charge',
+                                                    'lines', 'warnings', 'blocking')} if costing else None),
         # The ONLY block that ever claims to be a trained-AI prediction —
         # price_optimization above may be heuristic-driven and stays
         # populated either way, so the manual quote flow never breaks.
@@ -608,6 +675,10 @@ def analyze_quote(payload, company=None, user=None):
     # Builder's live panel, which re-analyzes on every cost change) skip the
     # synchronous OpenAI call — it dominates response time by seconds.
     narrative = None if payload.get('skip_narrative') else _llm_narrative(structured)
+    if narrative and not narrative_numbers_ok(narrative, structured):
+        # The model stated a number that isn't ours: never shown.
+        logger.info('analyze: LLM narrative rejected (unsupported numbers)')
+        narrative = None
     narrative_source = 'llm' if narrative else 'rules'
     if not narrative:
         narrative = _rule_based_narrative(cost, fuel, opt, market, suggested_price, quote_total)

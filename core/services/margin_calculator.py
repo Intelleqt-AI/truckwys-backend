@@ -164,11 +164,12 @@ def _get_current_diesel_price() -> Decimal:
 
     Falls back to a hardcoded conservative value if no records exist.
     """
-    from core.models.fuel_price import FuelPrice
-
-    latest = FuelPrice.objects.order_by('-date').first()
-    if latest:
-        return latest.diesel_inland
+    # The official inland price in force (FIASA 50ppm / MANUAL only — never a
+    # fallback-table row, never just "the newest row of any source").
+    from core.services.fuel_price import price_in_force
+    rec = price_in_force('INLAND')
+    if rec:
+        return Decimal(str(rec['price'])).quantize(Decimal('0.0001'))
 
     logger.warning(
         'No FuelPrice records found — using hardcoded fallback diesel price R%s',

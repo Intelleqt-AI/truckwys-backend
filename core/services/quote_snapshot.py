@@ -128,3 +128,35 @@ def blocked_response_body(check):
         'warnings': check['warnings'],
         'blocking': check['blocking'],
     }
+
+
+def fuel_change_since_pricing(quote, now=None):
+    """Like-for-like diesel movement since the quote was priced (§9): the
+    official price for the quote's OWN zone then (snapshot) vs now. Legacy
+    quotes without a snapshot use fuel_price_at_creation as the inland price
+    (that is what was stored). None when either side is unknown — never a
+    20.0 / fallback figure.
+    {'zone', 'baseline', 'current', 'delta', 'delta_pct', 'litres', 'impact_zar'}"""
+    from core.services.fuel_price import resolve_official
+    zone = (quote.fuel_zone or '').upper()
+    if quote.fuel_official_at_pricing is not None:
+        baseline = float(quote.fuel_official_at_pricing)
+    elif quote.fuel_price_source == 'official' and quote.fuel_price_used is not None:
+        baseline = float(quote.fuel_price_used)
+    elif not quote.fuel_price_source and quote.fuel_price_at_creation is not None:
+        baseline, zone = float(quote.fuel_price_at_creation), 'INLAND'
+    else:
+        return None
+    zone = zone or 'INLAND'
+    current = resolve_official(zone, now)['price']
+    if current is None or baseline <= 0:
+        return None
+    delta = current - baseline
+    litres = float(quote.fuel_litres) if quote.fuel_litres is not None else None
+    if litres is not None:
+        impact = round(litres * delta, 2)
+    else:
+        fuel = float(quote.fuel_surcharge or 0)
+        impact = round(fuel * delta / baseline, 2) if fuel else None
+    return {'zone': zone, 'baseline': baseline, 'current': current, 'delta': round(delta, 4),
+            'delta_pct': round(delta / baseline * 100, 2), 'litres': litres, 'impact_zar': impact}

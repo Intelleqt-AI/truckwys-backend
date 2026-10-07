@@ -995,9 +995,13 @@ class TripCostView(APIView):
         fuel_cost = Decimal('0.00')
         if trip.distance_km and trip.vehicle:
             try:
-                fuel_price = (company.fuel_price_per_litre if company else None) or Decimal('23.50')
+                # The company's diesel price in use (own or official zone);
+                # unknown => no estimate (never the 23.50 factory default).
+                from core.services.fuel_price import company_diesel_price
+                fuel_price = company_diesel_price(company) if company else None
                 fuel_consumption = trip.vehicle.fuel_consumption_per_km
-                fuel_cost = trip.distance_km * fuel_consumption * fuel_price
+                if fuel_price is not None:
+                    fuel_cost = trip.distance_km * fuel_consumption * fuel_price
             except Exception:
                 pass
 

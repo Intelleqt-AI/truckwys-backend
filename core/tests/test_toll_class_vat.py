@@ -221,7 +221,11 @@ class TollVatTests(_RouteCalcBase):
         self.assertEqual(sum(Decimal(str(b['tariff_incl_vat'])) for b in data['toll_breakdown']), Decimal('1274.00'))
         # Route option row and totals use the same VAT-exclusive figure.
         self.assertEqual(Decimal(str(data['routes'][0]['toll_cost_zar'])), Decimal('1107.83'))
-        self.assertAlmostEqual(data['total_cost_zar'], round(data['fuel_cost_zar'] + 1107.83, 2), places=2)
+        # QUOTE-RULES §1/§6: no diesel price / vehicle => fuel null => total null.
+        if data['fuel_cost_zar'] is None:
+            self.assertIsNone(data['total_cost_zar'])
+        else:
+            self.assertAlmostEqual(data['total_cost_zar'], round(data['fuel_cost_zar'] + 1107.83, 2), places=2)
 
     def test_jhb_cpt_excl_vat(self):
         data = self.calc('Interlink (34 tonnes)', wps=JHB_CPT, distance_km=1398.0)
@@ -274,7 +278,10 @@ class TollFallbackFlagTests(_RouteCalcBase):
         self.assertIs(data['tolls_estimated'], True)
         self.assertEqual(data['tolls_unavailable_reason'], 'routing_unavailable')
         self.assertTrue(data['toll_warning'])
-        self.assertEqual(data['toll_cost_zar'], 0)
+        # QUOTE-RULES §6: unknown, never R 0 as if known.
+        self.assertIsNone(data['toll_cost_zar'])
+        self.assertIs(data['tolls_unknown'], True)
+        self.assertIs(data['distance_estimated'], True)
         self.assertIs(data['routes'][0]['tolls_unavailable'], True)
 
     def test_toll_calculator_exception_is_flagged(self):
@@ -282,7 +289,8 @@ class TollFallbackFlagTests(_RouteCalcBase):
             data = self.calc('Interlink (34 tonnes)')
         self.assertIs(data['tolls_unavailable'], True)
         self.assertEqual(data['tolls_unavailable_reason'], 'toll_calculation_failed')
-        self.assertEqual(data['toll_cost_zar'], 0)
+        self.assertIsNone(data['toll_cost_zar'])
+        self.assertIs(data['tolls_unknown'], True)
 
     def test_no_plazas_is_flagged(self):
         TollPlaza.objects.all().delete()

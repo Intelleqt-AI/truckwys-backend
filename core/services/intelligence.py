@@ -25,6 +25,14 @@ class IntelligenceService:
     - Fleet efficiency
     """
 
+    def _diesel_price(self):
+        """The company's diesel R/L in use (own or official), cached; None
+        when unknown (QUOTE-RULES §1: fuel_price_per_litre is a mirror only)."""
+        if not hasattr(self, '_diesel_cache'):
+            from core.services.fuel_price import company_diesel_price
+            self._diesel_cache = company_diesel_price(self.company)
+        return self._diesel_cache
+
     def __init__(self, company: Company):
         """
         Initialize intelligence service for a company.
@@ -136,8 +144,8 @@ class IntelligenceService:
 
             # Costs (fuel + tolls + driver costs, etc.)
             fuel_cost = Decimal('0')
-            if trip.actual_fuel_litres:
-                fuel_cost = trip.actual_fuel_litres * self.company.fuel_price_per_litre
+            if trip.actual_fuel_litres and self._diesel_price() is not None:
+                fuel_cost = trip.actual_fuel_litres * self._diesel_price()
 
             toll_cost = trip.actual_toll_cost or Decimal('0')
 
@@ -366,8 +374,8 @@ class IntelligenceService:
 
             # Calculate costs
             fuel_cost = Decimal('0')
-            if trip.actual_fuel_litres:
-                fuel_cost = trip.actual_fuel_litres * self.company.fuel_price_per_litre
+            if trip.actual_fuel_litres and self._diesel_price() is not None:
+                fuel_cost = trip.actual_fuel_litres * self._diesel_price()
 
             toll_cost = trip.actual_toll_cost or Decimal('0')
             total_costs += (fuel_cost + toll_cost)

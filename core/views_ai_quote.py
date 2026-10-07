@@ -1447,39 +1447,30 @@ class FuelPriceSurchargeCheckView(APIView):
 
             quote = Quote.objects.get(id=quote_id, company=request.user.company)
 
-            # Get current fuel price
-            try:
-                current_fuel = fetch_fuel_prices()
-                fuel_current = float(current_fuel.diesel_inland)
-            except Exception:
-                fuel_current = 20.0  # fallback
-
-            fuel_at_creation = float(quote.fuel_price_at_creation) if quote.fuel_price_at_creation else fuel_current
-
-            if fuel_at_creation == 0:
-                delta_pct = 0
-                delta_zar = 0
-            else:
-                delta_pct = ((fuel_current - fuel_at_creation) / fuel_at_creation) * 100
-                delta_zar = fuel_current - fuel_at_creation
-
+            # Like-for-like (QUOTE-RULES §9): the official price for the
+            # quote's own zone when it was priced vs now. Unknown => no
+            # surcharge advice (never a 20.0 / fallback figure).
+            from core.services.quote_snapshot import fuel_change_since_pricing
+            change = fuel_change_since_pricing(quote)
+            if change is None:
+                return Response({
+                    'success': True, 'fuel_at_creation': None, 'fuel_current': None, 'delta_pct': None,
+                    'delta_zar': None, 'surcharge_required': False, 'recommended_surcharge_zar': 0,
+                    'fuel_impact_on_total': 'The diesel price change since this quote can\'t be worked out.',
+                    'fuel_zone': None, 'unknown': True,
+                })
+            delta_pct, delta_zar = change['delta_pct'], change['delta']
             surcharge_required = delta_pct > 3.0
-
-            # Calculate recommended surcharge
-            # Formula: delta_pct × original fuel_surcharge
-            original_fuel_cost = float(quote.fuel_surcharge) if quote.fuel_surcharge else 0
-            if surcharge_required and original_fuel_cost > 0:
-                recommended_surcharge_zar = original_fuel_cost * (delta_pct / 100)
-            else:
-                recommended_surcharge_zar = 0
-
+            recommended_surcharge_zar = max(change['impact_zar'] or 0, 0) if surcharge_required else 0
             distance = float(quote.distance) if quote.distance else 0
-            fuel_impact_message = f"Diesel price increase costs ~R{int(recommended_surcharge_zar)} more for this {int(distance)} km job" if surcharge_required else "No significant fuel price change"
+            fuel_impact_message = (f"Diesel price increase costs ~R{int(recommended_surcharge_zar)} more for this "
+                                   f"{int(distance)} km job" if surcharge_required else "No significant fuel price change")
 
             return Response({
                 'success': True,
-                'fuel_at_creation': fuel_at_creation,
-                'fuel_current': fuel_current,
+                'fuel_at_creation': change['baseline'],
+                'fuel_current': change['current'],
+                'fuel_zone': change['zone'],
                 'delta_pct': round(delta_pct, 2),
                 'delta_zar': round(delta_zar, 2),
                 'surcharge_required': surcharge_required,
@@ -1508,36 +1499,15 @@ class QuoteFuelAlertView(APIView):
         try:
             quote = Quote.objects.get(id=quote_id, company=request.user.company)
 
-            # Get current fuel price
-            try:
-                current_fuel = fetch_fuel_prices()
-                fuel_current = float(current_fuel.diesel_inland)
-            except Exception:
-                fuel_current = 20.0
-
-            fuel_at_creation = float(quote.fuel_price_at_creation) if quote.fuel_price_at_creation else fuel_current
-
-            if fuel_at_creation == 0:
-                return Response({
-                    'success': True,
-                    'has_alert': False,
-                })
-
-            delta_pct = ((fuel_current - fuel_at_creation) / fuel_at_creation) * 100
-            delta_zar = fuel_current - fuel_at_creation
-
-            has_alert = abs(delta_pct) > 3.0
-
-            if not has_alert:
-                return Response({
-                    'success': True,
-                    'has_alert': False,
-                })
-
-            # Calculate cost impact
-            distance = float(quote.distance) if quote.distance else 0
-            original_fuel_cost = float(quote.fuel_surcharge) if quote.fuel_surcharge else 0
-            estimated_cost_impact = int(original_fuel_cost * (abs(delta_pct) / 100))
+            # Like-for-like zone, against the snapshot (QUOTE-RULES §9).
+            from core.services.quote_snapshot import fuel_change_since_pricing
+            change = fuel_change_since_pricing(quote)
+            if change is None:
+                return Response({'success': True, 'has_alert': False})
+            delta_pct, delta_zar = change['delta_pct'], change['delta']
+            if abs(delta_pct) <= 3.0:
+                return Response({'success': True, 'has_alert': False})
+            estimated_cost_impact = int(abs(change['impact_zar'] or 0))
 
             alert_type = 'FUEL_INCREASE' if delta_zar > 0 else 'FUEL_DECREASE'
             message = f"Diesel {'up' if delta_zar > 0 else 'down'} R{abs(delta_zar):.2f}/L since this quote was created. This job now costs ~R{estimated_cost_impact} {'more' if delta_zar > 0 else 'less'}."

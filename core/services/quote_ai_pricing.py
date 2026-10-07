@@ -366,26 +366,22 @@ def official_fuel_price(fuel_type, zone, today: date) -> dict:
     if (fuel_type or 'Diesel').strip().lower() != 'diesel':
         out['error'] = f'only diesel has an official monthly price ({fuel_type})'
         return out
-    _, change = _fuel_period(today)
     try:
-        from core.models.fuel_price import FuelPrice
-
-        rec = eff = None
-        rows = (FuelPrice.objects.filter(source__in=OFFICIAL_FUEL_SOURCES, date__lte=today.replace(day=1))
-                .order_by('-date')[:4])
-        for row in rows:
-            if row.source == 'FIASA' and row.diesel_grade != '50ppm':
-                continue
-            row_eff = _fuel_effective_date(row)
-            if row_eff is not None and row_eff <= today:
-                rec, eff = row, row_eff
-                break
+        from datetime import datetime as _dt
+        from core.services.fuel_price import SAST, official_row_in_force, period_start, row_effective_from
+        # End of `today` in SAST: the price in force that day (official rows
+        # only — FIASA 50ppm / MANUAL — never the fallback table).
+        moment = min(timezone.now(), _dt(today.year, today.month, today.day, 23, 59, tzinfo=SAST))
+        rec = official_row_in_force(moment)
         if rec is None:
             out['error'] = 'no official price on record'
             return out
+        eff_dt = row_effective_from(rec)
+        eff = timezone.localtime(eff_dt).date()
         if (today - eff).days > FUEL_MAX_AGE_DAYS:
             out['error'] = f'the latest official price on record is from {_long_date(eff)}'
             return out
+        start = period_start(moment)
     except Exception as exc:
         logger.warning('AI price analysis: official fuel price lookup failed: %s', exc)
         out['error'] = 'official fuel price unavailable'
@@ -397,7 +393,9 @@ def official_fuel_price(fuel_type, zone, today: date) -> dict:
         'zone': 'coastal' if coastal else 'inland',
         'effective_date': eff.isoformat(),
         # A MANUAL row without effective_from is the override for its month.
-        'current': eff >= change or (rec.effective_from is None and rec.date == change.replace(day=1)),
+        # A legacy MANUAL row (no effective_from) is the override for its month.
+        'current': eff_dt >= start or (rec.effective_from is None and rec.source == 'MANUAL'
+                                       and rec.date.replace(day=1) == timezone.localtime(start).date().replace(day=1)),
         'source': rec.source,
         'verified_at': _fuel_verified_at(rec),
     })
@@ -409,8 +407,11 @@ def lane_benchmark(payload: dict, company) -> dict:
     the same definition the win model is trained on. Never raises."""
     try:
         from core.services.lane_benchmark import resolve_market_rate
+        # QUOTE-RULES §8: the same one-way, sent-only, fuel-normalised market
+        # the pricing analysis and the win model use.
         rate, source = resolve_market_rate(payload.get('origin'), payload.get('destination'),
-                                           payload.get('vehicle_type'), company=company)
+                                           payload.get('vehicle_type'), company=company,
+                                           one_way_only=True, sent_only=True)
     except Exception as exc:
         logger.warning('AI price analysis: lane benchmark failed: %s', exc)
         rate, source = None, 'none'
@@ -853,7 +854,8 @@ def _attach_win_probabilities(combos: dict, default_key: str, payload: dict, use
         # The market rate definition the model was TRAINED on (platform
         # median / company tier), not the benchmark mean the page displays.
         market_rate, _ = resolve_market_rate(payload.get('origin'), payload.get('destination'),
-                                             payload.get('vehicle_type'), company=company)
+                                             payload.get('vehicle_type'), company=company,
+                                             one_way_only=True, sent_only=True)
         market_rate = _f(market_rate) or None
         if market_rate is None:
             # Without a market rate price_ratio is a filler, so the probability
@@ -896,6 +898,51 @@ def _attach_win_probabilities(combos: dict, default_key: str, payload: dict, use
     return {'available': True, 'scope': ctx.scope, 'training_samples': ctx.sample_count, 'reason': None}
 
 
+def _cost_floor(payload, company):
+    """The quote_costing floor for this payload (None without a company or
+    on failure): {floor, target_price, minimum_charge, warnings, blocking}."""
+    if company is None:
+        return None
+    try:
+        from core.services.quote_costing import costing_for_payload
+        c = costing_for_payload(payload, company)
+    except Exception as exc:
+        logger.warning('AI price analysis: cost floor failed: %s', exc)
+        return None
+    return {'floor': c['floor'], 'floor_known': c['floor_known'], 'target_price': c['target_price'],
+            'target_margin_pct': c['target_margin_pct'], 'minimum_charge': c['minimum_charge'],
+            'lines': c['lines'], 'warnings': c['warnings'], 'blocking': c['blocking']}
+
+
+def _apply_floor(items, payload, floor, cross_border):
+    """Never suggest a price under the target price: if the AI choices sum
+    below floor / (1 − target) (or the minimum charge), lift the suggested
+    base rate to reach it."""
+    target = (floor or {}).get('target_price')
+    if target is None:
+        return
+    base = items['base_rate']
+    ai_total = sum((items[t]['ai_value_zar'] if items[t]['toggleable'] else items[t]['current_value_zar'])
+                   for t in TOPICS) + cross_border
+    if ai_total >= target - 0.5:
+        return
+    distance = _f(payload.get('distance_km'), 0.0) or 0.0
+    needed = base['ai_value_zar'] if base['toggleable'] else base['current_value_zar']
+    needed += target - ai_total
+    if distance <= 0:
+        return
+    rate = math.ceil(needed / distance * 100) / 100
+    base['detail']['ai_rate_per_km'] = rate
+    base['detail']['floor_rate_per_km'] = rate
+    base['ai_value_zar'] = _whole_rand(rate * distance)
+    if base['verdict'] != 'needs_adjustment':
+        base['verdict'] = 'needs_adjustment'
+        base['toggleable'] = True
+        base['reason'] = (f'Your price is under your target margin over the full cost floor '
+                          f'({_fmt_rand(floor["floor"])}); the base rate is lifted to {_fmt_rand(rate)}/km.')
+    base['floor_adjusted'] = True
+
+
 def compute_pricing(payload: dict, today: date = None, *, official_fuel: dict = None, benchmark: dict = None,
                     tolls: dict = None, allowance=..., company=None) -> dict:
     """All verdicts and price arithmetic, from stored figures only. Each
@@ -918,6 +965,8 @@ def compute_pricing(payload: dict, today: date = None, *, official_fuel: dict = 
     pass_through_market = fuel['ai_value_zar'] + toll_item['ai_value_zar'] + driver['ai_value_zar'] + cross_border
     base = _base_rate_item(benchmark, payload, pass_through_market)
     items = {'fuel': fuel, 'tolls': toll_item, 'driver_allowance': driver, 'base_rate': base}
+    floor = _cost_floor(payload, company)
+    _apply_floor(items, payload, floor, cross_border)
 
     verified = sum(1 for t in TOPICS if items[t]['verdict'] != 'could_not_verify')
     status, confidence = (('unverified', 'low') if verified == 0 else
@@ -940,6 +989,10 @@ def compute_pricing(payload: dict, today: date = None, *, official_fuel: dict = 
 
     combos = _combinations(items, payload)
     default_key = choice_key({t: 'ai' if items[t]['toggleable'] else 'mine' for t in TOPICS})
+    target_price = (floor or {}).get('target_price')
+    for combo in combos.values():
+        combo['below_floor'] = bool(floor and floor.get('floor') is not None and combo['price_zar'] < floor['floor'])
+        combo['below_target'] = bool(target_price is not None and combo['price_zar'] < target_price - 0.5)
     return {
         'verification_status': status,
         'confidence': confidence,
@@ -954,6 +1007,9 @@ def compute_pricing(payload: dict, today: date = None, *, official_fuel: dict = 
         'default_choice_key': default_key,
         'references': references,
         'return_leg': _return_leg(items, payload),
+        # QUOTE-RULES §7/§8 (additive): the authoritative cost floor; the
+        # suggested (default) combination is never below floor / (1 − target).
+        'cost_floor': floor,
     }
 
 

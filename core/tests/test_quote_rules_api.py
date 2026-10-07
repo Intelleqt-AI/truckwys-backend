@@ -367,3 +367,73 @@ class CoordinatorFollowUpTests(_Base):
         self.assertEqual(c.driver_allowance_per_night, Decimal('512'))
         self.company.refresh_from_db()
         self.assertEqual(self.company.driver_allowance_per_night, Decimal('450'))   # own setting kept
+
+
+class AiPriceCheckFloorTests(_Base):
+    def test_suggested_combination_never_below_target_price(self):
+        from core.services.quote_ai_pricing import compute_pricing
+        payload = {'origin': 'JHB', 'destination': 'DBN', 'distance_km': 568.4, 'duration_minutes': 440,
+                   'weight': 28000, 'vehicle_type': 'Superlink', 'toll_cost': 1043.48, 'fuel_cost': 6000,
+                   'fuel_usage_litres': 200, 'fuel_price_used': 30, 'driver_cost': 0, 'base_rate_per_km': 5}
+        out = compute_pricing(payload, date(2026, 10, 7), company=self.company,
+                              benchmark={'rate': None, 'source': 'none'}, allowance=None)
+        floor = out['cost_floor']
+        self.assertIsNotNone(floor['target_price'])
+        default = out['combinations'][out['default_choice_key']]
+        self.assertGreaterEqual(default['price_zar'], floor['target_price'] - 1)
+        self.assertTrue(out['cost_breakdown']['base_rate'].get('floor_adjusted'))
+        mine = out['combinations'][next(k for k in out['combinations'] if 'base_rate=mine' in k)]
+        self.assertTrue(mine['below_target'])
+
+    def test_market_rate_is_one_way_sent_only(self):
+        from unittest import mock
+        from core.services import quote_ai_pricing as qap
+        with mock.patch('core.services.lane_benchmark.resolve_market_rate', return_value=(None, 'none')) as m:
+            qap.lane_benchmark({'origin': 'JHB', 'destination': 'DBN'}, self.company)
+        self.assertTrue(m.call_args.kwargs['one_way_only'])
+        self.assertTrue(m.call_args.kwargs['sent_only'])
+
+
+class AnalyzeAndAlertTests(_Base):
+    def test_analyze_cost_basis_is_the_floor(self):
+        from core.services.quote_analysis import analyze_quote
+        out = analyze_quote({'quote_total': 36000, 'distance_km': 568.4, 'vehicle_type': 'Superlink',
+                             'weight': 28000, 'toll_cost': 1043.48, 'duration_minutes': 440,
+                             'skip_narrative': True}, company=self.company, user=self.user)
+        self.assertEqual(out['cost_basis_source'], 'cost_floor')
+        self.assertEqual(out['cost_basis'], out['cost_floor']['floor'])
+        self.assertGreaterEqual(out['suggested_price'], out['cost_floor']['target_price'])
+
+    def test_analyze_without_any_cost_has_no_invented_price(self):
+        from core.services.quote_analysis import analyze_quote
+        out = analyze_quote({'quote_total': 36000, 'skip_narrative': True}, company=self.company, user=self.user)
+        self.assertEqual(out['cost_basis_source'], 'none')
+        self.assertIsNone(out['suggested_price'])
+
+    def test_narrative_numbers_must_be_ours(self):
+        from core.services.quote_analysis import narrative_numbers_ok
+        structured = {'quote_total': 36000.0, 'cost': {'margin_pct': 12.5}, 'suggested_price': 38500.0}
+        self.assertTrue(narrative_numbers_ok('Margin 12.5% on R36,000; suggest R38 500 over 2 nights.', structured))
+        self.assertFalse(narrative_numbers_ok('The market pays about R45,000 on this lane.', structured))
+
+    def test_fuel_alert_compares_same_zone_snapshot(self):
+        self.company.fuel_zone = 'COASTAL'
+        self.company.save()
+        with patch('django.utils.timezone.now', return_value=sast(2026, 10, 1, 9)):
+            q = self.create()
+        self.assertEqual(q.fuel_official_at_pricing, Decimal('28.6831'))
+        body = self.api.get(f'/api/v1/quotes/{q.id}/fuel-alert/').json()
+        self.assertTrue(body['has_alert'])
+        self.assertAlmostEqual(body['fuel_delta_zar'], round(31.9269 - 28.6831, 2))
+        body = self.api.post('/api/v1/fuel-prices/surcharge-check/', {'quote_id': q.id}, format='json').json()
+        self.assertEqual(body['fuel_zone'], 'COASTAL')
+        self.assertTrue(body['surcharge_required'])
+        self.assertAlmostEqual(body['recommended_surcharge_zar'],
+                               round(float(q.fuel_litres) * (31.9269 - 28.6831), 2), places=1)
+
+    def test_no_price_means_no_alert_never_a_default(self):
+        q = self.create()
+        FuelPrice.objects.all().delete()
+        body = self.api.post('/api/v1/fuel-prices/surcharge-check/', {'quote_id': q.id}, format='json').json()
+        self.assertTrue(body['unknown'])
+        self.assertFalse(body['surcharge_required'])
