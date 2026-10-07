@@ -232,3 +232,32 @@ class CurrentEndpointTests(TestCase):
         self.assertTrue(body['stale'])
         self.assertTrue(body['is_stale'])
         self.assertTrue(body['company_price']['official']['stale'])
+
+
+class RepairAndCommandTests(TestCase):
+    def test_repair_rekeys_mislabelled_month_rows(self):
+        from io import StringIO
+        from django.core.management import call_command
+        row(date(2026, 10, 1), 29.5551, 28.6831, eff=sast(2026, 9, 2, 0, 1))      # Sep price filed under Oct
+        row(date(2026, 9, 1), 29.5551, 28.6831, eff=sast(2026, 9, 2, 0, 1))       # duplicate under Sep
+        row(date(2026, 8, 1), 28.0, 27.1, grade=None)                              # no effective date
+        out = StringIO()
+        call_command('repair_fuel_history', stdout=out)
+        self.assertIn('Dry run', out.getvalue())
+        self.assertTrue(FuelPrice.objects.filter(date=date(2026, 10, 1)).exists())   # dry run changes nothing
+        call_command('repair_fuel_history', '--apply', stdout=StringIO())
+        self.assertEqual(FuelPrice.objects.filter(date=date(2026, 9, 2)).count(), 1)
+        self.assertFalse(FuelPrice.objects.filter(date__in=[date(2026, 10, 1), date(2026, 9, 1)]).exists())
+        self.assertTrue(FuelPrice.objects.filter(date=date(2026, 8, 1)).exists())
+
+    def test_history_lookup_needs_an_effective_date(self):
+        row(date(2026, 8, 1), 28.0, 27.1, grade=None)
+        self.assertIsNone(fps.price_in_force('INLAND', sast(2026, 8, 20), strict_grade=False))
+
+    def test_fetch_command_keys_by_effective_date(self):
+        from io import StringIO
+        from django.core.management import call_command
+        with serve(), at(sast(2026, 9, 28, 10)):
+            call_command('fetch_fuel_prices', '--date', '2026-06-01', stdout=StringIO())
+        self.assertTrue(FuelPrice.objects.filter(date=date(2026, 6, 3), source='FIASA').exists())
+        self.assertFalse(FuelPrice.objects.filter(date=date(2026, 6, 1)).exists())

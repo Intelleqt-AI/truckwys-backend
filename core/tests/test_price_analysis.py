@@ -97,21 +97,18 @@ class OptimizerCostBasisTests(IsolatedModelStorageMixin, TestCase):
 
     @mock.patch('core.services.fuel_price.fetch_fuel_prices', side_effect=Exception('offline'))
     def test_analyze_quote_optimizes_over_direct_cost(self, _fp):
-        """With a real market rate, the suggestion is no longer forced to be
-        >= quote_total * 1.05 (the old wrong-cost-basis behaviour)."""
+        """QUOTE-RULES: /quotes/analyze/ runs on the pricing-analysis engine.
+        A client-sent market_rate is not market evidence (only real,
+        fuel-normalised quotes are); with no floor of ours the client's own
+        direct cost is the (labelled) cost basis at the target margin."""
         from core.services.quote_analysis import analyze_quote
 
-        result = analyze_quote({
-            'quote_total': 25000,
-            'direct_cost': 12000,
-            'market_rate': 25000,  # client-supplied; no origin => used as-is
-        })
+        result = analyze_quote({'quote_total': 25000, 'direct_cost': 12000, 'market_rate': 25000})
         self.assertTrue(result['success'])
-        self.assertLess(result['suggested_price'], 25000 * 1.05)
-        opt = result['price_optimization']
-        # Margin is relative to direct cost, not the quoted total.
-        expected_margin = (opt['optimal_price'] - 12000) / 12000 * 100
-        self.assertAlmostEqual(opt['optimal_margin_pct'], expected_margin, delta=0.2)
+        self.assertEqual(result['cost_basis_source'], 'client_direct_cost')
+        self.assertIsNone(result['market_analysis']['market_rate'])
+        self.assertEqual(result['suggested_price'], round(12000 / 0.9, 2))
+        self.assertEqual(result['price_optimization']['optimal_margin_pct'], 10.0)
 
     @mock.patch('core.services.fuel_price.fetch_fuel_prices', side_effect=Exception('offline'))
     def test_no_market_data_is_reported_honestly_not_fabricated(self, _fp):
@@ -156,25 +153,15 @@ class AiPredictionContractTests(IsolatedModelStorageMixin, TestCase):
 
     @mock.patch('core.services.fuel_price.fetch_fuel_prices', side_effect=Exception('offline'))
     def test_available_shape_when_a_model_resolves(self, _fp):
+        """ai_prediction is the pricing analysis' model level only; without a
+        company (no floor, no lane market) it is never claimed."""
         from core.services.quote_analysis import analyze_quote
         from core.services.win_prediction import PredictionContext
 
-        # A flat 0.6 here would legitimately trip margin_optimizer's
-        # degenerate-curve guard (a real, unrelated fix — a model with no
-        # price response is exactly what that guard exists to catch) and
-        # this test would then be asserting the wrong thing about a
-        # heuristic-derived result. Price-sensitive, so the curve is real.
-        fake_ctx = PredictionContext(True, 'user', 72, lambda features: max(0.05, min(0.95, 1.3 - features.get('price_ratio', 1.0))))
+        fake_ctx = PredictionContext(True, 'user', 72, lambda features: 0.5)
         with mock.patch('core.services.win_prediction.resolve_prediction_context', return_value=fake_ctx):
             result = analyze_quote({'quote_total': 25000, 'direct_cost': 12000, 'market_rate': 25000})
-
-        ai = result['ai_prediction']
-        self.assertTrue(ai['available'])
-        self.assertEqual(ai['model_scope'], 'user')
-        self.assertEqual(ai['training_samples'], 72)
-        self.assertIn('recommended_price', ai)
-        self.assertIn('win_probability', ai)
-        self.assertIn('price_vs_market_pct', ai)
+        self.assertFalse(result['ai_prediction']['available'])
 
     @mock.patch('core.services.fuel_price.fetch_fuel_prices', side_effect=Exception('offline'))
     def test_resolver_exception_degrades_gracefully(self, _fp):
@@ -263,8 +250,12 @@ class OptimizerConstraintTests(IsolatedModelStorageMixin, TestCase):
         company = Company.objects.create(company_name='Target Co', margin_target_pct=15)
         out = analyze_quote({'direct_cost': 8500, 'quote_total': 8500, 'market_rate': 0},
                             company=company)
-        self.assertEqual(out['suggested_price'], round(8500 / 0.85, 2))
-        self.assertIn('15%', out['suggested_price_rationale'])
+        # With a company the floor is OURS: no route => blocked, no suggestion
+        # (QUOTE-RULES: unknown inputs give null + block, never a guess).
+        self.assertIsNone(out['suggested_price'])
+        self.assertIn('distance_missing', out['blocking'])
+        out = analyze_quote({'direct_cost': 8500, 'quote_total': 8500, 'market_rate': 0})
+        self.assertEqual(out['suggested_price'], round(8500 / 0.9, 2))
 
     @mock.patch('core.services.fuel_price.fetch_fuel_prices', side_effect=Exception('offline'))
     def test_real_market_rate_keeps_profit_max_path(self, _fp):
@@ -272,10 +263,11 @@ class OptimizerConstraintTests(IsolatedModelStorageMixin, TestCase):
         the margin-target override applies ONLY when there's no data."""
         from core.services.quote_analysis import analyze_quote
 
+        # QUOTE-RULES: a client-sent market_rate is not market data, so this
+        # is the no-market (target margin) path too.
         out = analyze_quote({'direct_cost': 8000, 'quote_total': 10000, 'market_rate': 12000})
-        self.assertNotIn('target margin', out['suggested_price_rationale'] or '')
-        # The optimizer's own optimum, not cost/0.9.
-        self.assertNotEqual(out['suggested_price'], round(8000 / 0.9, 2))
+        self.assertIsNone(out['market_analysis']['market_rate'])
+        self.assertEqual(out['suggested_price'], round(8000 / 0.9, 2))
 
     def test_at_risk_price_increase_suggestion_math(self):
         """Target price for a revenue margin t is cost/(1-t): cost=10000,

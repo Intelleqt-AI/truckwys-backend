@@ -21,3 +21,14 @@ def sendable_quote_fields(company, name='Test Tautliner'):
     VehicleType.objects.get_or_create(company=company, name=name, defaults={
         'capacity': 30, 'max_distance': 3000, 'base_rate': 20, 'fuel_consumption_l_per_100km': 38})
     return {'distance': '120', 'vehicle_type': name, 'toll_charges': '150.00', 'estimated_duration_minutes': 100}
+
+
+def add_vehicle(company, vehicle_type, plate=None):
+    """A fleet vehicle of `vehicle_type`, so it is in the company's own list
+    (the builders' dropdown and the §3 truck suggestion)."""
+    from core.models import Vehicle
+    import secrets
+    return Vehicle.objects.create(company=company, vehicle_type=vehicle_type, make='Test', model='Rig',
+                                  plate=plate or f'T{secrets.randbelow(10**6)}', type=vehicle_type.name,
+                                  capacity=vehicle_type.capacity, fuel_type='Diesel', status='AVAILABLE',
+                                  )

@@ -546,6 +546,23 @@ def compute(inputs):
                                 actions=('use_minimum',)))
 
     blocking = [w['code'] for w in warnings if w['severity'] == 'block']
+
+    # Default price (coordinator round 3): max(rate price, target price)
+    # rounded UP to the whole rand; rate price only when the company set a
+    # default price per km > 0, on the billable (loaded) km. No floor -> none.
+    rate_per_km = _pos(inputs.get('default_price_per_km'))
+    rate_price = cents(rate_per_km * km_loaded) if rate_per_km is not None and km_loaded is not None else None
+    default_price = None
+    if target_price is not None:
+        default_price = float(math.ceil(max(rate_price or 0.0, target_price) - 1e-9))
+
+    # The same quote with a return load booked (one-way, empty return included).
+    alternative = None
+    if empty_return and requested is not False:
+        alt = compute({**inputs, 'include_empty_return': False})
+        alternative = {'floor': alt['floor'], 'target_price': alt['target_price'],
+                       'default_price': alt['default_price']}
+
     return {
         'version': VERSION,
         'trip': {'type': 'ROUND_TRIP' if round_trip else 'ONE_WAY', 'legs_loaded': legs_loaded,
@@ -568,6 +585,10 @@ def compute(inputs):
         'target_margin_pct': target,
         'target_price': target_price,
         'minimum_charge': minimum,
+        'default_price_per_km': rate_per_km,
+        'rate_price': rate_price,
+        'default_price': default_price,
+        'alternative_with_return_load': alternative,
         'price': price,
         'margin': margin,
         'margin_pct': margin_pct,
@@ -629,8 +650,9 @@ def cargo_fits_body(body, cargo):
 def suggest_vehicle(company, load_kg, cargo=None):
     """§3: the suggested truck for the load, or None.
 
-    No load entered -> no suggestion. Eligible: every visible vehicle type
-    (as the vehicle-types API lists them) with a known capacity >= the load
+    No load entered -> no suggestion. Eligible: the company's own visible
+    vehicle types (the builders' list: an available fleet vehicle of that
+    type) with a known capacity >= the load
     and a rated burn, excluding specialised bodies (reefer, tanker, tipper,
     car carrier, lowbed) unless the cargo description calls for that body.
     Among eligible: smallest capacity, then the company's most-quoted type,
@@ -647,8 +669,12 @@ def suggest_vehicle(company, load_kg, cargo=None):
         for row in (Quote.objects.filter(company=company).exclude(vehicle_type='')
                     .values('vehicle_type').annotate(n=Count('id'))):
             usage[(row['vehicle_type'] or '').strip().lower()] = row['n']
+    # Only the company's own visible types: exactly the list the builders
+    # offer (vehicle-types API rows with an available vehicle of the fleet).
+    from core.services.vehicle_types import available_vehicle_types
+    own_ids = {r['id'] for r in available_vehicle_types(company)} if company is not None else set()
     best = None
-    for vt in visible_vehicle_types_queryset(company):
+    for vt in visible_vehicle_types_queryset(company).filter(id__in=own_ids):
         cap = capacity_tonnes(vt.capacity)
         burn = _pos(vt.fuel_consumption_l_per_100km)
         if cap is None or burn is None or cap < load_t:
@@ -857,6 +883,9 @@ def build_inputs(payload, company, now=None, *, diesel_override=None):
             'empty_return_min_km': _num(getattr(company, 'empty_return_min_km', None)) or DEFAULT_EMPTY_RETURN_MIN_KM,
         },
         'minimum_charge': _pos(getattr(company, 'minimum_charge', None)),
+        # Company default price per km (Company.default_base_rate_per_km);
+        # null / <= 0 = none.
+        'default_price_per_km': _pos(getattr(company, 'default_base_rate_per_km', None)),
         'target_margin_pct': target_margin(company),
         'price': price,
     }
@@ -942,11 +971,10 @@ def quote_payload(quote):
         'toll_cost_empty_return': ci.get('tolls_empty_return'),
         'cargo_description': quote.cargo_description,
         'driver_cost': _num(quote.driver_allowance),
-        # A stored driver figure counts as entered only when the client said
-        # so (costing_inputs.driver_cost_is_override), or when it is > 0; a
-        # saved R 0 keeps driver_nights_unknown / driver_allowance_missing.
-        'driver_cost_is_override': (ci['driver_cost_is_override'] if 'driver_cost_is_override' in ci
-                                    else bool(_num(quote.driver_allowance))),
+        # A stored driver figure counts as entered ONLY when the client said
+        # so (costing_inputs.driver_cost_is_override true); otherwise the
+        # suggested nights x allowance is used, exactly as in the builder.
+        'driver_cost_is_override': bool(ci.get('driver_cost_is_override')),
         'driver_nights': ci.get('driver_nights'),
         # Border costs: the builder's figure from costing_inputs (Quote.
         # additional_charges also carries empty return / top-ups, so it can't

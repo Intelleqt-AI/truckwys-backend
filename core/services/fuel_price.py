@@ -695,6 +695,10 @@ def official_row_in_force(at: Optional[datetime] = None, *, strict_grade: bool =
     qs = qs.filter(date__gte=local_day - timedelta(days=400))
     if strict_grade:
         qs = qs.exclude(Q(source='FIASA') & ~Q(diesel_grade='50ppm'))
+    else:
+        # History (market normalisation): only rows that say when they took
+        # effect — a grade-less, date-less legacy row can't be placed in time.
+        qs = qs.exclude(effective_from__isnull=True)
     best = None
     for row in qs.order_by('-date')[:24]:
         eff = row_effective_from(row)

@@ -46,6 +46,8 @@ class _Base(TestCase):
                                                 address='', city='', state='', zip_code='')
         self.vt = VehicleType.objects.create(company=self.company, name='Superlink', capacity=34, max_distance=3000,
                                              base_rate=20, fuel_consumption_l_per_100km=42)
+        from core.tests.quote_rules_fixtures import add_vehicle
+        add_vehicle(self.company, self.vt)
         self.api = APIClient()
         self.api.force_authenticate(self.user)
 
@@ -285,15 +287,14 @@ class CostBreakdownEndpointTests(_Base):
         self.assertEqual(body['floor'], compute(body['inputs'])['floor'])
 
     def test_suggested_truck_when_none_given(self):
-        VehicleType.objects.create(company=self.company, name='Rigid 8t', capacity=8000, max_distance=1000,
-                                   base_rate=10, fuel_consumption_l_per_100km=24)
-        from core.services.quote_costing import capacity_tonnes
-        from core.services.vehicle_types import visible_vehicle_types_queryset
-        fits = sorted((capacity_tonnes(v.capacity), float(v.fuel_consumption_l_per_100km), v.name)
-                      for v in visible_vehicle_types_queryset(self.company)
-                      if capacity_tonnes(v.capacity) and capacity_tonnes(v.capacity) >= 5)
+        from core.tests.quote_rules_fixtures import add_vehicle
+        rigid = VehicleType.objects.create(company=self.company, name='Rigid 8t', capacity=8000, max_distance=1000,
+                                           base_rate=10, fuel_consumption_l_per_100km=24)
+        add_vehicle(self.company, rigid)
+        VehicleType.objects.create(company=self.company, name='Unused 6t', capacity=6, max_distance=1000,
+                                   base_rate=10, fuel_consumption_l_per_100km=20)   # no fleet vehicle: not offered
         body = self.api.post(self.URL, {'distance_km': 100, 'weight': 5000, 'toll_cost': 0}, format='json').json()
-        self.assertEqual(body['vehicle']['name'], fits[0][2])
+        self.assertEqual(body['vehicle']['name'], 'Rigid 8t')
         self.assertEqual(body['resolution']['vehicle_selection'], 'suggested')
 
     def test_saved_quote_with_send_check(self):
@@ -605,8 +606,11 @@ class SaveSemanticsTests(_Base):
 
 class TruckSuggestionTests(_Base):
     def _vt(self, name, cap, burn=30):
-        return VehicleType.objects.create(company=self.company, name=name, capacity=cap, max_distance=3000,
-                                          base_rate=10, fuel_consumption_l_per_100km=burn)
+        from core.tests.quote_rules_fixtures import add_vehicle
+        vt = VehicleType.objects.create(company=self.company, name=name, capacity=cap, max_distance=3000,
+                                        base_rate=10, fuel_consumption_l_per_100km=burn)
+        add_vehicle(self.company, vt)
+        return vt
 
     def test_specialised_bodies_only_for_matching_cargo(self):
         from core.services.quote_costing import suggest_vehicle
@@ -649,3 +653,64 @@ class SavedQuoteInputsTests(_Base):
         q.refresh_from_db()
         self.assertEqual(q.margin_percentage,
                          Decimal(str(round((36000 - float(q.cost_floor)) / 36000 * 100, 2))))
+
+
+class AiCheckOnComputeTests(_Base):
+    PAYLOAD = {'origin': 'JHB', 'destination': 'DBN', 'distance_km': 568.4, 'duration_minutes': 440,
+               'weight': 28000, 'vehicle_type': 'Superlink', 'toll_cost': 1043.48, 'fuel_cost': 6000,
+               'fuel_usage_litres': 200, 'fuel_price_used': 30, 'driver_cost': 0, 'base_rate_per_km': 20}
+
+    def compute(self, **over):
+        from core.services.quote_ai_pricing import compute_pricing
+        return compute_pricing({**self.PAYLOAD, **over}, date(2026, 10, 7), company=self.company,
+                               benchmark={'rate': None, 'source': 'none'}, allowance=None)
+
+    def test_tolls_unknown_blocks_with_no_prices(self):
+        out = self.compute(tolls_unknown=True)
+        self.assertIn('tolls_unknown', out['blocking'])
+        self.assertTrue(all(c['price_zar'] is None and c['blocked'] for c in out['combinations'].values()))
+
+    def test_return_leg_and_driver_rate_come_from_compute(self):
+        from core.services.quote_costing import costing_for_payload
+        out = self.compute()
+        c = costing_for_payload({**self.PAYLOAD}, self.company)
+        by = {ln['key']: ln['amount'] for ln in c['lines']}
+        self.assertEqual(out['return_leg']['fuel_zar'], by['fuel_return'])
+        self.assertEqual(out['return_leg']['driver_zar'], by['driver_return'])   # company R450 x 1 extra night
+        self.assertEqual(out['cost_breakdown']['driver_allowance']['detail']['rate_per_night_zar'], 450.0)
+
+    def test_view_passes_costing_flags(self):
+        from unittest import mock
+        with mock.patch('core.services.quote_ai_pricing.analyze_quote_price', return_value={'success': True}) as m, \
+                mock.patch('core.services.quote_ai_pricing.unavailable_reason', return_value=None):
+            self.api.post('/api/v1/quotes/ai-price-analysis/', {**self.PAYLOAD, 'tolls_unknown': True,
+                                                                 'include_empty_return': False,
+                                                                 'vehicle_type_id': self.vt.id}, format='json')
+        if m.called:
+            p = m.call_args.kwargs['payload']
+            self.assertTrue(p['tolls_unknown'])
+            self.assertFalse(p['include_empty_return'])
+            self.assertEqual(p['vehicle_type_id'], self.vt.id)
+
+
+class OneFuelDeltaTests(_Base):
+    def test_alert_and_reopen_use_the_same_fuel_delta(self):
+        with patch('django.utils.timezone.now', return_value=sast(2026, 10, 1, 9)):
+            q = self.create()
+        reopen = self.api.post('/api/v1/quotes/cost-breakdown/', {'quote_id': q.id},
+                               format='json').json()['changes_since_priced']
+        alert = self.api.get(f'/api/v1/quotes/{q.id}/fuel-alert/').json()
+        from core.services.quote_costing import _half_up_decimal
+        self.assertEqual(alert['estimated_cost_impact'], int(_half_up_decimal(reopen['fuel_delta_zar'], 0)))
+        surcharge = self.api.post('/api/v1/fuel-prices/surcharge-check/', {'quote_id': q.id},
+                                  format='json').json()
+        self.assertEqual(surcharge['recommended_surcharge_zar'], reopen['fuel_delta_zar'])
+
+
+class PetrolOwnFieldTests(_Base):
+    def test_official_petrol_echo_is_not_stored_as_own(self):
+        FuelPrice.objects.filter(date=date(2026, 10, 7)).update(petrol_95=Decimal('30.2500'))
+        body = self.api.patch('/api/v1/company/profile/', {'fuel_price_petrol': '30.25'}, format='json').json()
+        self.assertIsNone(body['fuel_price_petrol'])
+        body = self.api.patch('/api/v1/company/profile/', {'fuel_price_petrol': '28.90'}, format='json').json()
+        self.assertEqual(body['fuel_price_petrol'], '28.9000')

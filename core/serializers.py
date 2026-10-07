@@ -1418,6 +1418,23 @@ def _is_live_echo(value, zone='INLAND'):
     return False
 
 
+def _is_official_petrol(value):
+    """True when `value` is (±0.005) the official 95 or 93 petrol price in
+    force now or in the period before."""
+    from datetime import timedelta
+    from core.services.fuel_price import official_row_in_force, row_effective_from
+    value = Decimal(str(value))
+    current = official_row_in_force()
+    rows = [current]
+    if current is not None:
+        rows.append(official_row_in_force(row_effective_from(current) - timedelta(microseconds=1)))
+    for row in rows:
+        for p in (getattr(row, 'petrol_95', None), getattr(row, 'petrol_93', None)):
+            if p is not None and abs(value - p) <= Decimal('0.005'):
+                return True
+    return False
+
+
 class CompanySerializer(serializers.ModelSerializer):
     logo_url = serializers.SerializerMethodField()
     
@@ -1536,6 +1553,13 @@ class CompanySerializer(serializers.ModelSerializer):
             own = attrs.get('fuel_price_own', getattr(instance, 'fuel_price_own', None))
             if own is not None:
                 attrs['fuel_price_per_litre'] = own   # keep the stored mirror honest
+        # Petrol (same rule as diesel, QUOTE-RULES §1): a settings form that
+        # echoes the official 95/93 price back is not the fleet's own price —
+        # never store the official figure in the own field.
+        if attrs.get('fuel_price_petrol') is not None \
+                and attrs['fuel_price_petrol'] != getattr(instance, 'fuel_price_petrol', None) \
+                and _is_official_petrol(attrs['fuel_price_petrol']):
+            attrs['fuel_price_petrol'] = getattr(instance, 'fuel_price_petrol', None)
         # Empty-return default: the new field and the old pricing_include_empty_return mirror each other.
         if 'include_empty_return_default' in attrs:
             attrs['pricing_include_empty_return'] = attrs['include_empty_return_default']

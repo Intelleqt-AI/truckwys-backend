@@ -48,23 +48,19 @@ class Command(BaseCommand):
         force = options['force']
 
         if options['backfill']:
-            self.stdout.write('Backfilling historical fuel prices…')
-            created = 0
-            skipped = 0
+            # Official FIASA columns only, each stored under its effective date
+            # (history kept). The hard-coded fallback table is never written:
+            # its figures are not used for pricing (QUOTE-RULES §1).
+            self.stdout.write('Backfilling official fuel prices from FIASA…')
+            stored = missing = 0
             for (year, month) in sorted(_FALLBACK_PRICES.keys()):
                 target = date(year, month, 1)
-                fp = fetch_fuel_prices(target_date=target, force_update=force)
-                if fp.source.startswith('FALLBACK') or force:
-                    created += 1
-                    self.stdout.write(
-                        f'  {target:%Y-%m}  diesel_inland=R{fp.diesel_inland}  '
-                        f'diesel_coastal=R{fp.diesel_coastal}  [{fp.source}]'
-                    )
+                fp = self._store_month(target)
+                if fp is None:
+                    missing += 1
                 else:
-                    skipped += 1
-            self.stdout.write(
-                self.style.SUCCESS(f'Backfill complete. Processed: {created}, Skipped: {skipped}')
-            )
+                    stored += 1
+            self.stdout.write(self.style.SUCCESS(f'Backfill complete. Stored: {stored}, not on FIASA: {missing}'))
             return
 
         # Single-month fetch
@@ -93,14 +89,21 @@ class Command(BaseCommand):
                 + (f' (last check FAILED at {fp.fetch_failed_at:%Y-%m-%d %H:%M})' if fp.fetch_failed_at else '')))
             return
 
-        self.stdout.write(f'Fetching fuel prices for {target:%B %Y}…')
-        fp = fetch_fuel_prices(target_date=target, force_update=force)
+        self.stdout.write(f'Fetching the official fuel price in force during {target:%B %Y}…')
+        fp = self._store_month(target)
+        if fp is None:
+            raise CommandError(f'FIASA has no price for {target:%B %Y}; nothing stored (no fallback figures).')
 
-        self.stdout.write(self.style.SUCCESS(
-            f'Done — {target:%Y-%m} | '
-            f'Diesel inland: R{fp.diesel_inland} | '
-            f'Diesel coastal: R{fp.diesel_coastal} | '
-            f'Petrol 95: R{fp.petrol_95} | '
-            f'Petrol 93: R{fp.petrol_93} | '
-            f'Source: {fp.source}'
-        ))
+    def _store_month(self, target):
+        """FIASA's column in force at the end of `target`'s month, stored
+        under its EFFECTIVE date like refresh_official (never the 1st)."""
+        from django.utils import timezone
+        from core.services.fuel_price import _fetch_live, _store_official, row_effective_from
+        data = _fetch_live(target)
+        if not data or not data.get('effective_from') or data.get('source') != 'FIASA':
+            self.stdout.write(f'  {target:%Y-%m}  not available from FIASA')
+            return None
+        fp = _store_official(data, timezone.now())
+        self.stdout.write(f'  {target:%Y-%m}  {fp.source} inland R{fp.diesel_inland} coastal R{fp.diesel_coastal} '
+                          f'(effective {timezone.localtime(row_effective_from(fp)):%Y-%m-%d}, stored under {fp.date})')
+        return fp

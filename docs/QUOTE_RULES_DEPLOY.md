@@ -71,3 +71,13 @@ Leave it off unless FIASA is down for a long time: its rows are not official and
    `fuel_price_per_litre` was never modified) and 0148 (drops the new columns). The
    `pricing_include_empty_return` values set by 0149 are not restored (they now mirror the new default).
 3. Fuel rows written by `fetch_fuel_prices` / `repair_fuel_history` are additive history and can stay.
+
+## Fuel history repair (round 3)
+
+`python manage.py repair_fuel_history` (dry run) lists rows filed under the wrong date (e.g. the 2026-10-01 row
+holding the 2 Sep column), duplicates, rows without an effective date (left out of history) and fallback rows.
+`--apply` re-keys / removes duplicates; conflicts are only reported. Run before step 3 above.
+`fetch_fuel_prices --date YYYY-MM-01` / `--backfill` now store FIASA columns under their effective date only.
+
+Migration 0151 makes `default_base_rate_per_km` nullable (values kept). Rollback: `migrate core 0150` sets
+empty values back to 10.00 first.

@@ -50,6 +50,7 @@ def base(**over):
         'include_empty_return': None,
         'settings': {'include_empty_return_default': True, 'empty_return_min_km': 300.0},
         'minimum_charge': None,
+        'default_price_per_km': None,
         'target_margin_pct': 10.0,
         'price': 12500.0,
     }
@@ -150,6 +151,20 @@ CASES = [
     ('border_costs',
      'Cross-border costs as their own line.',
      long_trip(border_cost=3875.5, include_empty_return=False)),
+    ('default_price_target_wins',
+     'Company default R20,00/km on a one-way >= 300 km trip: the target price is higher, so it wins; '
+     'the return-load alternative carries its own floor / target / default price.',
+     long_trip(default_price_per_km=20.0)),
+    ('default_price_rate_wins',
+     'Company default R80,00/km is above the target price: default price = rate price rounded up.',
+     long_trip(default_price_per_km=80.0)),
+    ('default_price_no_rate_one_way_long',
+     'No default price per km: default price = target price rounded up; alternative included.',
+     long_trip(default_price_per_km=None)),
+    ('default_price_incomplete_floor',
+     'Floor incomplete (tolls unknown): no default price, alternative floor null too.',
+     long_trip(default_price_per_km=20.0,
+               tolls={'one_way': None, 'empty_return': None, 'lookup_failed': True, 'confirmed_none': False})),
 ]
 
 

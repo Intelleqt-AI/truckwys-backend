@@ -224,6 +224,14 @@ class AnalyzeQuotePriceTests(TestCase):
         self.quote = _make_quote(self.company, self.customer)
         _seed_route_tariffs()
         _approve_allowance()
+        # QUOTE-RULES: the check prices on the cost floor, which needs an
+        # official diesel price in force now.
+        from core.models import VehicleType
+        from core.tests.quote_rules_fixtures import add_vehicle, official_price_now
+        official_price_now()
+        add_vehicle(self.company, VehicleType.objects.create(
+            company=self.company, name='Flatbed', capacity=30, max_distance=3000, base_rate=20,
+            fuel_consumption_l_per_100km=33))
         for patcher in (_no_win_model(), *_own_data()):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -250,23 +258,28 @@ class AnalyzeQuotePriceTests(TestCase):
                          {'fuel': 'official', 'tolls': 'source', 'driver_allowance': 'source',
                           'base_rate': 'benchmark'})
         self.assertIn('NBCRFLI', items['driver_allowance']['reason'])
-        self.assertEqual(items['base_rate']['verdict'], 'accurate')
         self.assertEqual(result['verification_status'], 'verified')
 
+        # QUOTE-RULES §7: the suggested combination is never below the target
+        # price over the full cost floor (here the 1 400 km empty run home is
+        # in the floor, so the benchmark's base rate is lifted to reach it).
         default = result['combinations'][result['default_choice_key']]
-        self.assertAlmostEqual(default['price_zar'], EXPECTED_MARKET_PRICE, places=2)
-        self.assertEqual(default['margin_zar'], 30100.0)
-        self.assertEqual(sorted(result['toggleable_items']), ['driver_allowance', 'fuel', 'tolls'])
-        self.assertEqual(len(result['combinations']), 8)
+        floor = result['cost_floor']
+        self.assertGreaterEqual(default['price_zar'], floor['target_price'] - 1)
+        self.assertTrue(items['base_rate'].get('floor_adjusted'))
+        # fuel, tolls, driver and the (floor-lifted) base rate are all toggleable
+        self.assertEqual(len(result['combinations']), 16)
         self.assertEqual(result['win_model']['reason'], 'not_enough_history')
-        # The empty run home adds 2 more nights (32 h round trip = 3 nights, vs 1 one way).
-        self.assertAlmostEqual(result['return_leg']['total_zar'], 13391 + 1608.70 + 487.26, places=2)
+        # The empty run home comes from compute(): empty burn, operating cost,
+        # return tolls and the extra nights.
+        by = {ln['key']: ln['amount'] for ln in floor['lines'] if ln['leg'] == 'empty_return'}
+        self.assertAlmostEqual(result['return_leg']['total_zar'], sum(by.values()), places=2)
 
         row = AIQuotePriceAnalysis.objects.get(id=result['usage_log_id'])
         self.assertEqual((row.status, row.trigger_type, row.model), ('success', 'check', 'stored-rates'))
         self.assertEqual((row.total_cost_usd, row.web_search_cost_usd, row.research_web_search_calls),
                          (Decimal('0'), Decimal('0'), 0))
-        self.assertAlmostEqual(float(row.suggested_price_zar), EXPECTED_MARKET_PRICE, places=2)
+        self.assertAlmostEqual(float(row.suggested_price_zar), default['price_zar'], places=2)
         self.assertEqual(row.raw_result['requested_trigger'], 'auto')
 
     def test_items_carry_verified_at_source_url_and_source_name(self):

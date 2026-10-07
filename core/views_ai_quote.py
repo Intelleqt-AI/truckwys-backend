@@ -631,7 +631,11 @@ class AIQuotePriceAnalysisView(APIView):
             # to the requesting company.
             'customer_id': self._own_customer_id(data.get('customer_id'), company),
             'route': self._route(data.get('route')),
+            'cargo_description': self._text(data.get('cargo_description')),
             **{key: self._number(data.get(key), cap) for key, cap in self.NUMBER_CAPS.items()},
+            # The costing flags (QUOTE-RULES): the same inputs the builder's
+            # cost floor uses, so this check prices on the same floor.
+            **{key: self._flag(data.get(key)) for key in self.FLAG_KEYS if data.get(key) is not None},
         }
         result = quote_ai_pricing.analyze_quote_price(
             payload=payload, user=request.user, company=company, quote=quote,
@@ -649,7 +653,17 @@ class AIQuotePriceAnalysisView(APIView):
         'weight': 200_000, 'fuel_cost': 5_000_000, 'toll_cost': 1_000_000, 'driver_cost': 1_000_000,
         'cross_border_cost': 1_000_000, 'fuel_usage_litres': 100_000, 'fuel_price_used': 1_000,
         'fuel_consumption_l_per_100km': 500, 'base_rate_per_km': 1_000, 'market_rate': 10_000_000,
+        'vehicle_type_id': 10_000_000, 'fuel_price_override': 100, 'driver_nights': 60,
+        'toll_cost_one_way': 500_000, 'toll_cost_empty_return': 500_000,
     }
+    FLAG_KEYS = ('include_empty_return', 'include_return', 'tolls_unknown', 'tolls_confirmed_none',
+                 'distance_estimated', 'distance_confirmed', 'use_official_fuel', 'driver_cost_is_override')
+
+    @staticmethod
+    def _flag(value):
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in ('1', 'true', 'yes', 'on')
 
     @staticmethod
     def _number(value, cap):
@@ -1463,10 +1477,11 @@ class FuelPriceSurchargeCheckView(APIView):
                     'fuel_zone': None, 'unknown': True,
                 })
             delta_pct, delta_zar = change['delta_pct'], change['delta']
+            from core.services.quote_costing import _half_up_decimal as _hu
             surcharge_required = delta_pct > 3.0
             recommended_surcharge_zar = max(change['impact_zar'] or 0, 0) if surcharge_required else 0
             distance = float(quote.distance) if quote.distance else 0
-            fuel_impact_message = (f"Diesel price increase costs ~R{int(recommended_surcharge_zar)} more for this "
+            fuel_impact_message = (f"Diesel price increase costs ~R{int(_hu(recommended_surcharge_zar, 0))} more for this "
                                    f"{int(distance)} km job" if surcharge_required else "No significant fuel price change")
 
             return Response({
@@ -1510,7 +1525,10 @@ class QuoteFuelAlertView(APIView):
             delta_pct, delta_zar = change['delta_pct'], change['delta']
             if abs(delta_pct) <= 3.0:
                 return Response({'success': True, 'has_alert': False})
-            estimated_cost_impact = int(abs(change['impact_zar'] or 0))
+            # Whole rand half-up of the fuel-lines delta: the same figure the
+            # reopen notice shows (never truncated).
+            from core.services.quote_costing import _half_up_decimal
+            estimated_cost_impact = int(_half_up_decimal(abs(change['impact_zar'] or 0), 0))
 
             alert_type = 'FUEL_INCREASE' if delta_zar > 0 else 'FUEL_DECREASE'
             message = f"Diesel {'up' if delta_zar > 0 else 'down'} R{abs(delta_zar):.2f}/L since this quote was created. This job now costs ~R{estimated_cost_impact} {'more' if delta_zar > 0 else 'less'}."

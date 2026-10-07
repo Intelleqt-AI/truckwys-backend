@@ -72,6 +72,7 @@
           "empty_return_min_km": 300.0
         },
         "minimum_charge": null,
+        "default_price_per_km": null,
         "target_margin_pct": 10.0,
         "price": 12500.0
       },
@@ -166,6 +167,10 @@
         "target_margin_pct": 10.0,
         "target_price": 8256.26,
         "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": 8257.0,
+        "alternative_with_return_load": null,
         "price": 12500.0,
         "margin": 5069.37,
         "margin_pct": 40.55496,
@@ -222,6 +227,7 @@
           "empty_return_min_km": 300.0
         },
         "minimum_charge": null,
+        "default_price_per_km": null,
         "target_margin_pct": 10.0,
         "price": 12500.0
       },
@@ -316,6 +322,10 @@
         "target_margin_pct": 10.0,
         "target_price": 7970.06,
         "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": 7971.0,
+        "alternative_with_return_load": null,
         "price": 12500.0,
         "margin": 5326.95,
         "margin_pct": 42.6156,
@@ -409,6 +419,7 @@
           "empty_return_min_km": 300.0
         },
         "minimum_charge": null,
+        "default_price_per_km": null,
         "target_margin_pct": 10.0,
         "price": 12500.0
       },
@@ -503,6 +514,10 @@
         "target_margin_pct": 10.0,
         "target_price": 8225.7,
         "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": 8226.0,
+        "alternative_with_return_load": null,
         "price": 12500.0,
         "margin": 5096.87,
         "margin_pct": 40.77496,
@@ -559,6 +574,7 @@
           "empty_return_min_km": 300.0
         },
         "minimum_charge": null,
+        "default_price_per_km": null,
         "target_margin_pct": 10.0,
         "price": 12500.0
       },
@@ -653,6 +669,10 @@
         "target_margin_pct": 10.0,
         "target_price": 8256.26,
         "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": 8257.0,
+        "alternative_with_return_load": null,
         "price": 12500.0,
         "margin": 5069.37,
         "margin_pct": 40.55496,
@@ -709,6 +729,7 @@
           "empty_return_min_km": 300.0
         },
         "minimum_charge": null,
+        "default_price_per_km": null,
         "target_margin_pct": 10.0,
         "price": 12500.0
       },
@@ -803,6 +824,10 @@
         "target_margin_pct": 10.0,
         "target_price": 8287.04,
         "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": 8288.0,
+        "alternative_with_return_load": null,
         "price": 12500.0,
         "margin": 5041.66,
         "margin_pct": 40.33328,
@@ -859,6 +884,7 @@
           "empty_return_min_km": 300.0
         },
         "minimum_charge": null,
+        "default_price_per_km": null,
         "target_margin_pct": 10.0,
         "price": 12500.0
       },
@@ -953,6 +979,10 @@
         "target_margin_pct": 10.0,
         "target_price": null,
         "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": null,
+        "alternative_with_return_load": null,
         "price": 12500.0,
         "margin": null,
         "margin_pct": null,
@@ -1029,6 +1059,7 @@
           "empty_return_min_km": 300.0
         },
         "minimum_charge": null,
+        "default_price_per_km": null,
         "target_margin_pct": 10.0,
         "price": 12500.0
       },
@@ -1123,6 +1154,10 @@
         "target_margin_pct": 10.0,
         "target_price": 8097.58,
         "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": 8098.0,
+        "alternative_with_return_load": null,
         "price": 12500.0,
         "margin": 5212.18,
         "margin_pct": 41.69744,
@@ -1197,6 +1232,7 @@
           "empty_return_min_km": 300.0
         },
         "minimum_charge": null,
+        "default_price_per_km": null,
         "target_margin_pct": 10.0,
         "price": 12500.0
       },
@@ -1291,6 +1327,10 @@
         "target_margin_pct": 10.0,
         "target_price": 8167.09,
         "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": 8168.0,
+        "alternative_with_return_load": null,
         "price": 12500.0,
         "margin": 5149.62,
         "margin_pct": 41.19696,
@@ -1347,6 +1387,7 @@
           "empty_return_min_km": 300.0
         },
         "minimum_charge": null,
+        "default_price_per_km": null,
         "target_margin_pct": 10.0,
         "price": 12500.0
       },
@@ -1441,6 +1482,10 @@
         "target_margin_pct": 10.0,
         "target_price": 4661.79,
         "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": 4662.0,
+        "alternative_with_return_load": null,
         "price": 12500.0,
         "margin": 8304.39,
         "margin_pct": 66.43512,
@@ -1497,6 +1542,7 @@
           "empty_return_min_km": 300.0
         },
         "minimum_charge": null,
+        "default_price_per_km": null,
         "target_margin_pct": 10.0,
         "price": 31500.0
       },
@@ -1629,6 +1675,14 @@
         "target_margin_pct": 10.0,
         "target_price": 37101.54,
         "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": 37102.0,
+        "alternative_with_return_load": {
+          "floor": 17553.37,
+          "target_price": 19503.74,
+          "default_price": 19504.0
+        },
         "price": 31500.0,
         "margin": -1891.39,
         "margin_pct": -6.004412698412696,
@@ -1694,6 +1748,7 @@
           "empty_return_min_km": 300.0
         },
         "minimum_charge": null,
+        "default_price_per_km": null,
         "target_margin_pct": 10.0,
         "price": 31500.0
       },
@@ -1788,6 +1843,10 @@
         "target_margin_pct": 10.0,
         "target_price": 19503.74,
         "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": 19504.0,
+        "alternative_with_return_load": null,
         "price": 31500.0,
         "margin": 13946.63,
         "margin_pct": 44.275015873015874,
@@ -1844,6 +1903,7 @@
           "empty_return_min_km": 300.0
         },
         "minimum_charge": null,
+        "default_price_per_km": null,
         "target_margin_pct": 10.0,
         "price": 31500.0
       },
@@ -1938,6 +1998,10 @@
         "target_margin_pct": 10.0,
         "target_price": 19503.74,
         "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": 19504.0,
+        "alternative_with_return_load": null,
         "price": 31500.0,
         "margin": 13946.63,
         "margin_pct": 44.275015873015874,
@@ -1994,6 +2058,7 @@
           "empty_return_min_km": 300.0
         },
         "minimum_charge": null,
+        "default_price_per_km": null,
         "target_margin_pct": 10.0,
         "price": 52000.0
       },
@@ -2088,6 +2153,10 @@
         "target_margin_pct": 10.0,
         "target_price": 39507.48,
         "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": 39508.0,
+        "alternative_with_return_load": null,
         "price": 52000.0,
         "margin": 16443.27,
         "margin_pct": 31.621673076923067,
@@ -2144,6 +2213,7 @@
           "empty_return_min_km": 300.0
         },
         "minimum_charge": null,
+        "default_price_per_km": null,
         "target_margin_pct": 10.0,
         "price": 12500.0
       },
@@ -2238,6 +2308,10 @@
         "target_margin_pct": 10.0,
         "target_price": null,
         "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": null,
+        "alternative_with_return_load": null,
         "price": 12500.0,
         "margin": null,
         "margin_pct": null,
@@ -2314,6 +2388,7 @@
           "empty_return_min_km": 300.0
         },
         "minimum_charge": null,
+        "default_price_per_km": null,
         "target_margin_pct": 10.0,
         "price": 12500.0
       },
@@ -2408,6 +2483,10 @@
         "target_margin_pct": 10.0,
         "target_price": 7798.29,
         "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": 7799.0,
+        "alternative_with_return_load": null,
         "price": 12500.0,
         "margin": 5481.54,
         "margin_pct": 43.85232,
@@ -2464,6 +2543,7 @@
           "empty_return_min_km": 300.0
         },
         "minimum_charge": null,
+        "default_price_per_km": null,
         "target_margin_pct": 10.0,
         "price": 12500.0
       },
@@ -2558,6 +2638,10 @@
         "target_margin_pct": 10.0,
         "target_price": 8256.26,
         "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": 8257.0,
+        "alternative_with_return_load": null,
         "price": 12500.0,
         "margin": 5069.37,
         "margin_pct": 40.55496,
@@ -2634,6 +2718,7 @@
           "empty_return_min_km": 300.0
         },
         "minimum_charge": null,
+        "default_price_per_km": null,
         "target_margin_pct": 10.0,
         "price": 12500.0
       },
@@ -2728,6 +2813,10 @@
         "target_margin_pct": 10.0,
         "target_price": 8256.26,
         "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": 8257.0,
+        "alternative_with_return_load": null,
         "price": 12500.0,
         "margin": 5069.37,
         "margin_pct": 40.55496,
@@ -2784,6 +2873,7 @@
           "empty_return_min_km": 300.0
         },
         "minimum_charge": 15000.0,
+        "default_price_per_km": null,
         "target_margin_pct": 10.0,
         "price": 12500.0
       },
@@ -2878,6 +2968,10 @@
         "target_margin_pct": 10.0,
         "target_price": 15000.0,
         "minimum_charge": 15000.0,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": 15000.0,
+        "alternative_with_return_load": null,
         "price": 12500.0,
         "margin": 5069.37,
         "margin_pct": 40.55496,
@@ -2950,6 +3044,7 @@
           "empty_return_min_km": 300.0
         },
         "minimum_charge": null,
+        "default_price_per_km": null,
         "target_margin_pct": 10.0,
         "price": 12500.0
       },
@@ -3044,6 +3139,10 @@
         "target_margin_pct": 10.0,
         "target_price": 5860.66,
         "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": 5861.0,
+        "alternative_with_return_load": null,
         "price": 12500.0,
         "margin": 7225.41,
         "margin_pct": 57.80328,
@@ -3114,6 +3213,7 @@
           "empty_return_min_km": 300.0
         },
         "minimum_charge": null,
+        "default_price_per_km": null,
         "target_margin_pct": 10.0,
         "price": 12500.0
       },
@@ -3208,6 +3308,10 @@
         "target_margin_pct": 10.0,
         "target_price": 8211.59,
         "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": 8212.0,
+        "alternative_with_return_load": null,
         "price": 12500.0,
         "margin": 5109.57,
         "margin_pct": 40.87656,
@@ -3273,6 +3377,7 @@
           "empty_return_min_km": 300.0
         },
         "minimum_charge": null,
+        "default_price_per_km": null,
         "target_margin_pct": 10.0,
         "price": 12500.0
       },
@@ -3358,6 +3463,10 @@
         "target_margin_pct": 10.0,
         "target_price": null,
         "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": null,
+        "alternative_with_return_load": null,
         "price": 12500.0,
         "margin": null,
         "margin_pct": null,
@@ -3434,6 +3543,7 @@
           "empty_return_min_km": 300.0
         },
         "minimum_charge": null,
+        "default_price_per_km": null,
         "target_margin_pct": 10.0,
         "price": 12500.0
       },
@@ -3528,6 +3638,10 @@
         "target_margin_pct": 10.0,
         "target_price": 8728.94,
         "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": 8729.0,
+        "alternative_with_return_load": null,
         "price": 12500.0,
         "margin": 4643.95,
         "margin_pct": 37.1516,
@@ -3600,6 +3714,7 @@
           "empty_return_min_km": 300.0
         },
         "minimum_charge": null,
+        "default_price_per_km": null,
         "target_margin_pct": 10.0,
         "price": 31500.0
       },
@@ -3694,6 +3809,10 @@
         "target_margin_pct": 10.0,
         "target_price": 19503.74,
         "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": 19504.0,
+        "alternative_with_return_load": null,
         "price": 31500.0,
         "margin": 13946.63,
         "margin_pct": 44.275015873015874,
@@ -3768,6 +3887,7 @@
           "empty_return_min_km": 300.0
         },
         "minimum_charge": null,
+        "default_price_per_km": null,
         "target_margin_pct": 10.0,
         "price": 31500.0
       },
@@ -3862,6 +3982,10 @@
         "target_margin_pct": 10.0,
         "target_price": 20892.63,
         "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": 20893.0,
+        "alternative_with_return_load": null,
         "price": 31500.0,
         "margin": 12696.63,
         "margin_pct": 40.306761904761906,
@@ -3918,6 +4042,7 @@
           "empty_return_min_km": 300.0
         },
         "minimum_charge": null,
+        "default_price_per_km": null,
         "target_margin_pct": 10.0,
         "price": 6500.0
       },
@@ -4012,6 +4137,10 @@
         "target_margin_pct": 10.0,
         "target_price": 8256.26,
         "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": 8257.0,
+        "alternative_with_return_load": null,
         "price": 6500.0,
         "margin": -930.63,
         "margin_pct": -14.317384615384618,
@@ -4077,6 +4206,7 @@
           "empty_return_min_km": 300.0
         },
         "minimum_charge": null,
+        "default_price_per_km": null,
         "target_margin_pct": 10.0,
         "price": 31500.0
       },
@@ -4178,12 +4308,851 @@
         "target_margin_pct": 10.0,
         "target_price": 23809.86,
         "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": 23810.0,
+        "alternative_with_return_load": null,
         "price": 31500.0,
         "margin": 10071.13,
         "margin_pct": 31.97184126984127,
         "warnings": [],
         "blocking": [],
         "can_send": true
+      }
+    },
+    {
+      "name": "default_price_target_wins",
+      "description": "Company default R20,00/km on a one-way >= 300 km trip: the target price is higher, so it wins; the return-load alternative carries its own floor / target / default price.",
+      "inputs": {
+        "trip_type": "ONE_WAY",
+        "distance_km": 568.4,
+        "distance_estimated": false,
+        "distance_confirmed": false,
+        "duration_minutes": 440,
+        "load_kg": 28000,
+        "vehicle": {
+          "id": 11,
+          "name": "Superlink",
+          "capacity": 34,
+          "rated_burn_l_per_100km": 42
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "official_price": 32.7989,
+          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_stale": false,
+          "use_official": false,
+          "override_price": null
+        },
+        "operating_cost_per_km": 16.0,
+        "operating_cost_source": "vehicle_default",
+        "tolls": {
+          "one_way": 1043.48,
+          "empty_return": 812.61,
+          "lookup_failed": false,
+          "confirmed_none": false
+        },
+        "driver": {
+          "allowance_per_night": 450.0,
+          "nights": null,
+          "amount": null
+        },
+        "hours_per_day": 9.0,
+        "border_cost": 0.0,
+        "include_empty_return": null,
+        "settings": {
+          "include_empty_return_default": true,
+          "empty_return_min_km": 300.0
+        },
+        "minimum_charge": null,
+        "default_price_per_km": 20.0,
+        "target_margin_pct": 10.0,
+        "price": 31500.0
+      },
+      "expected": {
+        "version": "qc-1",
+        "trip": {
+          "type": "ONE_WAY",
+          "legs_loaded": 1,
+          "distance_km": 568.4,
+          "empty_return_included": true,
+          "empty_return_default": true,
+          "km_loaded": 568.4,
+          "km_empty": 568.4,
+          "km_driven": 1136.8,
+          "hours_one_way": 7.333333333333333,
+          "return_nights": 1
+        },
+        "vehicle": {
+          "id": 11,
+          "name": "Superlink",
+          "capacity_t": 34.0,
+          "load_t": 28.0,
+          "load_ratio": 0.8235294117647058,
+          "rated_burn_l_per_100km": 42.0,
+          "burn_loaded_l_per_100km": 39.77647058823529,
+          "burn_empty_l_per_100km": 29.4
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "fuel_type": "Diesel",
+          "official_price": 32.7989,
+          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_stale": false,
+          "price": 32.7989,
+          "source": "official"
+        },
+        "litres": {
+          "loaded": 226.08945882352938,
+          "empty_return": 167.1096,
+          "total": 393.1990588235294
+        },
+        "lines": [
+          {
+            "key": "fuel",
+            "label": "Fuel",
+            "leg": "loaded",
+            "amount": 7415.49,
+            "basis": "568 km at 39,8 L/100km × R 32,80/L",
+            "litres": 226.08945882352938,
+            "burn_l_per_100km": 39.77647058823529,
+            "price_per_litre": 32.7989,
+            "km": 568.4
+          },
+          {
+            "key": "operating",
+            "label": "Operating costs",
+            "leg": "loaded",
+            "amount": 9094.4,
+            "basis": "568 km × R 16,00/km",
+            "rate_per_km": 16.0,
+            "km": 568.4,
+            "source": "vehicle_default"
+          },
+          {
+            "key": "tolls",
+            "label": "Tolls",
+            "leg": "loaded",
+            "amount": 1043.48,
+            "basis": "R 1 043,48 one way",
+            "one_way": 1043.48,
+            "legs": 1
+          },
+          {
+            "key": "driver",
+            "label": "Driver nights out",
+            "leg": "loaded",
+            "amount": 0.0,
+            "basis": "No night away",
+            "nights": 0,
+            "suggested_nights": 0,
+            "rate_per_night": 450.0,
+            "suggested": 0.0,
+            "source": "suggested"
+          },
+          {
+            "key": "fuel_return",
+            "label": "Fuel, empty return",
+            "leg": "empty_return",
+            "amount": 5481.01,
+            "basis": "568 km empty at 29,4 L/100km × R 32,80/L",
+            "litres": 167.1096,
+            "burn_l_per_100km": 29.4,
+            "price_per_litre": 32.7989,
+            "km": 568.4
+          },
+          {
+            "key": "operating_return",
+            "label": "Operating costs, empty return",
+            "leg": "empty_return",
+            "amount": 9094.4,
+            "basis": "568 km × R 16,00/km",
+            "rate_per_km": 16.0,
+            "km": 568.4,
+            "source": "vehicle_default"
+          },
+          {
+            "key": "tolls_return",
+            "label": "Tolls, empty return",
+            "leg": "empty_return",
+            "amount": 812.61,
+            "basis": "R 812,61 home empty",
+            "one_way": 812.61
+          },
+          {
+            "key": "driver_return",
+            "label": "Driver nights, empty return",
+            "leg": "empty_return",
+            "amount": 450.0,
+            "basis": "1 extra night × R 450,00",
+            "nights": 1,
+            "rate_per_night": 450.0
+          }
+        ],
+        "floor": 33391.39,
+        "floor_known": 33391.39,
+        "floor_complete": true,
+        "target_margin_pct": 10.0,
+        "target_price": 37101.54,
+        "minimum_charge": null,
+        "default_price_per_km": 20.0,
+        "rate_price": 11368.0,
+        "default_price": 37102.0,
+        "alternative_with_return_load": {
+          "floor": 17553.37,
+          "target_price": 19503.74,
+          "default_price": 19504.0
+        },
+        "price": 31500.0,
+        "margin": -1891.39,
+        "margin_pct": -6.004412698412696,
+        "warnings": [
+          {
+            "code": "below_floor",
+            "severity": "warn",
+            "title": "Price is below your costs",
+            "detail": "This trip loses R 1 891.",
+            "impact_zar": -1891.39,
+            "actions": []
+          }
+        ],
+        "blocking": [],
+        "can_send": true
+      }
+    },
+    {
+      "name": "default_price_rate_wins",
+      "description": "Company default R80,00/km is above the target price: default price = rate price rounded up.",
+      "inputs": {
+        "trip_type": "ONE_WAY",
+        "distance_km": 568.4,
+        "distance_estimated": false,
+        "distance_confirmed": false,
+        "duration_minutes": 440,
+        "load_kg": 28000,
+        "vehicle": {
+          "id": 11,
+          "name": "Superlink",
+          "capacity": 34,
+          "rated_burn_l_per_100km": 42
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "official_price": 32.7989,
+          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_stale": false,
+          "use_official": false,
+          "override_price": null
+        },
+        "operating_cost_per_km": 16.0,
+        "operating_cost_source": "vehicle_default",
+        "tolls": {
+          "one_way": 1043.48,
+          "empty_return": 812.61,
+          "lookup_failed": false,
+          "confirmed_none": false
+        },
+        "driver": {
+          "allowance_per_night": 450.0,
+          "nights": null,
+          "amount": null
+        },
+        "hours_per_day": 9.0,
+        "border_cost": 0.0,
+        "include_empty_return": null,
+        "settings": {
+          "include_empty_return_default": true,
+          "empty_return_min_km": 300.0
+        },
+        "minimum_charge": null,
+        "default_price_per_km": 80.0,
+        "target_margin_pct": 10.0,
+        "price": 31500.0
+      },
+      "expected": {
+        "version": "qc-1",
+        "trip": {
+          "type": "ONE_WAY",
+          "legs_loaded": 1,
+          "distance_km": 568.4,
+          "empty_return_included": true,
+          "empty_return_default": true,
+          "km_loaded": 568.4,
+          "km_empty": 568.4,
+          "km_driven": 1136.8,
+          "hours_one_way": 7.333333333333333,
+          "return_nights": 1
+        },
+        "vehicle": {
+          "id": 11,
+          "name": "Superlink",
+          "capacity_t": 34.0,
+          "load_t": 28.0,
+          "load_ratio": 0.8235294117647058,
+          "rated_burn_l_per_100km": 42.0,
+          "burn_loaded_l_per_100km": 39.77647058823529,
+          "burn_empty_l_per_100km": 29.4
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "fuel_type": "Diesel",
+          "official_price": 32.7989,
+          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_stale": false,
+          "price": 32.7989,
+          "source": "official"
+        },
+        "litres": {
+          "loaded": 226.08945882352938,
+          "empty_return": 167.1096,
+          "total": 393.1990588235294
+        },
+        "lines": [
+          {
+            "key": "fuel",
+            "label": "Fuel",
+            "leg": "loaded",
+            "amount": 7415.49,
+            "basis": "568 km at 39,8 L/100km × R 32,80/L",
+            "litres": 226.08945882352938,
+            "burn_l_per_100km": 39.77647058823529,
+            "price_per_litre": 32.7989,
+            "km": 568.4
+          },
+          {
+            "key": "operating",
+            "label": "Operating costs",
+            "leg": "loaded",
+            "amount": 9094.4,
+            "basis": "568 km × R 16,00/km",
+            "rate_per_km": 16.0,
+            "km": 568.4,
+            "source": "vehicle_default"
+          },
+          {
+            "key": "tolls",
+            "label": "Tolls",
+            "leg": "loaded",
+            "amount": 1043.48,
+            "basis": "R 1 043,48 one way",
+            "one_way": 1043.48,
+            "legs": 1
+          },
+          {
+            "key": "driver",
+            "label": "Driver nights out",
+            "leg": "loaded",
+            "amount": 0.0,
+            "basis": "No night away",
+            "nights": 0,
+            "suggested_nights": 0,
+            "rate_per_night": 450.0,
+            "suggested": 0.0,
+            "source": "suggested"
+          },
+          {
+            "key": "fuel_return",
+            "label": "Fuel, empty return",
+            "leg": "empty_return",
+            "amount": 5481.01,
+            "basis": "568 km empty at 29,4 L/100km × R 32,80/L",
+            "litres": 167.1096,
+            "burn_l_per_100km": 29.4,
+            "price_per_litre": 32.7989,
+            "km": 568.4
+          },
+          {
+            "key": "operating_return",
+            "label": "Operating costs, empty return",
+            "leg": "empty_return",
+            "amount": 9094.4,
+            "basis": "568 km × R 16,00/km",
+            "rate_per_km": 16.0,
+            "km": 568.4,
+            "source": "vehicle_default"
+          },
+          {
+            "key": "tolls_return",
+            "label": "Tolls, empty return",
+            "leg": "empty_return",
+            "amount": 812.61,
+            "basis": "R 812,61 home empty",
+            "one_way": 812.61
+          },
+          {
+            "key": "driver_return",
+            "label": "Driver nights, empty return",
+            "leg": "empty_return",
+            "amount": 450.0,
+            "basis": "1 extra night × R 450,00",
+            "nights": 1,
+            "rate_per_night": 450.0
+          }
+        ],
+        "floor": 33391.39,
+        "floor_known": 33391.39,
+        "floor_complete": true,
+        "target_margin_pct": 10.0,
+        "target_price": 37101.54,
+        "minimum_charge": null,
+        "default_price_per_km": 80.0,
+        "rate_price": 45472.0,
+        "default_price": 45472.0,
+        "alternative_with_return_load": {
+          "floor": 17553.37,
+          "target_price": 19503.74,
+          "default_price": 45472.0
+        },
+        "price": 31500.0,
+        "margin": -1891.39,
+        "margin_pct": -6.004412698412696,
+        "warnings": [
+          {
+            "code": "below_floor",
+            "severity": "warn",
+            "title": "Price is below your costs",
+            "detail": "This trip loses R 1 891.",
+            "impact_zar": -1891.39,
+            "actions": []
+          }
+        ],
+        "blocking": [],
+        "can_send": true
+      }
+    },
+    {
+      "name": "default_price_no_rate_one_way_long",
+      "description": "No default price per km: default price = target price rounded up; alternative included.",
+      "inputs": {
+        "trip_type": "ONE_WAY",
+        "distance_km": 568.4,
+        "distance_estimated": false,
+        "distance_confirmed": false,
+        "duration_minutes": 440,
+        "load_kg": 28000,
+        "vehicle": {
+          "id": 11,
+          "name": "Superlink",
+          "capacity": 34,
+          "rated_burn_l_per_100km": 42
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "official_price": 32.7989,
+          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_stale": false,
+          "use_official": false,
+          "override_price": null
+        },
+        "operating_cost_per_km": 16.0,
+        "operating_cost_source": "vehicle_default",
+        "tolls": {
+          "one_way": 1043.48,
+          "empty_return": 812.61,
+          "lookup_failed": false,
+          "confirmed_none": false
+        },
+        "driver": {
+          "allowance_per_night": 450.0,
+          "nights": null,
+          "amount": null
+        },
+        "hours_per_day": 9.0,
+        "border_cost": 0.0,
+        "include_empty_return": null,
+        "settings": {
+          "include_empty_return_default": true,
+          "empty_return_min_km": 300.0
+        },
+        "minimum_charge": null,
+        "default_price_per_km": null,
+        "target_margin_pct": 10.0,
+        "price": 31500.0
+      },
+      "expected": {
+        "version": "qc-1",
+        "trip": {
+          "type": "ONE_WAY",
+          "legs_loaded": 1,
+          "distance_km": 568.4,
+          "empty_return_included": true,
+          "empty_return_default": true,
+          "km_loaded": 568.4,
+          "km_empty": 568.4,
+          "km_driven": 1136.8,
+          "hours_one_way": 7.333333333333333,
+          "return_nights": 1
+        },
+        "vehicle": {
+          "id": 11,
+          "name": "Superlink",
+          "capacity_t": 34.0,
+          "load_t": 28.0,
+          "load_ratio": 0.8235294117647058,
+          "rated_burn_l_per_100km": 42.0,
+          "burn_loaded_l_per_100km": 39.77647058823529,
+          "burn_empty_l_per_100km": 29.4
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "fuel_type": "Diesel",
+          "official_price": 32.7989,
+          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_stale": false,
+          "price": 32.7989,
+          "source": "official"
+        },
+        "litres": {
+          "loaded": 226.08945882352938,
+          "empty_return": 167.1096,
+          "total": 393.1990588235294
+        },
+        "lines": [
+          {
+            "key": "fuel",
+            "label": "Fuel",
+            "leg": "loaded",
+            "amount": 7415.49,
+            "basis": "568 km at 39,8 L/100km × R 32,80/L",
+            "litres": 226.08945882352938,
+            "burn_l_per_100km": 39.77647058823529,
+            "price_per_litre": 32.7989,
+            "km": 568.4
+          },
+          {
+            "key": "operating",
+            "label": "Operating costs",
+            "leg": "loaded",
+            "amount": 9094.4,
+            "basis": "568 km × R 16,00/km",
+            "rate_per_km": 16.0,
+            "km": 568.4,
+            "source": "vehicle_default"
+          },
+          {
+            "key": "tolls",
+            "label": "Tolls",
+            "leg": "loaded",
+            "amount": 1043.48,
+            "basis": "R 1 043,48 one way",
+            "one_way": 1043.48,
+            "legs": 1
+          },
+          {
+            "key": "driver",
+            "label": "Driver nights out",
+            "leg": "loaded",
+            "amount": 0.0,
+            "basis": "No night away",
+            "nights": 0,
+            "suggested_nights": 0,
+            "rate_per_night": 450.0,
+            "suggested": 0.0,
+            "source": "suggested"
+          },
+          {
+            "key": "fuel_return",
+            "label": "Fuel, empty return",
+            "leg": "empty_return",
+            "amount": 5481.01,
+            "basis": "568 km empty at 29,4 L/100km × R 32,80/L",
+            "litres": 167.1096,
+            "burn_l_per_100km": 29.4,
+            "price_per_litre": 32.7989,
+            "km": 568.4
+          },
+          {
+            "key": "operating_return",
+            "label": "Operating costs, empty return",
+            "leg": "empty_return",
+            "amount": 9094.4,
+            "basis": "568 km × R 16,00/km",
+            "rate_per_km": 16.0,
+            "km": 568.4,
+            "source": "vehicle_default"
+          },
+          {
+            "key": "tolls_return",
+            "label": "Tolls, empty return",
+            "leg": "empty_return",
+            "amount": 812.61,
+            "basis": "R 812,61 home empty",
+            "one_way": 812.61
+          },
+          {
+            "key": "driver_return",
+            "label": "Driver nights, empty return",
+            "leg": "empty_return",
+            "amount": 450.0,
+            "basis": "1 extra night × R 450,00",
+            "nights": 1,
+            "rate_per_night": 450.0
+          }
+        ],
+        "floor": 33391.39,
+        "floor_known": 33391.39,
+        "floor_complete": true,
+        "target_margin_pct": 10.0,
+        "target_price": 37101.54,
+        "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": 37102.0,
+        "alternative_with_return_load": {
+          "floor": 17553.37,
+          "target_price": 19503.74,
+          "default_price": 19504.0
+        },
+        "price": 31500.0,
+        "margin": -1891.39,
+        "margin_pct": -6.004412698412696,
+        "warnings": [
+          {
+            "code": "below_floor",
+            "severity": "warn",
+            "title": "Price is below your costs",
+            "detail": "This trip loses R 1 891.",
+            "impact_zar": -1891.39,
+            "actions": []
+          }
+        ],
+        "blocking": [],
+        "can_send": true
+      }
+    },
+    {
+      "name": "default_price_incomplete_floor",
+      "description": "Floor incomplete (tolls unknown): no default price, alternative floor null too.",
+      "inputs": {
+        "trip_type": "ONE_WAY",
+        "distance_km": 568.4,
+        "distance_estimated": false,
+        "distance_confirmed": false,
+        "duration_minutes": 440,
+        "load_kg": 28000,
+        "vehicle": {
+          "id": 11,
+          "name": "Superlink",
+          "capacity": 34,
+          "rated_burn_l_per_100km": 42
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "official_price": 32.7989,
+          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_stale": false,
+          "use_official": false,
+          "override_price": null
+        },
+        "operating_cost_per_km": 16.0,
+        "operating_cost_source": "vehicle_default",
+        "tolls": {
+          "one_way": null,
+          "empty_return": null,
+          "lookup_failed": true,
+          "confirmed_none": false
+        },
+        "driver": {
+          "allowance_per_night": 450.0,
+          "nights": null,
+          "amount": null
+        },
+        "hours_per_day": 9.0,
+        "border_cost": 0.0,
+        "include_empty_return": null,
+        "settings": {
+          "include_empty_return_default": true,
+          "empty_return_min_km": 300.0
+        },
+        "minimum_charge": null,
+        "default_price_per_km": 20.0,
+        "target_margin_pct": 10.0,
+        "price": 31500.0
+      },
+      "expected": {
+        "version": "qc-1",
+        "trip": {
+          "type": "ONE_WAY",
+          "legs_loaded": 1,
+          "distance_km": 568.4,
+          "empty_return_included": true,
+          "empty_return_default": true,
+          "km_loaded": 568.4,
+          "km_empty": 568.4,
+          "km_driven": 1136.8,
+          "hours_one_way": 7.333333333333333,
+          "return_nights": 1
+        },
+        "vehicle": {
+          "id": 11,
+          "name": "Superlink",
+          "capacity_t": 34.0,
+          "load_t": 28.0,
+          "load_ratio": 0.8235294117647058,
+          "rated_burn_l_per_100km": 42.0,
+          "burn_loaded_l_per_100km": 39.77647058823529,
+          "burn_empty_l_per_100km": 29.4
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "fuel_type": "Diesel",
+          "official_price": 32.7989,
+          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_stale": false,
+          "price": 32.7989,
+          "source": "official"
+        },
+        "litres": {
+          "loaded": 226.08945882352938,
+          "empty_return": 167.1096,
+          "total": 393.1990588235294
+        },
+        "lines": [
+          {
+            "key": "fuel",
+            "label": "Fuel",
+            "leg": "loaded",
+            "amount": 7415.49,
+            "basis": "568 km at 39,8 L/100km × R 32,80/L",
+            "litres": 226.08945882352938,
+            "burn_l_per_100km": 39.77647058823529,
+            "price_per_litre": 32.7989,
+            "km": 568.4
+          },
+          {
+            "key": "operating",
+            "label": "Operating costs",
+            "leg": "loaded",
+            "amount": 9094.4,
+            "basis": "568 km × R 16,00/km",
+            "rate_per_km": 16.0,
+            "km": 568.4,
+            "source": "vehicle_default"
+          },
+          {
+            "key": "tolls",
+            "label": "Tolls",
+            "leg": "loaded",
+            "amount": null,
+            "basis": "Unknown",
+            "one_way": null,
+            "legs": 1
+          },
+          {
+            "key": "driver",
+            "label": "Driver nights out",
+            "leg": "loaded",
+            "amount": 0.0,
+            "basis": "No night away",
+            "nights": 0,
+            "suggested_nights": 0,
+            "rate_per_night": 450.0,
+            "suggested": 0.0,
+            "source": "suggested"
+          },
+          {
+            "key": "fuel_return",
+            "label": "Fuel, empty return",
+            "leg": "empty_return",
+            "amount": 5481.01,
+            "basis": "568 km empty at 29,4 L/100km × R 32,80/L",
+            "litres": 167.1096,
+            "burn_l_per_100km": 29.4,
+            "price_per_litre": 32.7989,
+            "km": 568.4
+          },
+          {
+            "key": "operating_return",
+            "label": "Operating costs, empty return",
+            "leg": "empty_return",
+            "amount": 9094.4,
+            "basis": "568 km × R 16,00/km",
+            "rate_per_km": 16.0,
+            "km": 568.4,
+            "source": "vehicle_default"
+          },
+          {
+            "key": "tolls_return",
+            "label": "Tolls, empty return",
+            "leg": "empty_return",
+            "amount": null,
+            "basis": "Unknown",
+            "one_way": null
+          },
+          {
+            "key": "driver_return",
+            "label": "Driver nights, empty return",
+            "leg": "empty_return",
+            "amount": 450.0,
+            "basis": "1 extra night × R 450,00",
+            "nights": 1,
+            "rate_per_night": 450.0
+          }
+        ],
+        "floor": null,
+        "floor_known": 31535.3,
+        "floor_complete": false,
+        "target_margin_pct": 10.0,
+        "target_price": null,
+        "minimum_charge": null,
+        "default_price_per_km": 20.0,
+        "rate_price": 11368.0,
+        "default_price": null,
+        "alternative_with_return_load": {
+          "floor": null,
+          "target_price": null,
+          "default_price": null
+        },
+        "price": 31500.0,
+        "margin": null,
+        "margin_pct": null,
+        "warnings": [
+          {
+            "code": "tolls_unknown",
+            "severity": "block",
+            "title": "Tolls could not be worked out",
+            "detail": "Enter the tolls, or confirm there are none on this route.",
+            "impact_zar": null,
+            "actions": [
+              {
+                "id": "enter_tolls",
+                "label": "Enter tolls"
+              },
+              {
+                "id": "confirm_no_tolls",
+                "label": "No tolls on this route"
+              }
+            ]
+          }
+        ],
+        "blocking": [
+          "tolls_unknown"
+        ],
+        "can_send": false
       }
     }
   ],

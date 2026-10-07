@@ -67,6 +67,8 @@ class QuoteCostBreakdownView(APIView):
                 from core.services.quote_costing import changes_since_priced
                 out['changes_since_priced'] = changes_since_priced(
                     quote.total_amount, quote.cost_floor, out['floor'], quote.priced_at)
+                from core.services.quote_snapshot import fuel_lines_delta
+                out['changes_since_priced']['fuel_delta_zar'] = fuel_lines_delta(quote, costing_now=out)
                 out['snapshot'] = {
                     'fuel_price_used': quote.fuel_price_used, 'fuel_price_source': quote.fuel_price_source,
                     'fuel_zone': quote.fuel_zone, 'fuel_effective_from': quote.fuel_effective_from,

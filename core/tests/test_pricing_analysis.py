@@ -69,6 +69,8 @@ class _Base(IsolatedModelStorageMixin, TestCase):
         official_price_now()
         self.vt = VehicleType.objects.create(company=self.company, name='Tautliner', capacity=34, max_distance=3000,
                                              base_rate=20, fuel_consumption_l_per_100km=38)
+        from core.tests.quote_rules_fixtures import add_vehicle
+        add_vehicle(self.company, self.vt)
         self.api = APIClient()
         self.api.force_authenticate(user=self.user)
 
@@ -948,7 +950,7 @@ class Round3Tests(_ModelMixin, _Base):
     def test_reasoning_whole_rand_and_nbsp(self):
         r = self.analyze()
         first = r['reasoning'][0]
-        self.assertIn(pa._fmt(pa._round_to(r['cost_floor']['total'], 100)), first)
+        self.assertIn(pa._fmt(r['cost_floor']['total']), first)       # whole rand, same as the cost card
         self.assertNotRegex(first, r'/km\D*,\d\d/km')
         self.assertNotIn('R ', ' '.join(r['reasoning']))   # no plain space after R
 

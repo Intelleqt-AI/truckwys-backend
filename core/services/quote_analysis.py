@@ -98,23 +98,23 @@ def fleet_cost_per_km(company, categories=None, *, net_of_vat=False, exclude_rej
 def _fleet_avg_cpk(company):
     """This company's real cost-per-km from completed trips' expenses over the
     last 12 months (cached 1h). Falls back to the industry default when there
-    are fewer than 10 costed trips. Never raises. (Every category, gross —
-    unchanged; see fleet_cost_per_km for the generalised form.)"""
-    FALLBACK = 19.80
+    are fewer than 10 costed trips: then None (no invented "fleet average").
+    Never raises. (Every category, gross; see fleet_cost_per_km.)"""
     if company is None or not getattr(company, 'id', None):
-        return FALLBACK
+        return None
     from django.core.cache import cache
     cache_key = f'fleet_avg_cpk_{company.id}'
     cached = cache.get(cache_key)
     if cached is not None:
         return cached
     result = fleet_cost_per_km(company, None, use_cache=False)
-    cpk = result['value'] if result['value'] else FALLBACK
-    cache.set(cache_key, cpk, 3600)
+    cpk = result['value'] or None
+    if cpk is not None:
+        cache.set(cache_key, cpk, 3600)
     return cpk
 
 
-def _full_floor_fields(total_cost, quote_price, distance_km, company, vehicle_type=None):
+def _full_floor_fields(total_cost, quote_price, distance_km, company, vehicle_type=None, is_full_floor=False):
     """Additive Revenue Guard fields on the ONE margin definition the pricing
     analysis uses (core.services.pricing_analysis.margin_against_floor):
     margin = price − full cost floor, where the floor adds fixed cost/km × km
@@ -123,7 +123,9 @@ def _full_floor_fields(total_cost, quote_price, distance_km, company, vehicle_ty
     Never raises."""
     try:
         from core.services.pricing_analysis import fixed_cost_per_km, margin_against_floor
-        fixed = fixed_cost_per_km(company, None, vehicle_type) if distance_km > 0 else None
+        # total_cost that is already THE floor (quote_costing) includes the
+        # operating cost: never add it twice.
+        fixed = fixed_cost_per_km(company, None, vehicle_type) if distance_km > 0 and not is_full_floor else None
         fixed_zar = round(fixed['value'] * distance_km) if fixed else 0
         floor = round(total_cost) + fixed_zar
         m = margin_against_floor(quote_price, floor)
@@ -140,7 +142,8 @@ def _full_floor_fields(total_cost, quote_price, distance_km, company, vehicle_ty
 
 
 def assess_revenue_guard(*, total_cost, quote_price, distance_km=0.0,
-                         fuel_cost=0.0, company=None, quote=None, customer=None, vehicle_type=None):
+                         fuel_cost=0.0, company=None, quote=None, customer=None, vehicle_type=None,
+                         is_full_floor=False):
     """Assess margin health for a quote.
 
     total_cost = direct operating cost; quote_price = price being charged.
@@ -178,7 +181,7 @@ def assess_revenue_guard(*, total_cost, quote_price, distance_km=0.0,
 
     cost_per_km = round(total_cost / distance_km, 2) if distance_km > 0 else None
     fleet_avg_cpk = _fleet_avg_cpk(company)
-    if cost_per_km is not None and cost_per_km > fleet_avg_cpk * 1.1:
+    if cost_per_km is not None and fleet_avg_cpk and cost_per_km > fleet_avg_cpk * 1.1:
         explanations.append(f"Cost-per-km on this route is R{cost_per_km:.2f} — above the fleet average of R{fleet_avg_cpk:.2f}")
         suggestions.append("Review your cost model — this route may need a base rate increase")
 
@@ -223,7 +226,7 @@ def assess_revenue_guard(*, total_cost, quote_price, distance_km=0.0,
 
     margin_floor = int(total_cost)
     floor_fields = _full_floor_fields(total_cost, quote_price, distance_km, company,
-                                      vehicle_type or getattr(quote, 'vehicle_type', None))
+                                      vehicle_type or getattr(quote, 'vehicle_type', None), is_full_floor)
     return {
         **floor_fields,
         'success': True,
@@ -585,113 +588,84 @@ def analyze_quote(payload, company=None, user=None):
     if quote_total <= 0:
         return {'success': False, 'error': 'quote_total must be > 0'}
 
-    # Expected profit is computed against what the job COSTS: THE cost floor
-    # (core.services.quote_costing, QUOTE-RULES §3-§7). Never the quote total
-    # itself. If the floor can't be worked out, the client's own direct cost
-    # is used and labelled; with neither there is no cost basis.
-    costing = None
-    if company is not None:
-        try:
-            from core.services.quote_costing import costing_for_payload
-            p = dict(payload)
-            p.setdefault('price', quote_total)
-            costing = costing_for_payload(p, company)
-        except Exception as exc:
-            logger.warning('analyze: cost floor failed: %s', exc)
-    if costing is not None and costing['floor'] is not None:
-        cost_basis, cost_basis_source = costing['floor'], 'cost_floor'
-    elif direct_cost > 0:
-        cost_basis, cost_basis_source = direct_cost, 'client_direct_cost'
-    else:
-        cost_basis, cost_basis_source = 0.0, 'none'
-
     customer = None
     if payload.get('customer_id') and company is not None:
         try:
             from core.models import Customer
-            customer = Customer.objects.filter(
-                id=payload['customer_id'], company=company,
-            ).first()
+            customer = Customer.objects.filter(id=payload['customer_id'], company=company).first()
         except Exception as exc:
             logger.warning('analyze: customer lookup failed: %s', exc)
 
-    market = _market_analysis(origin, destination, vehicle_type, company, market_rate, quote_total, user=user)
-    # market_rate is now either a REAL benchmark or None (no fabricated anchor).
-    # When it's None, _optimization anchors its search band on cost internally
-    # (cost_basis * 1.25) — that's a private search bound, never shown as a
-    # "market rate".
-    real_market_rate = market.get('market_rate')
+    # THE engine (QUOTE-RULES): the pricing analysis — compute() floor on the
+    # full payload (trip type, legs, duration, flags), the fuel-normalised
+    # market (no hard-coded estimates) and the same three choices.
+    from core.services.pricing_analysis import analyze_pricing
+    pa_payload = dict(payload)
+    pa_payload['your_price'] = quote_total
+    analysis = {}
+    if company is not None:
+        try:
+            analysis = analyze_pricing(pa_payload, company=company, user=user)
+        except Exception as exc:
+            logger.warning('analyze: pricing analysis failed: %s', exc)
+            analysis = {}
+    floor_block = analysis.get('cost_floor') or {}
+    costing = analysis.get('costing') or floor_block.get('costing')
+    blocking = analysis.get('blocking') or []
+    floor = floor_block.get('total') if floor_block.get('complete') else None
+    if floor is not None:
+        cost_basis, cost_basis_source = floor, 'cost_floor'
+    elif direct_cost > 0 and not blocking:
+        cost_basis, cost_basis_source = direct_cost, 'client_direct_cost'
+    else:
+        cost_basis, cost_basis_source = 0.0, 'none'
 
-    try:
-        from core.services.win_prediction import resolve_prediction_context
-        prediction_ctx = resolve_prediction_context(user, company)
-    except Exception as exc:
-        logger.warning('analyze_quote: prediction context resolution failed: %s', exc)
-        prediction_ctx = None
+    m = analysis.get('market') or {}
+    usable = bool(m.get('available')) and not m.get('is_estimate')
+    market_rate_val = float(m['raw_median']) if usable and m.get('raw_median') else None
+    market = {'market_rate': round(market_rate_val, 2) if market_rate_val else None,
+              'source': m.get('tier') if usable else 'none',
+              'your_vs_market_pct': (round((quote_total - market_rate_val) / market_rate_val * 100, 1)
+                                     if market_rate_val else None)}
 
-    # Full v2 feature vector for the resolved model (if any) to score
-    # candidate prices against — same computation used at training time, so a
-    # trained model sees the feature distribution it was fitted on. Falling
-    # back to None (letting _optimization build a minimal legacy dict) if this
-    # fails for any reason; the heuristic/model still gets SOMETHING sane.
-    base_features = None
-    try:
-        from core.services import quote_features
-        customer_id_for_features = customer.id if customer is not None else payload.get('customer_id')
-        base_features = quote_features.compute_features(
-            company=company, customer_id=customer_id_for_features,
-            created_by_user_id=getattr(user, 'id', None),
-            origin=origin, destination=destination, vehicle_type=vehicle_type,
-            total_amount=quote_total, base_rate=cost_basis,
-            weight_kg=payload.get('weight'), distance_km=distance_km,
-            market_rate=real_market_rate,
-        )
-        # days_until_departure is already correctly derived upstream (from the
-        # request's pickup_date) — use that exact value rather than letting
-        # compute_features fall back to its own no-pickup-date default.
-        base_features['days_until_departure'] = days
-    except Exception as exc:
-        logger.warning('analyze_quote: base_features build failed: %s', exc)
-        base_features = None
-
-    opt = {'optimal_price': None, 'optimal_margin_pct': None, 'win_probability_at_optimal': None,
-           'expected_profit': 0.0, 'curve': []} if cost_basis <= 0 else _optimization(
-        cost_basis, real_market_rate, client_tier, days,
-        historical_acceptance_rate=hist_rate, origin=origin, destination=destination,
-        company=company, prediction_ctx=prediction_ctx, base_features=base_features,
-    )
-
-    # With NO market data the optimizer's "optimum" is an artefact of its own
-    # synthetic cost*1.25 anchor — effectively a fixed ~30% markup pulled from
-    # thin air, contradicting the Revenue Guard's margin-target advice shown on
-    # the same screen. Until the lane has a real benchmark, recommend the
-    # company's own target margin instead (same formula the guard uses), so
-    # both panels agree. The curve is kept so the sweet-spot chart still renders.
-    no_market_data = not real_market_rate
-    if no_market_data and cost_basis > 0:
-        t = _f(getattr(company, 'margin_target_pct', None), 10.0) or 10.0
-        t = min(max(t, 1.0), 40.0)  # sane bounds; t is margin-on-price in %
-        target_price = round(cost_basis / (1 - t / 100), 2)
-        curve = opt.get('curve') or []
-        nearest = min(curve, key=lambda p: abs(_f(p.get('price')) - target_price)) if curve else None
-        p_win = nearest.get('win_probability') if nearest else None
-        opt['optimal_price'] = target_price
-        opt['optimal_margin_pct'] = round((target_price - cost_basis) / target_price * 100, 1)   # margin on price
-        opt['win_probability_at_optimal'] = p_win
-        opt['expected_profit'] = round(
-            (target_price - cost_basis) * (p_win if p_win is not None else 1.0), 2)
-
-    cost = assess_revenue_guard(
-        total_cost=cost_basis, quote_price=quote_total,
-        distance_km=distance_km, fuel_cost=fuel_cost, company=company,
-        customer=customer,
-    )
+    choices = analysis.get('choices') or []
+    rec = next((c for c in choices if c.get('recommended')), None)
+    lk = analysis.get('likelihood') or {}
+    model = lk.get('model') if lk.get('level') == 'model' else None
+    suggested_price = float(rec['price']) if rec and cost_basis > 0 and not blocking else None
+    if suggested_price is None and cost_basis_source == 'client_direct_cost':
+        # No floor of ours (no company context / route): the company target
+        # margin over the client's own direct cost, labelled as such.
+        t = min(max(_f(getattr(company, 'margin_target_pct', None), 10.0) or 10.0, 1.0), 40.0)
+        suggested_price = round(cost_basis / (1 - t / 100), 2)
+        rec = {'price': suggested_price, 'margin_pct': round(t, 1), 'margin': suggested_price - cost_basis,
+               'likelihood': {'level': 'rules'}}
+    win_at = ((rec['likelihood'].get('pct') or 0) / 100.0
+              if rec and (rec.get('likelihood') or {}).get('level') == 'model' else None)
+    opt = {
+        'optimal_price': suggested_price,
+        'optimal_margin_pct': rec['margin_pct'] if rec and suggested_price else None,
+        'win_probability_at_optimal': win_at,
+        'expected_profit': round(win_at * rec['margin'], 2) if win_at is not None and rec else 0.0,
+        'curve': [{'price': p['price'], 'win_probability': p['pct'] / 100.0, 'expected_profit': p['expected_profit']}
+                  for p in (model or {}).get('curve') or []],
+        'choices': choices,
+    }
+    if cost_basis > 0:
+        cost = assess_revenue_guard(
+            total_cost=cost_basis, quote_price=quote_total, distance_km=distance_km, fuel_cost=fuel_cost,
+            company=company, customer=customer, is_full_floor=cost_basis_source == 'cost_floor')
+    else:
+        cost = {'success': False, 'error': 'The cost floor is not known yet.', 'blocking': blocking}
     fuel = _fuel_analysis(fuel_cost, fuel_usage_litres, fuel_price_used, quote_total, company)
 
-    suggested_price = _f(opt.get('optimal_price')) if cost_basis > 0 else 0.0
-    target_price = (costing or {}).get('target_price')
-    if suggested_price and target_price and suggested_price < target_price:
-        suggested_price = target_price      # never below floor / (1 − target) or the minimum charge
+    ai_prediction = ({'available': True, 'model_scope': model.get('scope'), 'training_samples': model.get('n_closed'),
+                      'win_probability': win_at, 'recommended_price': suggested_price,
+                      'expected_profit': opt['expected_profit'], 'margin_pct': opt['optimal_margin_pct'],
+                      'market_rate': market_rate_val,
+                      'price_vs_market_pct': (round((suggested_price - market_rate_val) / market_rate_val * 100, 2)
+                                              if market_rate_val and suggested_price else None)}
+                     if model and win_at is not None else {'available': False, 'reason': 'insufficient_training_data'})
 
     structured = {
         'route': f"{origin} → {destination}" if origin and destination else None,
@@ -706,16 +680,13 @@ def analyze_quote(payload, company=None, user=None):
         'cost_basis_source': cost_basis_source,
         'cost_floor': ({k: costing.get(k) for k in ('floor', 'floor_known', 'target_price', 'minimum_charge',
                                                     'lines', 'warnings', 'blocking')} if costing else None),
-        # The ONLY block that ever claims to be a trained-AI prediction —
-        # price_optimization above may be heuristic-driven and stays
-        # populated either way, so the manual quote flow never breaks.
-        'ai_prediction': _build_ai_prediction(opt, real_market_rate, prediction_ctx),
+        'blocking': blocking,
+        'recommendation': analysis.get('recommendation'),
+        'ai_prediction': ai_prediction,
     }
 
-    # skip_narrative: callers that never display the narrative (e.g. the Quote
-    # Builder's live panel, which re-analyzes on every cost change) skip the
-    # synchronous OpenAI call — it dominates response time by seconds.
-    narrative = None if payload.get('skip_narrative') else _llm_narrative(structured)
+    narrative = None if payload.get('skip_narrative') else _llm_narrative(
+        {k: v for k, v in structured.items() if k not in ('cost_floor',)})
     if narrative and not narrative_numbers_ok(narrative, structured):
         # The model stated a number that isn't ours: never shown.
         logger.info('analyze: LLM narrative rejected (unsupported numbers)')
@@ -724,6 +695,7 @@ def analyze_quote(payload, company=None, user=None):
     if not narrative:
         narrative = _rule_based_narrative(cost, fuel, opt, market, suggested_price, quote_total)
 
+    no_market_data = not market_rate_val
     rationale = None
     if no_market_data and cost_basis > 0:
         t = _f(getattr(company, 'margin_target_pct', None), 10.0) or 10.0

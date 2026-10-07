@@ -108,9 +108,12 @@ class Company(models.Model):
     )
 
     # Quote defaults — configurable per company
+    # The company's default price per km (QUOTE-RULES round 3: default price =
+    # max(this x billable km, target price)). Null / <= 0 = none. Existing
+    # values are left as they are (an untouched 10.00 can't be told apart).
     default_base_rate_per_km = models.DecimalField(
-        max_digits=8, decimal_places=2, default=10.00,
-        help_text='Default base rate per km used when creating a new quote (ZAR)'
+        max_digits=8, decimal_places=2, null=True, blank=True, default=None,
+        help_text='Default price per km for new quotes (ZAR, excl. VAT). Empty = none.'
     )
     default_sla_hours = models.IntegerField(
         default=48,

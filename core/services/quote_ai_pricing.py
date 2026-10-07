@@ -904,14 +904,27 @@ def _cost_floor(payload, company):
     if company is None:
         return None
     try:
-        from core.services.quote_costing import costing_for_payload
+        from core.services.quote_costing import compute, costing_for_payload
         c = costing_for_payload(payload, company)
+        # The empty run home as compute() prices it (empty burn, operating
+        # cost, return tolls, extra nights at the company allowance).
+        empty = None
+        if c['trip']['type'] == 'ONE_WAY' and c['trip']['distance_km']:
+            alt = c if c['trip']['empty_return_included'] else compute({**c['inputs'], 'include_empty_return': True})
+            by = {ln['key']: ln['amount'] for ln in alt['lines'] if ln['leg'] == 'empty_return'}
+            if by and all(v is not None for v in by.values()):
+                empty = {'fuel_zar': by.get('fuel_return'), 'operating_zar': by.get('operating_return'),
+                         'tolls_zar': by.get('tolls_return'), 'driver_zar': by.get('driver_return'),
+                         'total_zar': round(sum(by.values()), 2), 'included': c['trip']['empty_return_included']}
     except Exception as exc:
         logger.warning('AI price analysis: cost floor failed: %s', exc)
         return None
+    driver = next((ln for ln in c['lines'] if ln['key'] == 'driver'), None)
     return {'floor': c['floor'], 'floor_known': c['floor_known'], 'target_price': c['target_price'],
             'target_margin_pct': c['target_margin_pct'], 'minimum_charge': c['minimum_charge'],
-            'lines': c['lines'], 'warnings': c['warnings'], 'blocking': c['blocking']}
+            'lines': c['lines'], 'warnings': c['warnings'], 'blocking': c['blocking'],
+            'empty_return': empty, 'driver_rate': (driver or {}).get('rate_per_night'),
+            'driver_rate_source': (c.get('resolution') or {}).get('driver_rate_source')}
 
 
 def _apply_floor(items, payload, floor, cross_border):
@@ -958,6 +971,13 @@ def compute_pricing(payload: dict, today: date = None, *, official_fuel: dict = 
         tolls = stored_tolls(payload, company)
     if allowance is ...:
         allowance = stored_allowance(today)
+    floor = _cost_floor(payload, company)
+    if floor and floor.get('driver_rate') and floor.get('driver_rate_source') == 'company_setting':
+        # The driver line is checked against the same rate compute() uses:
+        # the company's allowance first (QUOTE-RULES §6).
+        allowance = {'rate_per_night': floor['driver_rate'], 'label': 'your driver allowance (company settings)',
+                     'allowance_type': 'company_setting', 'effective_from': today, 'verified_at': None,
+                     'source_url': None, 'source_name': 'Company settings'}
     fuel = _fuel_item(official_fuel, payload)
     toll_item = _tolls_item(tolls, payload, today)
     driver = _driver_item(allowance, payload, today)
@@ -965,7 +985,6 @@ def compute_pricing(payload: dict, today: date = None, *, official_fuel: dict = 
     pass_through_market = fuel['ai_value_zar'] + toll_item['ai_value_zar'] + driver['ai_value_zar'] + cross_border
     base = _base_rate_item(benchmark, payload, pass_through_market)
     items = {'fuel': fuel, 'tolls': toll_item, 'driver_allowance': driver, 'base_rate': base}
-    floor = _cost_floor(payload, company)
     _apply_floor(items, payload, floor, cross_border)
 
     verified = sum(1 for t in TOPICS if items[t]['verdict'] != 'could_not_verify')
@@ -990,9 +1009,15 @@ def compute_pricing(payload: dict, today: date = None, *, official_fuel: dict = 
     combos = _combinations(items, payload)
     default_key = choice_key({t: 'ai' if items[t]['toggleable'] else 'mine' for t in TOPICS})
     target_price = (floor or {}).get('target_price')
+    blocking = list((floor or {}).get('blocking') or [])
     for combo in combos.values():
         combo['below_floor'] = bool(floor and floor.get('floor') is not None and combo['price_zar'] < floor['floor'])
         combo['below_target'] = bool(target_price is not None and combo['price_zar'] < target_price - 0.5)
+        combo['blocked'] = bool(blocking)
+        if blocking:
+            # An unknown input (tolls unknown, diesel missing, ...) blocks:
+            # no price figure, never one priced on a 0.
+            combo['price_zar'] = combo['margin_zar'] = combo['margin_pct'] = None
     return {
         'verification_status': status,
         'confidence': confidence,
@@ -1006,10 +1031,13 @@ def compute_pricing(payload: dict, today: date = None, *, official_fuel: dict = 
         'combinations': combos,
         'default_choice_key': default_key,
         'references': references,
-        'return_leg': _return_leg(items, payload),
+        'return_leg': ((floor or {}).get('empty_return') or _return_leg(items, payload)) if company is not None
+                      else _return_leg(items, payload),
         # QUOTE-RULES §7/§8 (additive): the authoritative cost floor; the
         # suggested (default) combination is never below floor / (1 − target).
         'cost_floor': floor,
+        'blocking': blocking,
+        'warnings': (floor or {}).get('warnings') or [],
     }
 
 
@@ -1066,8 +1094,12 @@ def analyze_quote_price(*, payload: dict, user=None, company=None, quote=None, t
             'allowance': stored_allowance(today),
         }
         pricing = compute_pricing(payload, today, company=company, **inputs)
-        pricing['win_model'] = _attach_win_probabilities(
-            pricing['combinations'], pricing['default_choice_key'], payload, user, company)
+        if pricing.get('blocking'):
+            pricing['win_model'] = {'available': False, 'scope': None, 'training_samples': 0,
+                                    'reason': 'blocked'}
+        else:
+            pricing['win_model'] = _attach_win_probabilities(
+                pricing['combinations'], pricing['default_choice_key'], payload, user, company)
         default = pricing['combinations'][pricing['default_choice_key']]
     except Exception as exc:
         logger.exception('AI price analysis: pricing failed')
@@ -1078,7 +1110,7 @@ def analyze_quote_price(*, payload: dict, user=None, company=None, quote=None, t
 
     row = AIQuotePriceAnalysis.objects.create(
         **row_fields, status='success',
-        suggested_price_zar=Decimal(str(default['price_zar'])),
+        suggested_price_zar=Decimal(str(default['price_zar'])) if default['price_zar'] is not None else None,
         verification_status=pricing['verification_status'],
         confidence=pricing['confidence'],
         raw_result=_json_safe({

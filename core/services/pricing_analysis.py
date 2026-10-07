@@ -450,10 +450,33 @@ def operating_cost_in_use(company):
         label = (f'Now using the typical SA estimate for each vehicle type ({v}/km for a {fixed["class_label"]}) '
                  f'until {fixed["min_trips"]} completed trips have costs recorded (you have {fixed["trips"]})')
     actual = fixed.get('actuals') or {}
+    # The fleet-wide figure (setting or actuals) AND what each class is
+    # priced at (scaled by class ratio), so settings can say
+    # "R 16,94/km fleet · R 18,00/km for superlinks".
+    from core.services.quote_costing import operating_cost_for
+    names = {'light': 'light rigid', 'rigid': 'rigid', 'tri_axle': 'tri-axle', 'reefer': 'reefer',
+             'superlink': 'superlink'}
+    per_class = {}
+    for cls in OPERATING_COST_CLASSES:
+        class _N:
+            name = names[cls]
+            capacity = None
+        op = operating_cost_for(company, _N())
+        per_class[cls] = {'value': op['value'], 'source': op['source'], 'class_label': op['class_label'],
+                          'label': f'{_fmt2(op["value"])}/km for a {op["class_label"]}'
+                                   + (' (standard estimate)' if op['source'] == 'vehicle_default' else '')}
+    company_value = (fixed['value'] if source == 'setting' else actual.get('value'))
+    if source == 'setting':
+        company_value = _f(getattr(company, 'operating_cost_per_km', None))
     return {'value': fixed['value'], 'source': source, 'trips': fixed['trips'], 'min_trips': fixed['min_trips'],
             'window': fixed['window'], 'label': label,
             'actuals_value': actual.get('value'),
-            'estimates': {k: _class_default(k)[0] for k in OPERATING_COST_CLASSES}}
+            'company_value': company_value,
+            'company_label': (f'{_fmt2(company_value)}/km fleet' if company_value else None),
+            'reference_class': ref,
+            'per_class': per_class,
+            'estimates': {k: _class_default(k)[0] for k in OPERATING_COST_CLASSES},
+            'estimates_label': 'Standard estimates (typical SA cost per km by vehicle class, 2026)'}
 
 
 INCLUDED_TEXT = 'Driver wages, finance, insurance, licences, tyres, maintenance and overheads'
@@ -562,7 +585,7 @@ def _panel_lines(costing, fixed):
         elif fixed['source'] == 'company_actuals':
             src = _source('company_actuals', f'Your costs, {fixed["trips"]} completed trips, last 12 months')
         else:
-            src = _source('estimate', f'Estimate: typical SA operating cost for a {fixed["class_label"]}, '
+            src = _source('estimate', f'Standard estimate: typical SA operating cost for a {fixed["class_label"]}, '
                                       'excl. fuel and tolls')
             details += [{'label': name, 'value': f'{_fmt2(v)}/km'} for name, v in (fixed['parts'] or [])]
         if fixed.get('scaled_from'):
@@ -1136,7 +1159,8 @@ def _model_unavailable_reason(company, with_code=False):
     if not won or not lost:
         return ret((f'A percentage needs both won and lost quotes to learn from; you have {won} won and {lost} lost.'),
                    'Bands · needs won and lost quotes', 'needs_both', n)
-    return ret('You have enough closed quotes; your pricing model trains overnight.', 'Bands · model trains tonight',
+    return ret('You have enough closed quotes; chance to win as a % appears after the next nightly update.',
+               'Bands · % from tomorrow',
                'trains_tonight', n)
 
 
@@ -1152,7 +1176,7 @@ def likelihood_headline(code, *, thresholds, model_block=None, n_closed=0, neede
     return {
         'few_closed': f'{BANDS_WORDS}. A % needs {needed} closed quotes (you have {n_closed}).',
         'needs_both': f'{BANDS_WORDS}. A % needs both won and lost quotes.',
-        'trains_tonight': f'{BANDS_WORDS} until your model trains tonight.',
+        'trains_tonight': f'{BANDS_WORDS} for now; a % appears from tomorrow.',
         'outside_range': f'{BANDS_WORDS}: these prices are outside what your model has learned from.',
         'no_market_for_model': f'{BANDS_WORDS}: your model needs market figures for this lane.',
     }.get(code, f'{BANDS_WORDS}.')
@@ -1702,10 +1726,12 @@ def _reasoning(floor, market, choices, likelihood, cust, your, target, recommend
         fixed_txt = {
             'company_actuals': f'operating costs of {_fmt2(fixed["value"])}/km from your last 12 months',
             'company_setting': f'your operating cost setting of {_fmt2(fixed["value"])}/km',
-        }.get(fixed['source'], f'a typical {_fmt2(fixed["value"])}/km for operating costs')
+        }.get(fixed['source'], f'a standard estimate of {_fmt2(fixed["value"])}/km for operating costs')
         # Whole rand per km DRIVEN (both legs when the empty run home is
         # included): cost_floor.per_km_rand, the same figure the UI shows.
-        add('cost', f'This trip costs you about {_fmt(_round_to(floor["total"], 100))} '
+        # One rounding in all copy: whole rand for the floor (the same figure
+        # the cost card totals to), cents only in the line items.
+        add('cost', f'This trip costs you {_fmt(floor["total"])} '
                     f'({_fmt(floor["per_km_rand"])} per km driven'
                     + (', both legs' if floor['include_return'] else '') + '), '
                     f'including {fixed_txt}' + (' and the empty run home.' if floor['include_return'] else '.'))

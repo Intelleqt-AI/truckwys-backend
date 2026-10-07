@@ -167,7 +167,10 @@ def fuel_change_since_pricing(quote, now=None):
         return None
     delta = current - baseline
     litres = float(quote.fuel_litres) if quote.fuel_litres is not None else None
-    if litres is not None:
+    lines_delta = fuel_lines_delta(quote, now=now)
+    if lines_delta is not None:
+        impact = lines_delta          # same figure as the reopen notice
+    elif litres is not None:
         impact = round(litres * delta, 2)
     else:
         fuel = float(quote.fuel_surcharge or 0)
@@ -202,3 +205,27 @@ def enforce_send_guard(quote, now=None):
     if not check['can_send']:
         raise QuoteSendBlocked(check)
     return check
+
+
+FUEL_LINE_KEYS = ('fuel', 'fuel_return')
+
+
+def fuel_lines_delta(quote, costing_now=None, now=None):
+    """The ONE fuel-cost movement since pricing: today's fuel line amounts
+    minus the fuel lines stored in the pricing snapshot (to the cent). Used by
+    the reopen notice (changes_since_priced.fuel_delta_zar) and the fuel
+    alert / surcharge check, so they never differ. None when either side is
+    unknown."""
+    from core.services.quote_costing import cents, costing_for_quote
+    then_lines = [ln for ln in ((quote.costing_snapshot or {}).get('lines') or []) if ln.get('key') in FUEL_LINE_KEYS]
+    if not then_lines or any(ln.get('amount') is None for ln in then_lines):
+        return None
+    if costing_now is None:
+        try:
+            costing_now = costing_for_quote(quote, now)
+        except Exception:
+            return None
+    now_lines = [ln for ln in costing_now['lines'] if ln['key'] in FUEL_LINE_KEYS]
+    if not now_lines or any(ln['amount'] is None for ln in now_lines):
+        return None
+    return cents(sum(ln['amount'] for ln in now_lines) - sum(ln['amount'] for ln in then_lines))
