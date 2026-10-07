@@ -222,12 +222,20 @@ class FuelPriceCurrentView(APIView):
 
         now = timezone.now()
         today = timezone.localdate(now)
-        FuelPrice.objects.update_or_create(
+        manual, _ = FuelPrice.objects.update_or_create(
             date=today, source='MANUAL',
             defaults={**values, 'fetched_at': now, 'effective_from': now, 'fetch_failed_at': None,
                       'diesel_grade': None, 'diesel_500ppm_inland': None, 'diesel_500ppm_coastal': None},
         )
+        # Within one period FIASA's price supersedes a manual one: say whether
+        # this manual price is the one pricing quotes now.
+        from core.services.fuel_price import official_row_in_force
+        in_force_row = official_row_in_force(now)
+        in_force = in_force_row is not None and in_force_row.pk == manual.pk
         return Response({'success': True, 'date': today.isoformat(), 'source': 'MANUAL',
+                         'in_force': in_force,
+                         'message': (None if in_force else
+                                     "This period's official FIASA price is already recorded and takes precedence."),
                          'effective_from': timezone.localtime(now).isoformat(),
                          'diesel_inland': float(values['diesel_inland']),
                          'diesel_coastal': float(values['diesel_coastal'])})
@@ -1501,7 +1509,7 @@ class QuoteBenchmarkView(APIView):
         """
         try:
             from core.services.lane_benchmark import (
-                LANE_CODES_ADDED_FOR_PRICING, derive_lane_code,
+                derive_lane_code,
             )
             # derive_lane_code, not bare canon_code: the browser sends whatever
             # its address parsing produced, which has included street numbers
@@ -1551,16 +1559,6 @@ class QuoteBenchmarkView(APIView):
                 market_range_low = rng['p25']
                 market_range_high = rng['p75']
                 confidence = 'high'
-            elif origin in LANE_CODES_ADDED_FOR_PRICING or destination in LANE_CODES_ADDED_FOR_PRICING:
-                # Backward compatibility: before these lane codes existed
-                # the place derived no code at all, and this endpoint
-                # answered 400. Without real quotes on the lane, answer
-                # exactly as before (only lanes that now HAVE real data get
-                # a real answer).
-                return Response({
-                    'success': False,
-                    'error': 'origin, destination, and vehicle_type are required'
-                }, status=status.HTTP_400_BAD_REQUEST)
             elif sa_estimate:
                 # Fallback to hardcoded
                 market_avg_rate = sa_estimate['avg']
@@ -1592,6 +1590,7 @@ class QuoteBenchmarkView(APIView):
             if your_rate is not None and your_rate <= 0:
                 your_rate = None
             is_estimate = source == 'estimate'
+            from core.services.quote_costing import fmt_rand
             your_vs_market_pct = (
                 ((your_rate - market_avg_rate) / market_avg_rate) * 100
                 if your_rate is not None and market_avg_rate > 0 else None
@@ -1606,15 +1605,17 @@ class QuoteBenchmarkView(APIView):
                 # A hardcoded estimate is never "the market" and never makes a
                 # price "competitive" (pricing analysis rule 7).
                 recommendation = (
-                    f"No real quotes on this lane yet. A rough estimate is R{int(market_range_low):,}"
-                    f"-R{int(market_range_high):,}; treat it as a reference only."
+                    f"No real quotes on this lane yet. A rough estimate is {fmt_rand(market_range_low)} – "
+                    f"{fmt_rand(market_range_high)}; treat it as a reference only."
                 )
             elif your_vs_market_pct is None:
                 recommendation = (
-                    f"Accepted quotes on this lane mostly ran R{int(market_range_low):,}-R{int(market_range_high):,}."
+                    f"Accepted quotes on this lane mostly ran {fmt_rand(market_range_low)} – "
+                    f"{fmt_rand(market_range_high)}."
                 )
             elif your_vs_market_pct < -10:
-                recommendation = f"Your quote is {abs(your_vs_market_pct):.0f}% below market. Consider R{int(market_avg_rate * 0.9)}-R{int(market_avg_rate)} for better margin."
+                recommendation = (f"Your quote is {abs(your_vs_market_pct):.0f}% below market. Consider "
+                                  f"{fmt_rand(market_avg_rate * 0.9)} – {fmt_rand(market_avg_rate)} for better margin.")
             elif your_vs_market_pct > 10:
                 recommendation = f"Your quote is {your_vs_market_pct:.0f}% above market. May be difficult to win at this price."
             else:

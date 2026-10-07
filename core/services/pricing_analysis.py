@@ -820,6 +820,8 @@ def build_choices(floor_total, market, target, minimum=None):
                     'recommended': key == 'balanced',
                     'summary': (f'At your minimum charge of {_fmt(minimum)}.'
                                 if at_minimum and prices[key] <= round_price(minimum)
+                                else f'Just above your minimum charge of {_fmt(minimum)}.'
+                                if at_minimum and (not usable or clamped[key])
                                 else _choice_summary(key, prices[key], m['margin_pct'], shown,
                                                      target, clamped[key] and not bumped[key])),
                     'likelihood': None})
@@ -898,8 +900,9 @@ def _recommend(choices, cust, model_block=None, raw_p=None, hold=None, market=No
         elif market['p25'] <= bal['price'] <= market['p75']:
             code, short = 'rules_middle_half', f'in the middle half of the market, with a {m}% margin after all costs.'
         elif minimum is not None:
-            code, short = 'rules_minimum', (f'priced at your minimum charge of {_fmt(minimum)}; '
-                                            'this lane usually pays less.')
+            code, short = 'rules_minimum', (
+                f'at your minimum charge of {_fmt(minimum)}; this lane usually pays less.' if at_min else
+                f'{_fmt(bal["price"])}, just above your {_fmt(minimum)} minimum charge; this lane usually pays less.')
         else:
             code, short = 'rules_target', f'priced to keep your {t}% target margin; this lane usually pays less.'
         return out('balanced', code, short, f'Balanced is recommended: {short}')

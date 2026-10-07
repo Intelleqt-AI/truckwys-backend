@@ -700,12 +700,15 @@ def refresh_official(*, force: bool = False, now: Optional[datetime] = None):
     return row
 
 
+MANUAL_RECHECK_SECONDS = 3600
+
+
 def _manual_awaiting_fiasa(row) -> bool:
     """A MANUAL row in force is a stopgap: look for FIASA's price for the
     period (at most once an hour) so it supersedes the manual one."""
     if row.source != 'MANUAL':
         return False
-    return bool(cache.add(f'fuel_price_manual_recheck:{row.pk}', True, 3600))
+    return bool(cache.add(f'fuel_price_manual_recheck:{row.pk}', True, MANUAL_RECHECK_SECONDS))
 
 
 def _missing_petrol(row) -> bool:
@@ -762,6 +765,13 @@ def resolve_official(zone: str, now: Optional[datetime] = None, *, refresh: bool
         # (deduplicated by a cache lock for READ_REFRESH_SECONDS) and answer
         # now with what is stored, flagged stale.
         if cache.add('fuel_price_read_refresh', True, READ_REFRESH_SECONDS):
+            attempted = True
+            enqueue_refresh()
+    elif row is not None and row.source == 'MANUAL' and refresh and _read_refresh_enabled():
+        # A manual price is a stopgap: while it is in force, look for FIASA's
+        # price for the period at most once an hour (background task), so
+        # FIASA takes over within the hour — not only at the 06:00 run.
+        if cache.add('fuel_price_manual_takeover_check', True, MANUAL_RECHECK_SECONDS):
             attempted = True
             enqueue_refresh()
     stale = rec is not None and rec['effective_from'] < start

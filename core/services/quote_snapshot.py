@@ -56,7 +56,9 @@ def snapshot_fields(costing, now):
     }
     if costing.get('margin_pct') is not None:
         # Server-side margin % on the stored floor and price (margin on price).
-        out['margin_percentage'] = _dec(max(min(costing['margin_pct'], 999.99), -999.99), '0.01')
+        # The true margin on price; null only past what the column holds.
+        mp = costing['margin_pct']
+        out['margin_percentage'] = _dec(mp, '0.01') if abs(mp) < 9_999_999 else None
     elif not costing.get('floor_known'):
         # No floor, no margin: null, never a 0,00 that reads as "no margin".
         out['margin_percentage'] = None

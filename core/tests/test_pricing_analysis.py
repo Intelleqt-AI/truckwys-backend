@@ -1399,11 +1399,10 @@ class Round4Tests(_Base):
         self.assertIsNone(self.api.get(url).json()['agreed_price'])
 
     # 11: benchmark backward compatibility
-    def test_benchmark_new_lane_code_without_data_answers_as_before(self):
+    def test_benchmark_new_lane_code_without_data_is_a_clean_no_market(self):
         resp = self.api.get('/api/v1/quotes/benchmark/?origin=Johannesburg&destination=Gaborone&vehicle_type=superlink')
-        self.assertEqual(resp.status_code, 400)
-        self.assertNotIn('data_points', resp.json())
-        self.assertEqual(resp.json(), {'success': False, 'error': 'origin, destination, and vehicle_type are required'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual((resp.json()['market_avg_rate'], resp.json()['data_points']), (None, 0))
         # A known lane without data still answers 200 with data_points 0.
         resp = self.api.get('/api/v1/quotes/benchmark/?origin=BFN&destination=PE&vehicle_type=superlink')
         if resp.json().get('source') != 'estimate':

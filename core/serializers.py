@@ -1712,6 +1712,8 @@ class CompanySerializer(serializers.ModelSerializer):
         return value
 
     def validate_driver_allowance_per_night(self, value):
+        if self._unchanged('driver_allowance_per_night', value):
+            return value
         if value is not None and not (Decimal('1') <= value <= Decimal('5000')):
             raise serializers.ValidationError('Enter a driver allowance between R1 and R5 000 per night, or leave it blank.')
         return value
@@ -1719,6 +1721,8 @@ class CompanySerializer(serializers.ModelSerializer):
     def validate_operating_cost_per_km(self, value):
         # Blank clears it (back to the figure from expenses); otherwise a
         # plausible R/km, so a typo can't price every quote at R0.10 or R10 000/km.
+        if self._unchanged('operating_cost_per_km', value):
+            return value
         if value is not None and not (Decimal('1') <= value <= Decimal('200')):
             raise serializers.ValidationError('Enter an operating cost between R1 and R200 per km, or leave it blank.')
         return value
@@ -1788,7 +1792,8 @@ class CompanySerializer(serializers.ModelSerializer):
 class QuotePipelineSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source='customer.name', read_only=True)
     price = serializers.DecimalField(source='total_amount', max_digits=10, decimal_places=2, read_only=True)
-    margin_pct = serializers.DecimalField(source='margin_percentage', max_digits=5, decimal_places=2, read_only=True)
+    margin_pct = serializers.DecimalField(source='margin_percentage', max_digits=9, decimal_places=2, read_only=True,
+                                          allow_null=True)
     updated_at_iso = serializers.DateTimeField(source='updated_at', format='%Y-%m-%dT%H:%M:%SZ', read_only=True)
     confidence = serializers.SerializerMethodField()  # ADD THIS
     status = serializers.SerializerMethodField()  # ADD THIS

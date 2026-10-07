@@ -104,7 +104,9 @@ class Quote(models.Model):
     
     # Margin on price over the full cost floor; null when the floor is unknown
     # (never a 0,00 that reads as "no margin").
-    margin_percentage = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True, default=None,
+    # Wide enough for a real loss-making margin on price (−4 000 % is a real
+    # figure for a price far under cost); never clamped to a fake ±999,99.
+    margin_percentage = models.DecimalField(max_digits=9, decimal_places=2, null=True, blank=True, default=None,
                                             help_text="Profit margin %")
     
     confidence = models.CharField(max_length=20, choices=CONFIDENCE_CHOICES, default='MEDIUM')

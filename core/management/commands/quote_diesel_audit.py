@@ -189,6 +189,7 @@ class Command(BaseCommand):
         header = f'{"id":>5}  {"company":<32} {"per_litre":>9} {"now":<4} {"rule":<4}  why'
         self.stdout.write(header)
         self.stdout.write('-' * 100)
+        before_migrate = 'fuel_price_mode' not in c_cols
         changes = flagged = 0
         for c in companies:
             mode, reason = why(c.get('fuel_price_per_litre'))
@@ -203,5 +204,10 @@ class Command(BaseCommand):
             self.stdout.write(f'{c["id"]:>5}  {(c.get("company_name") or "")[:32]:<32} '
                               f'{str(c.get("fuel_price_per_litre")):>9} {now_mode:<4} {mode:<4}  {reason}  |  '
                               f'petrol now {p_now} rule {p_mode}: {p_reason}')
-        self.stdout.write(f'\n{changes} difference(s) between the rule and the stored mode; {flagged} own price(s) '
-                          'match an old backup price. Dry run: nothing was changed.')
+        if before_migrate:
+            # No stored mode yet: the "rule" column IS the plan, nothing to diff.
+            self.stdout.write(f'\nPlanned classification shown (differences: n/a before migrate); {flagged} own '
+                              'price(s) match an old backup price. Dry run: nothing was changed.')
+        else:
+            self.stdout.write(f'\n{changes} difference(s) between the rule and the stored mode; {flagged} own '
+                              'price(s) match an old backup price. Dry run: nothing was changed.')

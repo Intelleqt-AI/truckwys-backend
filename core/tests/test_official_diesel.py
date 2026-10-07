@@ -382,3 +382,41 @@ class Round3FuelTests(TestCase):
         row(date.today(), 30.0, 29.0, eff=None)
         Command()._fuel_prices(2)
         self.assertEqual(FuelPrice.objects.filter(date=date.today()).count(), 2)
+
+
+class ManualStopgapTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        staff = get_user_model().objects.create_user(username='ops2', email='ops2@x.test', password='x', is_staff=True)
+        self.api = APIClient()
+        self.api.force_authenticate(staff)
+
+    def test_post_says_whether_the_manual_price_is_in_force(self):
+        with at(sast(2026, 10, 8, 9)):
+            body = self.api.post('/api/v1/fuel-prices/current/', {'diesel_inland': '33.10', 'diesel_coastal': '32.20'},
+                                 format='json').json()
+        self.assertTrue(body['in_force'])
+        row(date(2026, 10, 7), 32.7989, 31.9269, eff=sast(2026, 10, 7, 0, 1))
+        with at(sast(2026, 10, 8, 10)):
+            body = self.api.post('/api/v1/fuel-prices/current/', {'diesel_inland': '33.20', 'diesel_coastal': '32.30'},
+                                 format='json').json()
+        self.assertFalse(body['in_force'])
+        self.assertIn('FIASA price is already recorded', body['message'])
+
+    @override_settings(FUEL_PRICE_READ_REFRESH=True)
+    def test_reads_queue_an_hourly_takeover_check_while_manual_is_in_force(self):
+        row(date(2026, 10, 7), 33.0, 32.1, source='MANUAL', eff=sast(2026, 10, 7, 8))
+        with at(sast(2026, 10, 7, 9)), patch.object(fps, 'enqueue_refresh', return_value=True) as q:
+            fps.resolve_official('INLAND')
+            fps.resolve_official('INLAND')              # throttled: once an hour
+        self.assertEqual(q.call_count, 1)
+        cache.delete('fuel_price_manual_takeover_check')
+        with at(sast(2026, 10, 7, 10, 5)), patch.object(fps, 'enqueue_refresh', return_value=True) as q:
+            fps.resolve_official('INLAND')
+        self.assertEqual(q.call_count, 1)
+        # Once FIASA is recorded for the period, no more checks.
+        row(date(2026, 10, 7), 32.7989, 31.9269, eff=sast(2026, 10, 7, 0, 1))
+        cache.delete('fuel_price_manual_takeover_check')
+        with at(sast(2026, 10, 7, 11)), patch.object(fps, 'enqueue_refresh', return_value=True) as q:
+            fps.resolve_official('INLAND')
+        q.assert_not_called()

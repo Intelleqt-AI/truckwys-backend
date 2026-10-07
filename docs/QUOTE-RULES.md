@@ -356,3 +356,13 @@ Copy the file into each client repo's test fixtures (keep identical).
   - Fuel alert compares the fuel the quote was priced on (petrol quotes compare petrol; adds `fuel_product`);
     market normalisation detects petrol from the priced truck. Win-probability `level` is model / bands / none.
   - Golden vectors: unchanged this round.
+- **Polish (7 Oct 2026).** `Quote.margin_percentage` holds the true margin on price (migration 0157 widens it;
+  no ±999,99 cap). A copilot re-itemise below cost keeps fuel / tolls / driver non-negative, base rate 0, and the
+  shortfall as the negative remainder in additional charges (the web builder's existing convention).
+  `/quotes/optimize/` margins are on price. `/quotes/benchmark/` copy is SA format and a lane with no data
+  answers 200 with no market (never the old 400). The minimum-charge recommendation names the charge only for
+  the choice at it ("Balanced R 30 900, just above your R 30 000 minimum charge"). Operating cost per km and
+  driver allowance per night accept an unchanged stored value. The audit prints no difference count before
+  migrate. The staff manual price response says `in_force` (false + message when FIASA's price for the period
+  is already recorded); while a manual price is in force, reads queue a FIASA re-check at most hourly.
+  Golden vectors unchanged.

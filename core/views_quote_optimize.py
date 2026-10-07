@@ -117,6 +117,14 @@ class AIPriceOptimizeView(APIView):
                 origin=origin or None,
                 destination=destination or None,
             )
+            # The optimizer's margin is markup on cost; the API reports the true
+            # margin on price, (price - cost) / price (QUOTE-RULES §7).
+            def margin_on_price(price):
+                return round((price - total_cost) / price * 100.0, 1) if price else None
+            if result.get('optimal_price'):
+                result['optimal_margin_pct'] = margin_on_price(float(result['optimal_price']))
+            result['curve'] = [{**pt, 'margin_pct': margin_on_price(float(pt['price']))}
+                               for pt in result.get('curve') or []]
             if result.get('used_heuristic_fallback') or result.get('win_probability_source') != 'model':
                 # A heuristic is not a chance to win: no %, and no expected
                 # profit built on it. The price is labelled heuristic.

@@ -1228,3 +1228,69 @@ class NarrativeBudgetTests(TestCase):
         with patch.object(agent, '_llm_enabled', return_value=True), \
                 patch.object(agent, '_llm_generate', side_effect=APITimeoutError('Request timed out.')):
             self.assertIsNone(qa._llm_narrative({'quote_total': 1}))
+
+
+class Round4PolishTests(_Base):
+    def test_copilot_below_cost_price_keeps_true_margin(self):
+        from core.models import CopilotProposal
+        from core.services import copilot_tools as tools
+        q = self.create()
+        out = tools.propose_update(self.company, self.user, None,
+                                   {'table': 'quotes', 'record_id': q.id, 'fields': {'total_amount': '1000'}})
+        ok, body = tools.execute_proposal(CopilotProposal.objects.get(id=out['proposal_id']), self.user, self.company)
+        self.assertTrue(ok, body)
+        q.refresh_from_db()
+        floor = float(q.cost_floor)
+        self.assertAlmostEqual(float(q.margin_percentage), round((1000 - floor) / 1000 * 100, 2), places=2)
+        self.assertLess(float(q.margin_percentage), -999.99)
+        # Builder convention (web QuoteBuilder savedBaseShortfall): fuel / tolls /
+        # driver stay non-negative, base 0, the shortfall is the negative remainder.
+        for f in ('base_rate', 'fuel_surcharge', 'toll_charges', 'driver_allowance'):
+            self.assertGreaterEqual(getattr(q, f), 0, f)
+        self.assertEqual(q.base_rate + q.fuel_surcharge + q.toll_charges + q.driver_allowance + q.additional_charges,
+                         q.total_amount)
+
+    def test_operating_cost_and_allowance_unchanged_values_save(self):
+        Company.objects.filter(pk=self.company.pk).update(operating_cost_per_km=Decimal('250'),
+                                                          driver_allowance_per_night=Decimal('6000'))
+        body = self.api.get('/api/v1/company/profile/').json()
+        r = self.api.patch('/api/v1/company/profile/', {
+            'operating_cost_per_km': body['operating_cost_per_km'],
+            'driver_allowance_per_night': body['driver_allowance_per_night'], 'company_name': 'X'}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        r = self.api.patch('/api/v1/company/profile/', {'operating_cost_per_km': '260'}, format='json')
+        self.assertEqual(r.status_code, 400)
+
+    def test_optimize_margin_is_on_price(self):
+        from core.tests.test_pricing_analysis import platform_market
+        platform_market(self.company, self.customer, start=30000)
+        r = self.api.post('/api/v1/quotes/optimize/', {'total_cost': 20000, 'origin': 'JHB', 'destination': 'DBN',
+                                                       'vehicle_type': 'Superlink'}, format='json').json()
+        p = r['optimal_price']
+        self.assertAlmostEqual(r['optimal_margin_pct'], round((p - 20000) / p * 100, 1), places=1)
+        for pt in r['curve']:
+            self.assertAlmostEqual(pt['margin_pct'], round((pt['price'] - 20000) / pt['price'] * 100, 1), places=1)
+
+    def test_benchmark_sa_copy_and_new_lane_codes_answer_cleanly(self):
+        from core.tests.test_pricing_analysis import platform_market
+        platform_market(self.company, self.customer)
+        r = self.api.get('/api/v1/quotes/benchmark/?origin=JHB&destination=DBN&vehicle_type=superlink').json()
+        self.assertRegex(r['recommendation'], r'R ?\s?\d{2}[\s ]\d{3} – R')
+        r = self.api.get('/api/v1/quotes/benchmark/?origin=Johannesburg&destination=Gaborone&vehicle_type=superlink')
+        self.assertEqual(r.status_code, 200)
+        self.assertIsNone(r.json()['market_avg_rate'])
+        self.assertEqual(r.json()['data_points'], 0)
+
+    def test_audit_before_migrate_shows_no_difference_count(self):
+        from io import StringIO
+        from django.core.management import call_command
+        from django.db import connection
+        real = connection.introspection.get_table_description
+
+        def old_schema(cursor, table):
+            return [c for c in real(cursor, table) if c.name not in ('fuel_price_mode', 'fuel_price_petrol_mode')]
+        out = StringIO()
+        with patch.object(connection.introspection, 'get_table_description', side_effect=old_schema):
+            call_command('quote_diesel_audit', '--classification', stdout=out)
+        self.assertIn('n/a before migrate', out.getvalue())
+        self.assertNotIn('difference(s) between', out.getvalue())
