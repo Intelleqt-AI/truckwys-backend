@@ -194,6 +194,25 @@ def blocked_response_body(check):
     }
 
 
+def quote_fuel_product(quote):
+    """'diesel' | 'petrol_95' | 'petrol_93': the fuel the quote was priced
+    on — its pricing snapshot, else the truck it was priced on, never the
+    vehicle-type name."""
+    snap = ((getattr(quote, 'costing_snapshot', None) or {}).get('diesel') or {})
+    ft = snap.get('fuel_type') or (snap.get('input') or {}).get('fuel_type')
+    grade = snap.get('grade') or (snap.get('input') or {}).get('grade')
+    if not ft and getattr(quote, 'priced_vehicle_type_id', None):
+        ft = getattr(quote.priced_vehicle_type, 'fuel_type', None)
+    if str(ft or '').lower() in ('petrol', 'hybrid'):
+        grade = grade or getattr(getattr(quote, 'company', None), 'fuel_price_petrol_grade', None) or '95'
+        return f'petrol_{grade}'
+    return 'diesel'
+
+
+def fuel_word(product):
+    return 'Diesel' if product == 'diesel' else f"Petrol {product.split('_')[1]}"
+
+
 def fuel_change_since_pricing(quote, now=None):
     """Like-for-like diesel movement since the quote was priced (§9): the
     official price for the quote's OWN zone then (snapshot) vs now. Legacy
@@ -203,6 +222,7 @@ def fuel_change_since_pricing(quote, now=None):
     {'zone', 'baseline', 'current', 'delta', 'delta_pct', 'litres', 'impact_zar'}"""
     from core.services.fuel_price import resolve_official
     zone = (quote.fuel_zone or '').upper()
+    product = quote_fuel_product(quote)
     if quote.fuel_official_at_pricing is not None:
         baseline = float(quote.fuel_official_at_pricing)
     elif quote.fuel_price_source == 'official' and quote.fuel_price_used is not None:
@@ -212,7 +232,9 @@ def fuel_change_since_pricing(quote, now=None):
     else:
         return None
     zone = zone or 'INLAND'
-    current = resolve_official(zone, now)['price']
+    if product.startswith('petrol') and zone == 'COASTAL':
+        product = 'petrol_95'                 # 93 is not sold at the coast
+    current = resolve_official(zone, now, product=product)['price']
     if current is None or baseline <= 0:
         return None
     delta = current - baseline
@@ -225,7 +247,8 @@ def fuel_change_since_pricing(quote, now=None):
     else:
         fuel = float(quote.fuel_surcharge or 0)
         impact = round(fuel * delta / baseline, 2) if fuel else None
-    return {'zone': zone, 'baseline': baseline, 'current': current, 'delta': round(delta, 4),
+    return {'zone': zone, 'product': product, 'fuel_word': fuel_word(product),
+            'baseline': baseline, 'current': current, 'delta': round(delta, 4),
             'delta_pct': round(delta / baseline * 100, 2), 'litres': litres, 'impact_zar': impact}
 
 

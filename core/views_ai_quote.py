@@ -1460,7 +1460,10 @@ class QuoteFuelAlertView(APIView):
             estimated_cost_impact = int(_half_up_decimal(abs(change['impact_zar'] or 0), 0))
 
             alert_type = 'FUEL_INCREASE' if delta_zar > 0 else 'FUEL_DECREASE'
-            message = f"Diesel {'up' if delta_zar > 0 else 'down'} R{abs(delta_zar):.2f}/L since this quote was created. This job now costs ~R{estimated_cost_impact} {'more' if delta_zar > 0 else 'less'}."
+            from core.services.quote_costing import fmt_rand
+            message = (f"{change.get('fuel_word') or 'Diesel'} {'up' if delta_zar > 0 else 'down'} "
+                       f"{fmt_rand(abs(delta_zar), 2)}/L since this quote was priced. This job now costs "
+                       f"~{fmt_rand(estimated_cost_impact)} {'more' if delta_zar > 0 else 'less'}.")
             action = 'Consider requesting a surcharge adjustment' if delta_zar > 0 else 'You may have extra margin to offer a discount'
 
             return Response({
@@ -1470,6 +1473,7 @@ class QuoteFuelAlertView(APIView):
                 'fuel_delta_pct': round(delta_pct, 2),
                 'fuel_delta_zar': round(delta_zar, 2),
                 'estimated_cost_impact': estimated_cost_impact,
+                'fuel_product': change.get('product', 'diesel'),
                 'message': message,
                 'action': action,
             })

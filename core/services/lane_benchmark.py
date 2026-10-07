@@ -189,7 +189,16 @@ MARKET_WINDOW_DAYS = 180       # QUOTE-RULES §8: last 180 days, every tier
 CLASS_MIN_N = 5                # same vehicle class only when it has >= 5 quotes
 QUOTE_ROW_FIELDS = ('id', 'total_amount', 'company_id', 'created_at', 'vehicle_type', 'distance', 'trip_type',
                     'fuel_litres', 'fuel_official_at_pricing', 'fuel_zone', 'company__fuel_zone',
-                    'company__fuel_price_petrol_grade')
+                    'company__fuel_price_petrol_grade', 'priced_vehicle_type__fuel_type')
+
+
+def _attr_path(obj, key, default=None):
+    """getattr for a values() style key ('priced_vehicle_type__fuel_type')."""
+    for part in key.split('__'):
+        obj = getattr(obj, part, None)
+        if obj is None:
+            return default
+    return obj
 
 
 class FuelNormaliser:
@@ -213,12 +222,19 @@ class FuelNormaliser:
         return self._prices[key]
 
     def product(self, row_get):
-        """'diesel', or 'petrol_95' / 'petrol_93' for a petrol or hybrid truck
-        (by its vehicle type), so a petrol quote moves with petrol."""
-        vt = self._vt(row_get('company_id'), row_get('vehicle_type'))
-        ft = (getattr(vt, 'fuel_type', None) or 'Diesel').lower()
+        """'diesel', or 'petrol_95' / 'petrol_93' for a petrol or hybrid truck,
+        so a petrol quote moves with petrol. The truck the quote was PRICED on
+        (priced_vehicle_type) decides; the name only for older quotes without
+        one. Grade 93 is inland only: coastal petrol is 95."""
+        ft = row_get('priced_vehicle_type__fuel_type')
+        if not ft:
+            vt = self._vt(row_get('company_id'), row_get('vehicle_type'))
+            ft = getattr(vt, 'fuel_type', None)
+        ft = (ft or 'Diesel').lower()
         if ft in ('petrol', 'hybrid'):
-            return f"petrol_{row_get('company__fuel_price_petrol_grade') or '95'}"
+            zone = (row_get('fuel_zone') or row_get('company__fuel_zone') or 'INLAND').upper()
+            grade = row_get('company__fuel_price_petrol_grade') or '95'
+            return f"petrol_{'95' if zone == 'COASTAL' else grade}"
         return 'diesel'
 
     def _vt(self, company_id, name):
@@ -248,7 +264,7 @@ class FuelNormaliser:
     def adjust(self, row):
         """The fuel-normalised total for a quote row (dict or Quote), or None
         when it can't be normalised (then it is left out)."""
-        get = row.get if isinstance(row, dict) else (lambda k, d=None: getattr(row, k, d))
+        get = row.get if isinstance(row, dict) else (lambda k, d=None: _attr_path(row, k, d))
         total = get('total_amount')
         if total is None:
             return None

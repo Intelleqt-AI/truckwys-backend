@@ -394,3 +394,14 @@ class PetrolNormalisationTests(FuelNormalisationTests):
         row = {'total_amount': 5000, 'fuel_litres': 100, 'fuel_official_at_pricing': None, 'fuel_zone': 'INLAND',
                'created_at': self.sep, 'company_id': None, 'vehicle_type': 'Petrol LDV', 'distance': 500}
         self.assertAlmostEqual(n.adjust(row), 5000 + 100 * (27.0 - 25.0))
+
+
+class PricedVehicleFuelTests(TestCase):
+    def test_product_comes_from_the_priced_truck_not_the_name(self):
+        from core.services.lane_benchmark import FuelNormaliser
+        n = FuelNormaliser()
+        row = {'company_id': None, 'vehicle_type': 'Superlink', 'priced_vehicle_type__fuel_type': 'Petrol',
+               'company__fuel_price_petrol_grade': '93', 'fuel_zone': 'INLAND'}
+        self.assertEqual(n.product(row.get), 'petrol_93')
+        self.assertEqual(n.product({**row, 'fuel_zone': 'COASTAL'}.get), 'petrol_95')   # 93 is inland only
+        self.assertEqual(n.product({**row, 'priced_vehicle_type__fuel_type': 'Diesel'}.get), 'diesel')

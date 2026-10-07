@@ -1188,3 +1188,21 @@ class StoredSettingsNotLockedOutTests(_Base):
         # A changed value is still validated.
         r = self.api.patch(self.URL, {'fuel_price_electric': '36'}, format='json')
         self.assertEqual(r.status_code, 400)
+
+
+class PetrolFuelAlertTests(_Base):
+    def test_petrol_quote_alert_compares_petrol(self):
+        from core.tests.quote_rules_fixtures import add_vehicle
+        FuelPrice.objects.filter(date=date(2026, 9, 2)).update(petrol_95=Decimal('24.0000'))
+        FuelPrice.objects.filter(date=date(2026, 10, 7)).update(petrol_95=Decimal('26.0000'))
+        vt = VehicleType.objects.create(company=self.company, name='Petrol Rigid', capacity=34, max_distance=3000,
+                                        base_rate=20, fuel_consumption_l_per_100km=30, fuel_type='Petrol')
+        add_vehicle(self.company, vt)
+        with patch('django.utils.timezone.now', return_value=sast(2026, 10, 1, 9)):
+            q = self.create(vehicle_type='Petrol Rigid')
+        self.assertEqual(q.fuel_official_at_pricing, Decimal('24.0000'))
+        body = self.api.get(f'/api/v1/quotes/{q.id}/fuel-alert/').json()
+        self.assertTrue(body['has_alert'], body)
+        self.assertAlmostEqual(body['fuel_delta_zar'], 2.0)
+        self.assertEqual(body['fuel_product'], 'petrol_95')
+        self.assertTrue(body['message'].startswith('Petrol 95 up R'), body['message'])
