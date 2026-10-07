@@ -15,16 +15,20 @@ The demo logins get a fresh random password each run, printed at the end
 What it creates (every name is invented and suffixed "(Demo)"):
 
   MODEL company  "Karoo Line Haulage (Demo)"   login model@demo.truckwys.local
-      72 decided quote outcomes (won AND lost, price-sensitive) on three lanes
-      (Johannesburg->Durban, Cape Town->Johannesburg, Johannesburg->Gaborone),
-      open + expired quotes, ~35 completed costed trips with expenses over the
-      last 12 months (company-actual fixed cost per km), invoices/payments with
-      one slow payer carrying overdue invoices. Operating cost all-in ~R17/km
-      excl. fuel and tolls: trip-linked wages/maintenance plus monthly
-      company-level bills (insurance, vehicle finance, licences, office).
+      ~650 decided quote outcomes (won AND lost, price-sensitive) on three
+      lanes (Johannesburg->Durban, Cape Town->Johannesburg, Johannesburg->
+      Gaborone) -- enough to clear the win model's 200-accepted AND
+      200-rejected bar independently (WIN_MODEL_MIN_ACCEPTED/_REJECTED),
+      not just a combined total -- open + expired quotes, ~35 completed
+      costed trips with expenses over the last 12 months (company-actual
+      fixed cost per km), invoices/payments with one slow payer carrying
+      overdue invoices. Operating cost all-in ~R17/km excl. fuel and tolls:
+      trip-linked wages/maintenance plus monthly company-level bills
+      (insurance, vehicle finance, licences, office).
   RULES company  "Highveld Freight Co (Demo)"  login rules@demo.truckwys.local
-      16 decided outcomes on Johannesburg->Durban (below the 40-outcome model
-      threshold), 6 costed trips (below the 10-trip actuals threshold).
+      16 decided outcomes on Johannesburg->Durban (well below the 200-accepted/
+      200-rejected model threshold), 6 costed trips (below the 10-trip actuals
+      threshold).
   COLD company   "Fynbos Road Carriers (Demo)" login cold@demo.truckwys.local
       No quotes, no trips; one customer with no history.
   MARKET companies (5, no usable login)
@@ -171,14 +175,19 @@ MARKET_COMPANIES = [
 # probability: P(win) = sigmoid(bias - slope * (price/market - 1)).
 # pay = invoice-settlement profile.
 MODEL_CUSTOMERS = [
+    # 'n' scaled 9x from the original 22/20/16/14 (72 total) so the MODEL
+    # company's decided outcomes clear the win model's 200-accepted AND
+    # 200-rejected bar (WIN_MODEL_MIN_ACCEPTED/_REJECTED) independently, not
+    # just a 200+ combined total — verified empirically against this file's
+    # fixed SEED: ~400+ accepted, ~240+ rejected at this scale.
     {'slug': 'umgeni', 'name': 'Umgeni Packaging (Demo)', 'contact': 'Zanele Khoza', 'terms': 'NET30',
-     'role': 'strong_payer', 'bias': 1.7, 'slope': 9.0, 'pay': 'prompt', 'n': 22, 'credit': 88},
+     'role': 'strong_payer', 'bias': 1.7, 'slope': 9.0, 'pay': 'prompt', 'n': 198, 'credit': 88},
     {'slug': 'vaalkop', 'name': 'Vaalkop Steel Traders (Demo)', 'contact': 'Hennie Kruger', 'terms': 'NET30',
-     'role': 'price_sensitive', 'bias': 0.2, 'slope': 17.0, 'pay': 'steady', 'n': 20, 'credit': 74},
+     'role': 'price_sensitive', 'bias': 0.2, 'slope': 17.0, 'pay': 'steady', 'n': 180, 'credit': 74},
     {'slug': 'kloofnek', 'name': 'Kloofnek Timber (Demo)', 'contact': 'Lungile Mahlangu', 'terms': 'NET30',
-     'role': 'slow_payer', 'bias': 1.0, 'slope': 10.0, 'pay': 'slow', 'n': 16, 'credit': 41},
+     'role': 'slow_payer', 'bias': 1.0, 'slope': 10.0, 'pay': 'slow', 'n': 144, 'credit': 41},
     {'slug': 'lekkervars', 'name': 'Lekker Vars Produce (Demo)', 'contact': 'Annelie du Plessis', 'terms': 'NET30',
-     'role': 'neutral', 'bias': 0.6, 'slope': 11.0, 'pay': 'steady', 'n': 14, 'credit': 70},
+     'role': 'neutral', 'bias': 0.6, 'slope': 11.0, 'pay': 'steady', 'n': 126, 'credit': 70},
     {'slug': 'witberg', 'name': 'Witberg Chemicals (Demo)', 'contact': 'Farouk Ebrahim', 'terms': 'NET30',
      'role': 'new_no_history', 'bias': 0.0, 'slope': 0.0, 'pay': 'steady', 'n': 0, 'credit': None},
 ]

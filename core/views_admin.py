@@ -998,12 +998,11 @@ class AdminModelHealthView(APIView):
     permission_classes = [IsSuperUser]
 
     def get(self, request):
-        from django.conf import settings
         from core.models import MLModelVersion
         from core.services import quote_features
 
         # What training actually uses (never-sent quotes excluded).
-        from core.services.quote_training import closed_outcomes
+        from core.services.quote_training import _min_class_counts, closed_outcomes
         trainable = closed_outcomes()
         by_label = {
             row['outcome']: row['n']
@@ -1012,13 +1011,15 @@ class AdminModelHealthView(APIView):
         accepted = by_label.get('accepted', 0)
         rejected = by_label.get('rejected', 0)
         total = accepted + rejected
-        global_floor = int(getattr(settings, 'WIN_MODEL_GLOBAL_MIN_SAMPLES', 40))
+        min_accepted, min_rejected = _min_class_counts('global')
 
+        # Checked independently, not as a combined total: a lopsided class
+        # split can clear the old-style total floor and still not qualify.
         blockers = []
-        if total < global_floor:
-            blockers.append(f'only {total} of {global_floor} outcomes needed')
-        if accepted == 0 or rejected == 0:
-            blockers.append('only one outcome class present — a classifier cannot train')
+        if accepted < min_accepted:
+            blockers.append(f'only {accepted} of {min_accepted} accepted outcomes needed')
+        if rejected < min_rejected:
+            blockers.append(f'only {rejected} of {min_rejected} rejected outcomes needed')
 
         # How much of the most predictive CORE feature is a real measurement
         # rather than the 1.0 filler. A model trained where this is near zero
@@ -1049,8 +1050,8 @@ class AdminModelHealthView(APIView):
                 'accepted': accepted,
                 'rejected': rejected,
                 'total': total,
-                'global_min_samples': global_floor,
-                'user_min_samples': int(getattr(settings, 'WIN_MODEL_USER_MIN_SAMPLES', 40)),
+                'min_accepted': min_accepted,
+                'min_rejected': min_rejected,
                 'class_balance': round(min(accepted, rejected) / total, 4) if total else 0,
             },
             'feature_coverage': {

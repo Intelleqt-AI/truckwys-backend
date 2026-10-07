@@ -1407,8 +1407,8 @@ class QuoteModelStatsView(APIView):
 
             # Win-probability model status — this is the one that drives the
             # profit sweet-spot curve. Two-tier: {'user': {...}, 'global': {...}}
-            # progress, each with its own outcomes_collected/outcomes_needed/
-            # qualifies — see core.services.win_prediction.model_progress.
+            # progress, each with its own outcomes_collected/accepted_needed/
+            # rejected_needed/qualifies — see core.services.win_prediction.model_progress.
             try:
                 from core.services.win_prediction import model_progress
                 win = model_progress(request.user, company)

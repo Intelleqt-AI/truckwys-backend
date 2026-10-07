@@ -1265,15 +1265,18 @@ def rules_thresholds(market, customer, raw=False):
 
 
 def _model_unavailable_reason(company, with_code=False):
-    """(reason, short[, code, n]): plain words for why there is no model % yet.
-    code: few_closed | needs_both | trains_tonight | unavailable."""
-    from django.conf import settings
-    from django.db.models import Count, Q
-    from core.services.quote_training import closed_outcomes
-    needed = int(getattr(settings, 'WIN_MODEL_COMPANY_MIN_SAMPLES', 40))
+    """(reason, short[, code, won, lost]): plain words for why there is no
+    model % yet. code: few_closed | needs_both | trains_tonight | unavailable.
 
-    def ret(reason, short, code, n=0):
-        return (reason, short, code, n) if with_code else (reason, short)
+    Accepted and rejected are gated INDEPENDENTLY (core.services.quote_training.
+    _min_class_counts) — 400 won and 2 lost does not qualify just because the
+    combined total looks large."""
+    from core.services.quote_training import _min_class_counts, closed_outcomes
+    from django.db.models import Count, Q
+    min_won, min_lost = _min_class_counts('company')
+
+    def ret(reason, short, code, won=0, lost=0):
+        return (reason, short, code, won, lost) if with_code else (reason, short)
     if company is None:
         return ret('No trained model is available.', 'Bands', 'unavailable')
     # The training definition of a closed quote (never-sent quotes out, r5 M1).
@@ -1283,28 +1286,25 @@ def _model_unavailable_reason(company, with_code=False):
     agg = qs.aggregate(won=Count('id', filter=Q(outcome='accepted')), lost=Count('id', filter=Q(outcome='rejected')))
     won, lost = agg['won'] or 0, agg['lost'] or 0
     n = won + lost
-    if n < needed:
-        return ret((f'A percentage needs {needed} won or lost quotes to learn from; you have {n} so far. '
-                    'Until then, likelihood is shown in plain bands.'), f'Bands · {n} of {needed} closed quotes',
-                   'few_closed', n)
-    if not won or not lost:
-        return ret((f'A percentage needs both won and lost quotes to learn from; you have {won} won and {lost} lost.'),
-                   'Bands · needs won and lost quotes', 'needs_both', n)
+    if won < min_won or lost < min_lost:
+        return ret((f'A percentage needs {min_won} won and {min_lost} lost quotes to learn from; you have '
+                    f'{won} won and {lost} lost so far. Until then, likelihood is shown in plain bands.'),
+                   f'Bands · {n} of {min_won + min_lost} closed quotes', 'few_closed', won, lost)
     return ret('You have enough closed quotes; your pricing model trains overnight.', 'Bands · model trains tonight',
-               'trains_tonight', n)
+               'trains_tonight', won, lost)
 
 
 BANDS_WORDS = 'Chance to win as Likely, Even chance or Less likely'
 
 
-def likelihood_headline(code, *, thresholds, model_block=None, n_closed=0, needed=40):
+def likelihood_headline(code, *, thresholds, model_block=None, won=0, lost=0, needed_won=200, needed_lost=200):
     """The panel subtitle (≤ 110 characters), display-ready."""
     if code == 'model' and model_block is not None:
         return f'Chance to win from {model_block["basis_label"]}.'
     if not thresholds:
         return 'No chance to win yet: no real quotes on this lane.'
     return {
-        'few_closed': f'{BANDS_WORDS}. A % needs {needed} closed quotes (you have {n_closed}).',
+        'few_closed': f'{BANDS_WORDS}. A % needs {needed_won} won + {needed_lost} lost (you have {won}, {lost}).',
         'needs_both': f'{BANDS_WORDS}. A % needs both won and lost quotes.',
         'trains_tonight': f'{BANDS_WORDS} until your model trains tonight.',
         'outside_range': f'{BANDS_WORDS}: these prices are outside what your model has learned from.',
@@ -1637,9 +1637,10 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
             ctx = None
         model_block, reason, predictor = None, None, None
         short = None
-        reason_code, n_closed = None, 0
+        reason_code, n_closed, won_closed, lost_closed = None, 0, 0, 0
         if ctx is None or not ctx.available:
-            reason, short, reason_code, n_closed = _model_unavailable_reason(company, with_code=True)
+            reason, short, reason_code, won_closed, lost_closed = _model_unavailable_reason(company, with_code=True)
+            n_closed = won_closed + lost_closed
         else:
             try:
                 model_block, reason, predictor = model_likelihood(
@@ -1695,11 +1696,12 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
         else:
             likelihood['reason'] = reason
             likelihood['short'] = short or 'Bands'
-        from django.conf import settings as dj_settings
+        from core.services.quote_training import _min_class_counts
+        min_won, min_lost = _min_class_counts('company')
         likelihood['reason_code'] = reason_code if model_block is not None or thresholds else 'no_basis'
         likelihood['headline'] = likelihood_headline(
-            reason_code, thresholds=thresholds, model_block=model_block, n_closed=n_closed,
-            needed=int(getattr(dj_settings, 'WIN_MODEL_COMPANY_MIN_SAMPLES', 40)))
+            reason_code, thresholds=thresholds, model_block=model_block, won=won_closed, lost=lost_closed,
+            needed_won=min_won, needed_lost=min_lost)
         # Empty return priced in and even the market's upper quarter can't
         # reach the target margin over the full round-trip cost: no choice is
         # a good answer, so keep Balanced and say what to do instead.

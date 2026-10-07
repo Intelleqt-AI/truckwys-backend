@@ -39,8 +39,9 @@ class Command(BaseCommand):
         if scope in ('global', 'all'):
             before = win_model_status()
             self.stdout.write(
-                f"Outcomes collected: {before['outcomes_collected']} "
-                f"(need {before['outcomes_needed']}) · current mode: {before['mode']}"
+                f"Outcomes collected: {before['accepted']} accepted (need {before['accepted_needed']}), "
+                f"{before['rejected']} rejected (need {before['rejected_needed']}) · "
+                f"current mode: {before['mode']}"
             )
             self._report('Win model', retrain_win_model())
         if scope == 'user':

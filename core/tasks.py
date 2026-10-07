@@ -508,9 +508,9 @@ def refresh_fuel_price(self):
 @track_task_run('retrain_win_model')
 def retrain_win_model():
     """Nightly retrain of the quote win-probability model from captured
-    QuoteOutcome data. Idempotent: no-ops with a clear reason until enough
-    outcomes exist (WIN_MODEL_GLOBAL_MIN_SAMPLES) and both outcome classes are
-    present — an all-accepted dataset cannot train a classifier."""
+    QuoteOutcome data. Idempotent: no-ops with a clear reason until both
+    WIN_MODEL_MIN_ACCEPTED accepted AND WIN_MODEL_MIN_REJECTED rejected
+    outcomes exist — an all-accepted dataset cannot train a classifier."""
     from core.services.quote_training import retrain_company_win_models, retrain_win_model as _retrain
     result = _retrain()
     if result.get('trained'):
@@ -596,13 +596,12 @@ def sweep_user_win_model_training():
     grew meaningfully since their last MLModelVersion, or who qualifies but
     has no model yet — not a blind nightly refit of every user.
     """
-    from django.conf import settings
     from django.db.models import Count
     from core.models import MLModelVersion
     from core.services.ml_training_queue import schedule_user_retrain
-    from core.services.quote_training import closed_outcomes
+    from core.services.quote_training import _min_class_counts, closed_outcomes
 
-    min_samples = int(getattr(settings, 'WIN_MODEL_USER_MIN_SAMPLES', 40))
+    min_accepted, min_rejected = _min_class_counts('user')
     counts = (
         closed_outcomes().filter(created_by__isnull=False)
         .values('created_by_id').annotate(n=Count('id'))
@@ -610,7 +609,9 @@ def sweep_user_win_model_training():
     scheduled = 0
     for row in counts:
         user_id, n = row['created_by_id'], row['n']
-        if n < min_samples:
+        # Cheap combined-total skip; the real accepted/rejected gate is
+        # enforced inside retrain_win_model_for_scope (via schedule_user_retrain).
+        if n < min_accepted + min_rejected:
             continue
         latest = MLModelVersion.objects.filter(scope='user', user_id=user_id).order_by('-created_at').first()
         if latest is None or n >= (latest.training_sample_count or 0) + 5:
