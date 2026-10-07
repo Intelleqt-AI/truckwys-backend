@@ -753,18 +753,35 @@ def _has_sklearn():
 
 
 class WinProbabilityTests(TestCase):
+    """The AI check scores through pricing_analysis.model_likelihood: the
+    same model, market reference, domain and curve gates as the analysis."""
     def setUp(self):
+        from core.services import pricing_analysis
+        pricing_analysis._MARKET_MEMO.clear()
+        self.addCleanup(pricing_analysis._MARKET_MEMO.clear)
         self.company, self.customer, self.user = _make_company_customer_user()
 
-    def _attach(self, ctx, market=(44000.0, 'platform'), payload=None):
+    def _attach(self, ctx, market=(44000.0, 'platform'), payload=None, floor_share=0.8):
         from core.services.quote_ai_pricing import _attach_win_probabilities
         p = _pricing_for_win_tests()
+        floor = min(c['price_zar'] for c in p['combinations'].values()) * floor_share
         with mock.patch('core.services.win_prediction.resolve_prediction_context', return_value=ctx), \
                 mock.patch('core.services.lane_benchmark.resolve_market_rate', return_value=market):
             info = _attach_win_probabilities(p['combinations'], p['default_choice_key'],
                                              payload or dict(ANALYSIS_PAYLOAD, customer_id=self.customer.id),
-                                             self.user, self.company)
+                                             self.user, self.company, floor_total=floor)
         return info, p
+
+    @staticmethod
+    def _model(fn, ratio_range=(0.5, 1.6)):
+        """A model object like WinProbabilityModel: metadata with the training
+        price-ratio range, predict_proba bound to it."""
+        class M:
+            metadata = {'price_ratio_range': list(ratio_range), 'feature_names': []}
+
+            def predict_proba(self, f):
+                return fn(f)
+        return M().predict_proba
 
     def test_no_trained_model_means_no_probability(self):
         from core.services.win_prediction import PredictionContext, heuristic_win_proba
@@ -782,7 +799,7 @@ class WinProbabilityTests(TestCase):
             return max(0.0, min(1.0, 1.5 - f['price_ratio']))
         # The panel's displayed benchmark (payload market_rate) is ignored for
         # scoring: resolve_market_rate is what training used.
-        info, p = self._attach(PredictionContext(True, 'user', 50, predict), market=(40000.0, 'platform'),
+        info, p = self._attach(PredictionContext(True, 'user', 50, self._model(predict)), market=(40000.0, 'platform'),
                                payload=dict(ANALYSIS_PAYLOAD, market_rate=99999, customer_id=self.customer.id))
         self.assertEqual((info['available'], info['scope'], info['training_samples']), (True, 'user', 50))
         default = p['combinations'][p['default_choice_key']]
@@ -794,15 +811,49 @@ class WinProbabilityTests(TestCase):
 
     def test_no_market_rate_means_no_probability(self):
         from core.services.win_prediction import PredictionContext
-        info, p = self._attach(PredictionContext(True, 'global', 62, lambda f: 0.5), market=(None, 'none'))
+        info, p = self._attach(PredictionContext(True, 'global', 62, self._model(lambda f: 0.5)), market=(None, 'none'))
         self.assertEqual((info['available'], info['reason']), (False, 'no_market_rate'))
+
+    def test_no_floor_means_no_probability(self):
+        from core.services.quote_ai_pricing import _attach_win_probabilities
+        from core.services.win_prediction import PredictionContext
+        p = _pricing_for_win_tests()
+        with mock.patch('core.services.win_prediction.resolve_prediction_context',
+                        return_value=PredictionContext(True, 'global', 62, self._model(lambda f: 0.5))):
+            info = _attach_win_probabilities(p['combinations'], p['default_choice_key'], dict(ANALYSIS_PAYLOAD),
+                                             self.user, self.company, floor_total=None)
+        self.assertEqual((info['available'], info['reason']), (False, 'floor_incomplete'))
+
+    def test_flat_curve_is_not_used_like_the_analysis(self):
+        from core.services.win_prediction import PredictionContext
+        info, p = self._attach(PredictionContext(True, 'global', 62, self._model(lambda f: 0.5)))
+        self.assertEqual((info['available'], info['reason']), (False, 'model_curve_unusable'))
+        self.assertTrue(all(c['win_probability'] is None for c in p['combinations'].values()))
+
+    def test_unreadable_training_range_is_not_used(self):
+        from core.services.win_prediction import PredictionContext
+        info, p = self._attach(PredictionContext(True, 'global', 62, lambda f: 0.4))
+        self.assertEqual((info['available'], info['reason']), (False, 'outside_training_range'))
+
+    def test_prices_past_the_model_domain_get_no_probability(self):
+        from core.services.win_prediction import PredictionContext
+        # Trained on 0.5-1.02 x market: a combination above 1.02 x R44 000 gets no %.
+        info, p = self._attach(PredictionContext(True, 'user', 50, self._model(
+            lambda f: max(0.0, min(1.0, 1.5 - f['price_ratio'])), ratio_range=(0.5, 1.02))), floor_share=0.5)
+        self.assertTrue(info['available'])
+        cap = 1.02 * 44000
+        above = [c for c in p['combinations'].values() if c['price_zar'] > cap]
+        below = [c for c in p['combinations'].values() if c['price_zar'] <= cap]
+        self.assertTrue(above and below)
+        self.assertTrue(all(c['win_probability'] is None for c in above))
+        self.assertTrue(all(c['win_probability'] is not None for c in below))
 
     def test_prediction_failure_is_not_reported_as_missing_history(self):
         from core.services.win_prediction import PredictionContext
 
         def broken(_):
             raise AttributeError('sklearn version mismatch')
-        info, p = self._attach(PredictionContext(True, 'global', 62, broken))
+        info, p = self._attach(PredictionContext(True, 'global', 62, self._model(broken)))
         self.assertEqual((info['available'], info['reason']), (False, 'prediction_failed'))
         self.assertTrue(all(c['win_probability'] is None for c in p['combinations'].values()))
 

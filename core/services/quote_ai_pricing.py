@@ -15,7 +15,7 @@ stores and that were verified on their published source:
      (core.services.verified_rates; SARS subsistence as a fallback), per
      night away: nights = ceil(driving hours / 9) - 1.
   4. BASE RATE: the lane benchmark from real quotes
-     (core.services.lane_benchmark.resolve_market_rate) minus the market
+     (pricing_analysis.market_range, the pricing analysis' market) minus the market
      pass-through, per km.
   5. Deterministic VERDICTS + PRICING in Python. Base rate is the margin
      lever: price = pass-through (fuel + tolls + driver + cross-border) +
@@ -430,19 +430,21 @@ def official_fuel_price(fuel_type, zone, today: date, petrol_grade=None) -> dict
 
 
 def lane_benchmark(payload: dict, company) -> dict:
-    """The lane's market total from real quotes (core.services.lane_benchmark),
-    the same definition the win model is trained on. Never raises."""
+    """The lane's market median from real quotes: the SAME market range the
+    pricing analysis shows (pricing_analysis.market_range: one-way, sent
+    only, fuel-normalised; platform tier only with >= 10 quotes from >= 3
+    other operators, rounded to R500; company tier only with >= 5 of the
+    company's own accepted quotes). This quote itself is never in it.
+    Never raises."""
     try:
-        from core.services.lane_benchmark import resolve_market_rate
-        # QUOTE-RULES §8: the same one-way, sent-only, fuel-normalised market
-        # the pricing analysis and the win model use.
-        rate, source = resolve_market_rate(payload.get('origin'), payload.get('destination'),
-                                           payload.get('vehicle_type'), company=company,
-                                           one_way_only=True, sent_only=True)
+        from core.services.pricing_analysis import _market_usable, market_range
+        m = market_range(payload.get('origin'), payload.get('destination'), payload.get('vehicle_type'),
+                         company, payload.get('quote_id'))
+        if _market_usable(m) and m.get('median'):
+            return {'rate': _f(m['median']), 'source': m.get('tier') or 'none', 'n': m.get('n')}
     except Exception as exc:
         logger.warning('AI price analysis: lane benchmark failed: %s', exc)
-        rate, source = None, 'none'
-    return {'rate': _f(rate), 'source': source}
+    return {'rate': None, 'source': 'none'}
 
 
 def stored_tolls(payload: dict, company=None) -> dict:
@@ -855,16 +857,20 @@ def _training_z_scores(predict_proba, features: dict) -> dict:
     return out
 
 
-def _attach_win_probabilities(combos: dict, default_key: str, payload: dict, user, company) -> dict:
-    """Scores every combination with the EXISTING win-probability model
-    (core.services.win_prediction). Only a real trained model counts — the
-    heuristic fallback is never shown as a probability — and only when this
-    quote looks like what it was trained on. Never raises."""
-    def unavailable(reason, **extra):
+def _attach_win_probabilities(combos: dict, default_key: str, payload: dict, user, company,
+                              floor_total=None) -> dict:
+    """Scores every combination with the win model through the SAME gates as
+    the pricing analysis (pricing_analysis.model_likelihood): a real trained
+    model, the market reference it was trained on, the price domain it has
+    seen (training range, every feature within the Z limit, at most 1,25 x
+    the highest price on screen, never under the cost floor) and a curve that
+    falls as the price rises. A combination outside that domain gets no %.
+    Only a real model counts. Never raises."""
+    def unavailable(reason, detail=None, **extra):
         for combo in combos.values():
             combo['win_probability'] = None
         return {'available': False, 'scope': extra.get('scope'), 'training_samples': extra.get('samples', 0),
-                'reason': reason}
+                'reason': reason, 'detail': detail}
 
     try:
         from core.services.win_prediction import resolve_prediction_context
@@ -875,55 +881,34 @@ def _attach_win_probabilities(combos: dict, default_key: str, payload: dict, use
     if not ctx.available or company is None or user is None:
         return unavailable('not_enough_history')
     model_info = {'scope': ctx.scope, 'samples': ctx.sample_count}
+    if floor_total is None:
+        return unavailable('floor_incomplete', **model_info)
     try:
-        from core.services import quote_features
-        from core.services.lane_benchmark import resolve_market_rate
-
-        # The market rate definition the model was TRAINED on (platform
-        # median / company tier), not the benchmark mean the page displays.
-        market_rate, _ = resolve_market_rate(payload.get('origin'), payload.get('destination'),
-                                             payload.get('vehicle_type'), company=company,
-                                             one_way_only=True, sent_only=True)
-        market_rate = _f(market_rate) or None
-        if market_rate is None:
-            # Without a market rate price_ratio is a filler, so the probability
-            # wouldn't depend on the price at all.
-            return unavailable('no_market_rate', **model_info)
-        default = combos[default_key]
-        v = default['values']
-        base = quote_features.compute_features(
-            company=company, customer_id=payload.get('customer_id') or None,
-            created_by_user_id=getattr(user, 'id', None),
-            origin=payload.get('origin'), destination=payload.get('destination'),
-            vehicle_type=payload.get('vehicle_type'),
-            total_amount=default['price_zar'], base_rate=v['base_rate'], fuel_surcharge=v['fuel'],
-            toll_charges=v['tolls'], driver_allowance=v['driver_allowance'],
-            additional_charges=_f(payload.get('cross_border_cost'), 0.0) or 0.0,
-            weight_kg=_f(payload.get('weight')), is_round_trip=_legs(payload) == 2,
-            distance_km=_f(payload.get('one_way_distance_km')) or _f(payload.get('distance_km')),
-            pickup_date=_parse_date(payload.get('pickup_date')),
-            market_rate=market_rate,
-        )
-        scored = {}
-        for key, combo in combos.items():
-            price = combo['price_zar']
-            features = dict(base)
-            # Only the price-dependent features change between combinations.
-            # The price is the sum of its cost lines, so direct cost == price
-            # and the quoted margin is 0 by compute_features' own definition.
-            features['price_ratio'] = price / market_rate
-            features['cost_to_market_ratio'] = price / market_rate
-            features['quoted_margin_pct'] = 0.0
-            z = _training_z_scores(ctx.predict_proba, features)
-            if any(abs(val) > WIN_FEATURE_Z_LIMIT for val in z.values()):
-                return unavailable('outside_training_range', **model_info)
-            scored[key] = round(float(ctx.predict_proba(features)), 3)
+        from core.services.pricing_analysis import NO_MARKET_FOR_MODEL, model_likelihood
+        prices = [c['price_zar'] for c in combos.values() if c.get('price_zar') is not None]
+        block, reason, predictor = model_likelihood(
+            ctx=ctx, company=company, user=user, payload=payload, origin=payload.get('origin'),
+            destination=payload.get('destination'), vt_name=payload.get('vehicle_type'),
+            floor_total=floor_total, probe_prices=prices, customer_id=payload.get('customer_id') or None,
+            best_prices=prices)
+        if block is None:
+            if reason == NO_MARKET_FOR_MODEL:
+                return unavailable('no_market_rate', **model_info)
+            code = 'model_curve_unusable' if 'respond to price' in (reason or '') else 'outside_training_range'
+            return unavailable(code, reason, **model_info)
+        predict, in_range = predictor
+        scored = {key: (round(float(predict(c['price_zar'])), 3) if in_range(c.get('price_zar')) else None)
+                  for key, c in combos.items()}
     except Exception as exc:
         logger.warning('AI price analysis: win probability failed: %s', exc)
         return unavailable('prediction_failed', **model_info)
+    if all(v is None for v in scored.values()):
+        return unavailable('outside_training_range',
+                           'These prices sit outside the range the model has been trained on.', **model_info)
     for key, combo in combos.items():
         combo['win_probability'] = scored[key]
-    return {'available': True, 'scope': ctx.scope, 'training_samples': ctx.sample_count, 'reason': None}
+    return {'available': True, 'scope': ctx.scope, 'training_samples': ctx.sample_count, 'reason': None,
+            'detail': None, 'range': block['range']}
 
 
 def _cost_floor(payload, company):
@@ -1144,8 +1129,10 @@ def analyze_quote_price(*, payload: dict, user=None, company=None, quote=None, t
             pricing['win_model'] = {'available': False, 'scope': None, 'training_samples': 0,
                                     'reason': 'blocked'}
         else:
+            cf = pricing.get('cost_floor') or {}
             pricing['win_model'] = _attach_win_probabilities(
-                pricing['combinations'], pricing['default_choice_key'], payload, user, company)
+                pricing['combinations'], pricing['default_choice_key'], payload, user, company,
+                floor_total=cf.get('floor') if cf.get('floor_known') else None)
         default = pricing['combinations'][pricing['default_choice_key']]
     except Exception as exc:
         logger.exception('AI price analysis: pricing failed')

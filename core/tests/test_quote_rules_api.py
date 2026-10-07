@@ -378,13 +378,36 @@ class AiPriceCheckFloorTests(_Base):
         mine = out['combinations'][next(k for k in out['combinations'] if 'base_rate=mine' in k)]
         self.assertTrue(mine['below_target'])
 
-    def test_market_rate_is_one_way_sent_only(self):
+    def test_market_is_the_pricing_analysis_range(self):
+        # M4: the AI check's benchmark is the analysis' market range (one-way,
+        # sent only, company sample >= 5, platform privacy), never a raw rate.
         from unittest import mock
+        from core.services import pricing_analysis
         from core.services import quote_ai_pricing as qap
-        with mock.patch('core.services.lane_benchmark.resolve_market_rate', return_value=(None, 'none')) as m:
-            qap.lane_benchmark({'origin': 'JHB', 'destination': 'DBN'}, self.company)
-        self.assertTrue(m.call_args.kwargs['one_way_only'])
-        self.assertTrue(m.call_args.kwargs['sent_only'])
+        pricing_analysis._MARKET_MEMO.clear()
+        rng = {'available': True, 'is_estimate': False, 'tier': 'platform', 'median': 36500.0, 'n': 12}
+        with mock.patch('core.services.lane_benchmark.resolve_market_range', return_value=rng) as m:
+            out = qap.lane_benchmark({'origin': 'JHB', 'destination': 'DBN', 'quote_id': 7}, self.company)
+        self.assertEqual((out['rate'], out['source']), (36500.0, 'platform'))
+        self.assertEqual(m.call_args.kwargs['trip'], 'one_way')
+        self.assertEqual(m.call_args.kwargs['exclude_quote_id'], 7)
+        pricing_analysis._MARKET_MEMO.clear()
+        with mock.patch('core.services.lane_benchmark.resolve_market_range',
+                        return_value={'available': False, 'tier': 'none'}):
+            self.assertIsNone(qap.lane_benchmark({'origin': 'JHB', 'destination': 'DBN'}, self.company)['rate'])
+        pricing_analysis._MARKET_MEMO.clear()
+
+    def test_company_tier_needs_five_quotes_like_the_analysis(self):
+        from core.services import pricing_analysis
+        from core.services import quote_ai_pricing as qap
+        from core.tests.test_price_analysis import make_quote
+        pricing_analysis._MARKET_MEMO.clear()
+        for i in range(4):
+            make_quote(self.company, self.customer, number=f'CT-{i}', status='ACCEPTED', outcome='accepted',
+                       total=30000, origin='JHB', destination='DBN')
+        Quote.objects.filter(quote_number__startswith='CT-').update(was_sent=True)
+        self.assertIsNone(qap.lane_benchmark({'origin': 'JHB', 'destination': 'DBN'}, self.company)['rate'])
+        pricing_analysis._MARKET_MEMO.clear()
 
 
 class AnalyzeAndAlertTests(_Base):
