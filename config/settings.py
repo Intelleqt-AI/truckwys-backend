@@ -533,6 +533,12 @@ FUEL_PRICE_ZAR = 22.50
 # See docs/backend-changes/2026-09-fuel-pipeline.md (F13).
 FUEL_PRICE_DAILY_SCRAPER_ENABLED = config('FUEL_PRICE_DAILY_SCRAPER_ENABLED', default=False, cast=bool)
 
+# QUOTE-RULES.md §2: a read of the official diesel price that finds it older
+# than the current first-Wednesday period refreshes it (at most once per 10
+# minutes). Off under `manage.py test` so no test reaches the internet; the
+# tests that cover it switch it on with override_settings.
+FUEL_PRICE_READ_REFRESH = config('FUEL_PRICE_READ_REFRESH', default=not _RUNNING_TESTS, cast=bool)
+
 # ---------------------------------------------------------------------------
 # Celery
 # ---------------------------------------------------------------------------

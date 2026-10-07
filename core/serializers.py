@@ -673,7 +673,11 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
         # a real model priced the quote, else null. A client-sent figure (the
         # old flow sent the heuristic at a price the operator never saw) is
         # ignored, not rejected, so older clients keep working.
-        read_only_fields = ['id', 'company', 'created_at', 'updated_at', 'created_by', 'win_probability']
+        read_only_fields = ['id', 'company', 'created_at', 'updated_at', 'created_by', 'win_probability',
+                            # Pricing snapshot (QUOTE-RULES.md §9): server-set on save.
+                            'fuel_price_used', 'fuel_price_source', 'fuel_zone', 'fuel_effective_from',
+                            'fuel_official_at_pricing', 'fuel_litres', 'priced_at', 'priced_vehicle_type',
+                            'empty_return_included', 'cost_floor', 'costing_snapshot']
 
     PRICING_DECISION_MAX_BYTES = 20_000
 
@@ -704,6 +708,42 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
                     raise serializers.ValidationError(f'{key} must be a number.')
         return value
 
+    def validate_costing_inputs(self, value):
+        """Only the documented keys (core.services.quote_costing
+        COSTING_INPUT_KEYS), coerced to their types; null drops a key."""
+        from core.services.quote_costing import COSTING_INPUT_KEYS
+        if value in (None, ''):
+            return {}
+        if not isinstance(value, dict):
+            raise serializers.ValidationError('costing_inputs must be a JSON object.')
+        unknown = sorted(set(value) - set(COSTING_INPUT_KEYS))
+        if unknown:
+            raise serializers.ValidationError(f'Unknown costing_inputs keys: {", ".join(unknown)}.')
+        out = {}
+        for key, kind in COSTING_INPUT_KEYS.items():
+            v = value.get(key)
+            if v is None or v == '':
+                continue
+            try:
+                if kind is bool:
+                    if not isinstance(v, bool):
+                        raise ValueError
+                    out[key] = v
+                else:
+                    num = float(v)
+                    if num != num or num < 0:
+                        raise ValueError
+                    out[key] = int(num) if kind is int else num
+            except (TypeError, ValueError):
+                raise serializers.ValidationError(f'costing_inputs.{key} must be '
+                                                  + ('true or false.' if kind is bool else 'a number of 0 or more.'))
+        return out
+
+    def _snapshot(self, instance, validated_data, created):
+        from core.services.quote_snapshot import PRICING_FIELDS, snapshot_quote
+        if created or PRICING_FIELDS & set(validated_data):
+            snapshot_quote(instance)
+
     def create(self, validated_data):
         from django.db import transaction
         decision = validated_data.pop('pricing_decision', None)
@@ -716,6 +756,7 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
             instance = super().create(validated_data)
             if decision:
                 self._save_pricing_decision(instance, decision, scored)
+        self._snapshot(instance, validated_data, created=True)
         return instance
 
     def update(self, instance, validated_data):
@@ -726,6 +767,7 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
             instance = super().update(instance, validated_data)
             if decision:
                 self._save_pricing_decision(instance, decision, scored)
+        self._snapshot(instance, validated_data, created=False)
         return instance
 
     def _request_user(self):
@@ -772,10 +814,12 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
             request = self.context.get('request')
             company = getattr(getattr(request, 'user', None), 'company', None)
             vt = VehicleType.objects.filter(name=vt_name, company=company).first() if company else None
-            if vt and vt.capacity and float(weight_kg) > float(vt.capacity) * 1000:
+            from core.services.quote_costing import capacity_tonnes
+            cap_t = capacity_tonnes(vt.capacity) if vt else None   # values > 100 are kg (QUOTE-RULES §3)
+            if vt and cap_t and float(weight_kg) > cap_t * 1000:
                 raise serializers.ValidationError({
                     'weight': f"{float(weight_kg) / 1000:.1f}t exceeds the {vt_name}'s rated capacity "
-                              f"of {vt.capacity}t — this can't be priced as a standard quote."
+                              f"of {cap_t:g}t — this can't be priced as a standard quote."
                 })
         return attrs
 
@@ -1298,6 +1342,24 @@ BANK_FIELDS = (
 )
 
 
+def _is_live_echo(value):
+    """True when an old client's fuel_price_per_litre write is not a price
+    the fleet chose: empty, the 23.50 factory default, or within half a cent
+    of any stored FuelPrice figure (the same rule as migration 0149)."""
+    if value is None:
+        return True
+    value = Decimal(str(value))
+    if abs(value - Decimal('23.50')) <= Decimal('0.00001'):
+        return True
+    from core.models import FuelPrice
+    tol = Decimal('0.005')
+    from django.db.models import Q
+    q = Q()
+    for field in ('diesel_inland', 'diesel_coastal', 'diesel_500ppm_inland', 'diesel_500ppm_coastal'):
+        q |= Q(**{f'{field}__gte': value - tol, f'{field}__lte': value + tol})
+    return FuelPrice.objects.filter(q).exists()
+
+
 class CompanySerializer(serializers.ModelSerializer):
     logo_url = serializers.SerializerMethodField()
     
@@ -1312,6 +1374,11 @@ class CompanySerializer(serializers.ModelSerializer):
             'cross_border_crossings_per_year',
             'fuel_zone',
             'fuel_price_per_litre', 'fuel_price_petrol', 'fuel_price_electric', 'fuel_price_hybrid',
+            # QUOTE-RULES.md §1 (additive): LIVE/OWN diesel and the price a
+            # quote would use right now (read-only, resolved server-side).
+            'fuel_price_mode', 'fuel_price_own', 'fuel_price_own_set_at', 'diesel_price_in_use',
+            # QUOTE-RULES.md §5/§6 (additive).
+            'include_empty_return_default', 'empty_return_min_km', 'minimum_charge',
             'margin_at_risk_pct', 'margin_caution_pct', 'margin_target_pct',
             'ai_optimizer_min_margin_pct', 'ai_optimizer_min_win_probability_pct',
             'ai_optimizer_max_market_deviation_pct',
@@ -1329,6 +1396,94 @@ class CompanySerializer(serializers.ModelSerializer):
 
     operating_cost_in_use = serializers.SerializerMethodField()
     margin_target_range = serializers.SerializerMethodField()
+    diesel_price_in_use = serializers.SerializerMethodField()
+    fuel_price_own = serializers.DecimalField(max_digits=8, decimal_places=4, required=False, allow_null=True)
+    fuel_price_own_set_at = serializers.DateTimeField(read_only=True)
+    # Old clients still write it; see validate() for how a write is read.
+    fuel_price_per_litre = serializers.DecimalField(max_digits=8, decimal_places=4, required=False,
+                                                    allow_null=True)
+
+    def get_diesel_price_in_use(self, obj):
+        """core.services.fuel_price.resolve_company_diesel: {mode, source,
+        price, zone, official{...}, own{...}, warnings}. Never raises."""
+        try:
+            from core.services.fuel_price import resolve_company_diesel
+            out = resolve_company_diesel(obj)
+            out.pop('input', None)
+            return out
+        except Exception:
+            return None
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        # Deprecated mirror for old clients: OWN -> own price, LIVE -> the
+        # official zone price in force (null when there is none). Never the
+        # 23.50 factory default.
+        in_use = data.get('diesel_price_in_use') or {}
+        if (instance.fuel_price_mode or 'LIVE') == 'OWN' and instance.fuel_price_own is not None:
+            mirror = instance.fuel_price_own
+        else:
+            mirror = (in_use.get('official') or {}).get('price')
+        data['fuel_price_per_litre'] = (str(Decimal(str(mirror)).quantize(Decimal('0.0001')))
+                                        if mirror is not None else None)
+        return data
+
+    def validate_fuel_price_own(self, value):
+        if value is not None and not (Decimal('5') <= value <= Decimal('100')):
+            raise serializers.ValidationError('Enter a diesel price between R5 and R100 per litre, or leave it blank.')
+        return value
+
+    def validate_minimum_charge(self, value):
+        if value is not None and value < 0:
+            raise serializers.ValidationError('Enter a minimum charge of R0 or more, or leave it blank.')
+        return value or None
+
+    def validate_empty_return_min_km(self, value):
+        if value is not None and not (Decimal('0') <= value <= Decimal('5000')):
+            raise serializers.ValidationError('Enter a distance between 0 and 5 000 km.')
+        return value
+
+    def validate(self, attrs):
+        """Diesel mode (QUOTE-RULES.md §1). New clients send fuel_price_mode /
+        fuel_price_own: own empty => LIVE. Old clients only send
+        fuel_price_per_litre: 23.50, empty, or (±0.005) any official price on
+        record is the live price echoed back => LIVE, own price untouched;
+        anything else is a price the fleet typed => OWN at that value."""
+        from django.utils import timezone as dj_tz
+        attrs = super().validate(attrs)
+        legacy = attrs.pop('fuel_price_per_litre', serializers.empty)
+        instance = self.instance
+        if 'fuel_price_mode' in attrs or 'fuel_price_own' in attrs:
+            own = attrs.get('fuel_price_own', getattr(instance, 'fuel_price_own', None))
+            mode = attrs.get('fuel_price_mode') or ('OWN' if 'fuel_price_own' in attrs and own is not None
+                                                    else getattr(instance, 'fuel_price_mode', 'LIVE'))
+            if own is None:
+                mode = 'LIVE'
+            attrs['fuel_price_mode'] = mode
+        elif legacy is not serializers.empty:
+            current_own = getattr(instance, 'fuel_price_own', None)
+            unchanged = (legacy is not None and current_own is not None
+                         and abs(Decimal(str(legacy)) - current_own) <= Decimal('0.00001'))
+            if unchanged:
+                pass   # the old client echoed the own price back: nothing changed
+            elif _is_live_echo(legacy):
+                attrs['fuel_price_mode'] = 'LIVE'   # live price / factory default echoed back
+            else:
+                attrs['fuel_price_mode'] = 'OWN'
+                attrs['fuel_price_own'] = legacy
+        if 'fuel_price_own' in attrs and attrs['fuel_price_own'] != getattr(instance, 'fuel_price_own', None):
+            attrs['fuel_price_own_set_at'] = dj_tz.now() if attrs['fuel_price_own'] is not None else None
+        if attrs.get('fuel_price_mode') == 'OWN' or (attrs.get('fuel_price_mode') is None
+                                                     and getattr(instance, 'fuel_price_mode', 'LIVE') == 'OWN'):
+            own = attrs.get('fuel_price_own', getattr(instance, 'fuel_price_own', None))
+            if own is not None:
+                attrs['fuel_price_per_litre'] = own   # keep the stored mirror honest
+        # Empty-return default: the new field and the old pricing_include_empty_return mirror each other.
+        if 'include_empty_return_default' in attrs:
+            attrs['pricing_include_empty_return'] = attrs['include_empty_return_default']
+        elif 'pricing_include_empty_return' in attrs:
+            attrs['include_empty_return_default'] = attrs['pricing_include_empty_return']
+        return attrs
 
     def get_margin_target_range(self, obj):
         from core.services.pricing_analysis import MARGIN_TARGET_RANGE

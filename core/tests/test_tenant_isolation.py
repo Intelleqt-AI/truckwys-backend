@@ -443,8 +443,10 @@ class SerializerRelationScopingTests(_TwoTenantFixture):
 
     def test_owner_quote_create_and_edit(self):
         c = self.client_for(self.user_a)
+        from core.tests.quote_rules_fixtures import official_price_now, sendable_quote_fields
+        official_price_now()
         resp = c.post('/api/v1/quotes/', self._quote_payload(
-            vehicle=self.vehicle_a.id, driver=self.driver_a.id), format='json')
+            vehicle=self.vehicle_a.id, driver=self.driver_a.id, **sendable_quote_fields(self.co_a)), format='json')
         self.assertEqual(resp.status_code, 201, resp.content)
         q = Quote.objects.get(id=resp.json()['id'])
         self.assertEqual(q.company_id, self.co_a.id)

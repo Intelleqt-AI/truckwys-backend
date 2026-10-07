@@ -519,13 +519,15 @@ def fetch_fuel_prices(
     Alert: if any diesel price changes >5% compared with the previous month,
     a WARNING is logged.
 
-    Returns the FuelPrice instance for the month.
+    Returns the FuelPrice instance for the month. With no target_date it is
+    refresh_official(): the official row in force now (or None), see below.
     """
     from core.models.fuel_price import FuelPrice
 
     if target_date is None:
-        today = date.today()
-        target_date = today.replace(day=1)
+        # The current price: keyed by its effective date (history kept),
+        # refreshed when a new first-Wednesday period has started.
+        return refresh_official(force=force_update)
 
     existing = FuelPrice.objects.filter(date=target_date).first()
     is_stale_fallback = bool(existing) and existing.source in _FALLBACK_SOURCES
@@ -620,3 +622,239 @@ def _check_price_alert(current_date: date, new_data: dict) -> None:
                     field, change * 100, old_val, new_val,
                     prior.date, current_date,
                 )
+
+
+# ---------------------------------------------------------------------------
+# The official price in force (QUOTE-RULES.md §1-§2)
+# ---------------------------------------------------------------------------
+# Only FIASA (50ppm) and MANUAL (ops override) rows are official. FALLBACK /
+# FALLBACK_LATEST rows (the hard-coded table) and the regex scrapers are never
+# used for pricing, snapshots or comparisons. Rows are keyed by the date the
+# price took effect, so every earlier price stays on record and "the price in
+# force on date D" can be answered for any D.
+
+OFFICIAL_SOURCES = ('MANUAL', 'FIASA')
+READ_REFRESH_SECONDS = 600      # read-path refresh: at most once per 10 minutes
+SAST = _SAST
+
+
+def first_wednesday(year: int, month: int) -> date:
+    first = date(year, month, 1)
+    return first + timedelta(days=(2 - first.weekday()) % 7)
+
+
+def _change_moment(d: date) -> datetime:
+    return datetime(d.year, d.month, d.day, 0, 1, tzinfo=_SAST)
+
+
+def period_start(now: Optional[datetime] = None) -> datetime:
+    """The most recent first-Wednesday 00:01 SAST <= now (aware)."""
+    now = now or django_timezone.now()
+    local = now.astimezone(_SAST)
+    start = _change_moment(first_wednesday(local.year, local.month))
+    if start <= now:
+        return start
+    prev = (local.date().replace(day=1) - timedelta(days=1))
+    return _change_moment(first_wednesday(prev.year, prev.month))
+
+
+def previous_period_start(start: datetime) -> datetime:
+    prev = (start.astimezone(_SAST).date().replace(day=1) - timedelta(days=1))
+    return _change_moment(first_wednesday(prev.year, prev.month))
+
+
+def row_effective_from(row) -> datetime:
+    """When a stored row's price took effect. Legacy rows without
+    effective_from count from 00:00 SAST on their `date`."""
+    if row.effective_from is not None:
+        return row.effective_from
+    return datetime(row.date.year, row.date.month, row.date.day, tzinfo=_SAST)
+
+
+def _zone_value(row, zone: str, strict_grade: bool):
+    coastal = str(zone or '').upper() == 'COASTAL'
+    value = row.diesel_coastal if coastal else row.diesel_inland
+    return value
+
+
+def official_row_in_force(at: Optional[datetime] = None, *, strict_grade: bool = True):
+    """The official FuelPrice row in force at `at` (default now), or None.
+
+    Newest effective_from wins; a FIASA row with a newer effective_from
+    supersedes an older MANUAL row; on the same effective moment MANUAL wins.
+    strict_grade: FIASA rows only when they hold the 50ppm grade (pricing).
+    History lookups (market normalisation) pass False to also accept older
+    FIASA rows whose grade was not recorded."""
+    from django.db.models import Q
+    from core.models.fuel_price import FuelPrice
+
+    at = at or django_timezone.now()
+    local_day = at.astimezone(_SAST).date()
+    qs = FuelPrice.objects.filter(source__in=OFFICIAL_SOURCES).filter(
+        Q(effective_from__lte=at) | Q(effective_from__isnull=True, date__lte=local_day))
+    qs = qs.filter(date__gte=local_day - timedelta(days=400))
+    if strict_grade:
+        qs = qs.exclude(Q(source='FIASA') & ~Q(diesel_grade='50ppm'))
+    best = None
+    for row in qs.order_by('-date')[:24]:
+        eff = row_effective_from(row)
+        if eff > at:
+            continue
+        key = (eff, 1 if row.source == 'MANUAL' else 0, row.fetched_at or row.updated_at)
+        if best is None or key > best[0]:
+            best = (key, row)
+    return best[1] if best else None
+
+
+def price_in_force(zone: str, at: Optional[datetime] = None, *, strict_grade: bool = True) -> Optional[dict]:
+    """{'price', 'effective_from', 'source', 'row_id'} for the zone at `at`, or None."""
+    row = official_row_in_force(at, strict_grade=strict_grade)
+    if row is None:
+        return None
+    value = _zone_value(row, zone, strict_grade)
+    if value is None or value <= 0:
+        return None
+    return {'price': float(value), 'effective_from': row_effective_from(row), 'source': row.source,
+            'row_id': row.id}
+
+
+def _store_official(data: dict, now: datetime):
+    """Upsert a live FIASA reading under its effective date (never touching a
+    MANUAL row for the same date, never another date's row)."""
+    from core.models.fuel_price import FuelPrice
+
+    eff = data['effective_from']
+    key = eff.astimezone(_SAST).date()
+    for field in ('diesel_inland', 'diesel_coastal', 'petrol_95', 'petrol_93'):
+        if data.get(field) is not None and not isinstance(data[field], Decimal):
+            data[field] = _to_decimal(str(data[field]))
+    fields = {k: data.get(k) for k in ('diesel_inland', 'diesel_coastal', 'diesel_grade', 'diesel_500ppm_inland',
+                                        'diesel_500ppm_coastal', 'effective_from', 'petrol_95', 'petrol_93',
+                                        'source')}
+    fields.update({'fetched_at': now, 'fetch_failed_at': None})
+    existing = FuelPrice.objects.filter(date=key).first()
+    if existing is not None:
+        if existing.source == 'MANUAL':
+            return existing
+        for k, v in fields.items():
+            setattr(existing, k, v)
+        existing.save()
+        return existing
+    _check_price_alert(key, data)
+    return FuelPrice.objects.create(date=key, **fields)
+
+
+def refresh_official(*, force: bool = False, now: Optional[datetime] = None):
+    """Make sure the official price for the current period is stored, and
+    return the official row in force now (or None when there is none).
+
+    No network when the row in force already belongs to the current period
+    (unless force). Otherwise FIASA is read as of now and stored under its
+    effective date. A failed read keeps whatever is stored and stamps
+    fetch_failed_at on the row in force. Never writes fallback rows."""
+    now = now or django_timezone.now()
+    row = official_row_in_force(now)
+    if row is not None and row_effective_from(row) >= period_start(now) and not force:
+        return row
+    data = _fetch_from_fiasa(as_of=now)
+    if data is not None:
+        try:
+            _store_official(data, now)
+        except Exception as exc:
+            logger.warning('Storing the FIASA price failed: %s', exc)
+        return official_row_in_force(now)
+    if row is not None:
+        row.fetch_failed_at = now
+        row.save(update_fields=['fetch_failed_at', 'updated_at'])
+        logger.warning('Official fuel price refresh failed; keeping %s row from %s', row.source,
+                       row_effective_from(row))
+    else:
+        logger.warning('Official fuel price refresh failed and no official price is on record')
+    return row
+
+
+def _read_refresh_enabled() -> bool:
+    from django.conf import settings
+    return bool(getattr(settings, 'FUEL_PRICE_READ_REFRESH', True))
+
+
+def resolve_official(zone: str, now: Optional[datetime] = None, *, refresh: bool = True) -> dict:
+    """The official price for `zone` now, with freshness (§2).
+
+    If the stored in-force price predates the current period, the read path
+    tries one refresh (throttled to once per READ_REFRESH_SECONDS across the
+    app) and, if still old, marks it stale. Older than the previous period is
+    not usable at all (price None).
+    {'zone', 'price', 'effective_from', 'source', 'stale', 'period_start',
+     'refresh_attempted'}"""
+    now = now or django_timezone.now()
+    zone = 'COASTAL' if str(zone or '').upper() == 'COASTAL' else 'INLAND'
+    start = period_start(now)
+    rec = price_in_force(zone, now)
+    attempted = False
+    if (rec is None or rec['effective_from'] < start) and refresh and _read_refresh_enabled():
+        if cache.add('fuel_price_read_refresh', True, READ_REFRESH_SECONDS):
+            attempted = True
+            try:
+                refresh_official(now=now)
+            except Exception as exc:
+                logger.warning('Read-path fuel refresh failed: %s', exc)
+            rec = price_in_force(zone, now)
+    stale = rec is not None and rec['effective_from'] < start
+    if rec is not None and rec['effective_from'] < previous_period_start(start):
+        rec = None   # more than a period out of date: not a price to quote on
+    return {
+        'zone': zone,
+        'price': rec['price'] if rec else None,
+        'effective_from': rec['effective_from'] if rec else None,
+        'source': rec['source'] if rec else None,
+        'stale': bool(rec) and stale,
+        'period_start': start,
+        'refresh_attempted': attempted,
+    }
+
+
+def resolve_company_diesel(company, now: Optional[datetime] = None, *, refresh: bool = True,
+                           use_official: bool = False, override_price=None, litres_total=None) -> dict:
+    """The company's diesel price for a quote (§1), resolved by the ONE rule
+    in core.services.quote_costing.resolve_diesel, plus its warnings.
+    Returns the quote_costing diesel input (`input`) and the resolution."""
+    from core.services import quote_costing as qc
+    now = now or django_timezone.now()
+    zone = getattr(company, 'fuel_zone', None) or 'INLAND'
+    official = resolve_official(zone, now, refresh=refresh)
+    mode = (getattr(company, 'fuel_price_mode', None) or 'LIVE').upper()
+    own = getattr(company, 'fuel_price_own', None)
+    d_input = {
+        'zone': official['zone'], 'mode': mode,
+        'own_price': float(own) if own is not None else None,
+        'own_set_at': qc.iso(getattr(company, 'fuel_price_own_set_at', None)),
+        'official_price': official['price'],
+        'official_effective_from': qc.iso(official['effective_from']),
+        'official_stale': official['stale'],
+        'use_official': bool(use_official),
+        'override_price': float(override_price) if override_price not in (None, '') else None,
+    }
+    resolved = qc.resolve_diesel(d_input)
+    return {
+        'input': d_input,
+        'mode': resolved['mode'],
+        'source': resolved['source'],
+        'price': resolved['price'],
+        'zone': resolved['zone'],
+        'official': {'price': official['price'], 'effective_from': qc.iso(official['effective_from']),
+                     'source': official['source'], 'stale': official['stale'],
+                     'period_start': qc.iso(official['period_start'])},
+        'own': {'price': resolved['own_price'], 'set_at': resolved['own_set_at']},
+        'warnings': qc.diesel_warnings(resolved, litres_total),
+    }
+
+
+def company_diesel_price(company, now: Optional[datetime] = None) -> Optional[Decimal]:
+    """The company's diesel R/L for cost reports (own or official), or None."""
+    try:
+        price = resolve_company_diesel(company, now)['price']
+    except Exception as exc:
+        logger.warning('company diesel price lookup failed: %s', exc)
+        return None
+    return Decimal(str(price)).quantize(Decimal('0.0001')) if price is not None else None

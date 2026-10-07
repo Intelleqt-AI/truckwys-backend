@@ -186,6 +186,11 @@ class EmailGatingTests(NotifQABase):
     Customer-facing transactional emails stay ungated by design."""
 
     def _make_quote_via_api(self):
+        # Sendable under QUOTE-RULES.md (diesel, truck, distance, tolls known).
+        from core.models import FuelPrice
+        from core.tests.quote_rules_fixtures import official_price_now, sendable_quote_fields
+        if not FuelPrice.objects.exists():
+            official_price_now()
         c = _client(self.actor)
         r = c.post("/api/v1/quotes/", {
             "customer": self.customer.id,
@@ -193,6 +198,7 @@ class EmailGatingTests(NotifQABase):
             "cargo_description": "QA cargo", "weight": "1000",
             "base_rate": "1000.00", "total_amount": "1150.00",
             "valid_until": str(date.today() + timedelta(days=14)),
+            **sendable_quote_fields(self.customer.company),
         }, format="json")
         assert r.status_code == 201, r.content
         return c, r.json()["id"]

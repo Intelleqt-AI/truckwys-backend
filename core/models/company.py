@@ -74,9 +74,25 @@ class Company(models.Model):
                   'Cape Town, Durban, Gqeberha and East London; INLAND for Gauteng '
                   'and the interior.'
     )
+    # DEPRECATED (read-only mirror for old clients, QUOTE-RULES.md §1):
+    # OWN -> fuel_price_own, LIVE -> the official zone price in force. Nothing
+    # new reads it; the serializer writes the mirror. Pricing uses
+    # fuel_price_mode / fuel_price_own via core.services.fuel_price.
     fuel_price_per_litre = models.DecimalField(
         max_digits=8, decimal_places=4, default=23.50,
-        help_text='Default Diesel price per litre in ZAR (default: R23.50)'
+        help_text='Deprecated mirror of the diesel price in use (own price, or the official zone price).'
+    )
+    FUEL_PRICE_MODE_CHOICES = [('LIVE', 'Official price (live)'), ('OWN', 'Own price')]
+    fuel_price_mode = models.CharField(
+        max_length=4, choices=FUEL_PRICE_MODE_CHOICES, default='LIVE',
+        help_text='LIVE = quote on the official FIASA price for the fuel zone; OWN = quote on fuel_price_own.'
+    )
+    fuel_price_own = models.DecimalField(
+        max_digits=8, decimal_places=4, null=True, blank=True,
+        help_text="The fleet's own diesel price per litre excl. VAT (fuel card etc.). Empty = LIVE."
+    )
+    fuel_price_own_set_at = models.DateTimeField(
+        null=True, blank=True, help_text='When fuel_price_own was last set by a person.'
     )
     fuel_price_petrol = models.DecimalField(
         max_digits=8, decimal_places=4, null=True, blank=True,
@@ -454,6 +470,20 @@ class Company(models.Model):
     pricing_include_empty_return = models.BooleanField(
         default=False,
         help_text='Include the empty run home in the cost floor of one-way quotes by default',
+    )
+    # QUOTE-RULES.md §5/§6. include_empty_return_default replaces
+    # pricing_include_empty_return (kept as a mirror for old clients).
+    include_empty_return_default = models.BooleanField(
+        default=True,
+        help_text='Price the empty run home into one-way quotes of at least empty_return_min_km by default',
+    )
+    empty_return_min_km = models.DecimalField(
+        max_digits=7, decimal_places=1, default=300,
+        help_text='One-way distance (km) from which the empty return is included by default',
+    )
+    minimum_charge = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True,
+        help_text='Lowest price (excl. VAT) a quote may go out at. Empty = no minimum.',
     )
     # The operator's own all-in operating cost per km (excl. fuel and tolls).
     # When set, it wins over the figure from expenses and the class estimate.

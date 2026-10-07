@@ -541,3 +541,311 @@ def compute(inputs):
         'blocking': blocking,
         'can_send': not blocking,
     }
+
+
+# ===========================================================================
+# Database layer: resolve compute()'s inputs for a company / payload / quote.
+# ===========================================================================
+
+def _truthy(v):
+    if isinstance(v, bool):
+        return v
+    if v is None:
+        return None
+    return str(v).strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def vehicle_input(vt):
+    if vt is None:
+        return None
+    return {'id': vt.id, 'name': vt.name, 'capacity': _num(vt.capacity),
+            'rated_burn_l_per_100km': _num(vt.fuel_consumption_l_per_100km)}
+
+
+def suggest_vehicle(company, load_kg):
+    """§3: the smallest-capacity visible vehicle type that carries the load
+    (tie: lowest rated burn), else None."""
+    from core.services.vehicle_types import visible_vehicle_types_queryset
+    load_t = (_num(load_kg) or 0) / 1000
+    best = None
+    for vt in visible_vehicle_types_queryset(company).filter(active=True):
+        cap = capacity_tonnes(vt.capacity)
+        burn = _pos(vt.fuel_consumption_l_per_100km)
+        if cap is None or burn is None or cap < load_t:
+            continue
+        key = (cap, burn, vt.id)
+        if best is None or key < best[0]:
+            best = (key, vt)
+    return best[1] if best else None
+
+
+def resolve_vehicle(company, *, vehicle_type_id=None, name=None, load_kg=None, suggest=True):
+    """(VehicleType | None, how): 'selected' (id), 'by_name', 'suggested' or
+    None. Only types this company can see (never another tenant's)."""
+    from core.services.vehicle_types import visible_vehicle_types_queryset
+    qs = visible_vehicle_types_queryset(company)
+    vt_id = _num(vehicle_type_id)
+    if vt_id:
+        row = qs.filter(id=int(vt_id)).first()
+        if row is not None:
+            return row, 'selected'
+    name = str(name or '').strip()
+    if name:
+        rows = list(qs.filter(name__iexact=name))
+        own = [r for r in rows if company is not None and r.company_id == getattr(company, 'id', None)]
+        row = (own or rows or [None])[0]
+        if row is not None:
+            return row, 'by_name'
+    if suggest:
+        row = suggest_vehicle(company, load_kg)
+        if row is not None:
+            return row, 'suggested'
+    return None, None
+
+
+def fleet_reference_class(company):
+    """The vehicle class a company-wide operating cost figure describes: the
+    most common class among the company's trucks (else its own vehicle
+    types), or None when it has neither."""
+    from collections import Counter
+    from core.services.pricing_analysis import vehicle_class
+    if company is None:
+        return None
+    try:
+        from core.models import Vehicle, VehicleType
+        counts = Counter(vehicle_class(v.vehicle_type) for v in
+                         Vehicle.objects.filter(company=company, vehicle_type__isnull=False)
+                         .select_related('vehicle_type'))
+        if not counts:
+            counts = Counter(vehicle_class(vt) for vt in VehicleType.objects.filter(company=company))
+        return counts.most_common(1)[0][0] if counts else None
+    except Exception:
+        return None
+
+
+def operating_cost_for(company, vt):
+    """§6: operating cost per km for THIS truck's class: {value, source,
+    class, class_label, scaled_from}. A company-wide figure (setting or
+    actuals) is scaled by class default ratio when the fleet's main class
+    differs; with no company figure, the class default."""
+    from core.services.pricing_analysis import (OPERATING_COST_CLASSES, _class_default, company_operating_cost,
+                                                vehicle_class)
+    cls = vehicle_class(vt)
+    out = {'class': cls, 'class_label': OPERATING_COST_CLASSES[cls][0], 'scaled_from': None}
+    setting = _pos(getattr(company, 'operating_cost_per_km', None))
+    actual = company_operating_cost(company) if company is not None else {}
+    figure, source = (setting, 'company_setting') if setting else (_pos(actual.get('value')), 'company_actuals')
+    if figure:
+        ref = fleet_reference_class(company)
+        if ref and ref != cls:
+            figure = figure * _class_default(cls)[0] / _class_default(ref)[0]
+            out['scaled_from'] = ref
+        out.update({'value': round(figure, 2), 'source': source})
+        return out
+    out.update({'value': _class_default(cls)[0], 'source': 'vehicle_default'})
+    return out
+
+
+def driver_rate(company, today):
+    """(rate per night | None, source): company setting first (what the fleet
+    pays), else the approved allowance in force."""
+    from core.services.quote_ai_pricing import DRIVER_RATE_MAX_PER_DAY, stored_allowance
+    own = _pos(getattr(company, 'driver_allowance_per_night', None))
+    if own is not None and own <= DRIVER_RATE_MAX_PER_DAY:
+        return own, 'company_setting'
+    allowance = stored_allowance(today)
+    rate = _pos((allowance or {}).get('rate_per_night'))
+    if rate is not None and rate <= DRIVER_RATE_MAX_PER_DAY:
+        return rate, 'approved_allowance'
+    return None, None
+
+
+def target_margin(company):
+    from core.services.pricing_analysis import MARGIN_TARGET_RANGE
+    t = _num(getattr(company, 'margin_target_pct', None)) or 10.0
+    return min(max(t, float(MARGIN_TARGET_RANGE[0])), float(MARGIN_TARGET_RANGE[1]))
+
+
+def build_inputs(payload, company, now=None, *, diesel_override=None):
+    """compute() inputs from a pricing payload (the builder's fields, the
+    pricing-analysis payload and POST /quotes/cost-breakdown/ share it).
+
+    Payload: trip_type | legs, one_way_distance_km | distance_km (total for
+    the legs), duration_minutes (one way), weight | load_kg, vehicle_type_id,
+    vehicle_type, toll_cost (all legs) | toll_cost_one_way, tolls_unknown,
+    tolls_confirmed_none, toll_cost_empty_return, driver_cost, driver_nights,
+    cross_border_cost, include_empty_return | include_return,
+    distance_estimated, distance_confirmed, use_official_fuel,
+    fuel_price_override, price | your_price.
+    Returns (inputs, context) — context holds the resolved objects."""
+    from django.conf import settings as dj_settings
+    from django.utils import timezone
+    from core.services.fuel_price import resolve_company_diesel
+
+    payload = payload or {}
+    now = now or timezone.now()
+    today = timezone.localdate(now)
+    trip = str(payload.get('trip_type') or '').upper()
+    legs = _num(payload.get('legs'))
+    round_trip = trip == 'ROUND_TRIP' or legs == 2
+    legs = 2 if round_trip else 1
+
+    one_way = _pos(payload.get('one_way_distance_km'))
+    if one_way is None:
+        total = _pos(payload.get('distance_km'))
+        one_way = total / legs if total is not None else None
+
+    load_kg = _num(payload.get('load_kg'))
+    if load_kg is None:
+        load_kg = _num(payload.get('weight'))
+    vt, how = resolve_vehicle(company, vehicle_type_id=payload.get('vehicle_type_id'),
+                              name=payload.get('vehicle_type'), load_kg=load_kg)
+
+    if diesel_override is not None:
+        diesel = diesel_override
+    else:
+        diesel = resolve_company_diesel(company, now, use_official=bool(_truthy(payload.get('use_official_fuel'))),
+                                        override_price=_pos(payload.get('fuel_price_override')))
+    op = operating_cost_for(company, vt) if vt is not None else None
+    rate, rate_source = driver_rate(company, today)
+
+    toll_one_way = _num(payload.get('toll_cost_one_way'))
+    if toll_one_way is None:
+        toll_total = _num(payload.get('toll_cost'))
+        toll_one_way = toll_total / legs if toll_total is not None else None
+    tolls_unknown = bool(_truthy(payload.get('tolls_unknown')))
+
+    driver_amount = _num(payload.get('driver_cost'))
+    if driver_amount is None:
+        driver_amount = _num(payload.get('driver_allowance'))
+    if _truthy(payload.get('driver_cost_is_override')) is False:
+        driver_amount = None
+
+    include = payload.get('include_empty_return')
+    if include is None:
+        include = payload.get('include_return')
+    include = _truthy(include) if include not in (None, '') else None
+
+    price = _pos(payload.get('price'))
+    if price is None:
+        price = _pos(payload.get('your_price'))
+
+    inputs = {
+        'trip_type': 'ROUND_TRIP' if round_trip else 'ONE_WAY',
+        'distance_km': one_way,
+        'distance_estimated': bool(_truthy(payload.get('distance_estimated'))),
+        'distance_confirmed': bool(_truthy(payload.get('distance_confirmed'))),
+        'duration_minutes': _pos(payload.get('duration_minutes')),
+        'load_kg': load_kg,
+        'vehicle': vehicle_input(vt),
+        'diesel': diesel['input'],
+        'operating_cost_per_km': op['value'] if op else (
+            _pos(getattr(company, 'operating_cost_per_km', None))),
+        'operating_cost_source': op['source'] if op else ('company_setting' if _pos(
+            getattr(company, 'operating_cost_per_km', None)) else None),
+        'tolls': {'one_way': toll_one_way, 'empty_return': _num(payload.get('toll_cost_empty_return')),
+                  'lookup_failed': tolls_unknown,
+                  'confirmed_none': bool(_truthy(payload.get('tolls_confirmed_none')))},
+        'driver': {'allowance_per_night': rate, 'nights': _num(payload.get('driver_nights')),
+                   'amount': driver_amount},
+        'hours_per_day': float(getattr(dj_settings, 'DRIVER_DRIVING_HOURS_PER_DAY', DEFAULT_HOURS_PER_DAY)),
+        'border_cost': _num(payload.get('cross_border_cost')) or 0.0,
+        'include_empty_return': include,
+        'settings': {
+            'include_empty_return_default': bool(getattr(company, 'include_empty_return_default', True)),
+            'empty_return_min_km': _num(getattr(company, 'empty_return_min_km', None)) or DEFAULT_EMPTY_RETURN_MIN_KM,
+        },
+        'minimum_charge': _pos(getattr(company, 'minimum_charge', None)),
+        'target_margin_pct': target_margin(company),
+        'price': price,
+    }
+    context = {'vehicle_type': vt, 'vehicle_how': how, 'operating_cost': op, 'diesel': diesel,
+               'driver_rate_source': rate_source, 'now': now}
+    return inputs, context
+
+
+def _context_out(context):
+    d = dict(context['diesel'])
+    d.pop('input', None)
+    d.pop('warnings', None)
+    return {'vehicle_selection': context['vehicle_how'], 'operating_cost': context['operating_cost'],
+            'driver_rate_source': context['driver_rate_source'], 'diesel_resolution': d}
+
+
+def costing_for_payload(payload, company, now=None):
+    """compute() for a builder payload, plus how each input was resolved."""
+    inputs, context = build_inputs(payload, company, now)
+    out = compute(inputs)
+    out['inputs'] = inputs
+    out['resolution'] = _context_out(context)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Saved quotes
+# ---------------------------------------------------------------------------
+
+COSTING_INPUT_KEYS = {
+    'distance_estimated': bool, 'distance_confirmed': bool, 'tolls_unknown': bool,
+    'tolls_confirmed_none': bool, 'include_empty_return': bool, 'use_official_fuel': bool,
+    'tolls_empty_return': float, 'fuel_price_override': float, 'vehicle_type_id': int,
+    'driver_nights': int, 'duration_minutes': float, 'toll_cost_one_way': float,
+}
+
+
+def quote_payload(quote):
+    """The pricing payload for a saved quote: its own fields (stored amounts
+    are the user's figures) plus its costing_inputs."""
+    ci = dict(quote.costing_inputs or {})
+    legs = 2 if quote.trip_type == 'ROUND_TRIP' else 1
+    distance = _pos(quote.distance)
+    payload = {
+        'trip_type': quote.trip_type,
+        'distance_km': distance,
+        'duration_minutes': ci.get('duration_minutes') or quote.estimated_duration_minutes,
+        'weight': _num(quote.weight),
+        'vehicle_type': quote.vehicle_type,
+        'vehicle_type_id': ci.get('vehicle_type_id') or getattr(quote, 'priced_vehicle_type_id', None),
+        'toll_cost': _num(quote.toll_charges),
+        'toll_cost_one_way': ci.get('toll_cost_one_way'),
+        'tolls_unknown': ci.get('tolls_unknown'),
+        'tolls_confirmed_none': ci.get('tolls_confirmed_none'),
+        'toll_cost_empty_return': ci.get('tolls_empty_return'),
+        'driver_cost': _num(quote.driver_allowance),
+        'driver_nights': ci.get('driver_nights'),
+        'cross_border_cost': 0.0,
+        'include_empty_return': ci.get('include_empty_return'),
+        'distance_estimated': ci.get('distance_estimated'),
+        'distance_confirmed': ci.get('distance_confirmed'),
+        'use_official_fuel': ci.get('use_official_fuel'),
+        'fuel_price_override': ci.get('fuel_price_override'),
+        'price': _num(quote.total_amount),
+    }
+    # Quote.distance is the one-way leg (pricing_decisions reads it so too);
+    # toll_charges is the total for the legs.
+    payload['one_way_distance_km'] = distance
+    payload['legs'] = legs
+    return payload
+
+
+def costing_for_quote(quote, now=None, *, use_snapshot_diesel=False):
+    """compute() for a saved quote. use_snapshot_diesel: price fuel on the
+    diesel stored when the quote was priced (send guard) instead of today's."""
+    company = quote.company
+    override = None
+    if use_snapshot_diesel and quote.fuel_price_used is not None and quote.fuel_price_source:
+        override = {'input': {
+            'zone': quote.fuel_zone or getattr(company, 'fuel_zone', 'INLAND'), 'mode': 'LIVE',
+            'own_price': None, 'own_set_at': None,
+            'official_price': float(quote.fuel_price_used), 'official_effective_from': iso(quote.fuel_effective_from),
+            'official_stale': False, 'use_official': False, 'override_price': None},
+            'source': quote.fuel_price_source}
+    inputs, context = build_inputs(quote_payload(quote), company, now, diesel_override=override)
+    out = compute(inputs)
+    if override is not None:
+        out['diesel']['source'] = quote.fuel_price_source
+    out['inputs'] = inputs
+    out['resolution'] = _context_out(context) if override is None else {
+        'vehicle_selection': context['vehicle_how'], 'operating_cost': context['operating_cost'],
+        'driver_rate_source': context['driver_rate_source'], 'diesel_resolution': 'snapshot'}
+    return out

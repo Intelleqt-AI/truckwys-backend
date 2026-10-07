@@ -1,0 +1,308 @@
+"""QUOTE-RULES.md over the API: company diesel mode (§1), the save-time
+snapshot (§9), the send guard (§11) and POST /quotes/cost-breakdown/."""
+import importlib
+from datetime import date, datetime, timedelta
+from decimal import Decimal
+from unittest.mock import patch
+from zoneinfo import ZoneInfo
+
+from django.apps import apps
+from django.contrib.auth import get_user_model
+from django.core.cache import cache
+from django.test import TestCase
+from rest_framework.test import APIClient
+
+from core.models import Company, Customer, FuelPrice, Quote, VehicleType
+
+SAST = ZoneInfo('Africa/Johannesburg')
+NOW = datetime(2026, 10, 7, 9, 0, tzinfo=SAST)
+User = get_user_model()
+
+
+def sast(y, m, d, hh=0, mm=0):
+    return datetime(y, m, d, hh, mm, tzinfo=SAST)
+
+
+def official_rows():
+    FuelPrice.objects.create(date=date(2026, 9, 2), diesel_inland=Decimal('29.5551'),
+                             diesel_coastal=Decimal('28.6831'), source='FIASA', diesel_grade='50ppm',
+                             diesel_500ppm_inland=Decimal('29.1111'), effective_from=sast(2026, 9, 2, 0, 1))
+    FuelPrice.objects.create(date=date(2026, 10, 7), diesel_inland=Decimal('32.7989'),
+                             diesel_coastal=Decimal('31.9269'), source='FIASA', diesel_grade='50ppm',
+                             effective_from=sast(2026, 10, 7, 0, 1))
+
+
+class _Base(TestCase):
+    def setUp(self):
+        cache.clear()
+        clock = patch('django.utils.timezone.now', return_value=NOW)
+        clock.start()
+        self.addCleanup(clock.stop)
+        official_rows()
+        self.company = Company.objects.create(company_name='Rules Haulage', margin_target_pct=Decimal('10'),
+                                              driver_allowance_per_night=Decimal('450'))
+        self.user = User.objects.create_user(username='rules', password='x', company=self.company, role='ADMIN')
+        self.customer = Customer.objects.create(company=self.company, name='Acme', email='a@x.test', phone='',
+                                                address='', city='', state='', zip_code='')
+        self.vt = VehicleType.objects.create(company=self.company, name='Superlink', capacity=34, max_distance=3000,
+                                             base_rate=20, fuel_consumption_l_per_100km=42)
+        self.api = APIClient()
+        self.api.force_authenticate(self.user)
+
+    def quote_payload(self, **over):
+        p = {'customer': self.customer.id, 'pickup_location': 'Johannesburg', 'delivery_location': 'Durban',
+             'origin': 'JHB', 'destination': 'DBN', 'cargo_description': 'Steel', 'weight': '28000',
+             'distance': '568.4', 'vehicle_type': 'Superlink', 'estimated_duration_minutes': 440,
+             'base_rate': '20000', 'fuel_surcharge': '6500', 'toll_charges': '1043.48', 'driver_allowance': '0',
+             'total_amount': '36000', 'valid_until': str(date(2026, 11, 7))}
+        p.update(over)
+        return p
+
+    def create(self, **over):
+        r = self.api.post('/api/v1/quotes/', self.quote_payload(**over), format='json')
+        self.assertEqual(r.status_code, 201, r.content)
+        return Quote.objects.get(id=r.json()['id'])
+
+
+class CompanyDieselModeTests(_Base):
+    URL = '/api/v1/company/profile/'
+
+    def test_mirror_live_is_official_zone_price(self):
+        body = self.api.get(self.URL).json()
+        self.assertEqual(body['fuel_price_mode'], 'LIVE')
+        self.assertEqual(body['fuel_price_per_litre'], '32.7989')
+        self.assertEqual(body['diesel_price_in_use']['source'], 'official')
+        self.assertEqual(body['include_empty_return_default'], True)
+
+    def test_new_client_own_price_and_clear(self):
+        body = self.api.patch(self.URL, {'fuel_price_own': '31.25'}, format='json').json()
+        self.assertEqual(body['fuel_price_mode'], 'OWN')
+        self.assertEqual(body['fuel_price_per_litre'], '31.2500')
+        self.assertIsNotNone(body['fuel_price_own_set_at'])
+        body = self.api.patch(self.URL, {'fuel_price_own': None}, format='json').json()
+        self.assertEqual(body['fuel_price_mode'], 'LIVE')
+        self.assertEqual(body['fuel_price_per_litre'], '32.7989')
+
+    def test_old_client_echoing_live_or_default_stays_live(self):
+        for value in ('32.7989', '23.50', '29.5551', '29.1111'):
+            body = self.api.patch(self.URL, {'fuel_price_per_litre': value}, format='json').json()
+            self.assertEqual(body['fuel_price_mode'], 'LIVE', value)
+
+    def test_old_client_typed_price_becomes_own(self):
+        body = self.api.patch(self.URL, {'fuel_price_per_litre': '30.40'}, format='json').json()
+        self.assertEqual((body['fuel_price_mode'], body['fuel_price_own']), ('OWN', '30.4000'))
+        # Saving settings again echoes the own price back: nothing changes.
+        set_at = body['fuel_price_own_set_at']
+        body = self.api.patch(self.URL, {'fuel_price_per_litre': '30.40'}, format='json').json()
+        self.assertEqual((body['fuel_price_mode'], body['fuel_price_own_set_at']), ('OWN', set_at))
+        # Old app cleared the field (it then writes the 23.50 default): LIVE.
+        body = self.api.patch(self.URL, {'fuel_price_per_litre': '23.50'}, format='json').json()
+        self.assertEqual(body['fuel_price_mode'], 'LIVE')
+
+    def test_zone_change_never_touches_own(self):
+        self.api.patch(self.URL, {'fuel_price_own': '31.25'}, format='json')
+        body = self.api.patch(self.URL, {'fuel_zone': 'COASTAL'}, format='json').json()
+        self.assertEqual((body['fuel_price_mode'], body['fuel_price_own']), ('OWN', '31.2500'))
+
+    def test_empty_return_fields_mirror(self):
+        body = self.api.patch(self.URL, {'pricing_include_empty_return': False}, format='json').json()
+        self.assertFalse(body['include_empty_return_default'])
+        body = self.api.patch(self.URL, {'include_empty_return_default': True, 'minimum_charge': '5000',
+                                         'empty_return_min_km': '250'}, format='json').json()
+        self.assertTrue(body['pricing_include_empty_return'])
+        self.assertEqual(body['minimum_charge'], '5000.00')
+
+
+class MigrationRuleTests(_Base):
+    def test_backfill_rule(self):
+        mod = importlib.import_module('core.migrations.0149_company_fuel_price_mode_backfill')
+        live = [Company.objects.create(company_name=f'L{i}', fuel_price_per_litre=Decimal(v))
+                for i, v in enumerate(('23.50', '29.5551', '28.6851', '29.1111'))]
+        own = Company.objects.create(company_name='O', fuel_price_per_litre=Decimal('27.10'))
+        mod.forwards(apps, None)
+        for c in live:
+            c.refresh_from_db()
+            self.assertEqual((c.fuel_price_mode, c.fuel_price_own), ('LIVE', None), c.company_name)
+        own.refresh_from_db()
+        self.assertEqual((own.fuel_price_mode, own.fuel_price_own), ('OWN', Decimal('27.1000')))
+        self.assertEqual(own.fuel_price_own_set_at, own.updated_at)
+        mod.backwards(apps, None)
+        own.refresh_from_db()
+        self.assertEqual((own.fuel_price_mode, own.fuel_price_own), ('LIVE', None))
+        self.assertEqual(own.fuel_price_per_litre, Decimal('27.1000'))
+
+
+class SnapshotTests(_Base):
+    def test_create_snapshots_zone_price_and_floor(self):
+        q = self.create()
+        self.assertEqual(q.fuel_price_used, Decimal('32.7989'))
+        self.assertEqual(q.fuel_price_source, 'official')
+        self.assertEqual(q.fuel_zone, 'INLAND')
+        self.assertEqual(q.fuel_effective_from, sast(2026, 10, 7, 0, 1))
+        self.assertEqual(q.fuel_official_at_pricing, Decimal('32.7989'))
+        self.assertEqual(q.priced_vehicle_type_id, self.vt.id)
+        self.assertTrue(q.empty_return_included)                 # 568 km one way
+        self.assertIsNotNone(q.cost_floor)
+        self.assertEqual(q.fuel_price_at_creation, Decimal('32.7989'))
+        self.assertEqual(Decimal(str(q.costing_snapshot['floor'])), q.cost_floor)
+        expected_litres = 568.4 * (42 * (0.7 + 0.3 * 28 / 34)) / 100 + 568.4 * 42 * 0.7 / 100
+        self.assertAlmostEqual(float(q.fuel_litres), expected_litres, places=3)
+
+    def test_update_re_prices_status_change_does_not(self):
+        q = self.create()
+        priced_at = q.priced_at
+        later = sast(2026, 10, 8, 9)
+        with patch('django.utils.timezone.now', return_value=later):
+            r = self.api.patch(f'/api/v1/quotes/{q.id}/', {'status': 'ACCEPTED'}, format='json')
+            self.assertEqual(r.status_code, 200, r.content)
+            q.refresh_from_db()
+            self.assertEqual(q.priced_at, priced_at)
+            r = self.api.patch(f'/api/v1/quotes/{q.id}/', {'costing_inputs': {'include_empty_return': False}},
+                               format='json')
+            self.assertEqual(r.status_code, 200, r.content)
+        q.refresh_from_db()
+        self.assertEqual(q.priced_at, later)
+        self.assertFalse(q.empty_return_included)
+
+    def test_coastal_own_and_override_sources(self):
+        self.company.fuel_zone = 'COASTAL'
+        self.company.save()
+        self.assertEqual(self.create().fuel_price_used, Decimal('31.9269'))
+        self.company.fuel_price_mode, self.company.fuel_price_own = 'OWN', Decimal('30')
+        self.company.save()
+        q = self.create()
+        self.assertEqual((q.fuel_price_source, q.fuel_price_used), ('own', Decimal('30.0000')))
+        q = self.create(costing_inputs={'use_official_fuel': True})
+        self.assertEqual((q.fuel_price_source, q.fuel_price_used), ('official', Decimal('31.9269')))
+        q = self.create(costing_inputs={'fuel_price_override': 33.1})
+        self.assertEqual(q.fuel_price_source, 'override')
+
+    def test_costing_inputs_validated(self):
+        r = self.api.post('/api/v1/quotes/', self.quote_payload(costing_inputs={'nope': 1}), format='json')
+        self.assertEqual(r.status_code, 400)
+        r = self.api.post('/api/v1/quotes/', self.quote_payload(costing_inputs={'tolls_unknown': 'yes'}),
+                          format='json')
+        self.assertEqual(r.status_code, 400)
+
+    def test_snapshot_fields_are_read_only(self):
+        q = self.create(fuel_price_used='1.00', cost_floor='5')
+        self.assertEqual(q.fuel_price_used, Decimal('32.7989'))
+
+    def test_copilot_creation_snapshots(self):
+        from core.services.copilot_entities import _quote_execute_create
+        payload = self.quote_payload()
+        q = _quote_execute_create(self.company, self.user, payload)
+        q.refresh_from_db()
+        self.assertEqual(q.fuel_price_used, Decimal('32.7989'))
+        self.assertEqual(q.fuel_price_at_creation, Decimal('32.7989'))
+
+
+class SendGuardTests(_Base):
+    def test_blocked_send_returns_structured_warnings(self):
+        q = self.create(costing_inputs={'tolls_unknown': True})
+        for call in (lambda: self.api.post(f'/api/v1/quotes/{q.id}/send_to_customer/', {}, format='json'),
+                     lambda: self.api.patch(f'/api/v1/quotes/{q.id}/', {'status': 'SENT'}, format='json'),
+                     lambda: self.api.patch(f'/api/v1/quotes/{q.id}/update_status/', {'status': 'SENT'},
+                                            format='json'),
+                     lambda: self.api.get(f'/api/v1/quotes/{q.id}/generate_pdf/')):
+            r = call()
+            self.assertEqual(r.status_code, 400, r.content)
+            body = r.json()
+            self.assertEqual(body['code'], 'quote_send_blocked')
+            self.assertEqual(body['blocking'], ['tolls_unknown'])
+            w = body['warnings'][0]
+            self.assertEqual(set(w), {'code', 'severity', 'title', 'detail', 'impact_zar', 'actions'})
+        q.refresh_from_db()
+        self.assertEqual(q.status, 'DRAFT')
+
+    def test_patch_to_sent_with_fix_in_same_request(self):
+        q = self.create(costing_inputs={'tolls_unknown': True})
+        r = self.api.patch(f'/api/v1/quotes/{q.id}/', {'status': 'SENT',
+                                                       'costing_inputs': {'tolls_confirmed_none': True}},
+                           format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        q.refresh_from_db()
+        self.assertEqual(q.status, 'SENT')
+
+    def test_blocked_patch_rolls_back_other_changes(self):
+        q = self.create(costing_inputs={'distance_estimated': True})
+        r = self.api.patch(f'/api/v1/quotes/{q.id}/', {'status': 'SENT', 'notes': 'x'}, format='json')
+        self.assertEqual(r.status_code, 400)
+        q.refresh_from_db()
+        self.assertEqual((q.status, q.notes), ('DRAFT', ''))
+
+    def test_create_as_sent_is_guarded(self):
+        r = self.api.post('/api/v1/quotes/', self.quote_payload(status='SENT', vehicle_type='Nope', weight='99000'),
+                          format='json')
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertEqual(r.json().get('code'), 'quote_send_blocked', r.content)
+        self.assertFalse(Quote.objects.exists())
+
+    def test_minimum_charge_blocks(self):
+        self.company.minimum_charge = Decimal('50000')
+        self.company.save()
+        q = self.create()
+        r = self.api.post(f'/api/v1/quotes/{q.id}/send_to_customer/', {}, format='json')
+        self.assertEqual(r.json()['blocking'], ['below_minimum_charge'])
+
+    def test_send_ok_and_earlier_period_warns(self):
+        with patch('django.utils.timezone.now', return_value=sast(2026, 10, 1, 9)):
+            q = self.create()
+        self.assertEqual(q.fuel_price_used, Decimal('29.5551'))
+        r = self.api.post(f'/api/v1/quotes/{q.id}/send_to_customer/', {}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        codes = [w['code'] for w in r.json()['warnings']]
+        self.assertIn('diesel_period_changed', codes)
+        q.refresh_from_db()
+        self.assertEqual(q.status, 'SENT')
+        # the snapshot is what it was priced on, not re-priced by sending
+        self.assertEqual(q.fuel_price_used, Decimal('29.5551'))
+
+
+class CostBreakdownEndpointTests(_Base):
+    URL = '/api/v1/quotes/cost-breakdown/'
+
+    def test_payload(self):
+        r = self.api.post(self.URL, {'trip_type': 'ONE_WAY', 'distance_km': 568.4, 'duration_minutes': 440,
+                                     'weight': 28000, 'vehicle_type_id': self.vt.id, 'toll_cost': 1043.48,
+                                     'price': 36000}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        body = r.json()
+        self.assertEqual(body['diesel']['price'], 32.7989)
+        self.assertEqual(body['resolution']['vehicle_selection'], 'selected')
+        self.assertTrue(body['trip']['empty_return_included'])
+        from core.services.quote_costing import compute
+        self.assertEqual(body['floor'], compute(body['inputs'])['floor'])
+
+    def test_suggested_truck_when_none_given(self):
+        VehicleType.objects.create(company=self.company, name='Rigid 8t', capacity=8000, max_distance=1000,
+                                   base_rate=10, fuel_consumption_l_per_100km=24)
+        from core.services.quote_costing import capacity_tonnes
+        from core.services.vehicle_types import visible_vehicle_types_queryset
+        fits = sorted((capacity_tonnes(v.capacity), float(v.fuel_consumption_l_per_100km), v.name)
+                      for v in visible_vehicle_types_queryset(self.company)
+                      if capacity_tonnes(v.capacity) and capacity_tonnes(v.capacity) >= 5)
+        body = self.api.post(self.URL, {'distance_km': 100, 'weight': 5000, 'toll_cost': 0}, format='json').json()
+        self.assertEqual(body['vehicle']['name'], fits[0][2])
+        self.assertEqual(body['resolution']['vehicle_selection'], 'suggested')
+
+    def test_saved_quote_with_send_check(self):
+        q = self.create()
+        body = self.api.post(self.URL, {'quote_id': q.id}, format='json').json()
+        self.assertTrue(body['send_check']['can_send'])
+        self.assertEqual(body['snapshot']['fuel_price_source'], 'official')
+
+    def test_other_tenants_quote_is_not_found(self):
+        other = Company.objects.create(company_name='Other')
+        q = self.create()
+        q.company = other
+        q.save()
+        self.assertEqual(self.api.post(self.URL, {'quote_id': q.id}, format='json').status_code, 404)
+
+    def test_vehicle_of_other_tenant_not_used(self):
+        other = Company.objects.create(company_name='Other')
+        theirs = VehicleType.objects.create(company=other, name='Theirs', capacity=10, max_distance=1000,
+                                            base_rate=10, fuel_consumption_l_per_100km=5)
+        body = self.api.post(self.URL, {'distance_km': 100, 'weight': 5000, 'toll_cost': 0,
+                                        'vehicle_type_id': theirs.id}, format='json').json()
+        self.assertNotEqual(body['vehicle']['id'], theirs.id)

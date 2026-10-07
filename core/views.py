@@ -2790,6 +2790,19 @@ class QuoteFilterSet(django_filters.FilterSet):
         return queryset.filter(status=value)
 
 
+class QuoteSendBlocked(Exception):
+    """A send path hit a blocking warning (QUOTE-RULES.md §11)."""
+
+    def __init__(self, check):
+        super().__init__('quote send blocked')
+        self.check = check
+
+
+def _send_blocked_response(check):
+    from core.services.quote_snapshot import blocked_response_body
+    return Response(blocked_response_body(check), status=status.HTTP_400_BAD_REQUEST)
+
+
 class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
     queryset = Quote.objects.all().select_related('company', 'pricing_decision').prefetch_related('loads')
     serializer_class = QuoteSerializer
@@ -2829,6 +2842,8 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         from django.db import DatabaseError
         try:
             return super().update(request, *args, **kwargs)
+        except QuoteSendBlocked as blocked:
+            return _send_blocked_response(blocked.check)
         except DatabaseError:
             # The quote and its pricing decision save in one transaction
             # (QuoteSerializer.update), so nothing was written: say so plainly.
@@ -2850,6 +2865,21 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
                           'use "Convert to booking" to create the Order, which tracks delivery status.'
             })
         previous_status = serializer.instance.status if serializer.instance is not None else None
+        if serializer.validated_data.get('status') == 'SENT' and previous_status != 'SENT':
+            # A status change to SENT is a send (QUOTE-RULES.md §11): save the
+            # other changes, check, and only then make the transition (whose
+            # post_save signal emails the customer) — all or nothing.
+            from django.db import transaction
+            from core.services.quote_snapshot import send_check
+            with transaction.atomic():
+                serializer.validated_data.pop('status')
+                quote = serializer.save()
+                check = send_check(quote)
+                if not check['can_send']:
+                    raise QuoteSendBlocked(check)
+                quote.status = 'SENT'
+                quote.save()
+            return
         quote = serializer.save()
         # A status change to Accepted / Declined through the plain PATCH (the
         # status menu and board drags use it) is a decision too: record it as
@@ -2908,6 +2938,8 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
                         Company.objects.filter(pk=company.pk).update(demo_quota_used=F('demo_quota_used') + 1)
                     return response
             return super().create(request, *args, **kwargs)
+        except QuoteSendBlocked as blocked:
+            return _send_blocked_response(blocked.check)
         except IntegrityError as exc:
             msg = str(exc)
             if 'quote_number' in msg.lower():
@@ -2948,17 +2980,19 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         if company:
             save_kwargs['company'] = company
 
-        # Snapshot the diesel price at quote creation so the fuel-surcharge /
-        # fuel-alert loop can later measure real margin erosion since the quote.
-        try:
-            from core.services.fuel_price import fetch_fuel_prices
-            fp = fetch_fuel_prices()
-            diesel = getattr(fp, 'diesel_inland', None)
-            if diesel is not None:
-                save_kwargs['fuel_price_at_creation'] = diesel
-        except Exception:
-            pass
-
+        # The pricing snapshot (QUOTE-RULES.md §9) is written by
+        # QuoteSerializer.create (core.services.quote_snapshot), including
+        # fuel_price_at_creation — never a fallback or inland-only figure.
+        if serializer.validated_data.get('status') == 'SENT':
+            # Created straight as SENT: same guard as every other send path.
+            from django.db import transaction
+            from core.services.quote_snapshot import send_check
+            with transaction.atomic():
+                quote = serializer.save(**save_kwargs)
+                check = send_check(quote)
+                if not check['can_send']:
+                    raise QuoteSendBlocked(check)
+            return
         serializer.save(**save_kwargs)
 
     @action(detail=True, methods=['patch'])
@@ -2984,6 +3018,11 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        if new_status == 'SENT' and quote.status != 'SENT':
+            from core.services.quote_snapshot import send_check
+            check = send_check(quote)
+            if not check['can_send']:
+                return _send_blocked_response(check)
         quote.status = new_status
         # Read by the Quote post_save signal: an authenticated user made this
         # change, so exclude them from their own "quote accepted/declined/…"
@@ -3177,6 +3216,11 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         from core.services.quote_pdf import generate_quote_pdf_bytes
 
         quote = self.get_object()
+        # The PDF is what goes to the customer: same guard as sending.
+        from core.services.quote_snapshot import send_check
+        check = send_check(quote)
+        if not check['can_send']:
+            return _send_blocked_response(check)
         pdf_bytes = generate_quote_pdf_bytes(quote)
 
         response = HttpResponse(pdf_bytes, content_type='application/pdf')
@@ -3196,7 +3240,14 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         transition and so wouldn't re-fire the signal on its own.
         """
         from core.services.quote_share import ensure_quote_token, quote_share_url, send_quote_to_customer_email
+        from core.services.quote_snapshot import send_check
         quote = self.get_object()
+
+        # QUOTE-RULES.md §11: any blocking warning stops the send (structured
+        # warnings in the 400 body); an earlier diesel period only warns.
+        check = send_check(quote)
+        if not check['can_send']:
+            return _send_blocked_response(check)
 
         if quote.status != 'SENT':
             quote.status = 'SENT'
@@ -3226,6 +3277,7 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
             'email_sent': email_sent,
             'customer_email': recipient,
             'email_skipped_reason': skipped_reason,
+            'warnings': check['warnings'],
         })
 
 
@@ -3663,18 +3715,10 @@ class RouteCalculatorView(APIView):
     permission_classes = [IsAuthenticated]
 
     TOMTOM_API_KEY = config('TOMTOM_API_KEY', default='')
-    FUEL_RATE_FALLBACK = 0.35   # litres/km — used only when vehicle_type is unrecognised
-    TOLL_ZAR_KM_FALLBACK = 0.95 # ZAR/km — used only when no SANRAL route is matched
-
-    # Per-vehicle-type diesel consumption (litres/km). Mirrors frontend FUEL_CONSUMPTION.
-    FUEL_CONSUMPTION_BY_TYPE: dict = {
-        'Flatbed':      0.32,
-        'Tautliner':    0.35,
-        'Refrigerated': 0.38,
-        'Box Truck':    0.30,
-        'Tanker':       0.40,
-        'Danger Load':  0.36,
-    }
+    # Fuel on the route options is priced by the quote rules (QUOTE-RULES.md
+    # §1/§4: the company's own vehicle type, burn by load ratio, the company's
+    # diesel price). No name-keyed consumption table, no 0.35 L/km, no 21.7:
+    # unknown => null with fuel_unknown_reason.
 
     # Maps frontend vehicle_type → SANRAL truck class used by toll_calculator.
     # Single source of truth lives in toll_calculator (imported below) so the class
@@ -3684,7 +3728,6 @@ class RouteCalculatorView(APIView):
     def post(self, request):
         from core.services.cross_border import (detect_countries, calculate_cross_border_costs,
                                                 get_cross_border_warnings, country_distances_km)
-        from core.services.fuel_price import fetch_fuel_prices
         from decimal import Decimal
         from core.services.toll_calculator import (VAT_RATE, calculate_tolls, calculate_tolls_by_geometry,
                                                    resolve_toll_class)
@@ -3696,7 +3739,14 @@ class RouteCalculatorView(APIView):
         origin_lon = data.get('origin_lon')
         dest_lat = data.get('dest_lat')
         dest_lon = data.get('dest_lon')
-        weight_kg = int(data.get('weight_kg') or data.get('weight') or 20000)
+        raw_weight = data.get('weight_kg') or data.get('weight')
+        try:
+            load_kg = float(raw_weight) if raw_weight not in (None, '') else None
+        except (TypeError, ValueError):
+            load_kg = None
+        # Cross-border fee bands still need a weight; fuel uses the real load
+        # (unknown => full-load burn, per the quote rules).
+        weight_kg = int(load_kg or 20000)
         vehicle_type = data.get('vehicle_type', 'Flatbed')
 
         # Ordered intermediate stops between origin and destination — only
@@ -3759,28 +3809,41 @@ class RouteCalculatorView(APIView):
                              {'lat': d['lat'], 'lon': d['lon']}],
             }]
 
-        # Get live fuel price
-        try:
-            fuel_price_obj = fetch_fuel_prices()
-            diesel_price = float(fuel_price_obj.diesel_inland)
-        except Exception:
-            # Fall back to company's configured fuel price, then static default
-            try:
-                company = getattr(request.user, 'company', None)
-                diesel_price = float(company.fuel_price_per_litre) if company and company.fuel_price_per_litre else 21.7
-            except Exception:
-                diesel_price = 21.7
+        # Fuel (QUOTE-RULES.md §1/§4): the company's vehicle type (never
+        # another tenant's, never a name-keyed guess) and its diesel price.
+        from core.services import quote_costing as qc
+        from core.services.fuel_price import resolve_company_diesel
+        company = getattr(request.user, 'company', None)
+        vt_obj, _how = qc.resolve_vehicle(company, vehicle_type_id=data.get('vehicle_type_id'),
+                                          name=vehicle_type, suggest=False)
+        diesel = resolve_company_diesel(company) if company is not None else None
+        diesel_price = (diesel or {}).get('price')
+        burn = None
+        fuel_unknown_reason = None
+        if vt_obj is None:
+            fuel_unknown_reason = 'no_vehicle'
+        else:
+            veh = qc.vehicle_input(vt_obj)
+            rated = qc._pos(veh['rated_burn_l_per_100km'])
+            cap_t = qc.capacity_tonnes(veh['capacity'])
+            ratio = min((load_kg / 1000) / cap_t, 1) if (cap_t and load_kg is not None) else 1
+            if rated is None:
+                fuel_unknown_reason = 'truck_burn_missing'
+            else:
+                burn = rated * (qc.LOADED_BASE + qc.LOADED_SLOPE * ratio)
+        if diesel_price is None and fuel_unknown_reason is None:
+            fuel_unknown_reason = 'diesel_missing'
 
-        # Fuel cost — vehicle-specific consumption rate (DB first, dict fallback)
-        try:
-            from core.models import VehicleType as VehicleTypeModel
-            vt_obj = VehicleTypeModel.objects.filter(name=vehicle_type).first()
-            fuel_rate = float(vt_obj.fuel_consumption_l_per_100km) / 100 if vt_obj and vt_obj.fuel_consumption_l_per_100km else None
-        except Exception:
-            fuel_rate = None
-        fuel_rate = fuel_rate or self.FUEL_CONSUMPTION_BY_TYPE.get(vehicle_type, self.FUEL_RATE_FALLBACK)
-        fuel_litres = round(distance_km * fuel_rate, 2)
-        fuel_zar = round(fuel_litres * diesel_price, 2)
+        def _fuel_for(km):
+            """(litres unrounded, fuel R to the cent) or (None, None)."""
+            if burn is None or diesel_price is None:
+                return None, None
+            litres = km * burn / 100
+            return litres, qc.cents(litres * diesel_price)
+
+        fuel_litres_raw, fuel_zar = _fuel_for(distance_km)
+        fuel_litres = round(fuel_litres_raw, 2) if fuel_litres_raw is not None else None
+        fuel_rate = burn / 100 if burn is not None else None
 
         # Use resolved labels + TomTom country codes for country detection
         origin_label = o.get('label', origin)
@@ -3896,7 +3959,11 @@ class RouteCalculatorView(APIView):
 
         geometry = routes_raw[0].get('geometry', []) if routes_raw else []
         toll_result = _toll_for_route(geometry)
-        toll_zar = float(toll_result['excl'])
+        # A failed or unmatched toll lookup is UNKNOWN, never R 0 (QUOTE-RULES
+        # §6): toll_cost_zar null + tolls_unknown. A real route that passes no
+        # plaza (no unavailable_reason) is a known R 0.
+        tolls_unknown = toll_result['unavailable_reason'] is not None
+        toll_zar = None if tolls_unknown else float(toll_result['excl'])
         toll_breakdown = toll_result['breakdown']
         toll_routes_used = toll_result['routes']
         toll_unavailable_reason = toll_result['unavailable_reason']
@@ -3947,12 +4014,20 @@ class RouteCalculatorView(APIView):
             'source': source,
             'distance_km': round(distance_km, 1),
             'duration_minutes': int(duration_min),
+            # Straight-line fallback (TomTom unavailable): flagged so the
+            # quote can't go out on it unconfirmed (QUOTE-RULES §6).
+            'distance_estimated': source != 'tomtom',
             'fuel_usage_litres': fuel_litres,
             'fuel_cost_zar': fuel_zar,
-            'fuel_rate_l_per_100km': round(fuel_rate * 100, 1),
+            'fuel_rate_l_per_100km': round(fuel_rate * 100, 1) if fuel_rate is not None else None,
+            'fuel_unknown_reason': fuel_unknown_reason,
+            'fuel_vehicle_type_id': vt_obj.id if vt_obj is not None else None,
+            'fuel_price_per_litre': diesel_price,
+            'fuel_price_source': (diesel or {}).get('source'),
             # VAT-EXCLUSIVE since 2026-09 (docs/backend-changes/2026-09-toll-class-vat.md):
             # this is the carrier's toll cost for a quote priced excl. VAT.
-            'toll_cost_zar': round(toll_zar, 2),
+            'toll_cost_zar': round(toll_zar, 2) if toll_zar is not None else None,
+            'tolls_unknown': tolls_unknown,
             'toll_cost_includes_vat': False,
             'toll_cost_incl_vat_zar': float(toll_result['incl']),
             'toll_vat_zar': float(toll_result['incl'] - toll_result['excl']),
@@ -3967,7 +4042,8 @@ class RouteCalculatorView(APIView):
             'toll_warning': _TOLL_UNAVAILABLE_MESSAGES.get(toll_unavailable_reason) if toll_unavailable_reason else None,
             'toll_routes': toll_routes_used,
             'toll_breakdown': toll_breakdown,
-            'total_cost_zar': round(fuel_zar + toll_zar + sum(additional_costs.values()), 2),
+            'total_cost_zar': (round(fuel_zar + toll_zar + sum(additional_costs.values()), 2)
+                               if fuel_zar is not None and toll_zar is not None else None),
             'origin_coords': o,
             'dest_coords': d,
             'origin_resolved': o.get('label', origin),
@@ -3996,12 +4072,14 @@ class RouteCalculatorView(APIView):
         extra_costs = sum(additional_costs.values()) if additional_costs else 0
         routes_out = []
         for i, rt in enumerate(routes_raw):
-            r_litres = round(rt['distance_km'] * fuel_rate, 2)
-            r_fuel = round(r_litres * diesel_price, 2)
+            r_litres_raw, r_fuel = _fuel_for(rt['distance_km'])
+            r_litres = round(r_litres_raw, 2) if r_litres_raw is not None else None
             analysis = self._analyze_route(rt)
             terrain = self._infer_terrain(rt['geometry'], origin, destination)
             rt_toll = toll_result if i == 0 else _toll_for_route(rt.get('geometry', []))
-            rt_toll_zar, rt_breakdown = round(float(rt_toll['excl']), 2), rt_toll['breakdown']
+            rt_tolls_unknown = rt_toll['unavailable_reason'] is not None
+            rt_toll_zar = None if rt_tolls_unknown else round(float(rt_toll['excl']), 2)
+            rt_breakdown = rt_toll['breakdown']
             routes_out.append({
                 'index': i,
                 'is_best': i == 0,
@@ -4021,7 +4099,9 @@ class RouteCalculatorView(APIView):
                 'tolls_unavailable': rt_toll['unavailable_reason'] is not None,
                 'tolls_unavailable_reason': rt_toll['unavailable_reason'],
                 'toll_breakdown': rt_breakdown,
-                'total_cost_zar': round(r_fuel + rt_toll_zar + extra_costs, 2),
+                'tolls_unknown': rt_tolls_unknown,
+                'total_cost_zar': (round(r_fuel + rt_toll_zar + extra_costs, 2)
+                                   if r_fuel is not None and rt_toll_zar is not None else None),
                 # Rich route metadata from section analysis
                 'toll_count': analysis['toll_count'],
                 'has_tunnel': analysis['has_tunnel'],

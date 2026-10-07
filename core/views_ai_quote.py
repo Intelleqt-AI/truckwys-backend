@@ -63,110 +63,97 @@ def _sg_extract_json(text):
 
 
 class FuelPriceCurrentView(APIView):
-    """GET /api/v1/fuel-prices/current/ — returns current diesel price with staleness check.
-    Pass ?force=true (e.g. a manual "Fetch Now" button) to bypass the normal
-    once-per-hour live-retry gate and re-check the live sources immediately."""
+    """GET /api/v1/fuel-prices/current/ — the official diesel price in force
+    now, its freshness, and the caller's company price (QUOTE-RULES.md §1-§2).
+
+    Only official rows (FIASA 50ppm / MANUAL) are ever returned as a price;
+    fallback-table rows never are. A price older than the current
+    first-Wednesday period triggers one throttled refresh and is flagged
+    `stale` if still old. ?force=true re-checks FIASA now.
+
+    Legacy keys (inland_price, coastal_price, date, diesel_inland, ...) are
+    kept; additive: zone_price, effective_from, period_start, stale,
+    company_price {mode, source, price, zone, official, own, warnings}."""
     permission_classes = [IsAuthenticated]
 
-    @staticmethod
-    def _provenance(request, fuel_price, is_fallback):
-        """Fields added 2026-09 (all additive; existing keys unchanged): the
-        price for the caller's company fuel zone plus where it came from."""
-        company = getattr(request.user, 'company', None)
-        zone = getattr(company, 'fuel_zone', None) or 'INLAND'
-
-        def num(v):
-            return float(v) if v is not None else None
-
-        effective_from = getattr(fuel_price, 'effective_from', None)
-        failed_at = getattr(fuel_price, 'fetch_failed_at', None)
-        zone_price = None
-        if not is_fallback:
-            zone_price = num(fuel_price.diesel_coastal if zone == 'COASTAL' else fuel_price.diesel_inland)
-        return {
-            'zone': zone,
-            'zone_price': zone_price,
-            'diesel_grade': getattr(fuel_price, 'diesel_grade', None),
-            'price_basis': 'WHOLESALE_LIST',
-            'effective_from': timezone.localtime(effective_from).isoformat() if effective_from else None,
-            'diesel_500ppm_inland': None if is_fallback else num(getattr(fuel_price, 'diesel_500ppm_inland', None)),
-            'diesel_500ppm_coastal': None if is_fallback else num(getattr(fuel_price, 'diesel_500ppm_coastal', None)),
-            'last_failed_check_at': timezone.localtime(failed_at).isoformat() if failed_at else None,
-        }
-
     def get(self, request):
+        from core.services.fuel_price import (official_row_in_force, period_start, refresh_official,
+                                              resolve_company_diesel, row_effective_from)
         try:
-            force = request.query_params.get('force', '').lower() == 'true'
-            fuel_price = fetch_fuel_prices(force_update=force)
+            now = timezone.now()
+            company = getattr(request.user, 'company', None)
+            zone = getattr(company, 'fuel_zone', None) or 'INLAND'
+            if request.query_params.get('force', '').lower() == 'true':
+                refresh_official(force=True, now=now)
+            resolution = resolve_company_diesel(company, now) if company is not None else None
+            if resolution is None:
+                from core.services.fuel_price import resolve_official
+                official = resolve_official(zone, now)
+                stale_flag = official['stale']
+            else:
+                stale_flag = resolution['official']['stale']
+            row = official_row_in_force(now)
+            start = period_start(now)
 
-            # Stale if: source is a fallback (live scrape failed), or data is >35 days old
-            days_old = (timezone.now().date() - fuel_price.date).days
-            is_fallback = fuel_price.source in ('FALLBACK', 'FALLBACK_LATEST')
-            # A refresh that failed after this price was stored leaves the
-            # last good price in place (never overwritten by a fallback) —
-            # still usable, but flagged.
-            refresh_failed_at = getattr(fuel_price, 'fetch_failed_at', None)
-            is_stale = is_fallback or days_old > 35 or refresh_failed_at is not None
-            provenance = self._provenance(request, fuel_price, is_fallback)
+            def num(v):
+                return float(v) if v is not None else None
 
-            if is_fallback:
-                # Don't hand over a substituted number dressed up as current —
-                # the live sources (AA SA, SAPIA, DMRE) are all presently
-                # broken (moved page / 404 / unreachable, not a transient
-                # blip — see fuel_price.py's scraper functions), so silently
-                # substituting an old figure would read as "the price" to
-                # anyone glancing at it. Leave the fields empty and say so
-                # plainly instead; a human can enter today's real price below.
+            company_price = None
+            if resolution is not None:
+                company_price = {k: v for k, v in resolution.items() if k != 'input'}
+            if row is None:
                 return Response({
                     'success': True,
-                    'inland_price': None,
-                    'coastal_price': None,
-                    'last_updated': None,
-                    # When we actually last checked a live source — distinct
-                    # from `last_updated`/`date`, which is just the calendar
-                    # month a price represents. Shown even on a fallback so
-                    # "checked 20 seconds ago and got nothing live" reads
-                    # differently from "hasn't been checked in days."
-                    'last_checked_at': fuel_price.fetched_at.isoformat(),
-                    'is_stale': True,
-                    'source': fuel_price.source,
-                    'stale_warning': "Couldn't reach any live fuel-price source right now — enter today's price manually below.",
-                    'date': None,
-                    'diesel_inland': None,
-                    'diesel_coastal': None,
-                    'petrol_95': None,
-                    'petrol_93': None,
-                    **provenance,
+                    'inland_price': None, 'coastal_price': None, 'last_updated': None,
+                    'last_checked_at': None, 'is_stale': True, 'stale': True, 'source': None,
+                    'stale_warning': 'No official diesel price is on record right now.',
+                    'date': None, 'diesel_inland': None, 'diesel_coastal': None,
+                    'petrol_95': None, 'petrol_93': None,
+                    'zone': zone, 'zone_price': None, 'diesel_grade': None, 'price_basis': 'WHOLESALE_LIST',
+                    'effective_from': None, 'period_start': timezone.localtime(start).isoformat(),
+                    'diesel_500ppm_inland': None, 'diesel_500ppm_coastal': None, 'last_failed_check_at': None,
+                    'company_price': company_price,
                 })
-
-            if refresh_failed_at is not None:
-                stale_warning = (
-                    f"The latest price check failed ({timezone.localtime(refresh_failed_at):%Y-%m-%d %H:%M} SAST); "
-                    f"showing the last confirmed {fuel_price.source} price."
-                )
-            elif is_stale:
-                stale_warning = f"Last update {days_old} days ago; consider manual refresh"
+            effective_from = row_effective_from(row)
+            failed_at = row.fetch_failed_at
+            stale = effective_from < start
+            if stale:
+                stale_warning = (f"The latest official price on record took effect "
+                                 f"{timezone.localtime(effective_from):%-d %b %Y}; this month's is not loaded yet.")
+            elif failed_at is not None:
+                stale_warning = (f"The latest price check failed ({timezone.localtime(failed_at):%Y-%m-%d %H:%M} SAST); "
+                                 f"showing the last confirmed {row.source} price.")
             else:
                 stale_warning = None
-
+            zone_price = num(row.diesel_coastal if zone == 'COASTAL' else row.diesel_inland)
             return Response({
                 'success': True,
-                'inland_price': float(fuel_price.diesel_inland),
-                'coastal_price': float(fuel_price.diesel_coastal),
-                'last_updated': fuel_price.date.isoformat(),
-                'last_checked_at': fuel_price.fetched_at.isoformat(),
-                'is_stale': is_stale,
-                'source': fuel_price.source,
+                'inland_price': num(row.diesel_inland),
+                'coastal_price': num(row.diesel_coastal),
+                'last_updated': row.date.isoformat(),
+                'last_checked_at': row.fetched_at.isoformat() if row.fetched_at else None,
+                'is_stale': stale or stale_flag or failed_at is not None,
+                'stale': stale,
+                'source': row.source,
                 'stale_warning': stale_warning,
-                # Legacy fields for backwards compatibility
-                'date': fuel_price.date.isoformat(),
-                'diesel_inland': float(fuel_price.diesel_inland),
-                'diesel_coastal': float(fuel_price.diesel_coastal),
-                'petrol_95': float(fuel_price.petrol_95) if fuel_price.petrol_95 else 0,
-                'petrol_93': float(fuel_price.petrol_93) if fuel_price.petrol_93 else 0,
-                **provenance,
+                'date': row.date.isoformat(),
+                'diesel_inland': num(row.diesel_inland),
+                'diesel_coastal': num(row.diesel_coastal),
+                'petrol_95': num(row.petrol_95) or 0,
+                'petrol_93': num(row.petrol_93) or 0,
+                'zone': zone,
+                'zone_price': zone_price,
+                'diesel_grade': row.diesel_grade,
+                'price_basis': 'WHOLESALE_LIST',
+                'effective_from': timezone.localtime(effective_from).isoformat(),
+                'period_start': timezone.localtime(start).isoformat(),
+                'diesel_500ppm_inland': num(row.diesel_500ppm_inland),
+                'diesel_500ppm_coastal': num(row.diesel_500ppm_coastal),
+                'last_failed_check_at': timezone.localtime(failed_at).isoformat() if failed_at else None,
+                'company_price': company_price,
             })
         except Exception as e:
+            logger.exception('fuel price current failed')
             return Response({
                 'success': False,
                 'error': str(e),
@@ -186,8 +173,9 @@ class FuelPriceCurrentView(APIView):
         from datetime import date
         from core.models.fuel_price import FuelPrice
 
-        today = date.today().replace(day=1)
         now = timezone.now()
+        # Keyed by the SAST day it was entered: earlier prices stay on record.
+        today = timezone.localdate(now)
         # A staff override is the price in force from now until a person
         # replaces it: automated refreshes never overwrite a MANUAL row (see
         # fetch_fuel_prices). Every provenance field is reset so nothing from

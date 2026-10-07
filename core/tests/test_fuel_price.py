@@ -88,17 +88,17 @@ class FetchFuelPricesTests(TestCase):
         fp2 = fetch_fuel_prices(target_date=target, force_update=True)
         self.assertEqual(fp2.pk, original_pk)
 
-    def test_defaults_to_current_month(self):
-        today = date.today()
-        current_month = today.replace(day=1)
-
+    def test_defaults_to_the_official_price_in_force(self):
+        # QUOTE-RULES §2: no target date = the current official price, stored
+        # under its effective date (2 Sep 2026 on the recorded page) and never
+        # a fallback-table row when the source is down.
+        fp = fetch_fuel_prices()
+        self.assertEqual(fp.date, date(2026, 9, 2))
+        self.assertEqual(fp.source, 'FIASA')
+        FuelPrice.objects.all().delete()
         self._go_offline()
-        with patch('core.services.fuel_price._fetch_from_aa_sa', return_value=None), \
-             patch('core.services.fuel_price._fetch_from_sapia', return_value=None), \
-             patch('core.services.fuel_price._fetch_from_dmre', return_value=None):
-            fp = fetch_fuel_prices()
-
-        self.assertEqual(fp.date, current_month)
+        self.assertIsNone(fetch_fuel_prices())
+        self.assertFalse(FuelPrice.objects.exists())
 
     def test_falls_back_to_latest_when_key_missing(self):
         # Use a future date not in _FALLBACK_PRICES

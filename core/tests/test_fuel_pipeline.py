@@ -271,7 +271,11 @@ class ManualOverrideTests(TestCase):
             r = client.post('/api/v1/fuel-prices/current/',
                             {'diesel_inland': '30.10', 'diesel_coastal': '29.20'}, format='json')
         self.assertEqual(r.status_code, 200, r.content)
-        row = FuelPrice.objects.get(date=self.month)
+        # Keyed by the SAST day it was entered; the FIASA row stays on record.
+        from django.utils import timezone as dj_tz
+        row = FuelPrice.objects.get(date=dj_tz.localdate())
+        self.assertTrue(FuelPrice.objects.filter(date=self.month, source='FIASA').exists()
+                        or dj_tz.localdate() == self.month)
         self.assertEqual(row.source, 'MANUAL')
         self.assertEqual(row.diesel_inland, Decimal('30.1000'))
         self.assertGreater(row.fetched_at, _sast(2026, 1, 2))

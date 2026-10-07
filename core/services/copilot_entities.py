@@ -163,15 +163,10 @@ def _quote_execute_create(company, user, payload):
     serializer = QuoteSerializer(data=payload, context={'company': company})
     if not serializer.is_valid():
         raise ToolError(_serializer_errors(serializer))
+    # QuoteSerializer.create writes the pricing snapshot (QUOTE-RULES.md §9:
+    # fuel price used / source / zone / litres / floor, and
+    # fuel_price_at_creation) exactly as the quote builder's save does.
     quote = serializer.save(company=company, created_by=user)
-
-    # Snapshot the fuel price like QuoteViewSet.perform_create does.
-    try:
-        from core.services.fuel_price import current_fuel_price
-        quote.fuel_price_at_creation = Decimal(str(current_fuel_price()))
-        quote.save(update_fields=['fuel_price_at_creation'])
-    except Exception:
-        pass
     return quote
 
 

@@ -48,6 +48,8 @@ from core.models import BorderCrossingFee, Company, TollPlaza, User, VehicleType
 from core.models.country_transit_rate import CountryTransitRate
 from core.models.fuel_price import FuelPrice
 
+from core.services.quote_costing import cents as qc_cents  # noqa: E402
+
 FIXTURES = os.path.join(os.path.dirname(__file__), 'fixtures', 'pricing_golden')
 ROUTES_DIR = os.path.join(FIXTURES, 'routes')
 DERIVED_PATH = os.path.join(FIXTURES, 'derived.json')
@@ -55,6 +57,16 @@ WRITE = os.environ.get('PRICING_GOLDEN_WRITE') == '1'
 # The day main's outputs were captured on: date-dependent rules (fuel period,
 # SANRAL schedule from 1 March, allowance validity) are evaluated on it.
 CAPTURE_DAY = date(2026, 10, 6)
+CAPTURE_NOW = datetime(2026, 10, 6, 10, 0, tzinfo=dt_timezone.utc)
+
+# QUOTE-RULES.md (7 Oct 2026) deliberately changed the route's FUEL figures:
+# the company's own vehicle type, burn = rated × (0.70 + 0.30 × load ratio),
+# the company's diesel price, cents rounding; unknown => null. Those keys are
+# checked against that formula (expected_route_fuel) instead of main's
+# capture; every other key is still pinned byte for byte.
+ROUTE_FUEL_KEYS = ('fuel_usage_litres', 'fuel_cost_zar', 'fuel_rate_l_per_100km', 'total_cost_zar')
+ROUTE_NEW_KEYS = ('distance_estimated', 'fuel_unknown_reason', 'fuel_vehicle_type_id', 'fuel_price_per_litre',
+                  'fuel_price_source', 'tolls_unknown')
 
 with open(os.path.join(FIXTURES, 'reference_data.json')) as _f:
     REF = json.load(_f)
@@ -173,7 +185,11 @@ class _GoldenBase(TestCase):
 
     def route_calc(self, fx):
         fake = FakeTomTom(fx['tomtom_response'])
-        with mock.patch('core.views.http_requests.get', side_effect=fake):
+        # Evaluated on the capture day (the reference FIASA row is the price
+        # in force then), with no fuel scrape possible.
+        with mock.patch('core.views.http_requests.get', side_effect=fake), \
+                mock.patch('core.services.fuel_price._fetch_from_fiasa', side_effect=_no_network), \
+                mock.patch('django.utils.timezone.now', return_value=CAPTURE_NOW):
             resp = self.client.post('/api/v1/route/calculate/', fx['request'], format='json')
         self.assertEqual(resp.status_code, 200, resp.content[:500])
         self.assertEqual(len(fake.calls), 1, 'exactly one routing call per calculation')
@@ -198,11 +214,12 @@ class RouteCalculateGoldenTests(_GoldenBase):
             src = fx['tomtom_response']['routes'][i]['legs'][0]['points']
             self.assertEqual(geoms[i], [{'lat': p['latitude'], 'lon': p['longitude']} for p in src])
 
+        exp = json.loads(json.dumps(exp))
+        self.check_route_fuel(key, fx, got, exp)
         # The headline numbers first, so a failure names what moved.
-        for k in ('source', 'distance_km', 'duration_minutes', 'fuel_usage_litres', 'fuel_cost_zar',
-                  'fuel_rate_l_per_100km', 'toll_sanral_class', 'toll_class_source', 'toll_cost_zar',
-                  'toll_cost_incl_vat_zar', 'toll_vat_zar', 'tolls_unavailable_reason', 'toll_routes',
-                  'total_cost_zar', 'cross_border', 'countries', 'additional_costs', 'warnings'):
+        for k in ('source', 'distance_km', 'duration_minutes', 'toll_sanral_class', 'toll_class_source',
+                  'toll_cost_zar', 'toll_cost_incl_vat_zar', 'toll_vat_zar', 'tolls_unavailable_reason',
+                  'toll_routes', 'cross_border', 'countries', 'additional_costs', 'warnings'):
             self.assertEqual(got.get(k), exp.get(k), f'{key}: {k}')
         self.assertEqual(
             [(b['plaza'], b['route'], b['tariff_excl_vat'], b['tariff_incl_vat']) for b in got['toll_breakdown']],
@@ -211,16 +228,57 @@ class RouteCalculateGoldenTests(_GoldenBase):
         self.assertEqual(got.get('cross_border_breakdown'), exp.get('cross_border_breakdown'),
                          f'{key}: cross-border line items')
         for i, (g, e) in enumerate(zip(got['routes'], exp['routes'])):
-            for k in ('distance_km', 'duration_minutes', 'fuel_cost_zar', 'toll_cost_zar', 'toll_breakdown',
-                      'total_cost_zar', 'motorway_pct', 'road_type', 'terrain', 'country_codes'):
+            for k in ('distance_km', 'duration_minutes', 'toll_cost_zar', 'toll_breakdown',
+                      'motorway_pct', 'road_type', 'terrain', 'country_codes'):
                 if k == 'country_codes':   # built from a set: order is not part of the contract
                     self.assertEqual(sorted(g[k]), sorted(e[k]), f'{key}: routes[{i}].{k}')
                 else:
                     self.assertEqual(g[k], e[k], f'{key}: routes[{i}].{k}')
         # And then everything else, byte for byte.
+        for k in ROUTE_FUEL_KEYS + ROUTE_NEW_KEYS:
+            got.pop(k, None)
+            exp.pop(k, None)
         for g, e in zip(got['routes'], exp['routes']):
+            for k in ROUTE_FUEL_KEYS + ('fuel_usage_litres', 'tolls_unknown'):
+                g.pop(k, None)
+                e.pop(k, None)
             g['country_codes'], e['country_codes'] = sorted(g['country_codes']), sorted(e['country_codes'])
         self.assertEqual(got, exp, f'{key}: full response')
+
+
+def expected_route_fuel(fx, km):
+    """(litres, fuel R) by QUOTE-RULES §4 for the request's vehicle type and
+    weight on the reference diesel price, or (None, None)."""
+    from core.services import quote_costing as qc
+    req = fx['request']
+    vt = VehicleType.objects.filter(name__iexact=req.get('vehicle_type') or '').first()
+    if vt is None:
+        return None, None
+    raw = req.get('weight_kg') or req.get('weight')
+    load = float(raw) if raw not in (None, '') else None
+    cap = qc.capacity_tonnes(vt.capacity)
+    ratio = min((load / 1000) / cap, 1) if (cap and load is not None) else 1
+    burn = float(vt.fuel_consumption_l_per_100km) * (0.70 + 0.30 * ratio)
+    litres = km * burn / 100
+    return litres, qc.cents(litres * float(REF['fuel_price']['diesel_inland']))
+
+
+def _check_route_fuel(self, key, fx, got, exp):
+    litres, fuel = expected_route_fuel(fx, got['distance_km'])
+    self.assertEqual(got['fuel_cost_zar'], fuel, f'{key}: fuel_cost_zar')
+    self.assertEqual(got['fuel_usage_litres'], round(litres, 2) if litres is not None else None, key)
+    self.assertEqual(got['tolls_unknown'], got['tolls_unavailable_reason'] is not None, key)
+    extras = sum((got.get('additional_costs') or {}).values())
+    if fuel is not None and got['toll_cost_zar'] is not None:
+        self.assertEqual(got['total_cost_zar'], round(fuel + got['toll_cost_zar'] + extras, 2), key)
+    else:
+        self.assertIsNone(got['total_cost_zar'], key)
+    for i, rt in enumerate(got['routes']):
+        r_litres, r_fuel = expected_route_fuel(fx, rt['distance_km'])
+        self.assertEqual(rt['fuel_cost_zar'], r_fuel, f'{key}: routes[{i}].fuel_cost_zar')
+
+
+RouteCalculateGoldenTests.check_route_fuel = _check_route_fuel
 
 
 def _make_route_test(key):
@@ -240,7 +298,8 @@ for _key in SCENARIO_KEYS:
 
 class FuelPriceGoldenTests(_GoldenBase):
     def test_current_fuel_price_endpoint(self):
-        resp = self.client.get('/api/v1/fuel-prices/current/')
+        with mock.patch('django.utils.timezone.now', return_value=CAPTURE_NOW):
+            resp = self.client.get('/api/v1/fuel-prices/current/')
         self.assertEqual(resp.status_code, 200)
         got = resp.json()
         for k, v in REF['fuel_current_expected'].items():
@@ -249,7 +308,10 @@ class FuelPriceGoldenTests(_GoldenBase):
     def test_route_calc_prices_fuel_at_the_inland_diesel_price(self):
         fx = load_route_fixture('s01_jhb_dbn_semi28')
         got = self.route_calc(fx)
-        self.assertEqual(got['fuel_cost_zar'], round(got['fuel_usage_litres'] * 29.5551, 2))
+        litres, fuel = expected_route_fuel(fx, got['distance_km'])
+        self.assertEqual(got['fuel_cost_zar'], qc_cents(litres * 29.5551))
+        self.assertEqual(got['fuel_price_per_litre'], 29.5551)
+        self.assertEqual(got['fuel_price_source'], 'official')
 
 
 # ---------------------------------------------------------------------------

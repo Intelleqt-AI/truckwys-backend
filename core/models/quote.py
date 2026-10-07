@@ -124,6 +124,34 @@ class Quote(models.Model):
     accepted_at = models.DateTimeField(null=True, blank=True, help_text="Timestamp when quote was accepted")
     rejected_at = models.DateTimeField(null=True, blank=True, help_text="Timestamp when quote was rejected")
     fuel_price_at_creation = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True, help_text="Fuel price snapshot at quote creation time")
+    # Pricing snapshot (QUOTE-RULES.md §9), written by the server on every
+    # create and every pricing update (core.services.quote_snapshot). Alerts,
+    # surcharge checks and insights compare like-for-like against these.
+    fuel_price_used = models.DecimalField(max_digits=8, decimal_places=4, null=True, blank=True,
+                                          help_text='Diesel R/L the quote was priced on')
+    fuel_price_source = models.CharField(max_length=10, blank=True, default='',
+                                         help_text='own | official | override (blank = not priced)')
+    fuel_zone = models.CharField(max_length=10, blank=True, default='', help_text='INLAND | COASTAL')
+    fuel_effective_from = models.DateTimeField(null=True, blank=True,
+                                               help_text='Effective date of the official price in force when priced')
+    fuel_official_at_pricing = models.DecimalField(max_digits=8, decimal_places=4, null=True, blank=True,
+                                                   help_text='Official zone price in force when priced')
+    fuel_litres = models.DecimalField(max_digits=10, decimal_places=3, null=True, blank=True,
+                                      help_text='Litres priced in (loaded + empty return)')
+    priced_at = models.DateTimeField(null=True, blank=True)
+    priced_vehicle_type = models.ForeignKey('VehicleType', on_delete=models.SET_NULL, null=True, blank=True,
+                                            related_name='+', help_text='Vehicle type the quote was priced on')
+    empty_return_included = models.BooleanField(null=True, blank=True)
+    cost_floor = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True,
+                                     help_text='Cost floor when priced (null = incomplete)')
+    costing_snapshot = models.JSONField(default=dict, blank=True,
+                                        help_text='quote_costing output when priced (lines, warnings)')
+    # Client-supplied costing inputs the quote fields don't carry (validated
+    # by QuoteSerializer): distance_estimated / distance_confirmed,
+    # tolls_unknown / tolls_confirmed_none / tolls_empty_return,
+    # include_empty_return, use_official_fuel, fuel_price_override,
+    # vehicle_type_id, driver_nights.
+    costing_inputs = models.JSONField(default=dict, blank=True)
     win_probability = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True, help_text="Predicted win probability (0-100)")
 
     # Round trip support
