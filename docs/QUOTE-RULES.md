@@ -130,7 +130,7 @@ Copy the file into each client repo's test fixtures (keep identical).
 - Unknown capacity or load → burn at full-load ratio (conservative) + `load_missing` warning for the load.
 - CHANGE (7 Oct, after first golden): `driver_allowance_missing` is now **warn**, not block: nights away with
   no rate anywhere price the driver line(s) at **R 0** (line `source: "missing"`), floor stays known. No
-  verified NBCRFLI figure exists in the app, so none is invented; migration 0150 copies an approved allowance
+  verified NBCRFLI figure exists in the app, so none is invented; a migration (later dropped) copied an approved allowance
   (VerifiedRate) into companies without one. Unknown driving time and no amount → `driver_nights_unknown`
   (block); the return line then has `amount: null` and no extra warning. Golden file regenerated
   (`driver_allowance_missing` case) and `diesel.fuel_type` added — re-copy it.
@@ -173,8 +173,9 @@ Copy the file into each client repo's test fixtures (keep identical).
   incl. copilot and status changes) + QuoteSerializer.create for a quote created as SENT. The customer email
   is sent on transaction commit. send_check fails closed: an internal error is block code `check_failed`.
   generate_pdf enforces blocking warnings only for DRAFT quotes.
-- Migration 0150 (driver allowance copy) was dropped; 0150 is now the concurrent index migration. A DB that
-  applied the old 0150 keeps a harmless django_migrations row.
+- The driver-allowance copy migration was dropped; the concurrent index migration is now 0151 (renumbered after
+  merging the dev branch's 0148_quotepricingdecision_superseded_at). A DB that applied an old 0148-0153 of ours
+  must be migrated from a fresh copy (they were never deployed).
 - Diesel read path never calls FIASA: a stale price queues one Celery refresh (deduplicated 10 min) and
   answers with `stale: true`. `?force=true` on fuel-prices/current is staff-only (ignored otherwise).
 - Market normalisation uses `fuel_official_at_pricing` (else official in force on the created date), never
@@ -218,7 +219,7 @@ Copy the file into each client repo's test fixtures (keep identical).
   ceil(max(rate_price or 0, target_price)) (null without a floor; rate price = rate × km_loaded = billable km,
   i.e. one-way km, ×2 round trip, never the empty return) and `alternative_with_return_load: {floor,
   target_price, default_price}` (one-way with the empty return included; null otherwise). The DB layer reads
-  `Company.default_base_rate_per_km` as the default price per km — now nullable (migration 0151; existing
+  `Company.default_base_rate_per_km` as the default price per km — now nullable (migration 0152; existing
   values kept since an untouched 10,00 can't be told apart; null / ≤ 0 = none). The pricing analysis
   `alternative_with_return_load` uses the same floor/target.
 - Truck suggestion only from the company's own list: vehicle types with an AVAILABLE fleet vehicle of that type
@@ -241,7 +242,7 @@ Copy the file into each client repo's test fixtures (keep identical).
 ## Petrol (7 Oct 2026): automatic, exactly like diesel
 - Official petrol = FIASA ULP 95 and 93, inland (Gauteng) and coastal, stored on the same effective-dated
   `FuelPrice` rows as diesel: `petrol_95`, `petrol_93` (inland), `petrol_95_coastal`, `petrol_93_coastal`
-  (migration 0152). Only what FIASA publishes; a missing figure is null (coastal 93 is normally null). No petrol
+  (migration 0153). Only what FIASA publishes; a missing figure is null (coastal 93 is normally null). No petrol
   figure is ever derived from diesel or another grade (the old `diesel + 1,30` / `95 − 0,75` defaults are gone).
   Staff MANUAL POST may carry `petrol_95_inland`, `petrol_93_inland`, `petrol_95_coastal`, `petrol_93_coastal`.
 - Petrol "in force" = the newest official (FIASA/MANUAL) row that publishes that column (a diesel-only MANUAL row
@@ -263,7 +264,7 @@ Copy the file into each client repo's test fixtures (keep identical).
   `fuel_price_petrol`: unchanged → nothing; official echo → not stored; empty/0 → LIVE; other → OWN.
   `GET fuel-prices/current/` adds `petrol {inland_95, inland_93, coastal_95, coastal_93: {price, effective_from,
   source, stale} | null}` and `company_petrol_price`. Clients never write the official into the own field.
-- Migration 0153: own petrol value (else the hybrid value when only that is set) equal (±0,005) to an official
+- Migration 0154: own petrol value (else the hybrid value when only that is set) equal (±0,005) to an official
   petrol figure (FIASA/MANUAL, current or previous period) → LIVE; empty → LIVE; else OWN with set_at =
   updated_at (a hybrid-only value is copied into `fuel_price_petrol`). Own values are never cleared.
 - PDF line names the fuel: "Priced on petrol 95 at R 30,25/L (official inland, 7 Oct 2026)."
@@ -275,3 +276,12 @@ Copy the file into each client repo's test fixtures (keep identical).
   without an effective date.
 - Driver line copy is already consistent server-side ("No night away" loaded, "1 extra night × R …" return);
   "None due (same day)" is client copy.
+- Merge with the dev branch (arif-dev-backend): their floor-gap rules now live INSIDE compute() (one floor):
+  input `international` (bool); an international trip with no border cost → border line `amount: null`,
+  `status: "needs_input"`, block `border_costs_missing`; tolls R 0 that are not `confirmed_none` → warn
+  `tolls_none_found` ("No tolls found on this route", actions enter_tolls / confirm_no_tolls). Golden: every
+  case's inputs gain `international: false` (no expected output changed) + 3 new cases (`tolls_none_found`,
+  `international_border_costs_missing`, `international_with_border_costs`). Pricing analysis keeps their
+  `cost_floor.needs` (fuel/tolls/border), the operating-cost overlap check (`operating_cost_overlap` warn,
+  line `status: "check"`), superseded pricing decisions and the 200 won + 200 lost win-model bar. Our
+  migrations are now 0149–0154 (after their 0148_quotepricingdecision_superseded_at).

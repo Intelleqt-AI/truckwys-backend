@@ -98,7 +98,7 @@ def backwards(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('core', '0152_petrol_official_price'),
+        ('core', '0153_petrol_official_price'),
     ]
 
     operations = [

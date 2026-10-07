@@ -86,6 +86,15 @@ CLASS_RATED_BURN = {'light': 18.0, 'rigid': 28.0, 'tri_axle': 38.0, 'reefer': 40
 # isn't run on the fleet's own trucks).
 OPERATING_COST_CATEGORIES = ('MAINTENANCE', 'INSURANCE', 'OVERHEAD', 'OTHER', 'DRIVER_COST')
 OPERATING_MIN_TRIPS = 10
+# Words that show a Driver cost / Other expense holds a cost the floor also
+# prices as its own line (night-out allowance, border fees): the operating
+# cost may then count it twice. Matched case-insensitively in descriptions.
+OVERLAP_WORDS = {
+    'night-out allowance': ('s&t', 'night out', 'night-out', 'nights out', 'nights-out', 'subsistence',
+                            'sleep out', 'sleep-out', 'sleepout', 'overnight allowance'),
+    'border fees': ('border', 'clearing', 'customs', 'c-brta', 'cbrta', 'cross-border permit'),
+}
+OVERLAP_CATEGORIES = ('DRIVER_COST', 'OTHER')
 
 
 def vehicle_class(vt, name=None):
@@ -366,11 +375,11 @@ def company_operating_cost(company, use_cache=True):
     trips in the same window. {'value'|None, 'trips', 'km', 'trip_linked',
     'company_level'}; value None below OPERATING_MIN_TRIPS completed trips.
     Cached 10 minutes. Never raises."""
-    empty = {'value': None, 'trips': 0, 'km': 0.0, 'trip_linked': 0.0, 'company_level': 0.0}
+    empty = {'value': None, 'trips': 0, 'km': 0.0, 'trip_linked': 0.0, 'company_level': 0.0, 'overlap': None}
     if company is None or not getattr(company, 'id', None):
         return empty
     from django.core.cache import cache
-    key = f'pa_opcost_{company.id}'
+    key = f'pa_opcost_v2_{company.id}'
     if use_cache:
         hit = cache.get(key)
         if hit is not None:
@@ -399,10 +408,36 @@ def company_operating_cost(company, use_cache=True):
             total = out['trip_linked'] + out['company_level']
             if total > 0:
                 out['value'] = round(total / out['km'], 2)
+                out['overlap'] = _expense_overlap(company, since.date())
     except Exception as exc:
         logger.warning('pricing analysis: operating cost aggregate failed: %s', exc)
     cache.set(key, out, 600)
     return out
+
+
+def _expense_overlap(company, since):
+    """Driver cost / Other expenses in the window whose description names a
+    night-out allowance or border fees (OVERLAP_WORDS), or None. Those costs
+    are also their own floor lines, so the operating cost may count them
+    twice; the floor flags it rather than guessing an amount to remove.
+    {'kinds': [...], 'count', 'amount' (excl. VAT), 'example'}."""
+    from django.db.models import F, Q
+    from core.models import Expense
+    words = {w for ws in OVERLAP_WORDS.values() for w in ws}
+    match = Q()
+    for w in words:
+        match |= Q(description__icontains=w)
+    rows = list(Expense.objects.filter(match, company=company, category__in=OVERLAP_CATEGORIES,
+                                       expense_date__gte=since)
+                .exclude(status='REJECTED')
+                .annotate(net=F('amount') - F('vat_amount'))
+                .order_by('-expense_date').values_list('description', 'net'))
+    if not rows:
+        return None
+    kinds = [kind for kind, ws in OVERLAP_WORDS.items()
+             if any(w in (d or '').lower() for d, _ in rows for w in ws)]
+    return {'kinds': kinds, 'count': len(rows), 'amount': round(sum(float(n or 0) for _, n in rows), 2),
+            'example': (rows[0][0] or '')[:120]}
 
 
 def fixed_cost_per_km(company, vt=None, vt_name=None):
@@ -553,10 +588,17 @@ def _panel_lines(costing, fixed):
     tolls = by.get('tolls')
     if tolls is not None and tolls['amount'] is not None:
         legs = tolls.get('legs') or 1
-        basis = ('No tolls on this route' if not tolls['amount']
-                 else f'{_fmt2(tolls["one_way"])} one way' + (' × 2 legs' if legs == 2 else ''))
-        out.append(_line('tolls', 'Tolls', 0, _source('calculated', 'Route toll calculation'), basis)
-                   | {'amount': tolls['amount']})
+        none_found = 'tolls_none_found' in {w['code'] for w in costing['warnings']}
+        if none_found:
+            # R0 means no plazas were FOUND: ask to check, never state it as fact.
+            out.append(_line('tolls', 'Tolls', 0, _source('calculated', 'No tolls found for this route'),
+                             'The route calculation found no toll plazas on this route. Check this if the trip '
+                             'uses toll roads, and add them in the build-up.', status='check') | {'amount': 0.0})
+        else:
+            basis = ('No tolls on this route (confirmed)' if not tolls['amount']
+                     else f'{_fmt2(tolls["one_way"])} one way' + (' × 2 legs' if legs == 2 else ''))
+            out.append(_line('tolls', 'Tolls', 0, _source('calculated', 'Route toll calculation'), basis)
+                       | {'amount': tolls['amount']})
     drv = by.get('driver')
     if drv is not None:
         status = 'needs_input' if drv['amount'] is None or drv.get('source') == 'missing' else 'ok'
@@ -573,7 +615,12 @@ def _panel_lines(costing, fixed):
                          rate_per_night=drv.get('rate_per_night'), status=status)
                    | {'amount': drv['amount'] if drv['amount'] is not None else 0.0})
     border = by.get('border')
-    if border is not None:
+    if border is not None and border['amount'] is None:
+        out.append(_line('border', 'Border fees', 0, _source('calculated', 'Border costs not worked out yet'),
+                         'This is an international trip, but its border, permit and non-SA toll costs are not '
+                         'worked out yet. Add them in the build-up to see prices.', status='needs_input')
+                   | {'amount': 0.0})
+    elif border is not None:
         out.append(_line('border', 'Border fees', 0, _source('calculated', 'Border fees from the route calculation'),
                          border['basis']) | {'amount': border['amount']})
     op = by.get('operating')
@@ -584,6 +631,19 @@ def _panel_lines(costing, fixed):
             details.append({'label': 'Set in', 'value': 'Company settings: operating cost per km'})
         elif fixed['source'] == 'company_actuals':
             src = _source('company_actuals', f'Your costs, {fixed["trips"]} completed trips, last 12 months')
+            a = fixed.get('actuals') or {}
+            details += [{'label': 'Trip costs', 'value': f'{_fmt(a.get("trip_linked") or 0)} excl. VAT'},
+                        {'label': 'Company costs',
+                         'value': f'{_fmt(a.get("company_level") or 0)} excl. VAT (not linked to a trip)'},
+                        {'label': 'Spread over', 'value': f'{_num(a.get("km") or 0, 0)} km driven on completed trips'},
+                        {'label': 'Built from', 'value': 'Your Driver cost, Maintenance, Insurance, Overhead and '
+                                                         'Other expenses'}]
+            overlap = a.get('overlap')
+            if overlap:
+                details.append({'label': 'Check', 'value': (
+                    f'{overlap["count"]} Driver cost or Other expense{"s" if overlap["count"] != 1 else ""} '
+                    f'({_fmt(overlap["amount"])} excl. VAT) mention {" and ".join(overlap["kinds"])}, e.g. '
+                    f'"{overlap["example"]}". These are also their own lines, so they may be counted twice.')})
         else:
             src = _source('estimate', f'Standard estimate: typical SA operating cost for a {fixed["class_label"]}, '
                                       'excl. fuel and tolls')
@@ -594,7 +654,9 @@ def _panel_lines(costing, fixed):
         details += [{'label': 'Included', 'value': INCLUDED_TEXT}, {'label': 'Not included', 'value': EXCLUDED_TEXT}]
         km, rate = op['km'], op['rate_per_km']
         basis = _approx(km, _km_dp(km), rate, op['amount']) + f'{_num(km, _km_dp(km))} km × {_fmt2(rate)}/km'
-        out.append(_line('fixed_cost', 'Operating costs', 0, src, basis, details) | {'amount': op['amount']})
+        extra = ({'status': 'check'} if fixed['source'] == 'company_actuals'
+                 and (fixed.get('actuals') or {}).get('overlap') else {})
+        out.append(_line('fixed_cost', 'Operating costs', 0, src, basis, details, **extra) | {'amount': op['amount']})
     ret = [ln for ln in costing['lines'] if ln['leg'] == 'empty_return']
     if ret:
         known = [ln['amount'] for ln in ret if ln['amount'] is not None]
@@ -648,6 +710,11 @@ def build_cost_floor(payload, *, company, today=None, include_return=None, warni
         'empty_return_default': bool(trip['empty_return_default']),
         'distance_km': round((trip['km_loaded'] or 0.0), 1),
         'complete': costing['floor'] is not None,
+        # Which unknown inputs hold the floor back (old key, kept): fuel /
+        # tolls / border, from compute()'s blocking warnings.
+        'needs': [k for k, codes in (('fuel', ('diesel_missing',)), ('tolls', ('tolls_unknown',)),
+                                     ('border', ('border_costs_missing',)))
+                  if any(c in costing['blocking'] for c in codes)],
         'lines': lines,
         'target_price': costing['target_price'],
         'minimum_charge': costing['minimum_charge'],
@@ -659,6 +726,16 @@ def build_cost_floor(payload, *, company, today=None, include_return=None, warni
     }
     if warnings is not None:
         warnings.extend(_from_costing_warning(w) for w in costing['warnings'])
+        overlap = (fixed.get('actuals') or {}).get('overlap') if fixed and fixed['source'] == 'company_actuals' \
+            else None
+        if overlap:
+            warnings.append(warning_item(
+                'operating_cost_overlap',
+                f'Your Driver cost or Other expenses seem to include {" and ".join(overlap["kinds"])}. These are '
+                'also added as their own lines, so your operating cost may count them twice and your prices come '
+                'out high. Check it, or set your own operating cost per km in Settings › Pricing.',
+                title='Operating cost may count some costs twice',
+                detail=f'Expenses mention {" and ".join(overlap["kinds"])}; check Settings › Pricing.'))
         if fixed and fixed['source'] == 'vehicle_default':
             warnings.append(warning_item(
                 'estimate_fixed_cost',
@@ -1134,15 +1211,18 @@ def rules_thresholds(market, customer, raw=False):
 
 
 def _model_unavailable_reason(company, with_code=False):
-    """(reason, short[, code, n]): plain words for why there is no model % yet.
-    code: few_closed | needs_both | trains_tonight | unavailable."""
-    from django.conf import settings
-    from django.db.models import Count, Q
-    from core.services.quote_training import closed_outcomes
-    needed = int(getattr(settings, 'WIN_MODEL_COMPANY_MIN_SAMPLES', 40))
+    """(reason, short[, code, won, lost]): plain words for why there is no
+    model % yet. code: few_closed | needs_both | trains_tonight | unavailable.
 
-    def ret(reason, short, code, n=0):
-        return (reason, short, code, n) if with_code else (reason, short)
+    Accepted and rejected are gated INDEPENDENTLY (core.services.quote_training.
+    _min_class_counts) — 400 won and 2 lost does not qualify just because the
+    combined total looks large."""
+    from core.services.quote_training import _min_class_counts, closed_outcomes
+    from django.db.models import Count, Q
+    min_won, min_lost = _min_class_counts('company')
+
+    def ret(reason, short, code, won=0, lost=0):
+        return (reason, short, code, won, lost) if with_code else (reason, short)
     if company is None:
         return ret('No trained model is available.', 'Bands', 'unavailable')
     # The training definition of a closed quote (never-sent quotes out, r5 M1).
@@ -1152,29 +1232,25 @@ def _model_unavailable_reason(company, with_code=False):
     agg = qs.aggregate(won=Count('id', filter=Q(outcome='accepted')), lost=Count('id', filter=Q(outcome='rejected')))
     won, lost = agg['won'] or 0, agg['lost'] or 0
     n = won + lost
-    if n < needed:
-        return ret((f'A percentage needs {needed} won or lost quotes to learn from; you have {n} so far. '
-                    'Until then, likelihood is shown in plain bands.'), f'Bands · {n} of {needed} closed quotes',
-                   'few_closed', n)
-    if not won or not lost:
-        return ret((f'A percentage needs both won and lost quotes to learn from; you have {won} won and {lost} lost.'),
-                   'Bands · needs won and lost quotes', 'needs_both', n)
+    if won < min_won or lost < min_lost:
+        return ret((f'A percentage needs {min_won} won and {min_lost} lost quotes to learn from; you have '
+                    f'{won} won and {lost} lost so far. Until then, likelihood is shown in plain bands.'),
+                   f'Bands · {n} of {min_won + min_lost} closed quotes', 'few_closed', won, lost)
     return ret('You have enough closed quotes; chance to win as a % appears after the next nightly update.',
-               'Bands · % from tomorrow',
-               'trains_tonight', n)
+               'Bands · % from tomorrow', 'trains_tonight', won, lost)
 
 
 BANDS_WORDS = 'Chance to win as Likely, Even chance or Less likely'
 
 
-def likelihood_headline(code, *, thresholds, model_block=None, n_closed=0, needed=40):
+def likelihood_headline(code, *, thresholds, model_block=None, won=0, lost=0, needed_won=200, needed_lost=200):
     """The panel subtitle (≤ 110 characters), display-ready."""
     if code == 'model' and model_block is not None:
         return f'Chance to win from {model_block["basis_label"]}.'
     if not thresholds:
         return 'No chance to win yet: no real quotes on this lane.'
     return {
-        'few_closed': f'{BANDS_WORDS}. A % needs {needed} closed quotes (you have {n_closed}).',
+        'few_closed': f'{BANDS_WORDS}. A % needs {needed_won} won + {needed_lost} lost (you have {won}, {lost}).',
         'needs_both': f'{BANDS_WORDS}. A % needs both won and lost quotes.',
         'trains_tonight': f'{BANDS_WORDS} for now; a % appears from tomorrow.',
         'outside_range': f'{BANDS_WORDS}: these prices are outside what your model has learned from.',
@@ -1474,6 +1550,8 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
             missing.append('fuel')
         if 'tolls_unknown' in codes:
             missing.append('tolls')
+        if 'border_costs_missing' in codes:
+            missing.append('border')
 
     your_price = _f(payload.get('your_price'))
     if your_price is not None and your_price <= 0:
@@ -1512,9 +1590,10 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
             ctx = None
         model_block, reason, predictor = None, None, None
         short = None
-        reason_code, n_closed = None, 0
+        reason_code, n_closed, won_closed, lost_closed = None, 0, 0, 0
         if ctx is None or not ctx.available:
-            reason, short, reason_code, n_closed = _model_unavailable_reason(company, with_code=True)
+            reason, short, reason_code, won_closed, lost_closed = _model_unavailable_reason(company, with_code=True)
+            n_closed = won_closed + lost_closed
         else:
             try:
                 model_block, reason, predictor = model_likelihood(
@@ -1571,11 +1650,12 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
         else:
             likelihood['reason'] = reason
             likelihood['short'] = short or 'Bands'
-        from django.conf import settings as dj_settings
+        from core.services.quote_training import _min_class_counts
+        min_won, min_lost = _min_class_counts('company')
         likelihood['reason_code'] = reason_code if model_block is not None or thresholds else 'no_basis'
         likelihood['headline'] = likelihood_headline(
-            reason_code, thresholds=thresholds, model_block=model_block, n_closed=n_closed,
-            needed=int(getattr(dj_settings, 'WIN_MODEL_COMPANY_MIN_SAMPLES', 40)))
+            reason_code, thresholds=thresholds, model_block=model_block, won=won_closed, lost=lost_closed,
+            needed_won=min_won, needed_lost=min_lost)
         # Empty return priced in and even the market's upper quarter can't
         # reach the target margin over the full round-trip cost: no choice is
         # a good answer, so keep Balanced and say what to do instead.

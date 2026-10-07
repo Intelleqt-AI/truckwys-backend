@@ -67,6 +67,7 @@
         },
         "hours_per_day": 9.0,
         "border_cost": 0.0,
+        "international": false,
         "include_empty_return": null,
         "settings": {
           "include_empty_return_default": true,
@@ -222,6 +223,7 @@
         },
         "hours_per_day": 9.0,
         "border_cost": 0.0,
+        "international": false,
         "include_empty_return": null,
         "settings": {
           "include_empty_return_default": true,
@@ -414,6 +416,7 @@
         },
         "hours_per_day": 9.0,
         "border_cost": 0.0,
+        "international": false,
         "include_empty_return": null,
         "settings": {
           "include_empty_return_default": true,
@@ -569,6 +572,7 @@
         },
         "hours_per_day": 9.0,
         "border_cost": 0.0,
+        "international": false,
         "include_empty_return": null,
         "settings": {
           "include_empty_return_default": true,
@@ -724,6 +728,7 @@
         },
         "hours_per_day": 9.0,
         "border_cost": 0.0,
+        "international": false,
         "include_empty_return": null,
         "settings": {
           "include_empty_return_default": true,
@@ -879,6 +884,7 @@
         },
         "hours_per_day": 9.0,
         "border_cost": 0.0,
+        "international": false,
         "include_empty_return": null,
         "settings": {
           "include_empty_return_default": true,
@@ -1054,6 +1060,7 @@
         },
         "hours_per_day": 9.0,
         "border_cost": 0.0,
+        "international": false,
         "include_empty_return": null,
         "settings": {
           "include_empty_return_default": true,
@@ -1227,6 +1234,7 @@
         },
         "hours_per_day": 9.0,
         "border_cost": 0.0,
+        "international": false,
         "include_empty_return": null,
         "settings": {
           "include_empty_return_default": true,
@@ -1382,6 +1390,7 @@
         },
         "hours_per_day": 9.0,
         "border_cost": 0.0,
+        "international": false,
         "include_empty_return": null,
         "settings": {
           "include_empty_return_default": true,
@@ -1537,6 +1546,7 @@
         },
         "hours_per_day": 9.0,
         "border_cost": 0.0,
+        "international": false,
         "include_empty_return": null,
         "settings": {
           "include_empty_return_default": true,
@@ -1743,6 +1753,7 @@
         },
         "hours_per_day": 9.0,
         "border_cost": 0.0,
+        "international": false,
         "include_empty_return": false,
         "settings": {
           "include_empty_return_default": true,
@@ -1898,6 +1909,7 @@
         },
         "hours_per_day": 9.0,
         "border_cost": 0.0,
+        "international": false,
         "include_empty_return": null,
         "settings": {
           "include_empty_return_default": false,
@@ -2053,6 +2065,7 @@
         },
         "hours_per_day": 9.0,
         "border_cost": 0.0,
+        "international": false,
         "include_empty_return": null,
         "settings": {
           "include_empty_return_default": true,
@@ -2208,6 +2221,7 @@
         },
         "hours_per_day": 9.0,
         "border_cost": 0.0,
+        "international": false,
         "include_empty_return": null,
         "settings": {
           "include_empty_return_default": true,
@@ -2383,6 +2397,7 @@
         },
         "hours_per_day": 9.0,
         "border_cost": 0.0,
+        "international": false,
         "include_empty_return": null,
         "settings": {
           "include_empty_return_default": true,
@@ -2538,6 +2553,7 @@
         },
         "hours_per_day": 9.0,
         "border_cost": 0.0,
+        "international": false,
         "include_empty_return": null,
         "settings": {
           "include_empty_return_default": true,
@@ -2713,6 +2729,7 @@
         },
         "hours_per_day": 9.0,
         "border_cost": 0.0,
+        "international": false,
         "include_empty_return": null,
         "settings": {
           "include_empty_return_default": true,
@@ -2868,6 +2885,7 @@
         },
         "hours_per_day": 9.0,
         "border_cost": 0.0,
+        "international": false,
         "include_empty_return": null,
         "settings": {
           "include_empty_return_default": true,
@@ -3039,6 +3057,7 @@
         },
         "hours_per_day": 9.0,
         "border_cost": 0.0,
+        "international": false,
         "include_empty_return": null,
         "settings": {
           "include_empty_return_default": true,
@@ -3208,6 +3227,7 @@
         },
         "hours_per_day": 9.0,
         "border_cost": 0.0,
+        "international": false,
         "include_empty_return": null,
         "settings": {
           "include_empty_return_default": true,
@@ -3372,6 +3392,7 @@
         },
         "hours_per_day": 9.0,
         "border_cost": 0.0,
+        "international": false,
         "include_empty_return": null,
         "settings": {
           "include_empty_return_default": true,
@@ -3538,6 +3559,7 @@
         },
         "hours_per_day": 9.0,
         "border_cost": 0.0,
+        "international": false,
         "include_empty_return": null,
         "settings": {
           "include_empty_return_default": true,
@@ -3709,6 +3731,7 @@
         },
         "hours_per_day": 9.0,
         "border_cost": 0.0,
+        "international": false,
         "include_empty_return": false,
         "settings": {
           "include_empty_return_default": true,
@@ -3882,6 +3905,7 @@
         },
         "hours_per_day": 9.0,
         "border_cost": 0.0,
+        "international": false,
         "include_empty_return": false,
         "settings": {
           "include_empty_return_default": true,
@@ -4037,6 +4061,7 @@
         },
         "hours_per_day": 9.0,
         "border_cost": 0.0,
+        "international": false,
         "include_empty_return": null,
         "settings": {
           "include_empty_return_default": true,
@@ -4201,6 +4226,7 @@
         },
         "hours_per_day": 9.0,
         "border_cost": 3875.5,
+        "international": false,
         "include_empty_return": false,
         "settings": {
           "include_empty_return_default": true,
@@ -4363,6 +4389,7 @@
         },
         "hours_per_day": 9.0,
         "border_cost": 0.0,
+        "international": false,
         "include_empty_return": null,
         "settings": {
           "include_empty_return_default": true,
@@ -4569,6 +4596,7 @@
         },
         "hours_per_day": 9.0,
         "border_cost": 0.0,
+        "international": false,
         "include_empty_return": null,
         "settings": {
           "include_empty_return_default": true,
@@ -4775,6 +4803,7 @@
         },
         "hours_per_day": 9.0,
         "border_cost": 0.0,
+        "international": false,
         "include_empty_return": null,
         "settings": {
           "include_empty_return_default": true,
@@ -4940,6 +4969,523 @@
       }
     },
     {
+      "name": "tolls_none_found",
+      "description": "Route found R 0 tolls (not confirmed): warning tolls_none_found, floor still complete.",
+      "inputs": {
+        "trip_type": "ONE_WAY",
+        "distance_km": 250.0,
+        "distance_estimated": false,
+        "distance_confirmed": false,
+        "duration_minutes": 200,
+        "load_kg": 20000,
+        "vehicle": {
+          "id": 11,
+          "name": "Superlink",
+          "capacity": 34,
+          "rated_burn_l_per_100km": 42
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "official_price": 32.7989,
+          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_stale": false,
+          "use_official": false,
+          "override_price": null
+        },
+        "operating_cost_per_km": 16.0,
+        "operating_cost_source": "vehicle_default",
+        "tolls": {
+          "one_way": 0.0,
+          "empty_return": null,
+          "lookup_failed": false,
+          "confirmed_none": false
+        },
+        "driver": {
+          "allowance_per_night": 450.0,
+          "nights": null,
+          "amount": null
+        },
+        "hours_per_day": 9.0,
+        "border_cost": 0.0,
+        "international": false,
+        "include_empty_return": null,
+        "settings": {
+          "include_empty_return_default": true,
+          "empty_return_min_km": 300.0
+        },
+        "minimum_charge": null,
+        "default_price_per_km": null,
+        "target_margin_pct": 10.0,
+        "price": 12500.0
+      },
+      "expected": {
+        "version": "qc-1",
+        "trip": {
+          "type": "ONE_WAY",
+          "legs_loaded": 1,
+          "distance_km": 250.0,
+          "empty_return_included": false,
+          "empty_return_default": false,
+          "km_loaded": 250.0,
+          "km_empty": 0.0,
+          "km_driven": 250.0,
+          "hours_one_way": 3.3333333333333335,
+          "return_nights": null
+        },
+        "vehicle": {
+          "id": 11,
+          "name": "Superlink",
+          "capacity_t": 34.0,
+          "load_t": 20.0,
+          "load_ratio": 0.5882352941176471,
+          "rated_burn_l_per_100km": 42.0,
+          "burn_loaded_l_per_100km": 36.811764705882354,
+          "burn_empty_l_per_100km": 29.4
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "fuel_type": "Diesel",
+          "official_price": 32.7989,
+          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_stale": false,
+          "price": 32.7989,
+          "source": "official"
+        },
+        "litres": {
+          "loaded": 92.0294117647059,
+          "empty_return": 0.0,
+          "total": 92.0294117647059
+        },
+        "lines": [
+          {
+            "key": "fuel",
+            "label": "Fuel",
+            "leg": "loaded",
+            "amount": 3018.46,
+            "basis": "250 km at 36,8 L/100km × R 32,80/L",
+            "litres": 92.0294117647059,
+            "burn_l_per_100km": 36.811764705882354,
+            "price_per_litre": 32.7989,
+            "km": 250.0
+          },
+          {
+            "key": "operating",
+            "label": "Operating costs",
+            "leg": "loaded",
+            "amount": 4000.0,
+            "basis": "250 km × R 16,00/km",
+            "rate_per_km": 16.0,
+            "km": 250.0,
+            "source": "vehicle_default"
+          },
+          {
+            "key": "tolls",
+            "label": "Tolls",
+            "leg": "loaded",
+            "amount": 0.0,
+            "basis": "R 0,00 one way",
+            "one_way": 0.0,
+            "legs": 1
+          },
+          {
+            "key": "driver",
+            "label": "Driver nights out",
+            "leg": "loaded",
+            "amount": 0.0,
+            "basis": "No night away",
+            "nights": 0,
+            "suggested_nights": 0,
+            "rate_per_night": 450.0,
+            "suggested": 0.0,
+            "source": "suggested"
+          }
+        ],
+        "floor": 7018.46,
+        "floor_known": 7018.46,
+        "floor_complete": true,
+        "target_margin_pct": 10.0,
+        "target_price": 7798.29,
+        "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": 7799.0,
+        "alternative_with_return_load": null,
+        "price": 12500.0,
+        "margin": 5481.54,
+        "margin_pct": 43.85232,
+        "warnings": [
+          {
+            "code": "tolls_none_found",
+            "severity": "warn",
+            "title": "No tolls found on this route",
+            "detail": "Check it if the trip uses toll roads.",
+            "impact_zar": null,
+            "actions": [
+              {
+                "id": "enter_tolls",
+                "label": "Enter tolls"
+              },
+              {
+                "id": "confirm_no_tolls",
+                "label": "No tolls on this route"
+              }
+            ]
+          }
+        ],
+        "blocking": [],
+        "can_send": true
+      }
+    },
+    {
+      "name": "international_border_costs_missing",
+      "description": "International trip without border costs: border line null, border_costs_missing blocks.",
+      "inputs": {
+        "trip_type": "ONE_WAY",
+        "distance_km": 568.4,
+        "distance_estimated": false,
+        "distance_confirmed": false,
+        "duration_minutes": 440,
+        "load_kg": 28000,
+        "vehicle": {
+          "id": 11,
+          "name": "Superlink",
+          "capacity": 34,
+          "rated_burn_l_per_100km": 42
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "official_price": 32.7989,
+          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_stale": false,
+          "use_official": false,
+          "override_price": null
+        },
+        "operating_cost_per_km": 16.0,
+        "operating_cost_source": "vehicle_default",
+        "tolls": {
+          "one_way": 1043.48,
+          "empty_return": 812.61,
+          "lookup_failed": false,
+          "confirmed_none": false
+        },
+        "driver": {
+          "allowance_per_night": 450.0,
+          "nights": null,
+          "amount": null
+        },
+        "hours_per_day": 9.0,
+        "border_cost": 0.0,
+        "international": true,
+        "include_empty_return": false,
+        "settings": {
+          "include_empty_return_default": true,
+          "empty_return_min_km": 300.0
+        },
+        "minimum_charge": null,
+        "default_price_per_km": null,
+        "target_margin_pct": 10.0,
+        "price": 31500.0
+      },
+      "expected": {
+        "version": "qc-1",
+        "trip": {
+          "type": "ONE_WAY",
+          "legs_loaded": 1,
+          "distance_km": 568.4,
+          "empty_return_included": false,
+          "empty_return_default": true,
+          "km_loaded": 568.4,
+          "km_empty": 0.0,
+          "km_driven": 568.4,
+          "hours_one_way": 7.333333333333333,
+          "return_nights": null
+        },
+        "vehicle": {
+          "id": 11,
+          "name": "Superlink",
+          "capacity_t": 34.0,
+          "load_t": 28.0,
+          "load_ratio": 0.8235294117647058,
+          "rated_burn_l_per_100km": 42.0,
+          "burn_loaded_l_per_100km": 39.77647058823529,
+          "burn_empty_l_per_100km": 29.4
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "fuel_type": "Diesel",
+          "official_price": 32.7989,
+          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_stale": false,
+          "price": 32.7989,
+          "source": "official"
+        },
+        "litres": {
+          "loaded": 226.08945882352938,
+          "empty_return": 0.0,
+          "total": 226.08945882352938
+        },
+        "lines": [
+          {
+            "key": "fuel",
+            "label": "Fuel",
+            "leg": "loaded",
+            "amount": 7415.49,
+            "basis": "568 km at 39,8 L/100km × R 32,80/L",
+            "litres": 226.08945882352938,
+            "burn_l_per_100km": 39.77647058823529,
+            "price_per_litre": 32.7989,
+            "km": 568.4
+          },
+          {
+            "key": "operating",
+            "label": "Operating costs",
+            "leg": "loaded",
+            "amount": 9094.4,
+            "basis": "568 km × R 16,00/km",
+            "rate_per_km": 16.0,
+            "km": 568.4,
+            "source": "vehicle_default"
+          },
+          {
+            "key": "tolls",
+            "label": "Tolls",
+            "leg": "loaded",
+            "amount": 1043.48,
+            "basis": "R 1 043,48 one way",
+            "one_way": 1043.48,
+            "legs": 1
+          },
+          {
+            "key": "driver",
+            "label": "Driver nights out",
+            "leg": "loaded",
+            "amount": 0.0,
+            "basis": "No night away",
+            "nights": 0,
+            "suggested_nights": 0,
+            "rate_per_night": 450.0,
+            "suggested": 0.0,
+            "source": "suggested"
+          },
+          {
+            "key": "border",
+            "label": "Border fees",
+            "leg": "loaded",
+            "amount": null,
+            "basis": "Not worked out yet",
+            "status": "needs_input"
+          }
+        ],
+        "floor": null,
+        "floor_known": 17553.37,
+        "floor_complete": false,
+        "target_margin_pct": 10.0,
+        "target_price": null,
+        "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": null,
+        "alternative_with_return_load": null,
+        "price": 31500.0,
+        "margin": null,
+        "margin_pct": null,
+        "warnings": [
+          {
+            "code": "border_costs_missing",
+            "severity": "block",
+            "title": "Border costs not worked out yet",
+            "detail": "Add the border, permit and non-SA toll costs for this trip.",
+            "impact_zar": null,
+            "actions": [
+              {
+                "id": "enter_border_costs",
+                "label": "Enter border costs"
+              }
+            ]
+          }
+        ],
+        "blocking": [
+          "border_costs_missing"
+        ],
+        "can_send": false
+      }
+    },
+    {
+      "name": "international_with_border_costs",
+      "description": "International trip with its border costs: complete floor.",
+      "inputs": {
+        "trip_type": "ONE_WAY",
+        "distance_km": 568.4,
+        "distance_estimated": false,
+        "distance_confirmed": false,
+        "duration_minutes": 440,
+        "load_kg": 28000,
+        "vehicle": {
+          "id": 11,
+          "name": "Superlink",
+          "capacity": 34,
+          "rated_burn_l_per_100km": 42
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "official_price": 32.7989,
+          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_stale": false,
+          "use_official": false,
+          "override_price": null
+        },
+        "operating_cost_per_km": 16.0,
+        "operating_cost_source": "vehicle_default",
+        "tolls": {
+          "one_way": 1043.48,
+          "empty_return": 812.61,
+          "lookup_failed": false,
+          "confirmed_none": false
+        },
+        "driver": {
+          "allowance_per_night": 450.0,
+          "nights": null,
+          "amount": null
+        },
+        "hours_per_day": 9.0,
+        "border_cost": 6700.0,
+        "international": true,
+        "include_empty_return": false,
+        "settings": {
+          "include_empty_return_default": true,
+          "empty_return_min_km": 300.0
+        },
+        "minimum_charge": null,
+        "default_price_per_km": null,
+        "target_margin_pct": 10.0,
+        "price": 31500.0
+      },
+      "expected": {
+        "version": "qc-1",
+        "trip": {
+          "type": "ONE_WAY",
+          "legs_loaded": 1,
+          "distance_km": 568.4,
+          "empty_return_included": false,
+          "empty_return_default": true,
+          "km_loaded": 568.4,
+          "km_empty": 0.0,
+          "km_driven": 568.4,
+          "hours_one_way": 7.333333333333333,
+          "return_nights": null
+        },
+        "vehicle": {
+          "id": 11,
+          "name": "Superlink",
+          "capacity_t": 34.0,
+          "load_t": 28.0,
+          "load_ratio": 0.8235294117647058,
+          "rated_burn_l_per_100km": 42.0,
+          "burn_loaded_l_per_100km": 39.77647058823529,
+          "burn_empty_l_per_100km": 29.4
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "fuel_type": "Diesel",
+          "official_price": 32.7989,
+          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_stale": false,
+          "price": 32.7989,
+          "source": "official"
+        },
+        "litres": {
+          "loaded": 226.08945882352938,
+          "empty_return": 0.0,
+          "total": 226.08945882352938
+        },
+        "lines": [
+          {
+            "key": "fuel",
+            "label": "Fuel",
+            "leg": "loaded",
+            "amount": 7415.49,
+            "basis": "568 km at 39,8 L/100km × R 32,80/L",
+            "litres": 226.08945882352938,
+            "burn_l_per_100km": 39.77647058823529,
+            "price_per_litre": 32.7989,
+            "km": 568.4
+          },
+          {
+            "key": "operating",
+            "label": "Operating costs",
+            "leg": "loaded",
+            "amount": 9094.4,
+            "basis": "568 km × R 16,00/km",
+            "rate_per_km": 16.0,
+            "km": 568.4,
+            "source": "vehicle_default"
+          },
+          {
+            "key": "tolls",
+            "label": "Tolls",
+            "leg": "loaded",
+            "amount": 1043.48,
+            "basis": "R 1 043,48 one way",
+            "one_way": 1043.48,
+            "legs": 1
+          },
+          {
+            "key": "driver",
+            "label": "Driver nights out",
+            "leg": "loaded",
+            "amount": 0.0,
+            "basis": "No night away",
+            "nights": 0,
+            "suggested_nights": 0,
+            "rate_per_night": 450.0,
+            "suggested": 0.0,
+            "source": "suggested"
+          },
+          {
+            "key": "border",
+            "label": "Border fees",
+            "leg": "loaded",
+            "amount": 6700.0,
+            "basis": "Border, permit and non-SA toll costs"
+          }
+        ],
+        "floor": 24253.37,
+        "floor_known": 24253.37,
+        "floor_complete": true,
+        "target_margin_pct": 10.0,
+        "target_price": 26948.19,
+        "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": 26949.0,
+        "alternative_with_return_load": null,
+        "price": 31500.0,
+        "margin": 7246.63,
+        "margin_pct": 23.005174603174606,
+        "warnings": [],
+        "blocking": [],
+        "can_send": true
+      }
+    },
+    {
       "name": "default_price_incomplete_floor",
       "description": "Floor incomplete (tolls unknown): no default price, alternative floor null too.",
       "inputs": {
@@ -4981,6 +5527,7 @@
         },
         "hours_per_day": 9.0,
         "border_cost": 0.0,
+        "international": false,
         "include_empty_return": null,
         "settings": {
           "include_empty_return_default": true,
@@ -5200,6 +5747,7 @@
         },
         "hours_per_day": 9.0,
         "border_cost": 0.0,
+        "international": false,
         "include_empty_return": null,
         "settings": {
           "include_empty_return_default": true,
@@ -5358,6 +5906,7 @@
         },
         "hours_per_day": 9.0,
         "border_cost": 0.0,
+        "international": false,
         "include_empty_return": null,
         "settings": {
           "include_empty_return_default": true,
@@ -5537,6 +6086,7 @@
         },
         "hours_per_day": 9.0,
         "border_cost": 0.0,
+        "international": false,
         "include_empty_return": null,
         "settings": {
           "include_empty_return_default": true,
@@ -5716,6 +6266,7 @@
         },
         "hours_per_day": 9.0,
         "border_cost": 0.0,
+        "international": false,
         "include_empty_return": null,
         "settings": {
           "include_empty_return_default": true,
@@ -5873,6 +6424,7 @@
         },
         "hours_per_day": 9.0,
         "border_cost": 0.0,
+        "international": false,
         "include_empty_return": null,
         "settings": {
           "include_empty_return_default": true,

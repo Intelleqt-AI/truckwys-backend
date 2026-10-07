@@ -197,6 +197,7 @@ ACTION_LABELS = {
     'reprice': 'Re-price',
     'keep_price': 'Keep price',
     'enter_weight': 'Enter weight',
+    'enter_border_costs': 'Enter border costs',
 }
 
 
@@ -327,6 +328,7 @@ def compute(inputs):
       driver               {allowance_per_night, nights, amount}
       hours_per_day        driving hours per day (9)
       border_cost
+      international        cross-border trip: no border cost -> incomplete floor (block)
       include_empty_return null = company default rule; false = return load booked
       settings             {include_empty_return_default (true), empty_return_min_km (300)}
       minimum_charge
@@ -450,6 +452,12 @@ def compute(inputs):
         warnings.append(warning('tolls_unknown', 'block', 'Tolls could not be worked out',
                                 'Enter the tolls, or confirm there are none on this route.',
                                 actions=('enter_tolls', 'confirm_no_tolls')))
+    if toll_one_way == 0 and not tolls.get('confirmed_none'):
+        # R 0 from the route means no plazas were FOUND, not that the road has
+        # none: say so and ask to check (a warning: tolls are small).
+        warnings.append(warning('tolls_none_found', 'warn', 'No tolls found on this route',
+                                'Check it if the trip uses toll roads.',
+                                actions=('enter_tolls', 'confirm_no_tolls')))
     toll_amt = cents(toll_one_way * legs_loaded) if toll_one_way is not None else None
     add('tolls', 'loaded', toll_amt,
         'Unknown' if toll_amt is None else (f'{fmt_rand(toll_one_way, 2)} × 2 legs' if round_trip
@@ -499,6 +507,13 @@ def compute(inputs):
     border = _num(inputs.get('border_cost'))
     if border is not None and border > 0:
         add('border', 'loaded', cents(border), 'Border, permit and non-SA toll costs')
+    elif inputs.get('international'):
+        # An international trip always has border costs (often R 5 000+):
+        # without them the floor is badly low, so it is incomplete.
+        add('border', 'loaded', None, 'Not worked out yet', status='needs_input')
+        warnings.append(warning('border_costs_missing', 'block', 'Border costs not worked out yet',
+                                'Add the border, permit and non-SA toll costs for this trip.',
+                                actions=('enter_border_costs',)))
 
     # --- empty return (§5) ---
     return_nights = None
@@ -886,6 +901,8 @@ def build_inputs(payload, company, now=None, *, diesel_override=None):
                    'amount': driver_amount},
         'hours_per_day': float(getattr(dj_settings, 'DRIVER_DRIVING_HOURS_PER_DAY', DEFAULT_HOURS_PER_DAY)),
         'border_cost': _num(payload.get('cross_border_cost')) or 0.0,
+        'international': bool(_truthy(payload.get('is_international'))
+                              or (isinstance(payload.get('route'), dict) and payload['route'].get('cross_border'))),
         'include_empty_return': include,
         'settings': {
             'include_empty_return_default': bool(getattr(company, 'include_empty_return_default', True)),
@@ -989,6 +1006,7 @@ def quote_payload(quote):
         # additional_charges also carries empty return / top-ups, so it can't
         # be read back as the border line).
         'cross_border_cost': ci.get('border_cost') or 0.0,
+        'is_international': bool(getattr(quote, 'is_international', False)),
         'include_empty_return': ci.get('include_empty_return'),
         'distance_estimated': ci.get('distance_estimated'),
         'distance_confirmed': ci.get('distance_confirmed'),

@@ -115,7 +115,7 @@ class CompanyDieselModeTests(_Base):
         self.assertEqual((body['fuel_price_mode'], body['fuel_price_own']), ('OWN', '31.2500'))
 
     def test_empty_return_fields_mirror(self):
-        self.company.pricing_include_empty_return = True      # as migration 0149 leaves it
+        self.company.pricing_include_empty_return = True      # as migration 0150 leaves it
         self.company.save()
         body = self.api.patch(self.URL, {'pricing_include_empty_return': False}, format='json').json()
         self.assertFalse(body['include_empty_return_default'])
@@ -127,7 +127,7 @@ class CompanyDieselModeTests(_Base):
 
 class MigrationRuleTests(_Base):
     def test_backfill_rule(self):
-        mod = importlib.import_module('core.migrations.0149_company_fuel_price_mode_backfill')
+        mod = importlib.import_module('core.migrations.0150_company_fuel_price_mode_backfill')
         live = [Company.objects.create(company_name=f'L{i}', fuel_price_per_litre=Decimal(v))
                 for i, v in enumerate(('23.50', '29.5551', '28.6851', '29.1111'))]
         own = Company.objects.create(company_name='O', fuel_price_per_litre=Decimal('27.10'))
@@ -488,14 +488,14 @@ class ClassificationAndEchoTests(_Base):
                                  diesel_coastal=Decimal('23.8800'), source='FALLBACK_LATEST')
         body = self.api.patch('/api/v1/company/profile/', {'fuel_price_per_litre': '24.50'}, format='json').json()
         self.assertEqual((body['fuel_price_mode'], body['fuel_price_own']), ('OWN', '24.5000'))
-        mod = importlib.import_module('core.migrations.0149_company_fuel_price_mode_backfill')
+        mod = importlib.import_module('core.migrations.0150_company_fuel_price_mode_backfill')
         c = Company.objects.create(company_name='FB', fuel_price_per_litre=Decimal('24.50'))
         mod.forwards(apps, None)
         c.refresh_from_db()
         self.assertEqual(c.fuel_price_mode, 'OWN')
 
     def test_backfill_mirrors_the_empty_return_toggle(self):
-        mod = importlib.import_module('core.migrations.0149_company_fuel_price_mode_backfill')
+        mod = importlib.import_module('core.migrations.0150_company_fuel_price_mode_backfill')
         c = Company.objects.create(company_name='T', pricing_include_empty_return=False)
         mod.forwards(apps, None)
         c.refresh_from_db()

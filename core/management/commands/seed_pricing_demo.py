@@ -6,21 +6,29 @@ payment risk). LOCAL / DEV ONLY.
     python manage.py seed_pricing_demo --reset    # deletes ONLY what this command created, then reseeds
     python manage.py seed_pricing_demo --reset --no-reseed   # just remove it
 
-Refuses to run when settings.DEBUG is False unless --force is passed.
+Runs only against a LOCAL database (SQLite, or a server on this machine);
+nothing can override that, so it can never run against production. With
+settings.DEBUG off it also needs --force (e.g. a local throwaway database).
+The demo logins get a fresh random password each run, printed at the end
+(or PRICING_DEMO_PASSWORD, if set).
 
 What it creates (every name is invented and suffixed "(Demo)"):
 
   MODEL company  "Karoo Line Haulage (Demo)"   login model@demo.truckwys.local
-      72 decided quote outcomes (won AND lost, price-sensitive) on three lanes
-      (Johannesburg->Durban, Cape Town->Johannesburg, Johannesburg->Gaborone),
-      open + expired quotes, ~35 completed costed trips with expenses over the
-      last 12 months (company-actual fixed cost per km), invoices/payments with
-      one slow payer carrying overdue invoices. Operating cost all-in ~R17/km
-      excl. fuel and tolls: trip-linked wages/maintenance plus monthly
-      company-level bills (insurance, vehicle finance, licences, office).
+      ~650 decided quote outcomes (won AND lost, price-sensitive) on three
+      lanes (Johannesburg->Durban, Cape Town->Johannesburg, Johannesburg->
+      Gaborone) -- enough to clear the win model's 200-accepted AND
+      200-rejected bar independently (WIN_MODEL_MIN_ACCEPTED/_REJECTED),
+      not just a combined total -- open + expired quotes, ~35 completed
+      costed trips with expenses over the last 12 months (company-actual
+      fixed cost per km), invoices/payments with one slow payer carrying
+      overdue invoices. Operating cost all-in ~R17/km excl. fuel and tolls:
+      trip-linked wages/maintenance plus monthly company-level bills
+      (insurance, vehicle finance, licences, office).
   RULES company  "Highveld Freight Co (Demo)"  login rules@demo.truckwys.local
-      16 decided outcomes on Johannesburg->Durban (below the 40-outcome model
-      threshold), 6 costed trips (below the 10-trip actuals threshold).
+      16 decided outcomes on Johannesburg->Durban (well below the 200-accepted/
+      200-rejected model threshold), 6 costed trips (below the 10-trip actuals
+      threshold).
   COLD company   "Fynbos Road Carriers (Demo)" login cold@demo.truckwys.local
       No quotes, no trips; one customer with no history.
   MARKET companies (5, no usable login)
@@ -58,7 +66,27 @@ from core.models import (
 )
 
 PASSWORD_ENV = 'PRICING_DEMO_PASSWORD'
-DEFAULT_PASSWORD = 'demo12345'  # local/dev only; the command refuses to run with DEBUG off
+# Database hosts that count as this machine. A local Docker setup whose
+# database host has another name can add it here through this env var
+# (comma-separated); production never sets it.
+ALLOWED_HOSTS_ENV = 'PRICING_DEMO_ALLOWED_DB_HOSTS'
+LOCAL_DB_HOSTS = ('', 'localhost', '127.0.0.1', '::1')
+
+
+def database_is_local(db_settings=None):
+    """(True, why) when the default database is on this machine: SQLite,
+    or a server whose host is localhost (or listed in ALLOWED_HOSTS_ENV)."""
+    from django.db import connections
+    db = db_settings or connections['default'].settings_dict
+    engine = str(db.get('ENGINE') or '')
+    if 'sqlite' in engine:
+        return True, 'SQLite'
+    host = str(db.get('HOST') or '').strip().lower()
+    allowed = set(LOCAL_DB_HOSTS) | {h.strip().lower() for h in os.environ.get(ALLOWED_HOSTS_ENV, '').split(',')
+                                     if h.strip()}
+    if host in allowed:
+        return True, f'host {host or "(socket)"}'
+    return False, f'host {host}'
 PREFIX = 'PRD'  # every number/identifier this command writes starts with this
 SEED = 20261006
 _CENT = Decimal('0.01')
@@ -147,14 +175,19 @@ MARKET_COMPANIES = [
 # probability: P(win) = sigmoid(bias - slope * (price/market - 1)).
 # pay = invoice-settlement profile.
 MODEL_CUSTOMERS = [
+    # 'n' scaled 9x from the original 22/20/16/14 (72 total) so the MODEL
+    # company's decided outcomes clear the win model's 200-accepted AND
+    # 200-rejected bar (WIN_MODEL_MIN_ACCEPTED/_REJECTED) independently, not
+    # just a 200+ combined total — verified empirically against this file's
+    # fixed SEED: ~400+ accepted, ~240+ rejected at this scale.
     {'slug': 'umgeni', 'name': 'Umgeni Packaging (Demo)', 'contact': 'Zanele Khoza', 'terms': 'NET30',
-     'role': 'strong_payer', 'bias': 1.7, 'slope': 9.0, 'pay': 'prompt', 'n': 22, 'credit': 88},
+     'role': 'strong_payer', 'bias': 1.7, 'slope': 9.0, 'pay': 'prompt', 'n': 198, 'credit': 88},
     {'slug': 'vaalkop', 'name': 'Vaalkop Steel Traders (Demo)', 'contact': 'Hennie Kruger', 'terms': 'NET30',
-     'role': 'price_sensitive', 'bias': 0.2, 'slope': 17.0, 'pay': 'steady', 'n': 20, 'credit': 74},
+     'role': 'price_sensitive', 'bias': 0.2, 'slope': 17.0, 'pay': 'steady', 'n': 180, 'credit': 74},
     {'slug': 'kloofnek', 'name': 'Kloofnek Timber (Demo)', 'contact': 'Lungile Mahlangu', 'terms': 'NET30',
-     'role': 'slow_payer', 'bias': 1.0, 'slope': 10.0, 'pay': 'slow', 'n': 16, 'credit': 41},
+     'role': 'slow_payer', 'bias': 1.0, 'slope': 10.0, 'pay': 'slow', 'n': 144, 'credit': 41},
     {'slug': 'lekkervars', 'name': 'Lekker Vars Produce (Demo)', 'contact': 'Annelie du Plessis', 'terms': 'NET30',
-     'role': 'neutral', 'bias': 0.6, 'slope': 11.0, 'pay': 'steady', 'n': 14, 'credit': 70},
+     'role': 'neutral', 'bias': 0.6, 'slope': 11.0, 'pay': 'steady', 'n': 126, 'credit': 70},
     {'slug': 'witberg', 'name': 'Witberg Chemicals (Demo)', 'contact': 'Farouk Ebrahim', 'terms': 'NET30',
      'role': 'new_no_history', 'bias': 0.0, 'slope': 0.0, 'pay': 'steady', 'n': 0, 'credit': None},
 ]
@@ -265,14 +298,23 @@ class Command(BaseCommand):
         parser.add_argument('--train', action='store_true',
                             help='After seeding, train the model company\'s company-tier and per-user win models.')
         parser.add_argument('--force', action='store_true',
-                            help='Run even when settings.DEBUG is False (never do this against production).')
+                            help='Run with settings.DEBUG off. The database must still be local: '
+                                 'this never runs against a remote (production) database.')
 
     # ------------------------------------------------------------------ entry
     def handle(self, *args, **options):
+        # Never a remote database, whatever the flags: it creates admin logins
+        # and fictional companies whose quotes would feed real tenants' market.
+        local, where = database_is_local()
+        if not local:
+            raise CommandError(f'seed_pricing_demo only runs against a local database ({where} is not local). '
+                               'It must never run against production.')
         if not settings.DEBUG and not options['force']:
             raise CommandError('seed_pricing_demo is local/dev only and settings.DEBUG is False. '
-                               'Pass --force only if this is a throwaway database.')
-        self.password = os.environ.get(PASSWORD_ENV) or DEFAULT_PASSWORD
+                               'Pass --force only if this is a throwaway local database.')
+        # A fresh random password each run (all demo logins get it, printed
+        # below) unless one is set: none is ever known in advance.
+        self.password = os.environ.get(PASSWORD_ENV) or secrets.token_urlsafe(9)
         self.rng = random.Random(SEED)
         self.now = timezone.now()
         self.today = timezone.localdate()

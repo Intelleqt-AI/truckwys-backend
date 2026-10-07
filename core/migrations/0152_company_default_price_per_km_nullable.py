@@ -12,7 +12,7 @@ def _nulls_back_to_default(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('core', '0150_quote_priced_vehicle_type_index'),
+        ('core', '0151_quote_priced_vehicle_type_index'),
     ]
 
     operations = [

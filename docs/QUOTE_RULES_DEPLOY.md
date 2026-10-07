@@ -31,9 +31,9 @@ FROM company_profile c WHERE EXISTS (SELECT 1 FROM vehicle_types v WHERE v.compa
                                AND lower(v.fuel_type) IN ('petrol', 'hybrid'));
 ```
 
-  (`petrol_95_coastal` / `petrol_93_coastal` only exist after migration 0152; before it, check `petrol_95` and
+  (`petrol_95_coastal` / `petrol_93_coastal` only exist after migration 0153; before it, check `petrol_95` and
   `petrol_93` only.) After step 3, the row in force must have `petrol_95` and `petrol_95_coastal` set.
-- Dry-run the LIVE/OWN classification that migration 0149 will apply:
+- Dry-run the LIVE/OWN classification that migration 0150 will apply:
   `python manage.py quote_diesel_audit --classification` (read-only; run it on the new code before `migrate`
   on a copy, or straight after migrate to review).
 - Dry-run the fuel-history repair: `python manage.py repair_fuel_history` (prints what it would change).
@@ -42,14 +42,14 @@ FROM company_profile c WHERE EXISTS (SELECT 1 FROM vehicle_types v WHERE v.compa
 ## 2. Migrate
 
 `python manage.py migrate core` applies:
-- 0148: company diesel mode fields, quote pricing snapshot fields (the quotes FK column is added without
+- 0149: company diesel mode fields, quote pricing snapshot fields (the quotes FK column is added without
   an index);
-- 0149: LIVE/OWN backfill (official FIASA/MANUAL matches only; never FALLBACK) and
+- 0150: LIVE/OWN backfill (official FIASA/MANUAL matches only; never FALLBACK) and
   `pricing_include_empty_return = include_empty_return_default`;
-- 0150: index on `quotes.priced_vehicle_type_id`, `CREATE INDEX CONCURRENTLY` on Postgres (non-atomic).
-- 0152: nullable `fuel_prices.petrol_95_coastal` / `petrol_93_coastal`; company `fuel_price_petrol_mode`
+- 0151: index on `quotes.priced_vehicle_type_id`, `CREATE INDEX CONCURRENTLY` on Postgres (non-atomic).
+- 0153: nullable `fuel_prices.petrol_95_coastal` / `petrol_93_coastal`; company `fuel_price_petrol_mode`
   (default LIVE), `fuel_price_petrol_set_at`, `fuel_price_petrol_grade` (default '95');
-- 0153: petrol LIVE/OWN backfill (official petrol match in the current/previous period or empty → LIVE, else OWN;
+- 0154: petrol LIVE/OWN backfill (official petrol match in the current/previous period or empty → LIVE, else OWN;
   a hybrid-only own value is copied into `fuel_price_petrol`).
 
 ## 3. Make sure the current official price is stored
@@ -90,18 +90,18 @@ Leave it off unless FIASA is down for a long time: its rows are not official and
 - Same response: `petrol.inland_95`, `petrol.inland_93` and `petrol.coastal_95` each have a `price` and
   `stale: false` (`petrol.coastal_93` is normally null); `company_petrol_price.source` is `official` for a LIVE
   company. Spot-check a petrol-truck quote: fuel line at R x/L = the zone's ULP 95, PDF "Priced on petrol 95 …".
-- Review petrol OWN companies (0153): `SELECT id, company_name, fuel_price_petrol, fuel_price_petrol_set_at FROM
+- Review petrol OWN companies (0154): `SELECT id, company_name, fuel_price_petrol, fuel_price_petrol_set_at FROM
   company_profile WHERE fuel_price_petrol_mode = 'OWN';` — gaps > 3% from official show `diesel_own_off` on quotes.
 - Try a send on a test quote: blocking warnings return 400 `{code: "quote_send_blocked", warnings}`.
 
 ## Rollback
 
 1. Redeploy the previous image.
-2. Petrol only: `python manage.py migrate core 0151` reverses 0153 (all companies back to LIVE / 95; a
-   copied hybrid value stays in `fuel_price_petrol`) and 0152 (drops the petrol columns). Full rollback:
-   `python manage.py migrate core 0147` reverses 0150 (drops the index), 0149 (clears LIVE/OWN fields;
-   `fuel_price_per_litre` was never modified) and 0148 (drops the new columns). The
-   `pricing_include_empty_return` values set by 0149 are not restored (they now mirror the new default).
+2. Petrol only: `python manage.py migrate core 0152` reverses 0154 (all companies back to LIVE / 95; a
+   copied hybrid value stays in `fuel_price_petrol`) and 0153 (drops the petrol columns). Full rollback:
+   `python manage.py migrate core 0148` (keeps the superseded-decision migration 0148) reverses 0151 (drops the index), 0150 (clears LIVE/OWN fields;
+   `fuel_price_per_litre` was never modified) and 0149 (drops the new columns). The
+   `pricing_include_empty_return` values set by 0150 are not restored (they now mirror the new default).
 3. Fuel rows written by `fetch_fuel_prices` / `repair_fuel_history` are additive history and can stay.
 
 ## Fuel history repair (round 3)
@@ -111,5 +111,5 @@ holding the 2 Sep column), duplicates, rows without an effective date (left out 
 `--apply` re-keys / removes duplicates; conflicts are only reported. Run before step 3 above.
 `fetch_fuel_prices --date YYYY-MM-01` / `--backfill` now store FIASA columns under their effective date only.
 
-Migration 0151 makes `default_base_rate_per_km` nullable (values kept). Rollback: `migrate core 0150` sets
+Migration 0152 makes `default_base_rate_per_km` nullable (values kept). Rollback: `migrate core 0151` sets
 empty values back to 10.00 first.

@@ -7,7 +7,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('core', '0147_company_driver_allowance_quote_was_sent'),
+        ('core', '0148_quotepricingdecision_superseded_at'),
     ]
 
     operations = [
@@ -96,7 +96,7 @@ class Migration(migrations.Migration):
             name='priced_at',
             field=models.DateTimeField(blank=True, null=True),
         ),
-        # The FK column is added WITHOUT its index here; 0150 builds the index
+        # The FK column is added WITHOUT its index here; 0151 builds the index
         # CONCURRENTLY on Postgres (quotes is a large, hot table). The model
         # state still says db_index=True, so later migrations see it normally.
         migrations.SeparateDatabaseAndState(

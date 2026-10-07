@@ -16,10 +16,11 @@ are decided.
 """
 import logging
 from datetime import datetime
+from typing import Tuple
 
 import numpy as np
 from django.conf import settings
-from django.db.models import F, Q
+from django.db.models import Count, F, Q
 
 from core.services import quote_features
 
@@ -32,10 +33,13 @@ logger = logging.getLogger(__name__)
 CANDIDATE_ALGORITHMS = ['logistic_regression', 'gradient_boosting', 'lightgbm']
 
 
-def _min_samples_for(scope: str) -> int:
-    setting_name = {'user': 'WIN_MODEL_USER_MIN_SAMPLES',
-                    'company': 'WIN_MODEL_COMPANY_MIN_SAMPLES'}.get(scope, 'WIN_MODEL_GLOBAL_MIN_SAMPLES')
-    return int(getattr(settings, setting_name, 40))
+def _min_class_counts(scope: str) -> Tuple[int, int]:
+    """(min_accepted, min_rejected) a scope needs to qualify — the SAME bar
+    for user/company/global today (kept scope-parameterised for whenever
+    that changes), checked independently: 200 accepted + 2 rejected does
+    not qualify just because the total clears 200."""
+    return (int(getattr(settings, 'WIN_MODEL_MIN_ACCEPTED', 200)),
+            int(getattr(settings, 'WIN_MODEL_MIN_REJECTED', 200)))
 
 
 def _cv_threshold() -> int:
@@ -61,6 +65,37 @@ def closed_outcomes():
     from core.models import QuoteOutcome
     return (QuoteOutcome.objects.filter(outcome__in=['accepted', 'rejected'])
             .exclude(quote__was_sent=False))
+
+
+def live_class_counts(scope: str, user_id=None, company_id=None) -> Tuple[int, int]:
+    """(accepted, rejected) this scope could train from RIGHT NOW — the same
+    filters as build_win_training_matrix_for_scope, minus the feature
+    engineering, so a resolve()-time re-check is cheap (one query, two
+    conditional counts).
+
+    Used both to gate training (200 accepted + 200 rejected, checked
+    independently) and to catch a company/user that has fallen back below
+    that bar since a model was last trained (deleted quotes, a shrinking
+    rolling window, etc.) — a model's frozen training-time metadata can't
+    detect that on its own.
+    """
+    qs = closed_outcomes().filter(
+        Q(quote__company__ai_training_started_at__isnull=True)
+        | Q(created_at__gte=F('quote__company__ai_training_started_at'))
+    )
+    if scope == 'user':
+        if not user_id:
+            return 0, 0
+        qs = qs.filter(created_by_id=user_id)
+    elif scope == 'company':
+        if not company_id:
+            return 0, 0
+        qs = qs.filter(quote__company_id=company_id)
+    else:
+        qs = qs.filter(quote__company__pool_pricing_data=True)
+    agg = qs.aggregate(accepted=Count('id', filter=Q(outcome='accepted')),
+                       rejected=Count('id', filter=Q(outcome='rejected')))
+    return agg['accepted'] or 0, agg['rejected'] or 0
 
 
 def build_win_training_matrix_for_scope(scope: str, user_id=None, company_id=None):
@@ -357,7 +392,8 @@ def _activate_model_version(scope, user_id, company_id=None, **kwargs):
 # Retrain entrypoints
 # ---------------------------------------------------------------------------
 
-def retrain_win_model_for_scope(scope: str, user_id=None, min_samples=None, company_id=None) -> dict:
+def retrain_win_model_for_scope(scope: str, user_id=None, min_accepted=None, min_rejected=None,
+                                company_id=None) -> dict:
     """Fit, validate, and (if it clears the gate) activate a win-probability
     model for one scope ('user' | 'company' | 'global'). Never raises."""
     from core.services.quote_ml import WIN_ML_AVAILABLE, WinProbabilityModel
@@ -371,20 +407,25 @@ def retrain_win_model_for_scope(scope: str, user_id=None, min_samples=None, comp
     # Every bookkeeping call below takes the tier's owner the same way.
     owner = {'company_id': company_id} if scope == 'company' else {}
 
-    min_samples = min_samples if min_samples is not None else _min_samples_for(scope)
+    default_accepted, default_rejected = _min_class_counts(scope)
+    min_accepted = min_accepted if min_accepted is not None else default_accepted
+    min_rejected = min_rejected if min_rejected is not None else default_rejected
     try:
         X, y, n, feature_names = build_win_training_matrix_for_scope(scope, user_id=user_id, company_id=company_id)
     except Exception as exc:
         logger.warning('win training matrix build failed (scope=%s, user=%s): %s', scope, user_id, exc)
         return {'trained': False, 'reason': f'feature build failed: {exc}'}
 
-    if n < min_samples:
-        return {'trained': False, 'reason': f'insufficient data ({n}/{min_samples})', 'samples': n}
-    if len(set(y.tolist())) < 2:
-        return {'trained': False, 'reason': 'only one outcome class present', 'samples': n}
-
-    accepted_count = int(y.sum())
+    accepted_count = int(y.sum()) if n else 0
     rejected_count = n - accepted_count
+
+    # Checked independently, not as a combined total: 398 accepted + 2
+    # rejected must not qualify just because the sum clears 400.
+    if accepted_count < min_accepted or rejected_count < min_rejected:
+        return {'trained': False,
+                'reason': f'insufficient data ({accepted_count}/{min_accepted} accepted, '
+                          f'{rejected_count}/{min_rejected} rejected)',
+                'samples': n, 'accepted': accepted_count, 'rejected': rejected_count}
 
     candidate_names = _candidates_for_size(n)
     bench = []
@@ -503,6 +544,8 @@ def retrain_win_model_for_scope(scope: str, user_id=None, min_samples=None, comp
         'training_count': int(n),
         'sample_count': int(n),
         'training_sample_count': int(n),
+        'accepted_count': int(accepted_count),
+        'rejected_count': int(rejected_count),
         'accuracy': winner_metrics.get('accuracy'),
         'auc': winner_metrics.get('roc_auc'),
         'brier': winner_metrics.get('brier'),
@@ -535,25 +578,28 @@ def retrain_win_model_for_scope(scope: str, user_id=None, min_samples=None, comp
     }
 
 
-def retrain_win_model(min_samples=None) -> dict:
+def retrain_win_model(min_accepted=None, min_rejected=None) -> dict:
     """Thin wrapper delegating to the global scope — keeps the existing
     Celery task name, Beat schedule entry, TaskRunLog tracking, and
     management command all working unchanged. The real, scope-aware
     implementation is retrain_win_model_for_scope()."""
-    return retrain_win_model_for_scope('global', user_id=None, min_samples=min_samples)
+    return retrain_win_model_for_scope('global', user_id=None, min_accepted=min_accepted,
+                                       min_rejected=min_rejected)
 
 
 def retrain_company_win_models(min_growth: int = 5) -> dict:
     """(Re)train the per-company tier for every company that qualifies:
-    >= WIN_MODEL_COMPANY_MIN_SAMPLES decided outcomes (both classes are
-    checked by retrain_win_model_for_scope itself). Skips a company whose
-    decided-outcome count grew by fewer than `min_growth` since its last
-    training attempt, so the nightly run is not a blind refit of everyone.
-    Never raises. Returns {'considered', 'trained', 'skipped', 'results'}."""
-    from django.db.models import Count
+    >= WIN_MODEL_MIN_ACCEPTED accepted AND >= WIN_MODEL_MIN_REJECTED rejected
+    decided outcomes (checked independently, by retrain_win_model_for_scope
+    itself — this prefilter is a cheap combined-total skip only). Skips a
+    company whose decided-outcome count grew by fewer than `min_growth`
+    since its last training attempt, so the nightly run is not a blind
+    refit of everyone. Never raises.
+    Returns {'considered', 'trained', 'skipped', 'results'}."""
     from core.models import MLModelVersion
 
-    min_samples = _min_samples_for('company')
+    min_accepted, min_rejected = _min_class_counts('company')
+    min_total = min_accepted + min_rejected
     summary = {'considered': 0, 'trained': 0, 'skipped': 0, 'results': {}}
     try:
         counts = (
@@ -569,7 +615,9 @@ def retrain_company_win_models(min_growth: int = 5) -> dict:
         logger.warning('retrain_company_win_models: count failed: %s', exc)
         return summary
     for company_id, n in rows:
-        if n < min_samples:
+        # Cheap combined-total skip; the real accepted/rejected gate is
+        # enforced inside retrain_win_model_for_scope below.
+        if n < min_total:
             continue
         summary['considered'] += 1
         latest = (MLModelVersion.objects.filter(scope='company', company_id=company_id)
@@ -603,8 +651,11 @@ def win_model_status(company=None) -> dict:
         # Platform-wide: only what the global model can actually train on —
         # outcomes from companies that opted into pooling.
         qs = qs.filter(quote__company__pool_pricing_data=True)
-    outcomes = qs.count()
-    min_needed = _min_samples_for('global')
+    agg = qs.aggregate(accepted=Count('id', filter=Q(outcome='accepted')),
+                       rejected=Count('id', filter=Q(outcome='rejected')))
+    accepted, rejected = agg['accepted'] or 0, agg['rejected'] or 0
+    outcomes = accepted + rejected
+    min_accepted, min_rejected = _min_class_counts('global')
 
     meta = {}
     try:
@@ -619,8 +670,13 @@ def win_model_status(company=None) -> dict:
         'mode': 'learned' if trained else 'heuristic',
         'trained': trained,
         'outcomes_collected': outcomes,
-        'outcomes_needed': min_needed,
-        'progress_pct': min(100, round(outcomes / min_needed * 100)) if min_needed else 0,
+        'accepted': accepted,
+        'rejected': rejected,
+        'accepted_needed': min_accepted,
+        'rejected_needed': min_rejected,
+        # The slower class is the real bottleneck, not the combined total.
+        'progress_pct': min(100, round(min(accepted / min_accepted, rejected / min_rejected) * 100))
+                        if min_accepted and min_rejected else 0,
         'auc': meta.get('auc'),
         'accuracy': meta.get('accuracy'),
         'last_trained': meta.get('trained_at'),

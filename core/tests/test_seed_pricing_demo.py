@@ -102,3 +102,51 @@ class SeedPricingDemoTests(TestCase):
                 self.assertIsNone(re.search(rf'\b{re.escape(brand)}\b', lowered), f'{name!r} contains {brand!r}')
         for spec in seed.COMPANIES.values():
             self.assertTrue(spec['name'].endswith('(Demo)'))
+
+
+class SeedPricingDemoSafetyTests(TestCase):
+    """Never against a remote (production) database, whatever the flags, and
+    no password known in advance."""
+
+    def test_database_is_local_rules(self):
+        local = seed.database_is_local
+        self.assertTrue(local({'ENGINE': 'django.db.backends.sqlite3', 'NAME': '/tmp/db.sqlite3'})[0])
+        for host in ('', 'localhost', '127.0.0.1', '::1'):
+            self.assertTrue(local({'ENGINE': 'django.db.backends.postgresql', 'HOST': host})[0], host)
+        self.assertFalse(local({'ENGINE': 'django.db.backends.postgresql',
+                                'HOST': 'dpg-abc123.oregon-postgres.render.com'})[0])
+        from unittest import mock
+        with mock.patch.dict('os.environ', {seed.ALLOWED_HOSTS_ENV: 'db'}):
+            self.assertTrue(local({'ENGINE': 'django.db.backends.postgresql', 'HOST': 'db'})[0])
+            self.assertFalse(local({'ENGINE': 'django.db.backends.postgresql', 'HOST': 'prod.example.com'})[0])
+
+    def test_remote_database_refused_even_with_force_and_debug(self):
+        from unittest import mock
+        with mock.patch.object(seed, 'database_is_local', return_value=(False, 'host prod.example.com')), \
+                override_settings(DEBUG=True):
+            with self.assertRaisesRegex(CommandError, 'never run against production'):
+                call_command('seed_pricing_demo', '--force', '--reset', stdout=StringIO())
+        self.assertFalse(Company.objects.filter(company_name__in=seed.all_company_names()).exists())
+
+    def test_random_password_each_run_and_printed(self):
+        from unittest import mock
+        with mock.patch.dict('os.environ', {}, clear=False):
+            import os
+            os.environ.pop(seed.PASSWORD_ENV, None)
+            outs = []
+            for _ in range(2):
+                buf = StringIO()
+                call_command('seed_pricing_demo', '--force', stdout=buf)
+                outs.append(buf.getvalue())
+        pw = [re.search(r'password "([^"]+)"', o).group(1) for o in outs]
+        self.assertNotEqual(pw[0], pw[1])
+        self.assertNotIn('demo12345', pw)
+        user = User.objects.get(username=f'model@{seed.DEMO_EMAIL_DOMAIN}')
+        self.assertTrue(user.check_password(pw[1]))          # the latest printed password works
+        self.assertFalse(user.check_password('demo12345'))
+
+    def test_password_from_env_when_set(self):
+        from unittest import mock
+        with mock.patch.dict('os.environ', {seed.PASSWORD_ENV: 'local-only-pw'}):
+            call_command('seed_pricing_demo', '--force', stdout=StringIO())
+        self.assertTrue(User.objects.get(username=f'model@{seed.DEMO_EMAIL_DOMAIN}').check_password('local-only-pw'))

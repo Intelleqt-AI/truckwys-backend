@@ -642,8 +642,8 @@ CELERY_BEAT_SCHEDULE = {
         'schedule': crontab(hour='6', minute='0'),
     },
     # Retrain the quote win-probability model nightly at 03:00 SAST.
-    # Idempotent — no-ops until WIN_MODEL_GLOBAL_MIN_SAMPLES outcomes exist
-    # AND both accepted and rejected labels are present.
+    # Idempotent — no-ops until WIN_MODEL_MIN_ACCEPTED accepted AND
+    # WIN_MODEL_MIN_REJECTED rejected outcomes exist, independently.
     'retrain-win-model': {
         'task': 'core.tasks.retrain_win_model',
         'schedule': crontab(hour='3', minute='0'),
@@ -825,9 +825,15 @@ CELERY_BEAT_SCHEDULE = {
 # full architecture; these are the tunables that used to be read via
 # getattr(settings, 'WIN_MODEL_MIN_SAMPLES', 40) without ever actually being
 # defined here, so the .env value was silently ignored. Now genuinely wired.
+#
+# A scope (user/company/global, same bar for every one of them) only
+# qualifies to train once it has BOTH this many accepted AND this many
+# rejected closed outcomes — not a combined total. A classifier trained on
+# 198 accepted + 2 rejected is not meaningfully informed about what loses a
+# quote, no matter how large the total looks.
 # ---------------------------------------------------------------------------
-WIN_MODEL_USER_MIN_SAMPLES = config('WIN_MODEL_USER_MIN_SAMPLES', default=40, cast=int)
-WIN_MODEL_GLOBAL_MIN_SAMPLES = config('WIN_MODEL_GLOBAL_MIN_SAMPLES', default=40, cast=int)
+WIN_MODEL_MIN_ACCEPTED = config('WIN_MODEL_MIN_ACCEPTED', default=200, cast=int)
+WIN_MODEL_MIN_REJECTED = config('WIN_MODEL_MIN_REJECTED', default=200, cast=int)
 # Below this many training rows, cross-validation replaces a single holdout
 # split (too few rows for a static 80/20 split to mean anything) and a
 # regression in evaluation metrics is logged but never blocks activation.

@@ -4,7 +4,7 @@
     python manage.py quote_diesel_audit [--days 30] [--all]
     python manage.py quote_diesel_audit --classification
 
---classification is a dry run of the LIVE/OWN rule (migration 0149 and the
+--classification is a dry run of the LIVE/OWN rule (migration 0150 and the
 legacy fuel_price_per_litre write): each company's stored
 fuel_price_per_litre, the mode the rule gives and why. It changes nothing.
 

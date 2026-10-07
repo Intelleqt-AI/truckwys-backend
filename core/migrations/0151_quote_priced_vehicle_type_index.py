@@ -1,4 +1,4 @@
-"""Index for quotes.priced_vehicle_type_id (added without one in 0148).
+"""Index for quotes.priced_vehicle_type_id (added without one in 0149).
 
 Postgres: CREATE INDEX CONCURRENTLY (no write lock on the quotes table), so
 this migration is non-atomic. Other backends (sqlite in tests): a plain
@@ -22,6 +22,6 @@ def backwards(apps, schema_editor):
 class Migration(migrations.Migration):
     atomic = False
 
-    dependencies = [('core', '0149_company_fuel_price_mode_backfill')]
+    dependencies = [('core', '0150_company_fuel_price_mode_backfill')]
 
     operations = [migrations.RunPython(forwards, backwards)]

@@ -215,7 +215,7 @@ class PetrolMigrationTests(_Base):
         FuelPrice.objects.filter(date=date(2026, 9, 2)).update(petrol_93=Decimal('26.76'))
         FuelPrice.objects.create(date=date(2026, 7, 1), diesel_inland=1, diesel_coastal=1, source='FIASA',
                                  effective_from=sast(2026, 7, 1, 0, 1), petrol_95=Decimal('25.00'))   # too old
-        mod = importlib.import_module('core.migrations.0153_company_petrol_mode_backfill')
+        mod = importlib.import_module('core.migrations.0154_company_petrol_mode_backfill')
         live = [Company.objects.create(company_name=f'L{i}', fuel_price_petrol=v)
                 for i, v in enumerate((None, Decimal('30.25'), Decimal('29.3810'), Decimal('26.76')))]
         own = [Company.objects.create(company_name=f'O{i}', fuel_price_petrol=v)

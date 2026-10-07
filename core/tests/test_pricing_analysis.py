@@ -92,7 +92,7 @@ class ColdStartTests(_Base):
         self.assertFalse(r['market']['available'])
         self.assertEqual(r['likelihood']['level'], 'rules')
         self.assertIsNone(r['likelihood']['model'])
-        self.assertIn('you have 0 so far', r['likelihood']['reason'])
+        self.assertIn('you have 0 won and 0 lost so far', r['likelihood']['reason'])
         # The level reason is not repeated in the reasoning sentences.
         self.assertFalse(any('0 so far' in t for t in r['reasoning']))
         codes = {w['code'] for w in r['warnings']}
@@ -342,12 +342,29 @@ class MarginConsistencyTests(_Base):
 
 
 class _ModelMixin:
-    def train_company_model(self, company, user, customer, n=40):
+    def train_company_model(self, company, user, customer, n=400):
         make_outcomes(company, customer, user, n, prefix=f'M{company.id}')
+        self.no_market_range()
         result = quote_training.retrain_win_model_for_scope('company', company_id=company.id)
         self.assertTrue(result.get('trained'), result)
         from core.services.quote_ml import _MODEL_CACHE
         _MODEL_CACHE.clear()
+
+    def no_market_range(self):
+        # make_outcomes adds a real platform market on JHB->CPT (median 38 900)
+        # as the win model's reference. These tests price from the cost floor
+        # (as when that reference was the old, unusable SA estimate), so the
+        # displayed market RANGE is left out; the model's reference stays.
+        from unittest import mock
+        none = {'available': False, 'tier': 'none', 'p25': None, 'median': None, 'p75': None, 'n': 0,
+                'is_estimate': False, 'tier_label': 'No market data for this lane yet', 'window_days': None,
+                'vehicle_specific': False}
+        if getattr(self, '_no_range_patched', False):
+            return
+        patcher = mock.patch.object(pa, 'market_range', return_value=none)
+        patcher.start()
+        self._no_range_patched = True
+        self.addCleanup(patcher.stop)
 
     def model_payload(self, **over):
         # JHB->CPT: the lane make_outcomes prices (16k-29k against the 38,900
@@ -377,7 +394,7 @@ class ModelLevelTests(_ModelMixin, _Base):
         lk = r['likelihood']
         self.assertEqual(lk['level'], 'model', lk.get('reason'))
         self.assertEqual(lk['model']['scope'], 'company')
-        self.assertEqual(lk['model']['n_closed'], 40)
+        self.assertEqual(lk['model']['n_closed'], 400)
         self.assertTrue(lk['model']['version'].startswith('company:'))
         self.assertIn('your company', lk['model']['basis_label'])
         curve = lk['model']['curve']
@@ -423,7 +440,8 @@ class GlobalOptInTests(_ModelMixin, _Base):
             self.skipTest('sklearn not installed')
         donor = Company.objects.create(company_name='Donor Logistics', pool_pricing_data=True)
         donor_user = User.objects.create_user(username='donor', password='x', company=donor)
-        make_outcomes(donor, make_customer(donor, 'Marula Co-op'), donor_user, 40, prefix='G')
+        make_outcomes(donor, make_customer(donor, 'Marula Co-op'), donor_user, 400, prefix='G')
+        self.no_market_range()
         result = quote_training.retrain_win_model_for_scope('global')
         self.assertTrue(result.get('trained'), result)
 
@@ -443,7 +461,7 @@ class GlobalOptInTests(_ModelMixin, _Base):
         hidden_user = User.objects.create_user(username='private', password='x', company=hidden)
         make_outcomes(hidden, make_customer(hidden, 'Quiet Ltd'), hidden_user, 10, prefix='H')
         _X, _y, n, _names = quote_training.build_win_training_matrix_for_scope('global')
-        self.assertEqual(n, 40)
+        self.assertEqual(n, 400)
 
 
 class _DecisionHelpers:
@@ -956,7 +974,7 @@ class Round3Tests(_ModelMixin, _Base):
 
     def test_short_reason_without_model(self):
         r = self.analyze()
-        self.assertEqual(r['likelihood']['short'], 'Bands · 0 of 40 closed quotes')
+        self.assertEqual(r['likelihood']['short'], 'Bands · 0 of 400 closed quotes')
         self.assertLessEqual(len(r['likelihood']['short']), 40)
 
 
@@ -990,7 +1008,7 @@ class Round3ModelTests(_ModelMixin, _Base):
         self.assertTrue(in_range(lo) and in_range(hi))
         self.assertFalse(in_range(lo - 1) or in_range(hi + 1))
         self.assertLessEqual(len(r['likelihood']['short']), 40)
-        self.assertEqual(r['likelihood']['short'], 'From 40 closed quotes')
+        self.assertEqual(r['likelihood']['short'], 'From 400 closed quotes')
 
     def test_recommendation_is_best_expected_profit_or_balanced_within_3pct(self):
         r = self.analyze(**self.model_payload())
@@ -1428,13 +1446,14 @@ class Round5Tests(_Base):
         self._platform()
         rules = self.analyze(include_return=False)
         self.assertEqual(rules['likelihood']['headline'],
-                         'Chance to win as Likely, Even chance or Less likely. A % needs 40 closed quotes (you have 0).')
+                         'Chance to win as Likely, Even chance or Less likely. A % needs 200 won + 200 lost '
+                         '(you have 0, 0).')
         self.assertEqual(rules['likelihood']['reason_code'], 'few_closed')
         self.assertIsNotNone(rules['likelihood']['short'])           # old field kept
         self.assertIsNone(self.analyze(distance_km=0)['likelihood']['headline'])
         th = {'likely_max': 1, 'even_max': 2}
         for code in ('few_closed', 'needs_both', 'trains_tonight', 'outside_range', 'no_market_for_model', None):
-            self.assertLessEqual(len(pa.likelihood_headline(code, thresholds=th, n_closed=17)), 111)
+            self.assertLessEqual(len(pa.likelihood_headline(code, thresholds=th, won=17, lost=17)), 111)
         self.assertEqual(pa.likelihood_headline('outside_range', thresholds=th),
                          'Chance to win as Likely, Even chance or Less likely: these prices are outside what your '
                          'model has learned from.')
@@ -1776,6 +1795,7 @@ class Round5NeverSentClosedQuoteTests(_ModelMixin, _Base):
 
     def _outcomes(self, n, never_sent, prefix='NS', sent_true=0):
         make_outcomes(self.company, self.customer, self.user, n, prefix=prefix)
+        self.no_market_range()
         ids = list(Quote.objects.filter(company=self.company, quote_number__startswith=f'{prefix}-')
                    .order_by('id').values_list('id', flat=True))
         # Spread across both classes (make_outcomes puts accepted first).
@@ -1798,19 +1818,20 @@ class Round5NeverSentClosedQuoteTests(_ModelMixin, _Base):
         self.assertEqual(prog['company']['outcomes_collected'], 7)
         self.assertEqual(prog['user']['outcomes_collected'], 7)
         self.assertEqual(quote_training.win_model_status(self.company)['outcomes_collected'], 7)
-        reason, short, code, n_closed = pa._model_unavailable_reason(self.company, with_code=True)
-        self.assertEqual((code, n_closed), ('few_closed', 7))
-        self.assertIn('you have 7 so far', reason)
-        self.assertEqual(short, 'Bands · 7 of 40 closed quotes')
+        reason, short, code, won, lost = pa._model_unavailable_reason(self.company, with_code=True)
+        self.assertEqual((code, won + lost), ('few_closed', 7))
+        self.assertIn(f'you have {won} won and {lost} lost so far', reason)
+        self.assertEqual(short, 'Bands · 7 of 400 closed quotes')
         r = self.analyze()
-        self.assertIn('you have 7 so far', r['likelihood']['reason'])
-        self.assertEqual(r['likelihood']['short'], 'Bands · 7 of 40 closed quotes')
-        self.assertEqual(pa.likelihood_headline('few_closed', thresholds={'likely_max': 1}, n_closed=n_closed),
-                         'Chance to win as Likely, Even chance or Less likely. A % needs 40 closed quotes '
-                         '(you have 7).')
+        self.assertIn(f'you have {won} won and {lost} lost so far', r['likelihood']['reason'])
+        self.assertEqual(r['likelihood']['short'], 'Bands · 7 of 400 closed quotes')
+        self.assertEqual(
+            pa.likelihood_headline('few_closed', thresholds={'likely_max': 1}, won=won, lost=lost),
+            f'Chance to win as Likely, Even chance or Less likely. A % needs 200 won + 200 lost '
+            f'(you have {won}, {lost}).')
 
     def test_nightly_sweep_counts_only_sent_or_unknown(self):
-        self._outcomes(43, never_sent=5)                     # 38 count: below the 40 gate
+        self._outcomes(43, never_sent=5)                     # 38 count: well below the 200/200 gate
         summary = quote_training.retrain_company_win_models()
         self.assertEqual(summary['considered'], 0)
         self.assertNotIn(self.company.id, summary['results'])
@@ -1818,7 +1839,10 @@ class Round5NeverSentClosedQuoteTests(_ModelMixin, _Base):
     def test_model_n_closed_and_label_exclude_never_sent(self):
         if not WIN_ML_AVAILABLE:
             self.skipTest('sklearn not installed')
-        self._outcomes(46, never_sent=6, prefix='M')          # 40 trainable
+        # 440, not 406: never_sent removal isn't perfectly class-balanced
+        # (it spreads evenly over row INDEX, not over the accepted/rejected
+        # split), so a thin 200/200 margin can leave one class one short.
+        self._outcomes(440, never_sent=6, prefix='M')          # 434 trainable
         result = quote_training.retrain_win_model_for_scope('company', company_id=self.company.id)
         self.assertTrue(result.get('trained'), result)
         from core.services.quote_ml import _MODEL_CACHE
@@ -1826,8 +1850,8 @@ class Round5NeverSentClosedQuoteTests(_ModelMixin, _Base):
         r = self.analyze(**self.model_payload())
         lk = r['likelihood']
         self.assertEqual(lk['level'], 'model', lk.get('reason'))
-        self.assertEqual(lk['model']['n_closed'], 40)
-        self.assertTrue(lk['model']['basis_label'].startswith('40 closed quotes'), lk['model']['basis_label'])
+        self.assertEqual(lk['model']['n_closed'], 434)
+        self.assertTrue(lk['model']['basis_label'].startswith('434 closed quotes'), lk['model']['basis_label'])
         self.assertEqual(lk['headline'], f"Chance to win from {lk['model']['basis_label']}.")
 
 

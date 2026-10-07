@@ -393,6 +393,18 @@ def predict_optimal_margin(
 _MODEL_CACHE: Dict[Tuple[str, Optional[int]], Tuple[Any, float]] = {}
 
 
+def _live_class_counts(scope: str, key_id: Optional[int]) -> Tuple[int, int]:
+    """Live (accepted, rejected) — not cached, not frozen-at-training-time —
+    for a resolve() scope/key_id pair. Lazy import: quote_training doesn't
+    import this module, so this is only to keep the dependency one-directional."""
+    from core.services.quote_training import live_class_counts
+    if scope == 'company':
+        return live_class_counts('company', company_id=key_id)
+    if scope == 'user':
+        return live_class_counts('user', user_id=key_id)
+    return live_class_counts('global')
+
+
 class WinProbabilityModel:
     """
     Classifier that predicts P(quote accepted | features) — see
@@ -576,9 +588,10 @@ class WinProbabilityModel:
         if not WIN_ML_AVAILABLE:
             return None, None, 0
         import time as _time
+        from core.services.quote_training import _min_class_counts
         ttl = float(getattr(settings, 'WIN_MODEL_CACHE_TTL_SECONDS', 60))
 
-        def _cached(cache_key, min_samples):
+        def _cached(cache_key, min_accepted, min_rejected):
             hit = _MODEL_CACHE.get(cache_key)
             if hit is not None and (_time.monotonic() - hit[1]) < ttl:
                 model = hit[0]
@@ -595,23 +608,33 @@ class WinProbabilityModel:
                 _MODEL_CACHE[cache_key] = (model, _time.monotonic())
             if model is None or not model.is_trained():
                 return None, 0
-            n = int(model.metadata.get('training_sample_count') or 0)
-            if n < min_samples:
+            # Gate on the LIVE accepted/rejected counts, not the frozen
+            # training_sample_count in the artifact's own metadata: a
+            # company/user that has since fallen below the bar (deleted
+            # quotes, a shrinking rolling window, class imbalance creeping
+            # in) stops being served a stale model rather than it running
+            # indefinitely. Checked independently — 500 accepted but only 5
+            # rejected does not qualify just because the total is large.
+            scope_, key_id = cache_key
+            accepted, rejected = _live_class_counts(scope_, key_id)
+            n = accepted + rejected
+            if accepted < min_accepted or rejected < min_rejected:
                 return None, n
             return model, n
 
+        min_accepted, min_rejected = _min_class_counts('company')  # same bar for every scope today
         if company_id:
-            model, n = _cached(('company', company_id), int(getattr(settings, 'WIN_MODEL_COMPANY_MIN_SAMPLES', 40)))
+            model, n = _cached(('company', company_id), min_accepted, min_rejected)
             if model is not None:
                 return model, 'company', n
 
         if user_id:
-            model, n = _cached(('user', user_id), int(getattr(settings, 'WIN_MODEL_USER_MIN_SAMPLES', 40)))
+            model, n = _cached(('user', user_id), min_accepted, min_rejected)
             if model is not None:
                 return model, 'user', n
 
         if allow_global:
-            model, n = _cached(('global', None), int(getattr(settings, 'WIN_MODEL_GLOBAL_MIN_SAMPLES', 40)))
+            model, n = _cached(('global', None), min_accepted, min_rejected)
             if model is not None:
                 return model, 'global', n
 

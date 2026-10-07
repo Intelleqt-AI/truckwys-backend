@@ -68,7 +68,7 @@ def backwards(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('core', '0148_quote_rules_fuel_mode_snapshot'),
+        ('core', '0149_quote_rules_fuel_mode_snapshot'),
     ]
 
     operations = [

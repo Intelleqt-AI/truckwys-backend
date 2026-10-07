@@ -647,6 +647,13 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
     # operator picked, stored as QuotePricingDecision. Write-only here; the
     # quote DETAIL response carries it back read-only (to_representation).
     pricing_decision = serializers.JSONField(required=False, allow_null=True, write_only=True)
+    # Declared explicitly (not left to ModelSerializer's auto-introspection)
+    # so the OpenAPI schema is honest about this: the old client-side heuristic
+    # always sent a number here, so API consumers (incl. a future mobile app)
+    # may still assume it's always numeric. It is genuinely null now whenever
+    # no real pricing decision scored the quote, or a stale one was superseded
+    # (see supersede_if_price_changed) — never faked back to a number.
+    win_probability = serializers.DecimalField(max_digits=5, decimal_places=2, read_only=True, allow_null=True)
     # Additive, list + detail: margin % against the full cost floor from the
     # stored pricing decision (null when the quote has none). The viewset
     # select_related's the decision, so this costs no extra query.
@@ -656,6 +663,9 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
         try:
             d = obj.pricing_decision
         except Exception:
+            return None
+        # A superseded decision was for an earlier price: no margin from it.
+        if d.superseded_at is not None:
             return None
         price, floor = d.final_price, d.floor
         if not price or floor is None or price <= 0:
@@ -1396,7 +1406,7 @@ def _is_live_echo(value, zone='INLAND'):
     the official price for the company's zone that a client could have been
     shown recently — the one in force now or the one in force before it
     (previous period). Any other value (e.g. an old 500ppm figure) is OWN.
-    Migration 0149 uses the wider historic rule for the one-off backfill."""
+    Migration 0150 uses the wider historic rule for the one-off backfill."""
     if value is None:
         return True
     value = Decimal(str(value))

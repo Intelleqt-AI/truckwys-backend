@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('core', '0151_company_default_price_per_km_nullable'),
+        ('core', '0152_company_default_price_per_km_nullable'),
     ]
 
     operations = [
