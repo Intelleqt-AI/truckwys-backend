@@ -327,3 +327,32 @@ Copy the file into each client repo's test fixtures (keep identical).
   - Golden: `official_effective_from` / `own_set_at` / reopen `priced_at` now `+02:00` (same instants); new
     cases `return_driver_nights_unknown`, `international_empty_return_crosses_back`,
     `international_round_trip_border`; no existing amount changed.
+- **Round 3 (7 Oct 2026).**
+  - Privacy: `GET /quotes/benchmark/`, `POST /quotes/optimize/` and `resolve_market_rate`'s platform tier (the
+    win model's market reference, live and in training) all use the platform rule: own company excluded,
+    ≥ 10 accepted quotes from ≥ 3 other operators, figures to the nearest R 500, never a mean, min/max or operator
+    count. Benchmark `market_avg_rate` keeps its key and is the median. Optimize never invents a market (no
+    cost × 1,25: no market → no optimised price, `reason: "no_market"`) and gives no heuristic win % or expected
+    profit (`win_probability_source: "heuristic"`, `price_basis: "heuristic"`).
+  - Copilot: ACCEPTED / DECLINED through the copilot records the outcome; any copilot write touching pricing
+    fields re-itemises the quote through compute() (fuel at today's price, tolls, driver, border, base =
+    price − those; shortfall in additional charges) and re-snapshots. Proposals carry `sends` (true when
+    executing sends to the customer) and a send is labelled "Send Quote" / "Send quote".
+  - `Quote.margin_percentage` is null when the floor is unknown (migration 0156; stored 0 without a floor →
+    null).
+  - Round trips: customer one-way prices × legs for the bands, with or without a market.
+  - Minimum charge: choice summaries name the charge; when it sets the prices the recommendation says so
+    (`rules_minimum`), never "keep your 10% target margin".
+  - `/quotes/analyze/`: floor and margins to the cent; rules narrative in SA format.
+  - AI check: combinations taking the official fuel are measured against a floor recomputed at that fuel
+    (`floor_zar` per combination); suggested fuel to the cent; the base-rate reason states a floor lift; a
+    blocked check states no market rate. The model curve / best price start at the target price.
+  - Settings: an unchanged stored value echoed back always saves (no lock-out); only changed values are
+    validated. `quote_diesel_audit --classification` runs before migrate and flags own prices matching old
+    backup rows.
+  - Fuel: within one first-Wednesday period FIASA supersedes a MANUAL price (manual is a stopgap); a successful
+    FIASA store clears `fetch_failed_at`; FIASA rows with neither grade nor effective date never price
+    (`repair_fuel_history --apply` relabels them `FIASA_UNDATED`).
+  - Fuel alert compares the fuel the quote was priced on (petrol quotes compare petrol; adds `fuel_product`);
+    market normalisation detects petrol from the priced truck. Win-probability `level` is model / bands / none.
+  - Golden vectors: unchanged this round.
