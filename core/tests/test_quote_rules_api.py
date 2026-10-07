@@ -938,6 +938,11 @@ class NarrativeNumbersTests(TestCase):
         self.assertFalse(self.ok('You make a negative margin of 9%.'))
         self.assertFalse(self.ok('Margin -9%.'))
         self.assertFalse(self.ok('You are R 1 200 above the floor.'))
+        # "up 5%" is a rise: false when our figure is -5 (below the market).
+        self.assertFalse(self.ok('Your price is up 5% on the market.'))
+        self.assertTrue(self.ok('Your price is down 5% on the market.'))
+        self.assertTrue(self.ok('The margin rose by 9% after the change.'))       # +9 is ours
+        self.assertFalse(self.ok('You lost 9% margin.'))                         # -9 isn't
 
     def test_unit_aware(self):
         self.assertFalse(self.ok('Margin of 560%.'))          # 560 is km, not a %
@@ -1206,3 +1211,20 @@ class PetrolFuelAlertTests(_Base):
         self.assertAlmostEqual(body['fuel_delta_zar'], 2.0)
         self.assertEqual(body['fuel_product'], 'petrol_95')
         self.assertTrue(body['message'].startswith('Petrol 95 up R'), body['message'])
+
+
+class NarrativeBudgetTests(TestCase):
+    def test_narrative_call_is_cancelled_at_the_budget(self):
+        from core.services import agent, quote_analysis as qa
+        with patch.object(agent, '_llm_enabled', return_value=True), \
+                patch.object(agent, '_llm_generate', return_value='Fine.') as gen:
+            self.assertEqual(qa._llm_narrative({'quote_total': 1}), 'Fine.')
+        kw = gen.call_args.kwargs
+        self.assertLessEqual(kw['timeout'], 20)
+        self.assertEqual(kw['max_retries'], 0)
+
+        class APITimeoutError(Exception):
+            pass
+        with patch.object(agent, '_llm_enabled', return_value=True), \
+                patch.object(agent, '_llm_generate', side_effect=APITimeoutError('Request timed out.')):
+            self.assertIsNone(qa._llm_narrative({'quote_total': 1}))

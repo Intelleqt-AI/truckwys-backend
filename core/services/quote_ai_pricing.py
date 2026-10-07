@@ -860,7 +860,7 @@ def _training_z_scores(predict_proba, features: dict) -> dict:
 
 
 def _attach_win_probabilities(combos: dict, default_key: str, payload: dict, user, company,
-                              floor_total=None) -> dict:
+                              floor_total=None, target_price=None) -> dict:
     """Scores every combination with the win model through the SAME gates as
     the pricing analysis (pricing_analysis.model_likelihood): a real trained
     model, the market reference it was trained on, the price domain it has
@@ -892,7 +892,7 @@ def _attach_win_probabilities(combos: dict, default_key: str, payload: dict, use
             ctx=ctx, company=company, user=user, payload=payload, origin=payload.get('origin'),
             destination=payload.get('destination'), vt_name=payload.get('vehicle_type'),
             floor_total=floor_total, probe_prices=prices, customer_id=payload.get('customer_id') or None,
-            best_prices=prices)
+            best_prices=prices, min_price=target_price)
         if block is None:
             if reason == NO_MARKET_FOR_MODEL:
                 return unavailable('no_market_rate', **model_info)
@@ -1157,7 +1157,8 @@ def analyze_quote_price(*, payload: dict, user=None, company=None, quote=None, t
             cf = pricing.get('cost_floor') or {}
             pricing['win_model'] = _attach_win_probabilities(
                 pricing['combinations'], pricing['default_choice_key'], payload, user, company,
-                floor_total=cf.get('floor') if cf.get('floor_known') else None)
+                floor_total=cf.get('floor') if cf.get('floor_known') else None,
+                target_price=cf.get('target_price') if cf.get('floor_known') else None)
         default = pricing['combinations'][pricing['default_choice_key']]
     except Exception as exc:
         logger.exception('AI price analysis: pricing failed')

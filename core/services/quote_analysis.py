@@ -441,18 +441,19 @@ def _llm_narrative(structured):
     )
     convo = [{"role": "user", "content": "Summarise this quote analysis and justify the suggested price."}]
     try:
-        # One overall budget for the narrative (QUOTE-RULES: <= 20 s), however
-        # many retries the client makes underneath.
-        from concurrent.futures import ThreadPoolExecutor
-        from concurrent.futures import TimeoutError as FutureTimeout
-        pool = ThreadPoolExecutor(max_workers=1)
+        # One budget for the narrative (QUOTE-RULES: <= 20 s), enforced by the
+        # SDK itself with no retries: a slow call is CANCELLED at the budget
+        # (the connection is closed), not left running in a thread we no
+        # longer wait for. A short answer only needs a few hundred tokens.
         try:
-            text = pool.submit(agent._llm_generate, system, convo).result(timeout=NARRATIVE_BUDGET_SECONDS)
-        except FutureTimeout:
-            logger.warning('LLM narrative over its %ss budget; using the rule-based summary', NARRATIVE_BUDGET_SECONDS)
-            return None
-        finally:
-            pool.shutdown(wait=False)
+            text = agent._llm_generate(system, convo, timeout=NARRATIVE_BUDGET_SECONDS, max_retries=0,
+                                       max_tokens=350)
+        except Exception as exc:
+            if 'timeout' in type(exc).__name__.lower() or 'timed out' in str(exc).lower():
+                logger.warning('LLM narrative over its %ss budget; using the rule-based summary',
+                               NARRATIVE_BUDGET_SECONDS)
+                return None
+            raise
         return text.strip() or None
     except Exception as exc:
         logger.warning('LLM narrative failed, using rule-based: %s', exc)
@@ -571,8 +572,10 @@ def _words_value(phrase):
 
 # Sign cues next to a figure: "lose R 1 200", "5% below the market".
 _NEG_BEFORE = re.compile(r'(?:\b(?:lose|losing|lost|loss of|minus|negative(?: margin)?(?: of)?|shortfall of|'
-                         r'down(?: by)?|deficit of|short by|under by|below by)\s*|[-−]\s?)$', re.I)
-_POS_BEFORE = re.compile(r'\b(?:gain of|profit of|plus|up by|ahead by|above by|over by)\s*$', re.I)
+                         r'down(?: by)?|fell(?: by)?|fallen(?: by)?|dropped(?: by)?|drop of|fall of|decrease of|'
+                         r'deficit of|short by|under by|below by)\s*|[-−]\s?)$', re.I)
+_POS_BEFORE = re.compile(r'\b(?:gain of|profit of|plus|up(?: by)?|rose(?: by)?|risen(?: by)?|rise of|increase of|'
+                         r'ahead by|above by|over by)\s*$', re.I)
 _NEG_AFTER = re.compile(r'^\s*(?:below|under|less|lower|cheaper|short|loss|down|negative|in the red)\b', re.I)
 _POS_AFTER = re.compile(r'^\s*(?:above|over|more|higher|ahead|profit|up)\b', re.I)
 

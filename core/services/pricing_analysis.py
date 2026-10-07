@@ -197,7 +197,12 @@ NBSP = '\u00a0'   # inside money and numbers, so "R 23 238" never wraps
 
 
 def _num(v, dp=0):
-    txt = f'{abs(float(v or 0)):,.{dp}f}'.replace(',', NBSP).replace('.', ',')
+    """SA style with NBSP thousands, rounded HALF-UP on the decimal form —
+    the same rule as quote_costing.fmt_num (33,15 -> '33,2', not Python's
+    '33,1'), so the analysis and the costing never show different figures."""
+    from core.services.quote_costing import _half_up_decimal
+    d = _half_up_decimal(abs(float(v or 0)), dp)
+    txt = f'{d:,.{dp}f}'.replace(',', NBSP).replace('.', ',')
     return ('−' if float(v or 0) < 0 and txt.strip('0, ') else '') + txt
 
 
@@ -233,6 +238,12 @@ def round_price(price):
     p = float(price or 0)
     unit = 50 if p < 20000 else 100
     return int(math.ceil(p / unit - 1e-9) * unit)
+
+
+def _target_price(floor_total, target_pct, minimum=None):
+    """floor / (1 − target), or the minimum charge when that is higher."""
+    t = price_for_margin(floor_total, target_pct / 100.0)
+    return max(t, float(minimum)) if minimum else t
 
 
 def price_for_margin(floor, margin):
@@ -1357,7 +1368,7 @@ def _z_domain(obj, meta, market_ref, base_features):
 
 
 def model_likelihood(*, ctx, company, user, payload, origin, destination, vt_name, floor_total,
-                     probe_prices, customer_id, best_prices=None):
+                     probe_prices, customer_id, best_prices=None, min_price=None):
     """(model_block | None, reason, (predict, in_range) | None).
 
     Model level needs: a real trained model, a market reference (the
@@ -1394,7 +1405,9 @@ def model_likelihood(*, ctx, company, user, payload, origin, destination, vt_nam
     zd = _z_domain(obj, meta, market_ref, base)
     if zd is None:
         return None, 'This quote sits outside what the model has been trained on.', None
-    lo = max(max(bounds[0], 0.0) * market_ref, zd[0], floor_total)
+    # Never below the target price (floor / (1 - target), or the minimum
+    # charge): the curve and its "best" price are never shown under it.
+    lo = max(max(bounds[0], 0.0) * market_ref, zd[0], floor_total, min_price or 0.0)
     top = max([p for p in probe_prices if p] + [floor_total])
     hi = min(bounds[1] * market_ref, zd[1], top * 1.25)
     range_lo, range_hi = math.ceil(lo), math.floor(hi)
@@ -1636,7 +1649,8 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
                     ctx=ctx, company=company, user=user, payload=payload, origin=origin,
                     destination=destination, vt_name=vt_name, floor_total=floor_total,
                     probe_prices=[c['price'] for c in choices] + [your_price or 0],
-                    customer_id=getattr(customer, 'id', None), best_prices=[c['price'] for c in choices])
+                    customer_id=getattr(customer, 'id', None), best_prices=[c['price'] for c in choices],
+                    min_price=_target_price(floor_total, target, floor.get('minimum_charge')))
             except Exception as exc:
                 logger.warning('pricing analysis: model likelihood failed: %s', exc)
                 model_block, reason, predictor = None, 'The model could not score this quote.', None

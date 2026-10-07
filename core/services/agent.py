@@ -624,7 +624,8 @@ def _retrieved_block(company, query: str) -> str:
     )
 
 
-def _llm_generate(system: str, convo: list) -> str:
+def _llm_generate(system: str, convo: list, *, timeout: float = None, max_retries: int = None,
+                  max_tokens: int = 700) -> str:
     """Generate a reply from the selected provider. Caller handles exceptions.
 
     Both providers receive the same instructions + grounding: Anthropic takes the
@@ -633,19 +634,21 @@ def _llm_generate(system: str, convo: list) -> str:
     """
     provider = _provider()
     if provider == "anthropic":
-        client = anthropic.Anthropic(timeout=LLM_TIMEOUT_SECONDS, max_retries=LLM_MAX_RETRIES)
+        client = anthropic.Anthropic(timeout=timeout or LLM_TIMEOUT_SECONDS,
+                                     max_retries=LLM_MAX_RETRIES if max_retries is None else max_retries)
         response = client.messages.create(
             model=AGENT_MODEL,
-            max_tokens=700,
+            max_tokens=max_tokens,
             system=system,
             messages=convo,
         )
         return next((b.text for b in response.content if b.type == "text"), "").strip()
     if provider == "openai":
-        client = OpenAI(api_key=_openai_key(), timeout=LLM_TIMEOUT_SECONDS, max_retries=LLM_MAX_RETRIES)
+        client = OpenAI(api_key=_openai_key(), timeout=timeout or LLM_TIMEOUT_SECONDS,
+                        max_retries=LLM_MAX_RETRIES if max_retries is None else max_retries)
         response = client.chat.completions.create(
             model=OPENAI_CHAT_MODEL,
-            max_tokens=700,
+            max_tokens=max_tokens,
             temperature=0,  # grounding: quote the provided figures exactly, don't "helpfully" derive
             messages=[{"role": "system", "content": system}, *convo],
         )

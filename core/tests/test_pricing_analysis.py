@@ -648,8 +648,8 @@ class HonestyFixTests(_Base):
                                                                'origin': 'JHB', 'destination': 'DBN'},
                           format='json').json()
         self.assertFalse(r['available'])
-        self.assertEqual(r['level'], 'heuristic')
-        self.assertIn('win_probability', r)
+        self.assertIsNone(r['win_probability'])
+        self.assertIn(r['level'], ('bands', 'none'))      # never 'heuristic' for a null figure
 
     def test_optimizer_flags_pure_heuristic(self):
         from core.services.margin_optimizer import optimize_price
@@ -1018,7 +1018,8 @@ class Round3ModelTests(_ModelMixin, _Base):
         floor = r['cost_floor']['total']
         block, _r, (predict, in_range) = pa.model_likelihood(
             ctx=ctx, company=self.company, user=self.user, payload=p, origin=o, destination=d, vt_name=None,
-            floor_total=floor, probe_prices=[c['price'] for c in r['choices']] + [21000], customer_id=None)
+            floor_total=floor, probe_prices=[c['price'] for c in r['choices']] + [21000], customer_id=None,
+            min_price=r['cost_floor']['target_price'])      # the domain starts at the target price
         self.assertEqual(block['range'], [lo, hi])
         self.assertTrue(in_range(lo) and in_range(hi))
         self.assertFalse(in_range(lo - 1) or in_range(hi + 1))
@@ -2106,3 +2107,29 @@ class MissingDriverTests(_Base):
         with mock.patch.object(pa, 'build_cost_floor', side_effect=with_unknown_nights):
             r = self.analyze(include_return=False)
         self.assertIn('driver', r['missing'])
+
+
+class NumberRoundingParityTests(_Base):
+    def test_num_rounds_half_up_like_the_costing(self):
+        from core.services.quote_costing import fmt_num
+        for v, dp in ((33.15, 1), (2.5, 0), (1.005, 2), (12345.5, 0), (-2.5, 0)):
+            self.assertEqual(pa._num(v, dp).replace(' ', ' '), fmt_num(v, dp))
+        r = self.analyze(include_return=False)
+        fuel = next(ln for ln in r['cost_floor']['lines'] if ln['key'] == 'fuel')
+        cons = next(d['value'] for d in fuel.get('details', []) if d['label'] == 'Consumption')
+        burn = r['costing']['vehicle'] and next(ln for ln in r['costing']['lines'] if ln['key'] == 'fuel')
+        self.assertIn(fmt_num(burn['burn_l_per_100km'], 1), cons.replace(' ', ' '))
+
+
+class ModelCurveTargetTests(_ModelMixin, _Base):
+    def test_curve_and_best_never_below_target(self):
+        if not WIN_ML_AVAILABLE:
+            self.skipTest('sklearn not installed')
+        self.train_company_model(self.company, self.user, self.customer)
+        r = self.analyze(**self.model_payload(customer_id=self.customer.id))
+        model = r['likelihood']['model']
+        self.assertEqual(r['likelihood']['level'], 'model', r['likelihood'].get('reason'))
+        target = r['cost_floor']['target_price']
+        self.assertGreaterEqual(model['range'][0], target - 1)
+        self.assertTrue(all(pt['price'] >= target - 1 for pt in model['curve']))
+        self.assertGreaterEqual(model['best']['price'], target - 1)

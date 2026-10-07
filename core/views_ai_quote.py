@@ -1689,6 +1689,8 @@ class QuoteWinProbabilityView(APIView):
             'margin_pct': (r.get('your_price') or {}).get('margin_pct'),
             'blocking': r.get('blocking') or [],
             'available': model,
-            'level': 'model' if model else 'heuristic',
+            # Never 'heuristic': no heuristic figure is given. 'bands' when a
+            # band is shown, 'none' when there is nothing to go on.
+            'level': 'model' if model else ('bands' if (lk or {}).get('band') else 'none'),
             'model_scope': ((r.get('likelihood') or {}).get('model') or {}).get('scope') if model else None,
         })
