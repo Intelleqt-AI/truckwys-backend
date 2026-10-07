@@ -287,3 +287,43 @@ Copy the file into each client repo's test fixtures (keep identical).
   `cost_floor.needs` (fuel/tolls/border), the operating-cost overlap check (`operating_cost_overlap` warn,
   line `status: "check"`), superseded pricing decisions and the 200 won + 200 lost win-model bar. Our
   migrations are now 0149–0154 (after their 0148_quotepricingdecision_superseded_at).
+- **Final fix batch (7 Oct 2026).**
+  - Fuel: `FuelPrice` is unique per (date, source) (migration 0155): a MANUAL row never replaces a FIASA row
+    for the same date. `POST fuel-prices/current/` is staff only, prices R 5–R 100 (coastal required, petrol
+    optional), stored as MANUAL for today (SAST). No fallback/derived figures anywhere: no hard-coded table,
+    no coastal derived from inland, no zone-gap guess, no `FUEL_PRICE_ZAR`; the daily live scraper
+    (`fetch_fuel_price_daily`, `FUEL_PRICE_DAILY_SCRAPER_ENABLED`) is removed. Scraped rows outside R 10–R 80
+    or with inland < coastal are rejected; a label dated before the first Wednesday is moved to it. Vehicle/
+    driver economics skip their fuel figure when there is no price. Legacy `petrol_95/93` are null, not 0.
+  - Timestamps: every ISO timestamp the rules emit is SAST (`+02:00`), same instant as before.
+  - Settings: the official-echo check compares both zones (current and previous period); a zone change never
+    flips OWN → LIVE; legacy diesel writes are validated (R 5–R 100, else 400); electric 0 < v ≤ 20, hybrid
+    0 < v ≤ 100 (hybrid is stored but ignored for pricing: hybrid trucks price on petrol),
+    `default_base_rate_per_km` 0–1000, `minimum_charge` 0–5 000 000; `empty_return_min_km` 0 means 0.
+  - Costing: an unknown return driver line (nights null) blocks `driver_nights_unknown`; an international
+    trip with an empty return adds `border_return` ("Border fees, empty return") at the border cost.
+  - Market (§8): evidence is `was_sent == true` only (legacy unknown and never-sent rows are out). A quote
+    created as SENT records `was_sent` and gets the share token + email on commit (rolled-back creates never
+    email). `Quote.outcome` is read-only through the quote API (only the outcome flow sets it). Platform tier:
+    ≥ 10 quotes from ≥ 3 operators other than the requester, own company excluded, p25/median/p75 rounded to
+    R 500, no raw figures. Every tier uses `won_quote_q()` and ignores outcomes recorded after `as_of`.
+    Customer all-lanes acceptance covers the last 180 days (`window_days`).
+  - Round trips are compared like-for-like: market median halved for price sensitivity, customer one-way
+    prices ×2 for the bands.
+  - `/quotes/suggest/` and `/quotes/win-probability/` run the pricing analysis (old keys kept); a % only from
+    a real model, otherwise null + band. `/quotes/ai-price-analysis/` uses the analysis' market range as its
+    benchmark and `model_likelihood` for every combination (same market reference, training range / Z-limit
+    domain, 1,25× cap, floor bound, falling-curve check); `win_model.reason` adds `floor_incomplete`,
+    `model_curve_unusable`.
+  - Narrative check: number words, sign cues ("lose", "below", "-9%") and units (% vs %, R vs rand, km vs km,
+    litres vs litres) are checked; tolerance = rounding of the figure as written or 0,1 %.
+  - Copilot: quote proposals carry `price_warnings` (below_floor / below_target / floor_unknown /
+    check_failed) and `requires_acknowledgement`; a send with any of them executes only with
+    `acknowledge_price_warnings: true` (re-checked at execute; else 400 `needs_acknowledgement`, proposal stays
+    PENDING). Drafts are not blocked.
+  - Chat extraction never sends the customer list to the LLM (local matching after extraction); 20 s timeout,
+    no retries. `retrain_win_model --scope user` without `--user-id` exits non-zero. A new-customer
+    notification never goes to the user who added the customer.
+  - Golden: `official_effective_from` / `own_set_at` / reopen `priced_at` now `+02:00` (same instants); new
+    cases `return_driver_nights_unknown`, `international_empty_return_crosses_back`,
+    `international_round_trip_border`; no existing amount changed.
