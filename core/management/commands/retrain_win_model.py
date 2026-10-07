@@ -8,7 +8,7 @@ Usage:
     python manage.py retrain_win_model --scope user --user-id 7
 Safe to run from cron — no-ops (with a clear message) until enough outcomes exist.
 """
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 
 from core.services.quote_training import (
     retrain_company_win_models, retrain_win_model, retrain_win_model_for_scope, win_model_status,
@@ -46,8 +46,8 @@ class Command(BaseCommand):
             self._report('Win model', retrain_win_model())
         if scope == 'user':
             if not options.get('user_id'):
-                self.stderr.write('--scope user needs --user-id')
-                return
+                # Non-zero exit (CommandError), so a cron/CI misconfiguration fails loudly.
+                raise CommandError('--scope user needs --user-id')
             self._report(f"User {options['user_id']}",
                          retrain_win_model_for_scope('user', user_id=options['user_id']))
         if scope in ('company', 'all'):

@@ -439,10 +439,13 @@ def compute_lane_benchmark(origin, destination, vehicle_type=None,
         # strict '<' would wrongly exclude a genuinely-prior row. Safe either
         # way since the row this benchmark is FOR is excluded separately, by
         # id (exclude_quote_id below), not by this cutoff.
+        # Won = won_quote_q(), the SAME definition as the company tier and
+        # customer acceptance (status won, or an accepted outcome on a quote
+        # that left DRAFT), so the tiers never disagree about what was won.
         qs = Quote.objects.filter(
+            won_quote_q(),
             _lane_q('origin', origin),
             _lane_q('destination', destination),
-            status__in=WON_STATUSES,
             created_at__gte=since, created_at__lte=as_of,
         ).exclude(outcomes__created_at__gt=as_of)   # won only once the win was known at as_of
         if exclude_company_id:
@@ -700,10 +703,9 @@ def resolve_market_rate(origin, destination, vehicle_type=None, company=None,
             from django.db.models import Avg
             since = as_of - timedelta(days=COMPANY_FALLBACK_DAYS)
             base = Quote.objects.filter(
-                _lane_q('origin', o), _lane_q('destination', d),
-                status__in=WON_STATUSES, company=company,
+                won_quote_q(), _lane_q('origin', o), _lane_q('destination', d), company=company,
                 created_at__gte=since, created_at__lte=as_of,
-            )
+            ).exclude(outcomes__created_at__gt=as_of)
             if exclude_quote_id:
                 base = base.exclude(id=exclude_quote_id)
             if exclude_created_by_user_id:

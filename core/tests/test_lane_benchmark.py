@@ -307,6 +307,21 @@ class PlatformBenchmarkOutlierTests(TestCase):
 
 
 
+    def test_platform_tier_counts_a_recorded_win_like_the_company_tier(self):
+        # Platform consistency: an accepted outcome on a quote that left
+        # DRAFT is won in every tier (won_quote_q), not only status ACCEPTED.
+        from core.services.lane_benchmark import compute_lane_benchmark
+        for amt in (30000, 31000, 32000):
+            self._won(self.company_a, self.cust_a, self.user_a, amt)
+        self._won(self.company_b, self.cust_b, self.user_b, 33000)
+        make_quote(self.company_b, self.cust_b, number='PB-SENT-WON', total=34000, origin='CPT',
+                   destination='DBN', status='SENT', outcome='accepted', created_by=self.user_b)
+        self.assertEqual(compute_lane_benchmark('CPT', 'DBN')['sample_size'], 5)
+        # ...and a DRAFT with an accepted outcome never is.
+        make_quote(self.company_b, self.cust_b, number='PB-DRAFT', total=35000, origin='CPT',
+                   destination='DBN', status='DRAFT', outcome='accepted', created_by=self.user_b)
+        self.assertEqual(compute_lane_benchmark('CPT', 'DBN')['sample_size'], 5)
+
 class FuelNormalisationTests(TestCase):
     """QUOTE-RULES §8: totals moved to today's diesel before percentiles."""
 

@@ -2014,3 +2014,20 @@ class RoundTripLikeForLikeTests(_Base):
         th1, th2 = one['likelihood']['rules']['thresholds'], rt['likelihood']['rules']['thresholds']
         # Both scaled together: the round-trip edges sit at about twice the one-way ones.
         self.assertGreater(th2['likely_max'], 1.8 * th1['likely_max'])
+
+
+class FinalLowFixesTests(_Base):
+    def test_customer_all_lanes_acceptance_is_last_180_days(self):
+        from datetime import timedelta
+        old = make_quote(self.company, self.customer, number='AL-OLD', status='ACCEPTED', outcome='accepted',
+                         was_sent=True, origin='BFN', destination='PLK')
+        Quote.objects.filter(pk=old.pk).update(created_at=timezone.now() - timedelta(days=200))
+        make_quote(self.company, self.customer, number='AL-NEW', status='DECLINED', outcome='rejected',
+                   was_sent=True, origin='BFN', destination='PLK')
+        acc = self.analyze(customer_id=self.customer.id)['customer']['acceptance']
+        self.assertEqual((acc['won'], acc['decided'], acc['window_days']), (0, 1, 180))
+
+    def test_retrain_user_scope_without_id_exits_non_zero(self):
+        from django.core.management import CommandError, call_command
+        with self.assertRaises(CommandError):
+            call_command('retrain_win_model', '--scope', 'user')

@@ -1070,7 +1070,12 @@ def customer_evidence(customer, company, origin, destination, exclude_quote_id=N
         return {'won': won, 'decided': won + lost,
                 'rate_pct': pct_half_up(won, won + lost) if won + lost else None}
 
-    acceptance = {**counts(base), 'scope': 'all_lanes'}
+    # All lanes over the same 180-day window as the lane history (QUOTE-RULES
+    # §8): an old run of wins or losses doesn't speak for the customer today.
+    from datetime import timedelta as _td
+    from core.services.lane_benchmark import MARKET_WINDOW_DAYS as _WINDOW
+    acceptance = {**counts(base.filter(created_at__gte=timezone.now() - _td(days=_WINDOW))),
+                  'scope': 'all_lanes', 'window_days': _WINDOW}
     lane_acceptance = None
     recent = []
     price_sensitive = None
