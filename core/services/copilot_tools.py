@@ -334,8 +334,12 @@ def quote_price_check(company, payload, instance=None):
             continue
     sends = (payload or {}).get('status') == 'SENT' and getattr(instance, 'status', None) != 'SENT'
     warnings = []
+    blocked = False
     try:
         c = costing_for_quote(q, timezone.now())
+        # A blocking warning stops the send at the send guard anyway (with its
+        # own structured warnings), so it needs no acknowledgement here.
+        blocked = bool(c.get('blocking'))
         price = float(q.total_amount) if q.total_amount is not None else None
         floor = c.get('floor') if c.get('floor_known') else None
         target = c.get('target_price')
@@ -348,7 +352,7 @@ def quote_price_check(company, payload, instance=None):
                              'detail': f'{fmt_rand(price)} is {fmt_rand(target - price)} under your target '
                                        f'price of {fmt_rand(target)}.',
                              'impact_zar': round(price - target, 2)})
-        elif price is not None and floor is None:
+        elif price is not None and floor is None and not blocked:
             warnings.append({'code': 'floor_unknown', 'title': 'Costs are incomplete',
                              'detail': 'The cost floor is incomplete, so this price can\'t be checked against '
                                        'your costs.', 'impact_zar': None})
@@ -356,7 +360,8 @@ def quote_price_check(company, payload, instance=None):
         logger.warning('copilot: quote price check failed', exc_info=True)
         warnings.append({'code': 'check_failed', 'title': 'Couldn\'t check the price',
                          'detail': 'The price couldn\'t be checked against your costs.', 'impact_zar': None})
-    return {'warnings': warnings, 'sends': sends, 'requires_ack': bool(sends and warnings)}
+    return {'warnings': warnings, 'sends': sends, 'blocked': blocked,
+            'requires_ack': bool(sends and warnings and not blocked)}
 
 
 def _price_check_text(check):

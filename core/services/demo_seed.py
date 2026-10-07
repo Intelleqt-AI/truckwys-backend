@@ -392,12 +392,49 @@ def _month_key(d):
     return (d.year, d.month)
 
 
+_DEMO_DIESEL_BY_MONTH = {   # (year, month): inland R/L — fictional demo history only
+    (2024, 1): '21.7400',
+    (2024, 2): '21.4900',
+    (2024, 3): '22.1000',
+    (2024, 4): '22.6500',
+    (2024, 5): '22.4000',
+    (2024, 6): '22.3000',
+    (2024, 7): '21.5400',
+    (2024, 8): '21.3900',
+    (2024, 9): '20.4900',
+    (2024, 10): '20.3900',
+    (2024, 11): '20.5200',
+    (2024, 12): '20.2700',
+    (2025, 1): '20.4400',
+    (2025, 2): '20.6900',
+    (2025, 3): '21.1800',
+    (2025, 4): '21.4600',
+    (2025, 5): '21.0500',
+    (2025, 6): '20.6900',
+    (2025, 7): '20.2200',
+    (2025, 8): '20.2000',
+    (2025, 9): '20.8500',
+    (2025, 10): '21.3200',
+    (2025, 11): '21.9000',
+    (2025, 12): '22.4500',
+    (2026, 1): '23.1000',
+    (2026, 2): '23.5500',
+    (2026, 3): '23.8000',
+    (2026, 4): '24.1000',
+    (2026, 5): '24.3500',
+    (2026, 6): '24.2000',
+    (2026, 7): '24.5000',
+}
+
+
 def _diesel_by_month(first_day, last_day):
-    """Inland diesel R/litre per (year, month): the stored FuelPrice row when
-    there is one, else the fuel service's own monthly table, else the last
-    known month carried forward. Never writes FuelPrice (shared data)."""
+    """Inland diesel R/litre per (year, month) for the DEMO company's synthetic
+    history: the stored FuelPrice row when there is one, else the demo
+    module's own monthly reference (_DEMO_DIESEL_BY_MONTH), else the last
+    known month carried forward. These shape fictional demo history only and
+    never price a real quote (the fuel service has no fallback table).
+    Never writes FuelPrice (shared data)."""
     from core.models import FuelPrice
-    from core.services.fuel_price import _FALLBACK_PRICES
 
     stored = {}
     for fp in FuelPrice.objects.filter(date__gte=first_day.replace(day=1), date__lte=last_day):
@@ -406,14 +443,14 @@ def _diesel_by_month(first_day, last_day):
 
     prices = {}
     previous = None
-    earlier = [k for k in _FALLBACK_PRICES if k < _month_key(first_day)]
+    earlier = [k for k in _DEMO_DIESEL_BY_MONTH if k < _month_key(first_day)]
     if earlier:
-        previous = Decimal(_FALLBACK_PRICES[max(earlier)][0])
+        previous = Decimal(_DEMO_DIESEL_BY_MONTH[max(earlier)])
     y, m = first_day.year, first_day.month
     while (y, m) <= _month_key(last_day):
         price = stored.get((y, m))
-        if price is None and (y, m) in _FALLBACK_PRICES:
-            price = Decimal(_FALLBACK_PRICES[(y, m)][0])
+        if price is None and (y, m) in _DEMO_DIESEL_BY_MONTH:
+            price = Decimal(_DEMO_DIESEL_BY_MONTH[(y, m)])
         if price is None:
             price = previous or Decimal('23.50')
         prices[(y, m)] = price.quantize(Decimal('0.0001'))
@@ -922,6 +959,8 @@ class _HistoryBuilder:
         )
 
     def _new_quote(self, values, status, created, **extra):
+        # bulk_create skips the send signal: a non-draft demo quote was sent.
+        extra.setdefault('was_sent', status != 'DRAFT')
         quote = Quote(quote_number=f"{NUMBER_PREFIX}Q-{self._next('quote', 31800):05d}", status=status, **values, **extra)
         quote._normalise_lane_codes()
         self._stamp(quote, created)

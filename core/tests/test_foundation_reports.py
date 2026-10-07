@@ -277,6 +277,12 @@ class LaneMarginTests(_Base):
         cls.driver = Driver.objects.create(company=cls.co, user=du, license_number='REP-1',
                                            license_expiry=date.today() + timedelta(days=365),
                                            license_state='GP', hire_date=date.today() - timedelta(days=365))
+        # The modelled (estimate) cost prices fuel on the official diesel in
+        # force; there is no fallback figure, so the test stores one.
+        from core.models import FuelPrice
+        FuelPrice.objects.create(date=timezone.localdate() - timedelta(days=3), diesel_inland=D('24.50'),
+                                 diesel_coastal=D('23.70'), source='FIASA', diesel_grade='50ppm',
+                                 effective_from=timezone.now() - timedelta(days=3))
 
     def load(self, n, origin, dest, amount, distance='500'):
         return Load.objects.create(

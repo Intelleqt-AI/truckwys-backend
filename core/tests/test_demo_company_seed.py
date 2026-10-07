@@ -108,6 +108,12 @@ class DemoCompanySeedTests(TestCase):
         cls.other_notifications = Notification.objects.filter(user=cls.other_user).count()
         cls.other_events = ActivityEvent.objects.filter(company=cls.other).count()
 
+        # Production always has the official diesel in force; the lane
+        # report's modelled cost uses it (there is no fallback figure).
+        from core.models import FuelPrice
+        FuelPrice.objects.create(date=timezone.localdate() - timedelta(days=3), diesel_inland=Decimal('24.5000'),
+                                 diesel_coastal=Decimal('23.8800'), source='FIASA', diesel_grade='50ppm',
+                                 effective_from=timezone.now() - timedelta(days=3))
         with mock.patch.dict(os.environ, {demo_seed.DEMO_PASSWORD_ENV: 'local-only-test-pw'}):
             cls.summary = demo_seed.seed_demo_company()
         cls.company = cls.summary['company']

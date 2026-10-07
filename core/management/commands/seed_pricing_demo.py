@@ -639,6 +639,9 @@ class Command(BaseCommand):
             margin_percentage=Decimal('0'), confidence='MEDIUM',
             valid_until=created_at.date() + timedelta(days=valid_days),
             status=status, outcome=outcome, rejection_reason=rejection_reason,
+            # bulk_create skips the send signal: record that every non-draft
+            # demo quote was sent (market evidence = was_sent true).
+            was_sent=status != 'DRAFT',
             fuel_price_at_creation=diesel, notes='Fictional demo quote (seed_pricing_demo).',
             token=secrets.token_urlsafe(32),
         )

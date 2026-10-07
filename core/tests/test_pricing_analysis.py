@@ -307,7 +307,8 @@ class RulesWithMarketTests(_Base):
         self.assertEqual(r['your_price']['market_position'], 'within')
         # Customer evidence: their own lane quotes, newest first.
         self.assertEqual(len(r['customer']['recent_lane_quotes']), 3)
-        self.assertEqual(r['customer']['acceptance'], {'won': 3, 'decided': 3, 'rate_pct': 100, 'scope': 'all_lanes'})
+        self.assertEqual(r['customer']['acceptance'], {'won': 3, 'decided': 3, 'rate_pct': 100, 'scope': 'all_lanes',
+                                                       'window_days': 180})
         self.assertEqual(r['customer']['lane_acceptance']['scope'], 'this_lane')
         # Balanced (the median, rounded up) sits in the median's band.
         self.assertEqual(balanced['likelihood']['band'], 'likely')
