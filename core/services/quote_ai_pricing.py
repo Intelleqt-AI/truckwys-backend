@@ -550,7 +550,9 @@ def _fuel_item(official, payload):
     if abs(yours_rate - market_rate) <= FUEL_TOLERANCE * market_rate:
         return _item('accurate', yours_total, None, f'Your {_fmt_rand(yours_rate)}/L matches {published}.',
                      note, sources, detail, 'official', **provenance)
-    return _item('needs_adjustment', yours_total, _whole_rand(litres * market_rate),
+    from core.services.quote_costing import cents
+    # To the cent, as the cost floor's fuel line (compute()).
+    return _item('needs_adjustment', yours_total, cents(litres * market_rate),
                  f'Your {_fmt_rand(yours_rate)}/L vs {published}.', note, sources, detail, 'official', **provenance)
 
 
@@ -962,11 +964,16 @@ def _apply_floor(items, payload, floor, cross_border):
     base['detail']['floor_rate_per_km'] = rate
     # Whole rand rounded UP: the lifted price is never a cent under the target.
     base['ai_value_zar'] = float(math.ceil(rate * distance - 1e-9))
+    lift = (f'the base rate is lifted to {_fmt_rand(rate)}/km to reach your target price of '
+            f'{_fmt_rand(target)} over the full cost floor ({_fmt_rand(floor["floor"])}).')
     if base['verdict'] != 'needs_adjustment':
         base['verdict'] = 'needs_adjustment'
         base['toggleable'] = True
-        base['reason'] = (f'Your price is under your target margin over the full cost floor '
-                          f'({_fmt_rand(floor["floor"])}); the base rate is lifted to {_fmt_rand(rate)}/km.')
+        base['reason'] = f'Your price is under your target margin; {lift}'
+    else:
+        # The market figure alone would leave the price under target: the
+        # reason says what the suggested rate actually is.
+        base['reason'] = f'{base["reason"].rstrip(".")}; {lift}'
     base['floor_adjusted'] = True
 
 
@@ -999,7 +1006,14 @@ def compute_pricing(payload: dict, today: date = None, *, official_fuel: dict = 
     pass_through_market = fuel['ai_value_zar'] + toll_item['ai_value_zar'] + driver['ai_value_zar'] + cross_border
     base = _base_rate_item(benchmark, payload, pass_through_market)
     items = {'fuel': fuel, 'tolls': toll_item, 'driver_allowance': driver, 'base_rate': base}
-    _apply_floor(items, payload, floor, cross_border)
+    # The suggested fuel is the official price: combinations that take it are
+    # measured against the floor recomputed at that fuel (it differs from the
+    # quote's own / company OWN price), the others against the quote's floor.
+    floor_ai_fuel = floor
+    if fuel['toggleable'] and company is not None and floor is not None:
+        floor_ai_fuel = _cost_floor({**payload, 'use_official_fuel': True, 'fuel_price_override': None},
+                                    company) or floor
+    _apply_floor(items, payload, floor_ai_fuel, cross_border)
 
     verified = sum(1 for t in TOPICS if items[t]['verdict'] != 'could_not_verify')
     status, confidence = (('unverified', 'low') if verified == 0 else
@@ -1022,15 +1036,26 @@ def compute_pricing(payload: dict, today: date = None, *, official_fuel: dict = 
 
     combos = _combinations(items, payload)
     if (floor or {}).get('blocking'):
-        # Blocked (tolls unknown, diesel missing, ...): no suggested figures.
+        # Blocked (tolls unknown, diesel missing, ...): no suggested figures,
+        # and no market rate stated (the base rate isn't checked).
         for t in TOPICS:
             items[t]['ai_value_zar'] = None
             items[t]['toggleable'] = False
+        b = items['base_rate']
+        b['detail'].update({'benchmark_zar': None, 'benchmark_source': None, 'benchmark_label': None,
+                            'market_low_per_km': None, 'market_high_per_km': None, 'implied_rate_per_km': None,
+                            'ai_rate_per_km': b['detail'].get('your_rate_per_km')})
+        b['detail'].pop('floor_rate_per_km', None)
+        b.update({'verdict': 'could_not_verify', 'verification': 'not_verified', 'verification_kind': 'unverified',
+                  'reason': 'Not checked: the quote is missing information it needs first.',
+                  'verification_note': 'quote blocked', 'floor_adjusted': False})
     default_key = choice_key({t: 'ai' if items[t]['toggleable'] else 'mine' for t in TOPICS})
-    target_price = (floor or {}).get('target_price')
     blocking = list((floor or {}).get('blocking') or [])
-    floor_total = (floor or {}).get('floor')
     for combo in combos.values():
+        f = floor_ai_fuel if combo['choices'].get('fuel') == 'ai' and fuel['toggleable'] else floor
+        target_price = (f or {}).get('target_price')
+        floor_total = (f or {}).get('floor')
+        combo['floor_zar'] = floor_total
         # Margin = price − the full cost floor, % of the price (QUOTE-RULES §7);
         # not the base-rate line. Unknown floor -> no margin.
         if floor_total is not None and combo['price_zar']:
@@ -1038,7 +1063,7 @@ def compute_pricing(payload: dict, today: date = None, *, official_fuel: dict = 
             combo['margin_pct'] = round((combo['price_zar'] - floor_total) / combo['price_zar'] * 100.0, 1)
         elif floor is not None:
             combo['margin_zar'] = combo['margin_pct'] = None
-        combo['below_floor'] = bool(floor and floor.get('floor') is not None and combo['price_zar'] < floor['floor'])
+        combo['below_floor'] = bool(floor_total is not None and combo['price_zar'] < floor_total)
         combo['below_target'] = bool(target_price is not None and combo['price_zar'] < target_price - 0.5)
         combo['blocked'] = bool(blocking)
         if blocking:

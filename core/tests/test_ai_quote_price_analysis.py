@@ -248,7 +248,7 @@ class AnalyzeQuotePriceTests(TestCase):
         self.assertTrue(result['success'])
         items = result['cost_breakdown']
         self.assertEqual(items['fuel']['verdict'], 'needs_adjustment')
-        self.assertEqual(items['fuel']['ai_value_zar'], 13391.0)
+        self.assertEqual(items['fuel']['ai_value_zar'], 13390.6)        # to the cent, as compute()
         self.assertEqual(items['tolls']['verdict'], 'needs_adjustment')
         self.assertEqual(items['tolls']['ai_value_zar'], 1608.70)
         self.assertEqual(items['driver_allowance']['ai_value_zar'], 243.63)
@@ -454,11 +454,12 @@ class ComputePricingTests(SimpleTestCase):
             self.assertEqual(key, '|'.join(f'{t}={combo["choices"][t]}' for t in
                                            ('fuel', 'tolls', 'driver_allowance', 'base_rate')))
 
-    def test_fuel_and_base_round_to_whole_rand_like_the_quote_builder(self):
-        # 1398.6 km x R21.50 = 30,069.90 -> 30,070; 459.73 L x R29.11 = 13,382.74 -> 13,383
+    def test_base_rounds_to_whole_rand_and_fuel_to_the_cent(self):
+        # 1398.6 km x R21.50 = 30,069.90 -> 30,070 (the builder's base line);
+        # 459.73 L x R29.11 = 13,382.74 to the cent (the cost floor's fuel line).
         p = self._price(distance_km=1398.6, fuel_usage_litres=459.73)
         self.assertEqual(p['cost_breakdown']['base_rate']['current_value_zar'], 30070.0)
-        self.assertEqual(p['cost_breakdown']['fuel']['ai_value_zar'], 13383.0)
+        self.assertEqual(p['cost_breakdown']['fuel']['ai_value_zar'], 13382.74)
 
     # ---- tolls (stored SANRAL tariffs) ----
     def test_correct_excl_vat_toll_is_at_market(self):

@@ -1097,3 +1097,45 @@ class AnalyzeRoundingAndFormatTests(_Base):
         self.assertIn('R 26 000', text.replace(' ', ' '))
         self.assertIn('12,5%', text)
         self.assertNotRegex(text, r'R\d')
+
+
+class AiCheckFuelFloorTests(_Base):
+    PAYLOAD = {'origin': 'JHB', 'destination': 'DBN', 'distance_km': 568.4, 'duration_minutes': 440,
+               'weight': 28000, 'vehicle_type': 'Superlink', 'toll_cost': 1043.48, 'fuel_cost': 5968.20,
+               'fuel_usage_litres': 238.728, 'fuel_price_used': 25.0, 'driver_cost': 0, 'base_rate_per_km': 5,
+               'fuel_type': 'Diesel', 'fuel_zone': 'INLAND', 'include_empty_return': False}
+
+    def setUp(self):
+        super().setUp()
+        self.company.fuel_price_mode, self.company.fuel_price_own = 'OWN', Decimal('25.00')
+        self.company.save()
+
+    def test_official_fuel_combinations_use_a_floor_at_official_fuel(self):
+        from core.services.quote_ai_pricing import compute_pricing
+        out = compute_pricing(self.PAYLOAD, date(2026, 10, 7), company=self.company,
+                              benchmark={'rate': None, 'source': 'none'}, allowance=None)
+        self.assertTrue(out['cost_breakdown']['fuel']['toggleable'])
+        ai = [c for c in out['combinations'].values() if c['choices']['fuel'] == 'ai']
+        mine = [c for c in out['combinations'].values() if c['choices']['fuel'] == 'mine']
+        self.assertGreater(ai[0]['floor_zar'], mine[0]['floor_zar'])
+        for c in ai:
+            self.assertAlmostEqual(c['margin_zar'], round(c['price_zar'] - c['floor_zar'], 2), places=2)
+        # The suggested (default) combination holds the target at official fuel.
+        default = out['combinations'][out['default_choice_key']]
+        self.assertFalse(default['below_target'])
+        # The lifted base rate says so.
+        base = out['cost_breakdown']['base_rate']
+        self.assertTrue(base.get('floor_adjusted'))
+        self.assertIn(f"/km to reach your target price", base['reason'])
+        # Fuel to the cent.
+        fuel = out['cost_breakdown']['fuel']['ai_value_zar']
+        self.assertEqual(fuel, round(fuel, 2))
+
+    def test_blocked_check_states_no_market_rate(self):
+        from core.services.quote_ai_pricing import compute_pricing
+        out = compute_pricing({**self.PAYLOAD, 'tolls_unknown': True}, date(2026, 10, 7), company=self.company,
+                              benchmark={'rate': 36500.0, 'source': 'platform'}, allowance=None)
+        base = out['cost_breakdown']['base_rate']
+        self.assertIsNone(base['detail']['benchmark_zar'])
+        self.assertNotIn('36', base['reason'])
+        self.assertEqual(base['verdict'], 'could_not_verify')
