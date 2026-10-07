@@ -857,3 +857,52 @@ class SentEvidenceTests(_Base):
         b = make_quote(self.company, self.customer, number='SE-2', status='ACCEPTED', outcome='accepted')
         Quote.objects.filter(pk=b.pk).update(was_sent=True)
         self.assertEqual(list(Quote.objects.filter(sent_q()).values_list('quote_number', flat=True)), ['SE-2'])
+
+
+class NarrativeNumbersTests(TestCase):
+    """M3: number words, sign flips, unit-aware matching, 0,1% tolerance."""
+    S = {'quote_total': 36000.0, 'suggested_price': 38500.0, 'distance_km': 560.0,
+         'cost_analysis': {'margin_pct': 9.0, 'margin_vs_floor': -1200.0},
+         'market_analysis': {'your_vs_market_pct': -5.0},
+         'fuel_analysis': {'current_price': 32.8, 'fuel_usage_litres': 235.2},
+         'ai_prediction': {'win_probability': 0.45}}
+
+    def ok(self, text):
+        from core.services.quote_analysis import narrative_numbers_ok
+        return narrative_numbers_ok(text, self.S)
+
+    def test_existing_passes_still_hold(self):
+        self.assertTrue(self.ok('560 km at R 32,80/L, margin 9% on R36,000; suggest R38 500 over 2 nights.'))
+        self.assertTrue(self.ok('About R36k today.'))
+        self.assertFalse(self.ok('The market pays about R45,000 on this lane.'))
+        self.assertFalse(self.ok('Diesel at R 29,50 per litre.'))
+
+    def test_number_words(self):
+        self.assertTrue(self.ok('A margin of nine percent.'))
+        self.assertFalse(self.ok('A margin of twelve percent.'))
+        self.assertTrue(self.ok('Thirty-six thousand rand is the price.'))
+        self.assertFalse(self.ok('Forty-five thousand rand is typical.'))
+        self.assertTrue(self.ok('Over two nights.'))
+        self.assertTrue(self.ok('A forty-five percent chance to win.'))
+
+    def test_sign_flips(self):
+        self.assertTrue(self.ok('You lose R 1 200 against the floor.'))
+        self.assertTrue(self.ok('Your price is 5% below the market.'))
+        self.assertFalse(self.ok('Your price is 5% above the market.'))
+        self.assertFalse(self.ok('You make a negative margin of 9%.'))
+        self.assertFalse(self.ok('Margin -9%.'))
+        self.assertFalse(self.ok('You are R 1 200 above the floor.'))
+
+    def test_unit_aware(self):
+        self.assertFalse(self.ok('Margin of 560%.'))          # 560 is km, not a %
+        self.assertFalse(self.ok('A 9 km detour costs R 9.'))  # 9 km not ours; R9 not ours
+        self.assertFalse(self.ok('A 36000 km trip.'))
+        self.assertTrue(self.ok('235,2 litres of diesel.'))
+        self.assertFalse(self.ok('235,2 km.'))
+
+    def test_tolerance_is_point_one_percent_or_rounding(self):
+        self.assertTrue(self.ok('Suggest R38 530.'))            # within 0,1% of 38 500
+        self.assertFalse(self.ok('Suggest R38 600.'))           # 0,26% off
+        self.assertTrue(self.ok('Diesel R 32,8.'))
+        self.assertFalse(self.ok('Diesel R 32,9.'))
+        self.assertFalse(self.ok('About R37k.'))

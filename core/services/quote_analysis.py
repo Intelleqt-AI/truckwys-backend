@@ -10,6 +10,7 @@ LLM narrative uses the project's configured provider via core.services.agent
 summary.
 """
 import logging
+import re
 
 from django.utils import timezone
 
@@ -463,10 +464,20 @@ HEADLINE_PATHS = (
     ('ai_prediction', 'margin_pct'), ('ai_prediction', 'price_vs_market_pct'),
 )
 
-_NUMBER = r'(\d{1,3}(?:[ \u00a0]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)*)'
+_NUMBER = r'(\d{1,3}(?:[  ]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)*)'
+
+# Units of the headline figures: a stated % is only checked against our
+# percentages, a rand amount only against rand, km against km.
+_PCT_KEYS = {'margin_pct', 'margin_floor_pct', 'target_margin_pct', 'fuel_pct_of_total', 'optimal_margin_pct',
+             'your_vs_market_pct', 'price_vs_market_pct'}
+_PROB_KEYS = {'win_probability_at_optimal', 'win_probability'}
+_KM_KEYS = {'distance_km'}
+_LITRE_KEYS = {'fuel_usage_litres'}
 
 
 def _headline_numbers(structured):
+    """[(value, unit)] for every headline figure; unit is 'rand', 'pct',
+    'km' or 'litres' (probabilities as %)."""
     out = []
     for path in HEADLINE_PATHS:
         v = structured
@@ -474,9 +485,17 @@ def _headline_numbers(structured):
             v = v.get(key) if isinstance(v, dict) else None
         if isinstance(v, bool) or not isinstance(v, (int, float)):
             continue
-        out.append(float(v))
-        if 0 < abs(v) <= 1:                       # probabilities said as %
-            out.append(float(v) * 100)
+        key = path[-1]
+        if key in _PROB_KEYS:
+            out.append((float(v) * 100 if 0 < abs(v) <= 1 else float(v), 'pct'))
+        elif key in _PCT_KEYS:
+            out.append((float(v), 'pct'))
+        elif key in _KM_KEYS:
+            out.append((float(v), 'km'))
+        elif key in _LITRE_KEYS:
+            out.append((float(v), 'litres'))
+        else:
+            out.append((float(v), 'rand'))
     return out
 
 
@@ -484,7 +503,7 @@ def _parse_number(raw):
     """'1 050' / '36,000' / '32,80' / '12.5' -> float (SA style: comma
     decimals, space thousands; a comma before exactly three digits with
     nothing after is a thousands separator)."""
-    txt = raw.replace('\u00a0', ' ').replace(' ', '')
+    txt = raw.replace(' ', ' ').replace(' ', '')
     if ',' in txt and '.' in txt:
         txt = txt.replace(',', '')                 # 36,000.50
     elif ',' in txt:
@@ -493,33 +512,141 @@ def _parse_number(raw):
     return float(txt)
 
 
-def narrative_numbers_ok(text, structured):
-    """True when every figure the narrative states is one of the headline
-    figures (within rounding). Rand amounts, percentages (any size), km and
-    'k' thousands are checked; bare counts up to 10 (nights, sentences) are
-    allowed."""
-    import re
-    known = _headline_numbers(structured)
-    # Not IGNORECASE: 'R' is the rand sign, 'r' ends words ("over 2").
-    pattern = re.compile(r'(?<![A-Za-z])(R\s?)?' + _NUMBER + r'(\s?%|[kK](?![a-zA-Z])|\s?km\b)?')
-    for m in pattern.finditer(text or ''):
-        rand, raw, suffix = m.group(1), m.group(2), (m.group(3) or '').strip().lower()
+def _decimals(raw):
+    """Decimal places as written ('32,80' -> 2, '36,000' -> 0)."""
+    txt = raw.replace(' ', ' ').replace(' ', '')
+    if ',' in txt and '.' in txt:
+        return len(txt.rsplit('.', 1)[1])
+    for sep in (',', '.'):
+        if sep in txt:
+            tail = txt.rsplit(sep, 1)[1]
+            if sep == ',' and all(len(p) == 3 for p in txt.split(',')[1:]):
+                return 0
+            return len(tail)
+    return 0
+
+
+_UNITS_WORDS = {w: i for i, w in enumerate(
+    'zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen '
+    'sixteen seventeen eighteen nineteen'.split())}
+_TENS_WORDS = {w: 10 * (i + 2) for i, w in enumerate(
+    'twenty thirty forty fifty sixty seventy eighty ninety'.split())}
+_SCALE_WORDS = {'hundred': 100, 'thousand': 1000, 'million': 1_000_000}
+_WORD = '|'.join(sorted([*_UNITS_WORDS, *_TENS_WORDS, *_SCALE_WORDS], key=len, reverse=True))
+_WORDS_NUMBER = r'((?:' + _WORD + r')(?:(?:[\s-]+|\s+and\s+)(?:' + _WORD + r'))*)'
+
+
+def _words_value(phrase):
+    """'forty-five thousand' -> 45000; None when it isn't a number."""
+    total = current = 0
+    seen = False
+    for w in re.split(r'[\s-]+', phrase.lower()):
+        if w == 'and' or not w:
+            continue
+        if w in _UNITS_WORDS:
+            current += _UNITS_WORDS[w]
+        elif w in _TENS_WORDS:
+            current += _TENS_WORDS[w]
+        elif w == 'hundred':
+            current = (current or 1) * 100
+        elif w in _SCALE_WORDS:
+            total += (current or 1) * _SCALE_WORDS[w]
+            current = 0
+        else:
+            return None
+        seen = True
+    return float(total + current) if seen else None
+
+
+# Sign cues next to a figure: "lose R 1 200", "5% below the market".
+_NEG_BEFORE = re.compile(r'(?:\b(?:lose|losing|lost|loss of|minus|negative(?: margin)?(?: of)?|shortfall of|'
+                         r'down(?: by)?|deficit of|short by|under by|below by)\s*|[-−]\s?)$', re.I)
+_POS_BEFORE = re.compile(r'\b(?:gain of|profit of|plus|up by|ahead by|above by|over by)\s*$', re.I)
+_NEG_AFTER = re.compile(r'^\s*(?:below|under|less|lower|cheaper|short|loss|down|negative|in the red)\b', re.I)
+_POS_AFTER = re.compile(r'^\s*(?:above|over|more|higher|ahead|profit|up)\b', re.I)
+
+
+def _stated_sign(text, start, end):
+    before, after = text[max(0, start - 30):start], text[end:end + 30]
+    if _NEG_BEFORE.search(before) or _NEG_AFTER.match(after):
+        return -1
+    if _POS_BEFORE.search(before) or _POS_AFTER.match(after):
+        return 1
+    return 0
+
+
+_UNIT_SUFFIX = (r'(\s?%|\s*(?:per\s?cent|percent)\b|\s?[kK](?![a-zA-Z])|\s?km\b|\s*kilomet(?:re|er)s?\b|'
+                r'\s?(?:L|l|litres?|liters?)\b(?!/)|\s*rand\b)?')
+_DIGITS_RE = re.compile(r'(?<![A-Za-z\d])(R\s?|ZAR\s?)?' + _NUMBER + _UNIT_SUFFIX)
+_WORDS_RE = re.compile(r'(?<![A-Za-z])(R\s?)?\b' + _WORDS_NUMBER + r'\b' + _UNIT_SUFFIX, re.I)
+
+
+def _stated_figures(text):
+    """Every figure the text states: (value, unit or None, decimals, sign,
+    from_k). unit None = no unit written."""
+    out, spans = [], []
+    for m in _DIGITS_RE.finditer(text):
         try:
-            v = _parse_number(raw)
+            v = _parse_number(m.group(2))
         except ValueError:
             continue
-        if suffix == 'k':
-            v *= 1000
-        is_pct = suffix == '%'
-        if not rand and not is_pct and suffix not in ('k', 'km') and v <= 10:
+        out.append((m, v, _decimals(m.group(2))))
+        spans.append(m.span())
+    for m in _WORDS_RE.finditer(text):
+        if any(s <= m.start() < e for s, e in spans):
             continue
-        if is_pct:
-            tol = 0.6
-        elif suffix == 'k':
-            tol = max(500.0, v * 0.05)
+        v = _words_value(m.group(2))
+        if v is None:
+            continue
+        out.append((m, v, 0))
+    figures = []
+    for m, v, dec in out:
+        rand = bool(m.group(1))
+        suffix = re.sub(r'\s', '', (m.group(3) or '').lower())
+        from_k = suffix == 'k'
+        if from_k:
+            v *= 1000
+        if suffix == '%' or suffix.startswith('per'):       # %, percent, per cent
+            unit = 'pct'
+        elif suffix == 'km' or suffix.startswith('kilomet'):
+            unit = 'km'
+        elif suffix in ('l', 'litre', 'litres', 'liter', 'liters'):
+            unit = 'litres'
+        elif rand or from_k or suffix == 'rand':
+            unit = 'rand'
         else:
-            tol = max(1.0, v * 0.006)
-        if not any(abs(abs(k) - v) <= tol for k in known):
+            unit = None
+        figures.append((v, unit, dec, _stated_sign(text, m.start(), m.end()), from_k))
+    return figures
+
+
+def narrative_numbers_ok(text, structured):
+    """True when every figure the narrative states is one of the headline
+    figures. Unit-aware (a % only against our percentages, R only against
+    rand amounts, km against km, litres against litres; a figure with no unit
+    against any). Within rounding of the figure as written or 0,1%, whichever
+    is larger ('R36k' = nearest thousand). Number words ("nine percent",
+    "forty-five thousand rand") are checked like digits. A sign cue ("lose
+    R 1 200", "5% below the market", "-5%") must agree with the sign of the
+    figure it matches. Bare counts up to 10 (nights, sentences) are allowed."""
+    known = _headline_numbers(structured)
+    for v, unit, dec, sign, from_k in _stated_figures(text or ''):
+        if unit is None and v <= 10:
+            continue
+        tol = max(500.0 if from_k else 0.5 * 10 ** -dec, abs(v) * 0.001)
+
+        def matches(k):
+            kv, ku = k
+            if unit is not None and ku != unit:
+                return False
+            if abs(abs(kv) - v) > tol:
+                return False
+            if sign < 0 and kv > 0:
+                return False
+            if sign > 0 and kv < 0:
+                return False
+            return True
+        if not any(matches(k) for k in known):
             return False
     return True
 
