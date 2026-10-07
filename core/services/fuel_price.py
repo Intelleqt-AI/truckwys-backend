@@ -6,13 +6,15 @@ regulated diesel retail price), for Gauteng (inland) and Coast. Rows written
 from FIASA store the 50ppm grade as diesel_inland/diesel_coastal, keep the
 500ppm grade alongside, and record the effective date of the column used.
 
-Primary source: FIASA (Fuels Industry Association of South Africa) —
-confirmed live 2026-08; publishes the official DMRE-regulated monthly price.
-Further live attempts (AA SA, SAPIA, DMRE) are kept as fallbacks in the chain
-in case FIASA ever goes down too, though all three are currently dead on
-their own (moved page / 404 / unreachable). Final fallback: a hardcoded
-table of approximate prices seeded directly in this file — used only when no
-row exists yet for a month; it never replaces a live or MANUAL row.
+Source: FIASA (Fuels Industry Association of South Africa), the official
+DMRE-regulated monthly price, read as of a moment and stored under the
+column's effective date (first Wednesday 00:01 SAST). Ops can enter a MANUAL
+price (staff POST /api/v1/fuel-prices/current/) as a stopgap; FIASA's row
+for the same period supersedes it. There are NO fallback figures: no
+hard-coded table, no derived coastal price, no scraper estimates. When no
+official price is on record, quotes block (diesel_missing) and callers
+treat the fuel cost as unknown. Old FALLBACK / FALLBACK_LATEST rows in the
+database are never read for pricing.
 
 Alert: logs a WARNING when price changes >5% month-over-month.
 """
@@ -30,11 +32,8 @@ from django.core.cache import cache
 
 logger = logging.getLogger(__name__)
 
-# A stale-fallback record makes every call site (route calc, AI quoting, quote
-# save/analysis) retry the live scrapers. Without a gate that reruns on *every*
-# request while the current month is stuck on fallback — if the scrape targets
-# are slow/blocked that's up to ~30s added to each one. Cap auto-retries to once
-# per hour; an explicit force_update=True (the daily cron) always bypasses this.
+# Automatic re-reads of FIASA are capped at once per hour; an explicit
+# force_update=True (the daily cron) always bypasses this.
 _LIVE_RETRY_GATE_SECONDS = 3600
 
 def _to_decimal(value: str) -> Decimal:
@@ -455,8 +454,7 @@ def fetch_fuel_prices(
     *target_date* and store it under its effective date (no fallback figures).
 
     If a record already exists for that month and *force_update* is False,
-    the existing record is returned unchanged (fallback rows are retried at
-    most hourly).
+    the existing record is returned unchanged.
 
     Automated writes never downgrade a stored row (review F2/F7):
       * a MANUAL row is returned untouched — no scrape happens;
@@ -583,8 +581,9 @@ def official_row_in_force(at: Optional[datetime] = None, *, strict_grade: bool =
                           column: Optional[str] = None):
     """The official FuelPrice row in force at `at` (default now), or None.
 
-    Newest effective_from wins; a FIASA row with a newer effective_from
-    supersedes an older MANUAL row; on the same effective moment MANUAL wins.
+    The newest price period wins (first-Wednesday periods). Within one
+    period a FIASA row supersedes a MANUAL row (a manual price is a stopgap
+    until FIASA publishes); otherwise the newest effective_from wins.
     strict_grade: FIASA rows only when they hold the 50ppm grade (pricing).
     History lookups (market normalisation) pass False to also accept older
     FIASA rows whose grade was not recorded.
@@ -601,6 +600,9 @@ def official_row_in_force(at: Optional[datetime] = None, *, strict_grade: bool =
     qs = qs.filter(date__gte=local_day - timedelta(days=400))
     if column is not None and column.startswith('petrol'):
         qs = qs.filter(**{f'{column}__isnull': False})
+        # A legacy FIASA row with neither a grade nor an effective date can't
+        # be placed in time (the old monthly key): never priced from.
+        qs = qs.exclude(Q(source='FIASA') & Q(diesel_grade__isnull=True) & Q(effective_from__isnull=True))
         if not strict_grade:
             # History: only rows that say when they took effect (as diesel).
             qs = qs.exclude(effective_from__isnull=True)
@@ -615,7 +617,7 @@ def official_row_in_force(at: Optional[datetime] = None, *, strict_grade: bool =
         eff = row_effective_from(row)
         if eff > at:
             continue
-        key = (eff, 1 if row.source == 'MANUAL' else 0, row.fetched_at or row.updated_at)
+        key = (period_start(eff), 1 if row.source == 'FIASA' else 0, eff, row.fetched_at or row.updated_at)
         if best is None or key > best[0]:
             best = (key, row)
     return best[1] if best else None
@@ -672,7 +674,7 @@ def refresh_official(*, force: bool = False, now: Optional[datetime] = None):
     now = now or django_timezone.now()
     row = official_row_in_force(now)
     if row is not None and row_effective_from(row) >= period_start(now) and not force \
-            and not _missing_petrol(row):
+            and not _missing_petrol(row) and not _manual_awaiting_fiasa(row):
         return row
     data = _fetch_from_fiasa(as_of=now)
     if data is not None:
@@ -680,7 +682,14 @@ def refresh_official(*, force: bool = False, now: Optional[datetime] = None):
             _store_official(data, now)
         except Exception as exc:
             logger.warning('Storing the FIASA price failed: %s', exc)
-        return official_row_in_force(now)
+        current = official_row_in_force(now)
+        # A successful check: no row in force carries an old failure stamp.
+        from core.models.fuel_price import FuelPrice
+        ids = {r.pk for r in (row, current) if r is not None}
+        FuelPrice.objects.filter(pk__in=ids, fetch_failed_at__isnull=False).update(fetch_failed_at=None)
+        if current is not None and current.pk in ids:
+            current.fetch_failed_at = None
+        return current
     if row is not None:
         row.fetch_failed_at = now
         row.save(update_fields=['fetch_failed_at', 'updated_at'])
@@ -689,6 +698,14 @@ def refresh_official(*, force: bool = False, now: Optional[datetime] = None):
     else:
         logger.warning('Official fuel price refresh failed and no official price is on record')
     return row
+
+
+def _manual_awaiting_fiasa(row) -> bool:
+    """A MANUAL row in force is a stopgap: look for FIASA's price for the
+    period (at most once an hour) so it supersedes the manual one."""
+    if row.source != 'MANUAL':
+        return False
+    return bool(cache.add(f'fuel_price_manual_recheck:{row.pk}', True, 3600))
 
 
 def _missing_petrol(row) -> bool:

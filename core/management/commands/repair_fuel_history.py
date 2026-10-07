@@ -11,6 +11,8 @@
   reported and left alone.
 * Rows with no effective_from, and FIASA rows with no recorded grade, are
   listed: they are not used for pricing history (price in force on a date).
+  A FIASA row with NEITHER (the old monthly key) is relabelled source
+  'FIASA_UNDATED' with --apply, so nothing can price from it.
 * FALLBACK / FALLBACK_LATEST rows are listed; they are never used.
 Nothing else is changed.
 """
@@ -28,12 +30,19 @@ class Command(BaseCommand):
     def handle(self, *args, **opts):
         from core.models import FuelPrice
         apply = opts['apply']
-        moved = removed = conflicts = 0
+        moved = removed = conflicts = neutralised = 0
         for row in FuelPrice.objects.order_by('date'):
             if row.source in ('FALLBACK', 'FALLBACK_LATEST'):
                 self.stdout.write(f'  {row.date}  {row.source}: fallback row, never used for pricing')
                 continue
             if row.effective_from is None:
+                if row.source == 'FIASA' and not row.diesel_grade:
+                    self.stdout.write(f'  {row.date}  FIASA without a grade or effective date: relabel '
+                                      'FIASA_UNDATED (never priced from)')
+                    neutralised += 1
+                    if apply:
+                        FuelPrice.objects.filter(pk=row.pk).update(source='FIASA_UNDATED')
+                    continue
                 self.stdout.write(f'  {row.date}  {row.source}: no effective date — left out of price history')
                 continue
             if row.source == 'FIASA' and row.diesel_grade != '50ppm':
@@ -59,4 +68,5 @@ class Command(BaseCommand):
                     f'holds {other.source} R{other.diesel_inland} — left alone, check by hand'))
                 conflicts += 1
         verb = 'Done' if apply else 'Dry run (use --apply to change)'
-        self.stdout.write(f'{verb}: {moved} re-keyed, {removed} duplicates removed, {conflicts} conflicts.')
+        self.stdout.write(f'{verb}: {moved} re-keyed, {removed} duplicates removed, {neutralised} undated FIASA '
+                          f'rows relabelled, {conflicts} conflicts.')

@@ -285,10 +285,17 @@ class FinalFuelFixTests(TestCase):
         self.assertEqual((manual.date, manual.diesel_coastal, manual.petrol_95),
                          (date(2026, 10, 7), Decimal('32.2000'), Decimal('27.5000')))
         with at(sast(2026, 10, 7, 10)):
-            self.assertEqual(fps.price_in_force('INLAND')['source'], 'MANUAL')      # newer effective time
+            # Same period: FIASA's published price supersedes the manual stopgap.
+            self.assertEqual(fps.price_in_force('INLAND')['source'], 'FIASA')
+        # A manual price for a period FIASA hasn't published yet is used...
+        with at(sast(2026, 11, 4, 9)):
+            self.post(diesel_inland='31.40', diesel_coastal='30.50')
+        with at(sast(2026, 11, 4, 10)):
+            self.assertEqual(fps.price_in_force('INLAND')['source'], 'MANUAL')
+        # ...until FIASA's row for that period exists.
         row(date(2026, 11, 4), 31.0, 30.1, eff=sast(2026, 11, 4, 0, 1))
         with at(sast(2026, 11, 5)):
-            self.assertEqual(fps.price_in_force('INLAND')['source'], 'FIASA')       # a later FIASA supersedes
+            self.assertEqual(fps.price_in_force('INLAND')['source'], 'FIASA')
 
     def test_manual_post_validation(self):
         for data in ({'diesel_inland': 'abc', 'diesel_coastal': '30'}, {'diesel_inland': 'NaN', 'diesel_coastal': '30'},
@@ -326,3 +333,52 @@ class FinalFuelFixTests(TestCase):
     def test_api_timestamps_are_sast(self):
         from core.services.quote_costing import iso
         self.assertEqual(iso('2026-10-06T22:01:00Z'), '2026-10-07T00:01:00+02:00')
+
+
+
+class Round3FuelTests(TestCase):
+    def setUp(self):
+        cache.clear()
+
+    def test_fetch_command_success_path(self):
+        from io import StringIO
+        from django.core.management import call_command
+        out = StringIO()
+        with serve(), at(sast(2026, 9, 28, 10)):
+            call_command('fetch_fuel_prices', stdout=out)
+        self.assertIn('Official price in force: FIASA', out.getvalue())
+        self.assertIn('SAST', out.getvalue())
+
+    def test_successful_store_clears_the_failure_stamp(self):
+        old = row(date(2026, 9, 2), 29.5551, 28.6831, eff=sast(2026, 9, 2, 0, 1), fetch_failed_at=sast(2026, 9, 27))
+        with serve(), at(sast(2026, 9, 28, 10)):
+            rec = fps.refresh_official(force=True)
+        old.refresh_from_db()
+        self.assertIsNone(old.fetch_failed_at)
+        self.assertIsNone(rec.fetch_failed_at)
+
+    def test_manual_in_force_rechecks_fiasa_without_force(self):
+        row(date(2026, 9, 3), 30.0, 29.1, source='MANUAL', eff=sast(2026, 9, 3, 8))
+        with serve(), at(sast(2026, 9, 28, 10)):
+            rec = fps.refresh_official()
+        self.assertEqual(rec.source, 'FIASA')
+
+    def test_undated_gradeless_fiasa_never_prices_petrol_and_repair_relabels_it(self):
+        from io import StringIO
+        from django.core.management import call_command
+        legacy = FuelPrice.objects.create(date=date(2026, 10, 1), diesel_inland=Decimal('24.5'),
+                                          diesel_coastal=Decimal('23.9'), petrol_95=Decimal('22.0'),
+                                          source='FIASA', diesel_grade=None, effective_from=None)
+        self.assertIsNone(fps.price_in_force('INLAND', sast(2026, 10, 8), product='petrol_95'))
+        self.assertIsNone(fps.price_in_force('INLAND', sast(2026, 10, 8)))
+        out = StringIO()
+        call_command('repair_fuel_history', '--apply', stdout=out)
+        legacy.refresh_from_db()
+        self.assertEqual(legacy.source, 'FIASA_UNDATED')
+        self.assertIn('1 undated FIASA rows relabelled', out.getvalue())
+
+    def test_seed_test_data_fuel_rows_coexist_with_official(self):
+        from core.management.commands.seed_test_data import Command
+        row(date.today(), 30.0, 29.0, eff=None)
+        Command()._fuel_prices(2)
+        self.assertEqual(FuelPrice.objects.filter(date=date.today()).count(), 2)

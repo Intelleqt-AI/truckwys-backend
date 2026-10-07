@@ -81,7 +81,9 @@ class PetrolInForceTests(TestCase):
         self.assertIsNone(fps.price_in_force('COASTAL', at_, product='petrol_93'))
 
     def test_diesel_only_manual_row_does_not_hide_petrol(self):
-        petrol_row(date(2026, 10, 7), sast(2026, 10, 7, 0, 1), p95=30.25, p95c=29.38)
+        # FIASA (September) is the latest published; ops entered October's
+        # diesel by hand before FIASA published it.
+        petrol_row(date(2026, 9, 2), sast(2026, 9, 2, 0, 1), p95=30.25, p95c=29.38)
         row(date(2026, 10, 8), 33.0, 32.1, source='MANUAL', eff=sast(2026, 10, 8, 8))
         rec = fps.price_in_force('INLAND', sast(2026, 10, 8, 9), product='petrol_95')
         self.assertEqual((rec['price'], rec['source']), (30.25, 'FIASA'))

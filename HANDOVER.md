@@ -88,9 +88,9 @@ All in `core/services/`. Surfaced on the **New Quote** screen.
 | Margin model | `quote_ml.QuoteMLModel` (LightGBM) | Predicts optimal margin % from 22 features. **Needs lightgbm+pandas installed** (see §7). |
 | Win-probability | `quote_ml.WinProbabilityModel` (logistic, sklearn) | P(quote accepted) vs price/tier/urgency/history. Runs on sklearn — **learns from real outcomes** (see flywheel). |
 | Price optimiser | `margin_optimizer.optimize_price` | Sweeps price, returns the price that maximises **expected profit = (price − cost) × P(win)** + the full curve. |
-| Market benchmark | `lane_benchmark.compute_lane_benchmark` | Anonymised cross-fleet lane rate (k-anonymity), with own-data + SA-market fallbacks. |
+| Market benchmark | `lane_benchmark.resolve_market_range` | Platform range only from >= 10 accepted quotes by >= 3 other operators (own company excluded, R500 rounding), else the company's own accepted quotes (>= 5); no hard-coded SA estimates. |
 | Revenue guard | `views_ai_quote.RevenueGuardView` | SAFE / CAUTION / AT-RISK margin badge + suggestions (surcharge, deposit, CPK). |
-| Fuel alert | `views_ai_quote.QuoteFuelAlertView` | Flags margin erosion if diesel moved >3% since the quote. |
+| Fuel alert | `views_ai_quote.QuoteFuelAlertView` | Flags margin erosion if the quote's fuel (diesel or petrol, its own zone) moved >3% since it was priced. |
 
 **The key idea**: the quote screen shows the **profit sweet-spot curve** (expected profit
 vs win-rate across margin) so the operator prices for *maximum money*, not max margin or
@@ -167,7 +167,7 @@ these unlock real functionality. Set in the backend `.env` (see `.env.example`).
 **Cron jobs to schedule** (none run on a timer yet — there is no Celery beat):
 ```
 # daily ~07:00 SAST
-python manage.py fetch_fuel_prices --force  # current diesel price; only needed if Celery beat is NOT running (beat runs refresh_fuel_price daily 06:00). fetch_fuel_price_daily is legacy and disabled — see docs/backend-changes/2026-09-fuel-pipeline.md
+python manage.py fetch_fuel_prices --force  # current diesel price; only needed if Celery beat is NOT running (beat runs refresh_fuel_price daily 06:00). the old daily scraper (fetch_fuel_price_daily) is removed; no fallback prices exist — with no official price quotes block, and staff can POST a MANUAL stopgap (docs/QUOTE_RULES_DEPLOY.md)
 python manage.py run_dunning                # send due payment reminders (throttled, escalating)
 # daily or weekly
 python manage.py retrain_win_model          # retrain win-prob model from new QuoteOutcome data

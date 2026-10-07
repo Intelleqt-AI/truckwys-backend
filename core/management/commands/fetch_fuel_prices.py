@@ -14,6 +14,7 @@ Usage examples:
 from datetime import date, timedelta
 
 from django.core.management.base import BaseCommand, CommandError
+from django.utils import timezone
 
 
 class Command(BaseCommand):
@@ -53,7 +54,7 @@ class Command(BaseCommand):
             # its figures are not used for pricing (QUOTE-RULES §1).
             self.stdout.write('Backfilling official fuel prices from FIASA…')
             stored = missing = 0
-            today = date.today()
+            today = timezone.localdate()
             months = [date(y, m, 1) for y in range(2024, today.year + 1) for m in range(1, 13)
                       if date(y, m, 1) <= today]
             for target in months:
@@ -101,7 +102,6 @@ class Command(BaseCommand):
     def _store_month(self, target):
         """FIASA's column in force at the end of `target`'s month, stored
         under its EFFECTIVE date like refresh_official (never the 1st)."""
-        from django.utils import timezone
         from core.services.fuel_price import _fetch_live, _store_official, row_effective_from
         data = _fetch_live(target)
         if not data or not data.get('effective_from') or data.get('source') != 'FIASA':

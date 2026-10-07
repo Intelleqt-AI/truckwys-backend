@@ -435,14 +435,16 @@ class Command(BaseCommand):
     def _fuel_prices(self, n):
         for i in range(n):
             d = date.today() - timedelta(days=i)
+            # One row per (date, source): key on both, so an official row on
+            # the same date never makes this fail (or get reused as demo data).
             FuelPrice.objects.get_or_create(
-                date=d,
+                date=d, source='DEMO',
                 defaults={
                     'diesel_inland': Decimal(str(round(random.uniform(22.0, 25.0), 4))),
                     'diesel_coastal': Decimal(str(round(random.uniform(21.5, 24.5), 4))),
                     'petrol_95': Decimal(str(round(random.uniform(23.0, 26.0), 4))),
                     'petrol_93': Decimal(str(round(random.uniform(22.5, 25.5), 4))),
-                    'source': 'DEMO', 'is_stale': i > 7})
+                    'is_stale': i > 7})
 
     def _report(self, company, user):
         rows = [
