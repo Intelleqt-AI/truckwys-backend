@@ -73,3 +73,38 @@ class FuzzyMatchRegressionTests(SimpleTestCase):
             _fuzzy_match('the client is existing one, name arifuzzaman swapnil',
                          ['Arifuzzaman Swapnil']),
             'Arifuzzaman Swapnil')
+
+
+class CustomerListPrivacyTests(SimpleTestCase):
+    """M6: the customer list never goes to the LLM; names are matched locally
+    after extraction; the call has an explicit <= 20 s timeout, no retries."""
+
+    def test_anthropic_call_has_no_customer_names_and_a_timeout(self):
+        import json
+        from unittest import mock
+        from core.services import llm_quote
+        seen = {}
+
+        class Block:
+            type = 'text'
+            text = json.dumps({'customer_name': 'kestrel', 'pickup_location': 'Johannesburg', 'reply': 'ok'})
+
+        class Messages:
+            def create(self, **kw):
+                seen['create'] = kw
+                return type('R', (), {'content': [Block()]})()
+
+        def factory(**kw):
+            seen['client'] = kw
+            return type('C', (), {'messages': Messages()})()
+        customers = [{'id': 7, 'name': 'Kestrel Mills'}, {'id': 8, 'name': 'Umgeni Packaging'}]
+        with mock.patch.object(llm_quote, '_provider', return_value='anthropic'), \
+                mock.patch.object(llm_quote, 'anthropic', create=True) as sdk:
+            sdk.Anthropic.side_effect = factory
+            extracted, _reply, _un = llm_quote.extract('quote for kestrel from JHB', customers=customers)
+        self.assertLessEqual(seen['client']['timeout'], 20)
+        self.assertEqual(seen['client']['max_retries'], 0)
+        sent = json.dumps(seen['create'], default=str)
+        self.assertNotIn('Kestrel Mills', sent)
+        self.assertNotIn('Umgeni', sent)
+        self.assertEqual((extracted.get('customer_id'), extracted.get('customer_name')), (7, 'Kestrel Mills'))
