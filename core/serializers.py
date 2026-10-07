@@ -1403,10 +1403,11 @@ BANK_FIELDS = (
 def _is_live_echo(value, zone='INLAND'):
     """True when an old client's fuel_price_per_litre WRITE is not a price the
     fleet chose: empty, the 23.50 factory default, or within half a cent of
-    the official price for the company's zone that a client could have been
-    shown recently — the one in force now or the one in force before it
-    (previous period). Any other value (e.g. an old 500ppm figure) is OWN.
-    Migration 0150 uses the wider historic rule for the one-off backfill."""
+    an official 50ppm diesel price a client could have been shown recently —
+    either zone (a zone change in the same save shows the other zone), in
+    force now or in the previous period. Any other value (e.g. an old 500ppm
+    figure) is OWN. Migration 0150 uses the wider historic rule for the
+    one-off backfill. `zone` is kept for callers; both zones are checked."""
     if value is None:
         return True
     value = Decimal(str(value))
@@ -1418,13 +1419,12 @@ def _is_live_echo(value, zone='INLAND'):
     rows = [current]
     if current is not None:
         rows.append(official_row_in_force(row_effective_from(current) - timedelta(microseconds=1)))
-    coastal = str(zone or '').upper() == 'COASTAL'
     for row in rows:
         if row is None:
             continue
-        price = row.diesel_coastal if coastal else row.diesel_inland
-        if price is not None and abs(value - price) <= Decimal('0.005'):
-            return True
+        for price in (row.diesel_inland, row.diesel_coastal):
+            if price is not None and abs(value - price) <= Decimal('0.005'):
+                return True
     return False
 
 
@@ -1540,9 +1540,27 @@ class CompanySerializer(serializers.ModelSerializer):
         return value
 
     def validate_minimum_charge(self, value):
-        if value is not None and value < 0:
-            raise serializers.ValidationError('Enter a minimum charge of R0 or more, or leave it blank.')
+        if value is not None and not (Decimal('0') <= value <= Decimal('5000000')):
+            raise serializers.ValidationError('Enter a minimum charge between R0 and R5 000 000, or leave it blank.')
         return value or None
+
+    def validate_fuel_price_electric(self, value):
+        if value is not None and not (Decimal('0') < value <= Decimal('20')):
+            raise serializers.ValidationError('Enter an electricity price above R0 and up to R20 per kWh, or leave it '
+                                              'blank.')
+        return value
+
+    def validate_fuel_price_hybrid(self, value):
+        # Hybrid trucks price on the PETROL setting; this old field is only
+        # stored for old screens (QUOTE_RULES_DEPLOY.md).
+        if value is not None and not (Decimal('0') < value <= Decimal('100')):
+            raise serializers.ValidationError('Enter a price above R0 and up to R100 per litre, or leave it blank.')
+        return value
+
+    def validate_default_base_rate_per_km(self, value):
+        if value is not None and not (Decimal('0') <= value <= Decimal('1000')):
+            raise serializers.ValidationError('Enter a default price per km between R0 and R1 000, or leave it blank.')
+        return value
 
     def validate_empty_return_min_km(self, value):
         if value is not None and not (Decimal('0') <= value <= Decimal('5000')):
@@ -1567,13 +1585,21 @@ class CompanySerializer(serializers.ModelSerializer):
                 mode = 'LIVE'
             attrs['fuel_price_mode'] = mode
         elif legacy is not serializers.empty:
+            if legacy is not None and not (Decimal('5') <= Decimal(str(legacy)) <= Decimal('100')):
+                raise serializers.ValidationError(
+                    {'fuel_price_per_litre': 'Enter a diesel price between R5 and R100 per litre, or leave it blank.'})
             current_own = getattr(instance, 'fuel_price_own', None)
             unchanged = (legacy is not None and current_own is not None
                          and abs(Decimal(str(legacy)) - current_own) <= Decimal('0.00001'))
+            zone_change = ('fuel_zone' in attrs and instance is not None
+                           and attrs['fuel_zone'] != getattr(instance, 'fuel_zone', None))
+            echo = _is_live_echo(legacy)
             if unchanged:
                 pass   # the old client echoed the own price back: nothing changed
-            elif _is_live_echo(legacy, attrs.get('fuel_zone') or getattr(instance, 'fuel_zone', 'INLAND')):
-                attrs['fuel_price_mode'] = 'LIVE'   # live price / factory default echoed back
+            elif echo and zone_change:
+                pass   # the official price echoed with a zone change: never flips OWN -> LIVE
+            elif echo:
+                attrs['fuel_price_mode'] = 'LIVE'   # live price / factory default echoed back (own kept)
             else:
                 attrs['fuel_price_mode'] = 'OWN'
                 attrs['fuel_price_own'] = legacy

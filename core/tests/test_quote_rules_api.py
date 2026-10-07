@@ -91,12 +91,10 @@ class CompanyDieselModeTests(_Base):
             body = self.api.patch(self.URL, {'fuel_price_per_litre': value}, format='json').json()
             self.assertEqual(body['fuel_price_mode'], 'LIVE', value)
 
-    def test_old_500ppm_or_other_zone_figure_is_own(self):
+    def test_old_500ppm_figure_is_own(self):
         body = self.api.patch(self.URL, {'fuel_price_per_litre': '29.1111'}, format='json').json()
         self.assertEqual((body['fuel_price_mode'], body['fuel_price_own']), ('OWN', '29.1111'))
-        self.api.patch(self.URL, {'fuel_price_own': None}, format='json')
-        body = self.api.patch(self.URL, {'fuel_price_per_litre': '31.9269'}, format='json').json()   # coastal
-        self.assertEqual(body['fuel_price_mode'], 'OWN')
+        # (the other zone's official 50ppm price is a live echo: FinalSettingsTests)
 
     def test_old_client_typed_price_becomes_own(self):
         body = self.api.patch(self.URL, {'fuel_price_per_litre': '30.40'}, format='json').json()
@@ -714,3 +712,42 @@ class PetrolOwnFieldTests(_Base):
         self.assertIsNone(body['fuel_price_petrol'])
         body = self.api.patch('/api/v1/company/profile/', {'fuel_price_petrol': '28.90'}, format='json').json()
         self.assertEqual(body['fuel_price_petrol'], '28.9000')
+
+
+class FinalSettingsTests(_Base):
+    URL = '/api/v1/company/profile/'
+
+    def test_echo_of_either_zone_with_zone_change_never_flips_own(self):
+        self.api.patch(self.URL, {'fuel_price_own': '30.00'}, format='json')
+        body = self.api.patch(self.URL, {'fuel_zone': 'COASTAL', 'fuel_price_per_litre': '32.7989'},
+                              format='json').json()
+        self.assertEqual((body['fuel_price_mode'], body['fuel_price_own']), ('OWN', '30.0000'))
+        # the coastal official price (other zone) echoed back is a live echo too
+        self.company.refresh_from_db()
+        self.company.fuel_price_mode, self.company.fuel_zone = 'LIVE', 'INLAND'
+        self.company.save()
+        body = self.api.patch(self.URL, {'fuel_price_per_litre': '31.9269'}, format='json').json()
+        self.assertEqual(body['fuel_price_mode'], 'LIVE')
+
+    def test_legacy_diesel_write_validated(self):
+        r = self.api.patch(self.URL, {'fuel_price_per_litre': '3.10'}, format='json')
+        self.assertEqual(r.status_code, 400)
+
+    def test_live_mode_keeps_the_own_price(self):
+        self.api.patch(self.URL, {'fuel_price_own': '30.00'}, format='json')
+        body = self.api.patch(self.URL, {'fuel_price_mode': 'LIVE'}, format='json').json()
+        self.assertEqual((body['fuel_price_mode'], body['fuel_price_own']), ('LIVE', '30.0000'))
+
+    def test_other_bounds(self):
+        for field, value in (('fuel_price_electric', '0'), ('fuel_price_electric', '50'),
+                             ('fuel_price_hybrid', '-1'), ('default_base_rate_per_km', '-5'),
+                             ('minimum_charge', '9000000')):
+            r = self.api.patch(self.URL, {field: value}, format='json')
+            self.assertEqual(r.status_code, 400, (field, value, r.content))
+
+    def test_empty_return_min_km_zero_means_zero(self):
+        from core.services.quote_costing import build_inputs
+        self.company.empty_return_min_km = 0
+        self.company.save()
+        inputs, _ = build_inputs({'distance_km': 50, 'weight': 1000, 'toll_cost': 0}, self.company)
+        self.assertEqual(inputs['settings']['empty_return_min_km'], 0.0)

@@ -911,7 +911,9 @@ def build_inputs(payload, company, now=None, *, diesel_override=None):
         'include_empty_return': include,
         'settings': {
             'include_empty_return_default': bool(getattr(company, 'include_empty_return_default', True)),
-            'empty_return_min_km': _num(getattr(company, 'empty_return_min_km', None)) or DEFAULT_EMPTY_RETURN_MIN_KM,
+            # 0 means 0 (always include); only an unset value takes the default.
+            'empty_return_min_km': (DEFAULT_EMPTY_RETURN_MIN_KM if _num(getattr(company, 'empty_return_min_km', None))
+                                    is None else _num(company.empty_return_min_km)),
         },
         'minimum_charge': _pos(getattr(company, 'minimum_charge', None)),
         # Company default price per km (Company.default_base_rate_per_km);
