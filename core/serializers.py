@@ -1419,17 +1419,19 @@ def _is_live_echo(value, zone='INLAND'):
 
 
 def _is_official_petrol(value):
-    """True when `value` is (±0.005) the official 95 or 93 petrol price in
-    force now or in the period before."""
+    """True when `value` is (±0.005) an official petrol price (95 or 93,
+    inland or coastal) in force now or in the period before."""
     from datetime import timedelta
-    from core.services.fuel_price import official_row_in_force, row_effective_from
+    from core.services.fuel_price import PETROL_FIELDS, official_row_in_force, row_effective_from
     value = Decimal(str(value))
-    current = official_row_in_force()
-    rows = [current]
-    if current is not None:
-        rows.append(official_row_in_force(row_effective_from(current) - timedelta(microseconds=1)))
-    for row in rows:
-        for p in (getattr(row, 'petrol_95', None), getattr(row, 'petrol_93', None)):
+    for column in PETROL_FIELDS:
+        current = official_row_in_force(column=column)
+        rows = [current]
+        if current is not None:
+            rows.append(official_row_in_force(row_effective_from(current) - timedelta(microseconds=1),
+                                              column=column))
+        for row in rows:
+            p = getattr(row, column, None) if row is not None else None
             if p is not None and abs(value - p) <= Decimal('0.005'):
                 return True
     return False
@@ -1452,6 +1454,10 @@ class CompanySerializer(serializers.ModelSerializer):
             # QUOTE-RULES.md §1 (additive): LIVE/OWN diesel and the price a
             # quote would use right now (read-only, resolved server-side).
             'fuel_price_mode', 'fuel_price_own', 'fuel_price_own_set_at', 'diesel_price_in_use',
+            # Petrol (and hybrid trucks), same rule as diesel: LIVE/OWN, own
+            # price = fuel_price_petrol, official grade 95 (93 inland option).
+            'fuel_price_petrol_mode', 'fuel_price_petrol_set_at', 'fuel_price_petrol_grade',
+            'petrol_price_in_use',
             # QUOTE-RULES.md §5/§6 (additive).
             'include_empty_return_default', 'empty_return_min_km', 'minimum_charge',
             'margin_at_risk_pct', 'margin_caution_pct', 'margin_target_pct',
@@ -1472,11 +1478,26 @@ class CompanySerializer(serializers.ModelSerializer):
     operating_cost_in_use = serializers.SerializerMethodField()
     margin_target_range = serializers.SerializerMethodField()
     diesel_price_in_use = serializers.SerializerMethodField()
+    petrol_price_in_use = serializers.SerializerMethodField()
+    fuel_price_petrol_set_at = serializers.DateTimeField(read_only=True)
+    fuel_price_petrol_mode = serializers.ChoiceField(choices=Company.FUEL_PRICE_MODE_CHOICES, required=False)
     fuel_price_own = serializers.DecimalField(max_digits=8, decimal_places=4, required=False, allow_null=True)
     fuel_price_own_set_at = serializers.DateTimeField(read_only=True)
     # Old clients still write it; see validate() for how a write is read.
     fuel_price_per_litre = serializers.DecimalField(max_digits=8, decimal_places=4, required=False,
                                                     allow_null=True)
+
+    def get_petrol_price_in_use(self, obj):
+        """core.services.fuel_price.resolve_company_petrol: {fuel_type,
+        grade, mode, source, price, zone, official{...}, own{...}, warnings}.
+        Never raises."""
+        try:
+            from core.services.fuel_price import resolve_company_petrol
+            out = resolve_company_petrol(obj)
+            out.pop('input', None)
+            return out
+        except Exception:
+            return None
 
     def get_diesel_price_in_use(self, obj):
         """core.services.fuel_price.resolve_company_diesel: {mode, source,
@@ -1553,13 +1574,7 @@ class CompanySerializer(serializers.ModelSerializer):
             own = attrs.get('fuel_price_own', getattr(instance, 'fuel_price_own', None))
             if own is not None:
                 attrs['fuel_price_per_litre'] = own   # keep the stored mirror honest
-        # Petrol (same rule as diesel, QUOTE-RULES §1): a settings form that
-        # echoes the official 95/93 price back is not the fleet's own price —
-        # never store the official figure in the own field.
-        if attrs.get('fuel_price_petrol') is not None \
-                and attrs['fuel_price_petrol'] != getattr(instance, 'fuel_price_petrol', None) \
-                and _is_official_petrol(attrs['fuel_price_petrol']):
-            attrs['fuel_price_petrol'] = getattr(instance, 'fuel_price_petrol', None)
+        self._validate_petrol(attrs, instance)
         # Empty-return default: the new field and the old pricing_include_empty_return mirror each other.
         if 'include_empty_return_default' in attrs:
             attrs['pricing_include_empty_return'] = attrs['include_empty_return_default']
@@ -1571,6 +1586,41 @@ class CompanySerializer(serializers.ModelSerializer):
             else:
                 attrs.pop('pricing_include_empty_return')
         return attrs
+
+    def _validate_petrol(self, attrs, instance):
+        """Petrol mode, same rule as diesel (QUOTE-RULES.md §1). New clients
+        send fuel_price_petrol_mode (+ fuel_price_petrol): own empty => LIVE.
+        Old clients only send fuel_price_petrol: unchanged => nothing; a value
+        echoing the official 95/93 price => not stored (never the official
+        figure in the own field), mode unchanged; empty => LIVE; anything
+        else => OWN at that value."""
+        from django.utils import timezone as dj_tz
+        current_own = getattr(instance, 'fuel_price_petrol', None)
+        if 'fuel_price_petrol_mode' in attrs:
+            own = attrs.get('fuel_price_petrol', current_own)
+            if own is None:
+                attrs['fuel_price_petrol_mode'] = 'LIVE'
+        elif 'fuel_price_petrol' in attrs:
+            value = attrs['fuel_price_petrol']
+            if value is None:
+                attrs['fuel_price_petrol_mode'] = 'LIVE'
+            elif current_own is not None and abs(Decimal(str(value)) - current_own) <= Decimal('0.00001'):
+                attrs.pop('fuel_price_petrol')      # echoed back unchanged
+            elif _is_official_petrol(value):
+                attrs.pop('fuel_price_petrol')      # the official price echoed back: not an own price
+            else:
+                attrs['fuel_price_petrol_mode'] = 'OWN'
+        if 'fuel_price_petrol' in attrs and attrs['fuel_price_petrol'] != current_own:
+            attrs['fuel_price_petrol_set_at'] = dj_tz.now() if attrs['fuel_price_petrol'] is not None else None
+
+    def validate_fuel_price_petrol(self, value):
+        if value is None or value <= 0:
+            return None                      # empty / 0 = no own price (LIVE)
+        if self.instance is not None and value == getattr(self.instance, 'fuel_price_petrol', None):
+            return value                     # an old client echoing a stored value back
+        if not (Decimal('5') <= value <= Decimal('100')):
+            raise serializers.ValidationError('Enter a petrol price between R5 and R100 per litre, or leave it blank.')
+        return value
 
     def get_margin_target_range(self, obj):
         from core.services.pricing_analysis import MARGIN_TARGET_RANGE

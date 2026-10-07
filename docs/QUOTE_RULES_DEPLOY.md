@@ -17,6 +17,22 @@ LIMIT 5;
 
 - At least one row must have `source='FIASA' AND diesel_grade='50ppm'` or `source='MANUAL'`, with
   `effective_from` on or after the previous first-Wednesday (00:01 SAST).
+- Petrol (LIVE petrol/hybrid companies price on it; missing = blocked quotes):
+
+```sql
+SELECT date, source, effective_from, petrol_95, petrol_93, petrol_95_coastal, petrol_93_coastal
+FROM fuel_prices
+WHERE source IN ('FIASA', 'MANUAL')
+ORDER BY COALESCE(effective_from, date::timestamptz) DESC
+LIMIT 5;
+-- Who is affected: companies with petrol/hybrid vehicle types
+SELECT c.id, c.company_name, c.fuel_zone, c.fuel_price_petrol, c.fuel_price_hybrid
+FROM company_profile c WHERE EXISTS (SELECT 1 FROM vehicle_types v WHERE v.company_id = c.id
+                               AND lower(v.fuel_type) IN ('petrol', 'hybrid'));
+```
+
+  (`petrol_95_coastal` / `petrol_93_coastal` only exist after migration 0152; before it, check `petrol_95` and
+  `petrol_93` only.) After step 3, the row in force must have `petrol_95` and `petrol_95_coastal` set.
 - Dry-run the LIVE/OWN classification that migration 0149 will apply:
   `python manage.py quote_diesel_audit --classification` (read-only; run it on the new code before `migrate`
   on a copy, or straight after migrate to review).
@@ -31,6 +47,10 @@ LIMIT 5;
 - 0149: LIVE/OWN backfill (official FIASA/MANUAL matches only; never FALLBACK) and
   `pricing_include_empty_return = include_empty_return_default`;
 - 0150: index on `quotes.priced_vehicle_type_id`, `CREATE INDEX CONCURRENTLY` on Postgres (non-atomic).
+- 0152: nullable `fuel_prices.petrol_95_coastal` / `petrol_93_coastal`; company `fuel_price_petrol_mode`
+  (default LIVE), `fuel_price_petrol_set_at`, `fuel_price_petrol_grade` (default '95');
+- 0153: petrol LIVE/OWN backfill (official petrol match in the current/previous period or empty → LIVE, else OWN;
+  a hybrid-only own value is copied into `fuel_price_petrol`).
 
 ## 3. Make sure the current official price is stored
 
@@ -47,6 +67,11 @@ curl -X POST https://<api>/api/v1/fuel-prices/current/ \
   -d '{"diesel_inland": "32.7989", "diesel_coastal": "31.9269"}'
 ```
 
+Add the petrol figures as published when you have them: `"petrol_95_inland"`, `"petrol_93_inland"`,
+`"petrol_95_coastal"` (and `"petrol_93_coastal"` if published); left out = not set on that row (petrol then
+uses the newest official row that has it). `fetch_fuel_prices` (no args) re-reads FIASA and fills the coastal
+petrol columns on the current row.
+
 That stores a `MANUAL` row (effective now, keyed by today's SAST date). A later FIASA row with a newer
 effective date replaces it automatically. Staff can also force a FIASA re-check with
 `GET /api/v1/fuel-prices/current/?force=true` (ignored for non-staff).
@@ -62,12 +87,19 @@ Leave it off unless FIASA is down for a long time: its rows are not official and
 - `python manage.py quote_diesel_audit` — companies on an OWN price, gap vs official, quotes in the last
   30 days priced below official. Contact companies with large negative gaps.
 - `GET /api/v1/fuel-prices/current/` as any user: `zone_price` set, `stale: false`.
+- Same response: `petrol.inland_95`, `petrol.inland_93` and `petrol.coastal_95` each have a `price` and
+  `stale: false` (`petrol.coastal_93` is normally null); `company_petrol_price.source` is `official` for a LIVE
+  company. Spot-check a petrol-truck quote: fuel line at R x/L = the zone's ULP 95, PDF "Priced on petrol 95 …".
+- Review petrol OWN companies (0153): `SELECT id, company_name, fuel_price_petrol, fuel_price_petrol_set_at FROM
+  company_profile WHERE fuel_price_petrol_mode = 'OWN';` — gaps > 3% from official show `diesel_own_off` on quotes.
 - Try a send on a test quote: blocking warnings return 400 `{code: "quote_send_blocked", warnings}`.
 
 ## Rollback
 
 1. Redeploy the previous image.
-2. `python manage.py migrate core 0147` reverses 0150 (drops the index), 0149 (clears LIVE/OWN fields;
+2. Petrol only: `python manage.py migrate core 0151` reverses 0153 (all companies back to LIVE / 95; a
+   copied hybrid value stays in `fuel_price_petrol`) and 0152 (drops the petrol columns). Full rollback:
+   `python manage.py migrate core 0147` reverses 0150 (drops the index), 0149 (clears LIVE/OWN fields;
    `fuel_price_per_litre` was never modified) and 0148 (drops the new columns). The
    `pricing_include_empty_return` values set by 0149 are not restored (they now mirror the new default).
 3. Fuel rows written by `fetch_fuel_prices` / `repair_fuel_history` are additive history and can stay.

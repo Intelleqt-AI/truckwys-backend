@@ -21,6 +21,7 @@
     "margin": "cents(price - floor); margin_pct = (price - floor) / price * 100 (unrounded)",
     "diesel": "override_price -> override; OWN (own_price set, not use_official) -> own; else official_price -> official; else missing",
     "diesel_own_off": "|own - official| / official > 0.03; impact_zar = cents((own - official) * litres_total)",
+    "fuel_type": "diesel.fuel_type Diesel (default) | Petrol | Electric. Petrol (petrol and hybrid trucks) uses the same rule as diesel with the official ULP price for the zone and diesel.grade (95; 93 inland only); warning codes stay diesel_* with fuel_type on the warning. Electric has no official price: own price or diesel_missing.",
     "compare": "lines[].amount, floor, floor_known, target_price, margin: exact to the cent. warnings: code, severity, impact_zar exact; title/detail are server copy. litres / burn: within 1e-9."
   },
   "cases": [
@@ -5151,6 +5152,853 @@
         ],
         "blocking": [
           "tolls_unknown"
+        ],
+        "can_send": false
+      }
+    },
+    {
+      "name": "petrol_official_inland_95",
+      "description": "Petrol truck, LIVE company: official ULP 95 inland.",
+      "inputs": {
+        "trip_type": "ONE_WAY",
+        "distance_km": 250.0,
+        "distance_estimated": false,
+        "distance_confirmed": false,
+        "duration_minutes": 200,
+        "load_kg": 3000,
+        "vehicle": {
+          "id": 16,
+          "name": "4 ton petrol rigid",
+          "capacity": 4,
+          "rated_burn_l_per_100km": 16
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "official_price": 30.25,
+          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_stale": false,
+          "use_official": false,
+          "override_price": null,
+          "fuel_type": "Petrol",
+          "grade": "95"
+        },
+        "operating_cost_per_km": 8.0,
+        "operating_cost_source": "vehicle_default",
+        "tolls": {
+          "one_way": 412.17,
+          "empty_return": null,
+          "lookup_failed": false,
+          "confirmed_none": false
+        },
+        "driver": {
+          "allowance_per_night": 450.0,
+          "nights": null,
+          "amount": null
+        },
+        "hours_per_day": 9.0,
+        "border_cost": 0.0,
+        "include_empty_return": null,
+        "settings": {
+          "include_empty_return_default": true,
+          "empty_return_min_km": 300.0
+        },
+        "minimum_charge": null,
+        "default_price_per_km": null,
+        "target_margin_pct": 10.0,
+        "price": 6500.0
+      },
+      "expected": {
+        "version": "qc-1",
+        "trip": {
+          "type": "ONE_WAY",
+          "legs_loaded": 1,
+          "distance_km": 250.0,
+          "empty_return_included": false,
+          "empty_return_default": false,
+          "km_loaded": 250.0,
+          "km_empty": 0.0,
+          "km_driven": 250.0,
+          "hours_one_way": 3.3333333333333335,
+          "return_nights": null
+        },
+        "vehicle": {
+          "id": 16,
+          "name": "4 ton petrol rigid",
+          "capacity_t": 4.0,
+          "load_t": 3.0,
+          "load_ratio": 0.75,
+          "rated_burn_l_per_100km": 16.0,
+          "burn_loaded_l_per_100km": 14.799999999999999,
+          "burn_empty_l_per_100km": 11.2
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "fuel_type": "Petrol",
+          "official_price": 30.25,
+          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_stale": false,
+          "grade": "95",
+          "price": 30.25,
+          "source": "official"
+        },
+        "litres": {
+          "loaded": 36.99999999999999,
+          "empty_return": 0.0,
+          "total": 36.99999999999999
+        },
+        "lines": [
+          {
+            "key": "fuel",
+            "label": "Fuel",
+            "leg": "loaded",
+            "amount": 1119.25,
+            "basis": "250 km at 14,8 L/100km × R 30,25/L",
+            "litres": 36.99999999999999,
+            "burn_l_per_100km": 14.799999999999999,
+            "price_per_litre": 30.25,
+            "km": 250.0
+          },
+          {
+            "key": "operating",
+            "label": "Operating costs",
+            "leg": "loaded",
+            "amount": 2000.0,
+            "basis": "250 km × R 8,00/km",
+            "rate_per_km": 8.0,
+            "km": 250.0,
+            "source": "vehicle_default"
+          },
+          {
+            "key": "tolls",
+            "label": "Tolls",
+            "leg": "loaded",
+            "amount": 412.17,
+            "basis": "R 412,17 one way",
+            "one_way": 412.17,
+            "legs": 1
+          },
+          {
+            "key": "driver",
+            "label": "Driver nights out",
+            "leg": "loaded",
+            "amount": 0.0,
+            "basis": "No night away",
+            "nights": 0,
+            "suggested_nights": 0,
+            "rate_per_night": 450.0,
+            "suggested": 0.0,
+            "source": "suggested"
+          }
+        ],
+        "floor": 3531.42,
+        "floor_known": 3531.42,
+        "floor_complete": true,
+        "target_margin_pct": 10.0,
+        "target_price": 3923.8,
+        "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": 3924.0,
+        "alternative_with_return_load": null,
+        "price": 6500.0,
+        "margin": 2968.58,
+        "margin_pct": 45.67046153846154,
+        "warnings": [],
+        "blocking": [],
+        "can_send": true
+      }
+    },
+    {
+      "name": "petrol_own_off",
+      "description": "Petrol OWN R27,00 set after the 7 Oct change: more than 3% under official 95 inland.",
+      "inputs": {
+        "trip_type": "ONE_WAY",
+        "distance_km": 250.0,
+        "distance_estimated": false,
+        "distance_confirmed": false,
+        "duration_minutes": 200,
+        "load_kg": 3000,
+        "vehicle": {
+          "id": 16,
+          "name": "4 ton petrol rigid",
+          "capacity": 4,
+          "rated_burn_l_per_100km": 16
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "OWN",
+          "own_price": 27.0,
+          "own_set_at": "2026-10-07T06:30:00Z",
+          "official_price": 30.25,
+          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_stale": false,
+          "use_official": false,
+          "override_price": null,
+          "fuel_type": "Petrol",
+          "grade": "95"
+        },
+        "operating_cost_per_km": 8.0,
+        "operating_cost_source": "vehicle_default",
+        "tolls": {
+          "one_way": 412.17,
+          "empty_return": null,
+          "lookup_failed": false,
+          "confirmed_none": false
+        },
+        "driver": {
+          "allowance_per_night": 450.0,
+          "nights": null,
+          "amount": null
+        },
+        "hours_per_day": 9.0,
+        "border_cost": 0.0,
+        "include_empty_return": null,
+        "settings": {
+          "include_empty_return_default": true,
+          "empty_return_min_km": 300.0
+        },
+        "minimum_charge": null,
+        "default_price_per_km": null,
+        "target_margin_pct": 10.0,
+        "price": 6500.0
+      },
+      "expected": {
+        "version": "qc-1",
+        "trip": {
+          "type": "ONE_WAY",
+          "legs_loaded": 1,
+          "distance_km": 250.0,
+          "empty_return_included": false,
+          "empty_return_default": false,
+          "km_loaded": 250.0,
+          "km_empty": 0.0,
+          "km_driven": 250.0,
+          "hours_one_way": 3.3333333333333335,
+          "return_nights": null
+        },
+        "vehicle": {
+          "id": 16,
+          "name": "4 ton petrol rigid",
+          "capacity_t": 4.0,
+          "load_t": 3.0,
+          "load_ratio": 0.75,
+          "rated_burn_l_per_100km": 16.0,
+          "burn_loaded_l_per_100km": 14.799999999999999,
+          "burn_empty_l_per_100km": 11.2
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "OWN",
+          "own_price": 27.0,
+          "own_set_at": "2026-10-07T06:30:00Z",
+          "fuel_type": "Petrol",
+          "official_price": 30.25,
+          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_stale": false,
+          "grade": "95",
+          "price": 27.0,
+          "source": "own"
+        },
+        "litres": {
+          "loaded": 36.99999999999999,
+          "empty_return": 0.0,
+          "total": 36.99999999999999
+        },
+        "lines": [
+          {
+            "key": "fuel",
+            "label": "Fuel",
+            "leg": "loaded",
+            "amount": 999.0,
+            "basis": "250 km at 14,8 L/100km × R 27,00/L",
+            "litres": 36.99999999999999,
+            "burn_l_per_100km": 14.799999999999999,
+            "price_per_litre": 27.0,
+            "km": 250.0
+          },
+          {
+            "key": "operating",
+            "label": "Operating costs",
+            "leg": "loaded",
+            "amount": 2000.0,
+            "basis": "250 km × R 8,00/km",
+            "rate_per_km": 8.0,
+            "km": 250.0,
+            "source": "vehicle_default"
+          },
+          {
+            "key": "tolls",
+            "label": "Tolls",
+            "leg": "loaded",
+            "amount": 412.17,
+            "basis": "R 412,17 one way",
+            "one_way": 412.17,
+            "legs": 1
+          },
+          {
+            "key": "driver",
+            "label": "Driver nights out",
+            "leg": "loaded",
+            "amount": 0.0,
+            "basis": "No night away",
+            "nights": 0,
+            "suggested_nights": 0,
+            "rate_per_night": 450.0,
+            "suggested": 0.0,
+            "source": "suggested"
+          }
+        ],
+        "floor": 3411.17,
+        "floor_known": 3411.17,
+        "floor_complete": true,
+        "target_margin_pct": 10.0,
+        "target_price": 3790.19,
+        "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": 3791.0,
+        "alternative_with_return_load": null,
+        "price": 6500.0,
+        "margin": 3088.83,
+        "margin_pct": 47.52046153846154,
+        "warnings": [
+          {
+            "code": "diesel_own_off",
+            "severity": "warn",
+            "title": "Your petrol price differs from official",
+            "detail": "Yours R 27,00/L, official R 30,25/L (inland 95).",
+            "impact_zar": -120.25,
+            "actions": [
+              {
+                "id": "use_official",
+                "label": "Use official price"
+              },
+              {
+                "id": "update_own",
+                "label": "Update my price"
+              }
+            ],
+            "own_price": 27.0,
+            "official_price": 30.25,
+            "fuel_type": "petrol"
+          }
+        ],
+        "blocking": [],
+        "can_send": true
+      }
+    },
+    {
+      "name": "petrol_missing",
+      "description": "Petrol truck, LIVE company, no official petrol price on record: blocks, no floor.",
+      "inputs": {
+        "trip_type": "ONE_WAY",
+        "distance_km": 250.0,
+        "distance_estimated": false,
+        "distance_confirmed": false,
+        "duration_minutes": 200,
+        "load_kg": 3000,
+        "vehicle": {
+          "id": 16,
+          "name": "4 ton petrol rigid",
+          "capacity": 4,
+          "rated_burn_l_per_100km": 16
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "official_price": null,
+          "official_effective_from": null,
+          "official_stale": false,
+          "use_official": false,
+          "override_price": null,
+          "fuel_type": "Petrol",
+          "grade": "95"
+        },
+        "operating_cost_per_km": 8.0,
+        "operating_cost_source": "vehicle_default",
+        "tolls": {
+          "one_way": 412.17,
+          "empty_return": null,
+          "lookup_failed": false,
+          "confirmed_none": false
+        },
+        "driver": {
+          "allowance_per_night": 450.0,
+          "nights": null,
+          "amount": null
+        },
+        "hours_per_day": 9.0,
+        "border_cost": 0.0,
+        "include_empty_return": null,
+        "settings": {
+          "include_empty_return_default": true,
+          "empty_return_min_km": 300.0
+        },
+        "minimum_charge": null,
+        "default_price_per_km": null,
+        "target_margin_pct": 10.0,
+        "price": 6500.0
+      },
+      "expected": {
+        "version": "qc-1",
+        "trip": {
+          "type": "ONE_WAY",
+          "legs_loaded": 1,
+          "distance_km": 250.0,
+          "empty_return_included": false,
+          "empty_return_default": false,
+          "km_loaded": 250.0,
+          "km_empty": 0.0,
+          "km_driven": 250.0,
+          "hours_one_way": 3.3333333333333335,
+          "return_nights": null
+        },
+        "vehicle": {
+          "id": 16,
+          "name": "4 ton petrol rigid",
+          "capacity_t": 4.0,
+          "load_t": 3.0,
+          "load_ratio": 0.75,
+          "rated_burn_l_per_100km": 16.0,
+          "burn_loaded_l_per_100km": 14.799999999999999,
+          "burn_empty_l_per_100km": 11.2
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "fuel_type": "Petrol",
+          "official_price": null,
+          "official_effective_from": null,
+          "official_stale": false,
+          "grade": "95",
+          "price": null,
+          "source": "missing"
+        },
+        "litres": {
+          "loaded": 36.99999999999999,
+          "empty_return": 0.0,
+          "total": 36.99999999999999
+        },
+        "lines": [
+          {
+            "key": "fuel",
+            "label": "Fuel",
+            "leg": "loaded",
+            "amount": null,
+            "basis": "250 km at 14,8 L/100km",
+            "litres": 36.99999999999999,
+            "burn_l_per_100km": 14.799999999999999,
+            "price_per_litre": null,
+            "km": 250.0
+          },
+          {
+            "key": "operating",
+            "label": "Operating costs",
+            "leg": "loaded",
+            "amount": 2000.0,
+            "basis": "250 km × R 8,00/km",
+            "rate_per_km": 8.0,
+            "km": 250.0,
+            "source": "vehicle_default"
+          },
+          {
+            "key": "tolls",
+            "label": "Tolls",
+            "leg": "loaded",
+            "amount": 412.17,
+            "basis": "R 412,17 one way",
+            "one_way": 412.17,
+            "legs": 1
+          },
+          {
+            "key": "driver",
+            "label": "Driver nights out",
+            "leg": "loaded",
+            "amount": 0.0,
+            "basis": "No night away",
+            "nights": 0,
+            "suggested_nights": 0,
+            "rate_per_night": 450.0,
+            "suggested": 0.0,
+            "source": "suggested"
+          }
+        ],
+        "floor": null,
+        "floor_known": 2412.17,
+        "floor_complete": false,
+        "target_margin_pct": 10.0,
+        "target_price": null,
+        "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": null,
+        "alternative_with_return_load": null,
+        "price": 6500.0,
+        "margin": null,
+        "margin_pct": null,
+        "warnings": [
+          {
+            "code": "diesel_missing",
+            "severity": "block",
+            "title": "No petrol price available",
+            "detail": "No official price on record; set your own in settings.",
+            "impact_zar": null,
+            "actions": [
+              {
+                "id": "retry_diesel",
+                "label": "Try again"
+              },
+              {
+                "id": "update_own",
+                "label": "Update my price"
+              }
+            ],
+            "fuel_type": "petrol"
+          }
+        ],
+        "blocking": [
+          "diesel_missing"
+        ],
+        "can_send": false
+      }
+    },
+    {
+      "name": "petrol_coastal",
+      "description": "Coastal fleet, petrol truck: official ULP 95 coastal.",
+      "inputs": {
+        "trip_type": "ONE_WAY",
+        "distance_km": 250.0,
+        "distance_estimated": false,
+        "distance_confirmed": false,
+        "duration_minutes": 200,
+        "load_kg": 3000,
+        "vehicle": {
+          "id": 16,
+          "name": "4 ton petrol rigid",
+          "capacity": 4,
+          "rated_burn_l_per_100km": 16
+        },
+        "diesel": {
+          "zone": "COASTAL",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "official_price": 29.38,
+          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_stale": false,
+          "use_official": false,
+          "override_price": null,
+          "fuel_type": "Petrol",
+          "grade": "95"
+        },
+        "operating_cost_per_km": 8.0,
+        "operating_cost_source": "vehicle_default",
+        "tolls": {
+          "one_way": 412.17,
+          "empty_return": null,
+          "lookup_failed": false,
+          "confirmed_none": false
+        },
+        "driver": {
+          "allowance_per_night": 450.0,
+          "nights": null,
+          "amount": null
+        },
+        "hours_per_day": 9.0,
+        "border_cost": 0.0,
+        "include_empty_return": null,
+        "settings": {
+          "include_empty_return_default": true,
+          "empty_return_min_km": 300.0
+        },
+        "minimum_charge": null,
+        "default_price_per_km": null,
+        "target_margin_pct": 10.0,
+        "price": 6500.0
+      },
+      "expected": {
+        "version": "qc-1",
+        "trip": {
+          "type": "ONE_WAY",
+          "legs_loaded": 1,
+          "distance_km": 250.0,
+          "empty_return_included": false,
+          "empty_return_default": false,
+          "km_loaded": 250.0,
+          "km_empty": 0.0,
+          "km_driven": 250.0,
+          "hours_one_way": 3.3333333333333335,
+          "return_nights": null
+        },
+        "vehicle": {
+          "id": 16,
+          "name": "4 ton petrol rigid",
+          "capacity_t": 4.0,
+          "load_t": 3.0,
+          "load_ratio": 0.75,
+          "rated_burn_l_per_100km": 16.0,
+          "burn_loaded_l_per_100km": 14.799999999999999,
+          "burn_empty_l_per_100km": 11.2
+        },
+        "diesel": {
+          "zone": "COASTAL",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "fuel_type": "Petrol",
+          "official_price": 29.38,
+          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_stale": false,
+          "grade": "95",
+          "price": 29.38,
+          "source": "official"
+        },
+        "litres": {
+          "loaded": 36.99999999999999,
+          "empty_return": 0.0,
+          "total": 36.99999999999999
+        },
+        "lines": [
+          {
+            "key": "fuel",
+            "label": "Fuel",
+            "leg": "loaded",
+            "amount": 1087.06,
+            "basis": "250 km at 14,8 L/100km × R 29,38/L",
+            "litres": 36.99999999999999,
+            "burn_l_per_100km": 14.799999999999999,
+            "price_per_litre": 29.38,
+            "km": 250.0
+          },
+          {
+            "key": "operating",
+            "label": "Operating costs",
+            "leg": "loaded",
+            "amount": 2000.0,
+            "basis": "250 km × R 8,00/km",
+            "rate_per_km": 8.0,
+            "km": 250.0,
+            "source": "vehicle_default"
+          },
+          {
+            "key": "tolls",
+            "label": "Tolls",
+            "leg": "loaded",
+            "amount": 412.17,
+            "basis": "R 412,17 one way",
+            "one_way": 412.17,
+            "legs": 1
+          },
+          {
+            "key": "driver",
+            "label": "Driver nights out",
+            "leg": "loaded",
+            "amount": 0.0,
+            "basis": "No night away",
+            "nights": 0,
+            "suggested_nights": 0,
+            "rate_per_night": 450.0,
+            "suggested": 0.0,
+            "source": "suggested"
+          }
+        ],
+        "floor": 3499.23,
+        "floor_known": 3499.23,
+        "floor_complete": true,
+        "target_margin_pct": 10.0,
+        "target_price": 3888.03,
+        "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": 3889.0,
+        "alternative_with_return_load": null,
+        "price": 6500.0,
+        "margin": 3000.77,
+        "margin_pct": 46.16569230769231,
+        "warnings": [],
+        "blocking": [],
+        "can_send": true
+      }
+    },
+    {
+      "name": "electric_own_missing",
+      "description": "Electric truck with no electricity cost set: blocks (no official price exists).",
+      "inputs": {
+        "trip_type": "ONE_WAY",
+        "distance_km": 250.0,
+        "distance_estimated": false,
+        "distance_confirmed": false,
+        "duration_minutes": 200,
+        "load_kg": 3000,
+        "vehicle": {
+          "id": 16,
+          "name": "4 ton petrol rigid",
+          "capacity": 4,
+          "rated_burn_l_per_100km": 16
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "OWN",
+          "own_price": null,
+          "own_set_at": null,
+          "official_price": null,
+          "official_effective_from": null,
+          "official_stale": false,
+          "use_official": false,
+          "override_price": null,
+          "fuel_type": "Electric"
+        },
+        "operating_cost_per_km": 8.0,
+        "operating_cost_source": "vehicle_default",
+        "tolls": {
+          "one_way": 412.17,
+          "empty_return": null,
+          "lookup_failed": false,
+          "confirmed_none": false
+        },
+        "driver": {
+          "allowance_per_night": 450.0,
+          "nights": null,
+          "amount": null
+        },
+        "hours_per_day": 9.0,
+        "border_cost": 0.0,
+        "include_empty_return": null,
+        "settings": {
+          "include_empty_return_default": true,
+          "empty_return_min_km": 300.0
+        },
+        "minimum_charge": null,
+        "default_price_per_km": null,
+        "target_margin_pct": 10.0,
+        "price": 6500.0
+      },
+      "expected": {
+        "version": "qc-1",
+        "trip": {
+          "type": "ONE_WAY",
+          "legs_loaded": 1,
+          "distance_km": 250.0,
+          "empty_return_included": false,
+          "empty_return_default": false,
+          "km_loaded": 250.0,
+          "km_empty": 0.0,
+          "km_driven": 250.0,
+          "hours_one_way": 3.3333333333333335,
+          "return_nights": null
+        },
+        "vehicle": {
+          "id": 16,
+          "name": "4 ton petrol rigid",
+          "capacity_t": 4.0,
+          "load_t": 3.0,
+          "load_ratio": 0.75,
+          "rated_burn_l_per_100km": 16.0,
+          "burn_loaded_l_per_100km": 14.799999999999999,
+          "burn_empty_l_per_100km": 11.2
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "fuel_type": "Electric",
+          "official_price": null,
+          "official_effective_from": null,
+          "official_stale": false,
+          "price": null,
+          "source": "missing"
+        },
+        "litres": {
+          "loaded": 36.99999999999999,
+          "empty_return": 0.0,
+          "total": 36.99999999999999
+        },
+        "lines": [
+          {
+            "key": "fuel",
+            "label": "Fuel",
+            "leg": "loaded",
+            "amount": null,
+            "basis": "250 km at 14,8 L/100km",
+            "litres": 36.99999999999999,
+            "burn_l_per_100km": 14.799999999999999,
+            "price_per_litre": null,
+            "km": 250.0
+          },
+          {
+            "key": "operating",
+            "label": "Operating costs",
+            "leg": "loaded",
+            "amount": 2000.0,
+            "basis": "250 km × R 8,00/km",
+            "rate_per_km": 8.0,
+            "km": 250.0,
+            "source": "vehicle_default"
+          },
+          {
+            "key": "tolls",
+            "label": "Tolls",
+            "leg": "loaded",
+            "amount": 412.17,
+            "basis": "R 412,17 one way",
+            "one_way": 412.17,
+            "legs": 1
+          },
+          {
+            "key": "driver",
+            "label": "Driver nights out",
+            "leg": "loaded",
+            "amount": 0.0,
+            "basis": "No night away",
+            "nights": 0,
+            "suggested_nights": 0,
+            "rate_per_night": 450.0,
+            "suggested": 0.0,
+            "source": "suggested"
+          }
+        ],
+        "floor": null,
+        "floor_known": 2412.17,
+        "floor_complete": false,
+        "target_margin_pct": 10.0,
+        "target_price": null,
+        "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": null,
+        "alternative_with_return_load": null,
+        "price": 6500.0,
+        "margin": null,
+        "margin_pct": null,
+        "warnings": [
+          {
+            "code": "diesel_missing",
+            "severity": "block",
+            "title": "No electricity price set",
+            "detail": "Set your electricity cost per kWh in settings.",
+            "impact_zar": null,
+            "actions": [
+              {
+                "id": "update_own",
+                "label": "Update my price"
+              }
+            ],
+            "fuel_type": "electric"
+          }
+        ],
+        "blocking": [
+          "diesel_missing"
         ],
         "can_send": false
       }

@@ -305,14 +305,21 @@ def _terms_days(quote) -> int:
 
 def diesel_reference_line(quote):
     """'Priced on diesel at R 32,80/L (official inland, 7 Oct 2026).' from the
-    quote's pricing snapshot, or None when it has none (never a fallback)."""
+    quote's pricing snapshot, or None when it has none (never a fallback).
+    Names the fuel the quote was priced on: 'Priced on petrol 95 at …',
+    'Priced on electricity at R 3,10/kWh (own price, …)'."""
     price = getattr(quote, 'fuel_price_used', None)
     source = getattr(quote, 'fuel_price_source', '') or ''
     if price is None or not source:
         return None
     from core.services.quote_costing import fmt_rand, sa_date
+    snap = (getattr(quote, 'costing_snapshot', None) or {}).get('diesel') or {}
+    fuel = str(snap.get('fuel_type') or 'Diesel').lower()
+    grade = snap.get('grade')
+    name = {'petrol': f'petrol {grade}' if grade else 'petrol', 'electric': 'electricity'}.get(fuel, fuel)
+    unit = 'kWh' if fuel == 'electric' else 'L'
     zone = 'coastal' if (getattr(quote, 'fuel_zone', '') or '').upper() == 'COASTAL' else 'inland'
     what = {'official': f'official {zone}', 'own': 'own price', 'override': 'set for this quote'}.get(source, source)
     when = sa_date(getattr(quote, 'fuel_effective_from', None) if source == 'official' else None) \
         or sa_date(getattr(quote, 'priced_at', None))
-    return f'Priced on diesel at {fmt_rand(float(price), 2)}/L ({what}' + (f', {when}' if when else '') + ').'
+    return f'Priced on {name} at {fmt_rand(float(price), 2)}/{unit} ({what}' + (f', {when}' if when else '') + ').'

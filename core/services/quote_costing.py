@@ -201,16 +201,19 @@ ACTION_LABELS = {
 
 
 # ---------------------------------------------------------------------------
-# Diesel (§1)
+# Fuel price (§1): diesel, and petrol by the same rule
 # ---------------------------------------------------------------------------
 
 def resolve_diesel(d):
-    """Which diesel price this quote uses. Pure.
+    """Which fuel price this quote uses (diesel, or petrol for petrol and
+    hybrid trucks: same rule). Pure.
 
     d: {zone, mode LIVE|OWN, own_price, own_set_at, official_price,
-        official_effective_from, official_stale, use_official, override_price}
+        official_effective_from, official_stale, use_official, override_price,
+        fuel_type (Diesel), grade (petrol: '95' | '93', optional)}
     -> {price, source own|official|override|missing, zone, mode, own_price,
-        own_set_at, official_price, official_effective_from, official_stale}
+        own_set_at, fuel_type, official_price, official_effective_from,
+        official_stale} (+ grade when given)
     """
     d = d or {}
     zone = str(d.get('zone') or 'INLAND').upper()
@@ -225,6 +228,8 @@ def resolve_diesel(d):
            'fuel_type': d.get('fuel_type') or 'Diesel',
            'official_price': official, 'official_effective_from': iso(d.get('official_effective_from')),
            'official_stale': bool(d.get('official_stale')) if official is not None else False}
+    if d.get('grade'):
+        out['grade'] = str(d['grade'])
     if override is not None:
         price, source = override, 'override'
     elif mode == 'OWN' and not d.get('use_official'):
@@ -243,22 +248,30 @@ def _fuel_lines_total(litres_parts, price):
 
 
 def diesel_warnings(diesel, litres_total=None, litres_parts=None):
-    """§1 warnings for a resolved diesel price. Pure. litres_parts: the
-    litres of each fuel line (loaded, empty return) so diesel_own_off's
-    impact is exactly the difference of the fuel line totals."""
+    """§1 warnings for a resolved fuel price (diesel, or petrol by the same
+    rule; codes stay diesel_* for compatibility, copy names the fuel). Pure.
+    litres_parts: the litres of each fuel line (loaded, empty return) so
+    diesel_own_off's impact is exactly the difference of the fuel line totals."""
     out = []
     zone_txt = 'coastal' if diesel['zone'] == 'COASTAL' else 'inland'
+    fuel = str(diesel.get('fuel_type') or 'Diesel').lower()
+    official_fuel = fuel in ('diesel', 'petrol')     # fuels with an official FIASA price
+    grade = diesel.get('grade')
+    where = f'{zone_txt} {grade}' if fuel == 'petrol' and grade else zone_txt
+    extra = {} if fuel == 'diesel' else {'fuel_type': fuel}
     if diesel['source'] == 'missing':
-        fuel = str(diesel.get('fuel_type') or 'Diesel').lower()
-        if fuel == 'diesel':
-            out.append(warning('diesel_missing', 'block', 'No diesel price available',
+        if official_fuel:
+            out.append(warning('diesel_missing', 'block', f'No {fuel} price available',
                                'No official price on record; set your own in settings.',
-                               actions=('retry_diesel', 'update_own')))
+                               actions=('retry_diesel', 'update_own'), **extra))
+        elif fuel == 'electric':
+            out.append(warning('diesel_missing', 'block', 'No electricity price set',
+                               'Set your electricity cost per kWh in settings.', actions=('update_own',),
+                               **extra))
         else:
-            unit = 'kWh' if fuel == 'electric' else 'litre'
             out.append(warning('diesel_missing', 'block', f'No {fuel} price set',
-                               f'Set your {fuel} price per {unit} in settings.', actions=('update_own',),
-                               fuel_type=fuel))
+                               f'Set your {fuel} price per litre in settings.', actions=('update_own',),
+                               **extra))
         return out
     if diesel['source'] == 'own' and diesel['official_price']:
         own, official = diesel['own_price'], diesel['official_price']
@@ -268,22 +281,22 @@ def diesel_warnings(diesel, litres_total=None, litres_parts=None):
             else:
                 impact = cents((own - official) * litres_total) if litres_total is not None else None
             out.append(warning(
-                'diesel_own_off', 'warn', 'Your diesel price differs from official',
-                f'Yours {fmt_rand(own, 2)}/L, official {fmt_rand(official, 2)}/L ({zone_txt}).',
+                'diesel_own_off', 'warn', f'Your {fuel} price differs from official',
+                f'Yours {fmt_rand(own, 2)}/L, official {fmt_rand(official, 2)}/L ({where}).',
                 impact_zar=impact, actions=('use_official', 'update_own'),
-                own_price=own, official_price=official))
+                own_price=own, official_price=official, **extra))
         set_at, eff = parse_dt(diesel['own_set_at']), parse_dt(diesel['official_effective_from'])
         if set_at is not None and eff is not None and set_at < eff:
             out.append(warning(
-                'diesel_own_old', 'warn', 'Your diesel price predates the latest change',
+                'diesel_own_old', 'warn', f'Your {fuel} price predates the latest change',
                 f'Set {sa_date(set_at)}; official price changed {sa_date(eff)}.',
-                actions=('update_own', 'use_official')))
+                actions=('update_own', 'use_official'), **extra))
     if diesel['source'] == 'official' and diesel['official_stale']:
         eff = diesel['official_effective_from']
         out.append(warning(
-            'diesel_stale', 'warn', 'Official diesel price may be out of date',
+            'diesel_stale', 'warn', f'Official {fuel} price may be out of date',
             f'Latest on record is from {sa_date(eff)}.' if eff else 'This month\'s price is not loaded yet.',
-            actions=('retry_diesel', 'update_own')))
+            actions=('retry_diesel', 'update_own'), **extra))
     return out
 
 
@@ -793,7 +806,7 @@ def build_inputs(payload, company, now=None, *, diesel_override=None):
     Returns (inputs, context) — context holds the resolved objects."""
     from django.conf import settings as dj_settings
     from django.utils import timezone
-    from core.services.fuel_price import resolve_company_diesel
+    from core.services.fuel_price import resolve_company_fuel
 
     payload = payload or {}
     now = now or timezone.now()
@@ -819,18 +832,14 @@ def build_inputs(payload, company, now=None, *, diesel_override=None):
     fuel_type = (getattr(vt, 'fuel_type', None) or 'Diesel') if vt is not None else 'Diesel'
     if diesel_override is not None:
         diesel = diesel_override
-    elif fuel_type.lower() != 'diesel':
-        # Only diesel has an official price: other fuels use the company's
-        # own per-fuel price (Company.fuel_price_petrol / _electric / _hybrid).
-        own = _pos(getattr(company, f'fuel_price_{fuel_type.lower()}', None))
-        diesel = {'input': {'zone': getattr(company, 'fuel_zone', None) or 'INLAND', 'mode': 'OWN',
-                            'own_price': own, 'own_set_at': None, 'official_price': None,
-                            'official_effective_from': None, 'official_stale': False, 'use_official': False,
-                            'override_price': _pos(payload.get('fuel_price_override')), 'fuel_type': fuel_type},
-                  'source': 'own' if own else 'missing'}
+        if fuel_type.lower() != 'diesel' and not diesel['input'].get('fuel_type'):
+            diesel['input']['fuel_type'] = 'Petrol' if fuel_type.lower() == 'hybrid' else fuel_type.capitalize()
     else:
-        diesel = resolve_company_diesel(company, now, use_official=bool(_truthy(payload.get('use_official_fuel'))),
-                                        override_price=_pos(payload.get('fuel_price_override')))
+        # Diesel and petrol (petrol + hybrid trucks): official or own price,
+        # one rule. Electric has no official price: own price or blocked.
+        diesel = resolve_company_fuel(company, fuel_type, now,
+                                      use_official=bool(_truthy(payload.get('use_official_fuel'))),
+                                      override_price=_pos(payload.get('fuel_price_override')))
     op = operating_cost_for(company, vt) if vt is not None else None
     rate, rate_source = driver_rate(company, today)
 

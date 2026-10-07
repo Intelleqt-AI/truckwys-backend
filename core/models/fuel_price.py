@@ -48,15 +48,24 @@ class FuelPrice(models.Model):
     )
     petrol_95 = models.DecimalField(
         max_digits=8, decimal_places=4,
-        help_text='Petrol 95 ULP inland retail price (ZAR/litre)',
+        help_text='Petrol 95 ULP inland (Gauteng) retail price (ZAR/litre); NULL when not published',
         null=True,
         blank=True,
     )
     petrol_93 = models.DecimalField(
         max_digits=8, decimal_places=4,
-        help_text='Petrol 93 ULP inland retail price (ZAR/litre)',
+        help_text='Petrol 93 ULP inland (Gauteng) retail price (ZAR/litre); NULL when not published',
         null=True,
         blank=True,
+    )
+    petrol_95_coastal = models.DecimalField(
+        max_digits=8, decimal_places=4, null=True, blank=True,
+        help_text='Petrol 95 ULP coastal retail price (ZAR/litre); NULL when not published',
+    )
+    petrol_93_coastal = models.DecimalField(
+        max_digits=8, decimal_places=4, null=True, blank=True,
+        help_text='Petrol 93 ULP coastal retail price (ZAR/litre); NULL when not published '
+                  '(93 is normally sold inland only)',
     )
     source = models.CharField(
         max_length=100,

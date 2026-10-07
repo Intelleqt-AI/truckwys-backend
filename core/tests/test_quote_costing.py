@@ -36,6 +36,10 @@ RULES = {
     'diesel': 'override_price -> override; OWN (own_price set, not use_official) -> own; '
               'else official_price -> official; else missing',
     'diesel_own_off': '|own - official| / official > 0.03; impact_zar = cents((own - official) * litres_total)',
+    'fuel_type': 'diesel.fuel_type Diesel (default) | Petrol | Electric. Petrol (petrol and hybrid trucks) uses the '
+                 'same rule as diesel with the official ULP price for the zone and diesel.grade (95; 93 inland '
+                 'only); warning codes stay diesel_* with fuel_type on the warning. Electric has no official '
+                 'price: own price or diesel_missing.',
     'compare': 'lines[].amount, floor, floor_known, target_price, margin: exact to the cent. '
                'warnings: code, severity, impact_zar exact; title/detail are server copy. '
                'litres / burn: within 1e-9.',

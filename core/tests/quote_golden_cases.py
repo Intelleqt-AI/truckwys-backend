@@ -15,11 +15,17 @@ COASTAL = 31.9269
 EFFECTIVE = '2026-10-06T22:01:00Z'   # 7 Oct 2026 00:01 SAST
 PREVIOUS_EFFECTIVE = '2026-09-01T22:01:00Z'   # 2 Sep 2026 00:01 SAST
 
+# Official petrol (FIASA ULP, in force from 7 Oct 2026 00:01 SAST). 93 is published inland only.
+PETROL_95_INLAND = 30.25
+PETROL_93_INLAND = 29.88
+PETROL_95_COASTAL = 29.38
+
 SUPERLINK = {'id': 11, 'name': 'Superlink', 'capacity': 34, 'rated_burn_l_per_100km': 42}
 TRI_AXLE = {'id': 12, 'name': 'Tri-axle', 'capacity': 30, 'rated_burn_l_per_100km': 38}
 RIGID_KG = {'id': 13, 'name': '8 ton rigid', 'capacity': 8000, 'rated_burn_l_per_100km': 24}
 SUSPECT_LOW_BURN = {'id': 14, 'name': 'Tautliner', 'capacity': 34, 'rated_burn_l_per_100km': 12}
 SUSPECT_GVM = {'id': 15, 'name': 'Interlink', 'capacity': 56, 'rated_burn_l_per_100km': 45}
+PETROL_RIGID = {'id': 16, 'name': '4 ton petrol rigid', 'capacity': 4, 'rated_burn_l_per_100km': 16}
 
 
 def official(zone='INLAND', price=INLAND, **extra):
@@ -28,6 +34,19 @@ def official(zone='INLAND', price=INLAND, **extra):
            'use_official': False, 'override_price': None}
     out.update(extra)
     return out
+
+
+def petrol(zone='INLAND', price=PETROL_95_INLAND, grade='95', **extra):
+    """Petrol / hybrid trucks: the same Official/Own resolution as diesel."""
+    return official(zone=zone, price=price, fuel_type='Petrol', grade=grade, **extra)
+
+
+def petrol_trip(**over):
+    """A one-way 250 km trip on a petrol 4 t rigid, 3 t load."""
+    inputs = base(vehicle=dict(PETROL_RIGID), load_kg=3000, operating_cost_per_km=8.0, price=6500.0,
+                  diesel=petrol())
+    inputs.update(over)
+    return inputs
 
 
 def base(**over):
@@ -165,6 +184,24 @@ CASES = [
      'Floor incomplete (tolls unknown): no default price, alternative floor null too.',
      long_trip(default_price_per_km=20.0,
                tolls={'one_way': None, 'empty_return': None, 'lookup_failed': True, 'confirmed_none': False})),
+    # Petrol (added 7 Oct 2026, after the diesel cases; those are unchanged).
+    ('petrol_official_inland_95',
+     'Petrol truck, LIVE company: official ULP 95 inland.',
+     petrol_trip()),
+    ('petrol_own_off',
+     'Petrol OWN R27,00 set after the 7 Oct change: more than 3% under official 95 inland.',
+     petrol_trip(diesel=petrol(mode='OWN', own_price=27.0, own_set_at='2026-10-07T06:30:00Z'))),
+    ('petrol_missing',
+     'Petrol truck, LIVE company, no official petrol price on record: blocks, no floor.',
+     petrol_trip(diesel=petrol(price=None, official_effective_from=None))),
+    ('petrol_coastal',
+     'Coastal fleet, petrol truck: official ULP 95 coastal.',
+     petrol_trip(diesel=petrol(zone='COASTAL', price=PETROL_95_COASTAL))),
+    ('electric_own_missing',
+     'Electric truck with no electricity cost set: blocks (no official price exists).',
+     petrol_trip(diesel={'zone': 'INLAND', 'mode': 'OWN', 'own_price': None, 'own_set_at': None,
+                         'official_price': None, 'official_effective_from': None, 'official_stale': False,
+                         'use_official': False, 'override_price': None, 'fuel_type': 'Electric'})),
 ]
 
 

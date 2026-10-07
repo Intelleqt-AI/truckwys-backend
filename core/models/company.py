@@ -96,7 +96,23 @@ class Company(models.Model):
     )
     fuel_price_petrol = models.DecimalField(
         max_digits=8, decimal_places=4, null=True, blank=True,
-        help_text='Default Petrol price per litre in ZAR'
+        help_text="The fleet's own petrol price per litre (used when fuel_price_petrol_mode is OWN). "
+                  'Petrol and hybrid trucks.'
+    )
+    # Petrol works like diesel (QUOTE-RULES §1): LIVE = the official FIASA
+    # petrol price for the fuel zone and grade, OWN = fuel_price_petrol.
+    fuel_price_petrol_mode = models.CharField(
+        max_length=4, choices=FUEL_PRICE_MODE_CHOICES, default='LIVE',
+        help_text='LIVE = quote petrol/hybrid trucks on the official price for the fuel zone; '
+                  'OWN = quote on fuel_price_petrol.'
+    )
+    fuel_price_petrol_set_at = models.DateTimeField(
+        null=True, blank=True, help_text='When fuel_price_petrol was last set by a person.'
+    )
+    PETROL_GRADE_CHOICES = [('95', 'ULP 95'), ('93', 'ULP 93 (inland only)')]
+    fuel_price_petrol_grade = models.CharField(
+        max_length=2, choices=PETROL_GRADE_CHOICES, default='95',
+        help_text='Official petrol grade for LIVE pricing. 93 applies inland only; coastal is always 95.'
     )
     fuel_price_electric = models.DecimalField(
         max_digits=8, decimal_places=4, null=True, blank=True,

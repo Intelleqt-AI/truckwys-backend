@@ -73,12 +73,17 @@ class FuelPriceCurrentView(APIView):
 
     Legacy keys (inland_price, coastal_price, date, diesel_inland, ...) are
     kept; additive: zone_price, effective_from, period_start, stale,
-    company_price {mode, source, price, zone, official, own, warnings}."""
+    company_price {mode, source, price, zone, official, own, warnings},
+    petrol {inland_95, inland_93, coastal_95, coastal_93: {price,
+    effective_from, source, stale} | null} (official petrol in force per zone
+    and grade; null = not published) and company_petrol_price (the same
+    shape as company_price, plus fuel_type / grade)."""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         from core.services.fuel_price import (official_row_in_force, period_start, refresh_official,
-                                              resolve_company_diesel, row_effective_from)
+                                              resolve_company_diesel, resolve_company_petrol, resolve_official,
+                                              row_effective_from)
         try:
             now = timezone.now()
             company = getattr(request.user, 'company', None)
@@ -103,6 +108,18 @@ class FuelPriceCurrentView(APIView):
             company_price = None
             if resolution is not None:
                 company_price = {k: v for k, v in resolution.items() if k != 'input'}
+            from core.services.quote_costing import iso as _iso
+            petrol = {}
+            for z in ('INLAND', 'COASTAL'):
+                for grade in ('95', '93'):
+                    rec = resolve_official(z, now, product=f'petrol_{grade}')
+                    petrol[f'{z.lower()}_{grade}'] = None if rec['price'] is None else {
+                        'price': rec['price'], 'effective_from': _iso(rec['effective_from']),
+                        'source': rec['source'], 'stale': rec['stale']}
+            company_petrol_price = None
+            if company is not None:
+                company_petrol_price = {k: v for k, v in resolve_company_petrol(company, now).items()
+                                        if k != 'input'}
             if row is None:
                 return Response({
                     'success': True,
@@ -115,6 +132,7 @@ class FuelPriceCurrentView(APIView):
                     'effective_from': None, 'period_start': timezone.localtime(start).isoformat(),
                     'diesel_500ppm_inland': None, 'diesel_500ppm_coastal': None, 'last_failed_check_at': None,
                     'company_price': company_price,
+                    'petrol': petrol, 'company_petrol_price': company_petrol_price,
                 })
             effective_from = row_effective_from(row)
             failed_at = row.fetch_failed_at
@@ -153,6 +171,7 @@ class FuelPriceCurrentView(APIView):
                 'diesel_500ppm_coastal': num(row.diesel_500ppm_coastal),
                 'last_failed_check_at': timezone.localtime(failed_at).isoformat() if failed_at else None,
                 'company_price': company_price,
+                'petrol': petrol, 'company_petrol_price': company_petrol_price,
             })
         except Exception as e:
             logger.exception('fuel price current failed')
@@ -162,7 +181,11 @@ class FuelPriceCurrentView(APIView):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     def post(self, request):
-        """Admin override: POST {diesel_inland, diesel_coastal} to set current month's price."""
+        """Admin override: POST {diesel_inland, diesel_coastal} to set current month's price.
+        Optional petrol (as published, never derived): petrol_95_inland,
+        petrol_93_inland, petrol_95_coastal, petrol_93_coastal. Petrol left
+        out stays unset on the row; petrol pricing then uses the newest
+        official row that has it."""
         if not request.user.is_staff:
             return Response({'error': 'Staff only'}, status=status.HTTP_403_FORBIDDEN)
 
@@ -174,6 +197,13 @@ class FuelPriceCurrentView(APIView):
         from decimal import Decimal
         from datetime import date
         from core.models.fuel_price import FuelPrice
+
+        def petrol_value(*keys):
+            for k in keys:
+                v = request.data.get(k)
+                if v not in (None, ''):
+                    return Decimal(str(v))
+            return None
 
         now = timezone.now()
         # Keyed by the SAST day it was entered: earlier prices stay on record.
@@ -195,6 +225,10 @@ class FuelPriceCurrentView(APIView):
                 'diesel_grade': None,
                 'diesel_500ppm_inland': None,
                 'diesel_500ppm_coastal': None,
+                'petrol_95': petrol_value('petrol_95_inland', 'petrol_95'),
+                'petrol_93': petrol_value('petrol_93_inland', 'petrol_93'),
+                'petrol_95_coastal': petrol_value('petrol_95_coastal'),
+                'petrol_93_coastal': petrol_value('petrol_93_coastal'),
             }
         )
         return Response({'success': True, 'date': today.isoformat(), 'diesel_inland': float(diesel_inland)})

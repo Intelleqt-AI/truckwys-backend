@@ -342,7 +342,7 @@ class CoordinatorFollowUpTests(_Base):
         body = self.api.post('/api/v1/quotes/cost-breakdown/', {'distance_km': 100, 'weight': 5000, 'toll_cost': 0,
                                                                 'vehicle_type': 'E-Truck'}, format='json').json()
         w = next(w for w in body['warnings'] if w['code'] == 'diesel_missing')
-        self.assertEqual(w['title'], 'No electric price set')
+        self.assertEqual(w['title'], 'No electricity price set')
         self.company.fuel_price_electric = Decimal('3.10')
         self.company.save()
         body = self.api.post('/api/v1/quotes/cost-breakdown/', {'distance_km': 100, 'weight': 5000, 'toll_cost': 0,

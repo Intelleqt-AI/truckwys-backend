@@ -87,7 +87,8 @@ class RefreshTests(TestCase):
         self.assertEqual(sep.diesel_inland, SEP_50PPM_GAUTENG)   # never overwritten
 
     def test_no_network_when_current(self):
-        row(date(2026, 10, 7), 32.7989, 31.9269, eff=sast(2026, 10, 7, 0, 1))
+        row(date(2026, 10, 7), 32.7989, 31.9269, eff=sast(2026, 10, 7, 0, 1),
+            petrol_95=Decimal('30.25'), petrol_95_coastal=Decimal('29.38'))
         with serve() as get, at(sast(2026, 10, 9)):
             fps.refresh_official()
         get.assert_not_called()

@@ -134,8 +134,9 @@ Copy the file into each client repo's test fixtures (keep identical).
   (VerifiedRate) into companies without one. Unknown driving time and no amount → `driver_nights_unknown`
   (block); the return line then has `amount: null` and no extra warning. Golden file regenerated
   (`driver_allowance_missing` case) and `diesel.fuel_type` added — re-copy it.
-- Non-diesel trucks: price = company `fuel_price_petrol|electric|hybrid` (source `own`); missing → code
-  `diesel_missing` (kept for compatibility) with title "No electric price set" etc.
+- Non-diesel trucks: SUPERSEDED for petrol/hybrid by "Petrol (7 Oct 2026)" below. Electric: price = company
+  `fuel_price_electric` (source `own`); missing → code `diesel_missing` (kept for compatibility), title "No
+  electricity price set", detail "Set your electricity cost per kWh in settings.".
 - Truck suggestion considers all visible vehicle types (active or not). Server returns
   `resolution.vehicle_type_id` and `resolution.suggested_vehicle_type_id` (cost-breakdown, pricing-analysis
   `costing.resolution`).
@@ -236,6 +237,39 @@ Copy the file into each client repo's test fixtures (keep identical).
   L/100km) is a standard estimate used only to estimate litres of historic quotes for market normalisation.
 - Fuel alert / surcharge amount = `changes_since_priced.fuel_delta_zar` (today's fuel lines − the snapshot's).
 - Petrol own price: a write echoing the official 95/93 price is not stored (same rule as diesel).
+
+## Petrol (7 Oct 2026): automatic, exactly like diesel
+- Official petrol = FIASA ULP 95 and 93, inland (Gauteng) and coastal, stored on the same effective-dated
+  `FuelPrice` rows as diesel: `petrol_95`, `petrol_93` (inland), `petrol_95_coastal`, `petrol_93_coastal`
+  (migration 0152). Only what FIASA publishes; a missing figure is null (coastal 93 is normally null). No petrol
+  figure is ever derived from diesel or another grade (the old `diesel + 1,30` / `95 − 0,75` defaults are gone).
+  Staff MANUAL POST may carry `petrol_95_inland`, `petrol_93_inland`, `petrol_95_coastal`, `petrol_93_coastal`.
+- Petrol "in force" = the newest official (FIASA/MANUAL) row that publishes that column (a diesel-only MANUAL row
+  doesn't hide petrol). Same freshness as diesel (§2): older than the current period → stale (warn), older than
+  the previous period → missing. A current FIASA row without inland/coastal 95 is re-read (≤ once per 6 h).
+- Company: `fuel_price_petrol_mode` LIVE (default) | OWN, own price `fuel_price_petrol`, `fuel_price_petrol_set_at`,
+  `fuel_price_petrol_grade` '95' (default) | '93'. Grade 93 applies only to INLAND fleets; coastal is always 95.
+- Petrol and **hybrid** trucks resolve exactly like diesel (override → own → official → missing) with the
+  diesel input carrying `fuel_type: "Petrol"` and `grade`; compute() output `diesel` echoes `grade` only when given.
+  Electric has no official price (own only).
+- Warnings: same codes (`diesel_own_off` >3%, `diesel_own_old`, `diesel_stale`, `diesel_missing` block) with
+  `fuel_type` on the warning and fuel-named copy: "Your petrol price differs from official" (detail
+  "Yours R 27,00/L, official R 30,25/L (inland 95)."), "Your petrol price predates the latest change",
+  "Official petrol price may be out of date", "No petrol price available" / "No official price on record; set
+  your own in settings.". Diesel copy unchanged.
+- API: company profile adds `fuel_price_petrol_mode`, `fuel_price_petrol_set_at` (read-only),
+  `fuel_price_petrol_grade`, `petrol_price_in_use` (same shape as `diesel_price_in_use` + `fuel_type`, `grade`).
+  Writes: mode + own (own empty ⇒ LIVE; switching to LIVE keeps own). Old clients that only send
+  `fuel_price_petrol`: unchanged → nothing; official echo → not stored; empty/0 → LIVE; other → OWN.
+  `GET fuel-prices/current/` adds `petrol {inland_95, inland_93, coastal_95, coastal_93: {price, effective_from,
+  source, stale} | null}` and `company_petrol_price`. Clients never write the official into the own field.
+- Migration 0153: own petrol value (else the hybrid value when only that is set) equal (±0,005) to an official
+  petrol figure (FIASA/MANUAL, current or previous period) → LIVE; empty → LIVE; else OWN with set_at =
+  updated_at (a hybrid-only value is copied into `fuel_price_petrol`). Own values are never cleared.
+- PDF line names the fuel: "Priced on petrol 95 at R 30,25/L (official inland, 7 Oct 2026)."
+- Golden: cases `petrol_official_inland_95`, `petrol_own_off`, `petrol_missing`, `petrol_coastal`,
+  `electric_own_missing` appended, rules key `fuel_type` added; existing cases unchanged. Old clients/backends:
+  without the petrol fields, petrol/hybrid price on the own `fuel_price_petrol` only (missing → block).
 - `fetch_fuel_prices --date/--backfill` store FIASA columns under their effective date (no fallback rows);
   `repair_fuel_history` (dry run unless --apply) re-keys mislabelled month rows; history lookups ignore rows
   without an effective date.

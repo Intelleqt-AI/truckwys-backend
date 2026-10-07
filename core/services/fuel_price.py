@@ -155,8 +155,10 @@ def _extract_prices_from_soup(soup) -> Optional[dict]:
     # there is no history to read.
     if 'diesel_coastal' not in prices:
         prices['diesel_coastal'] = prices['diesel_inland'] - _last_known_zone_gap()
-    prices.setdefault('petrol_95', prices['diesel_inland'] + Decimal('1.30'))
-    prices.setdefault('petrol_93', prices['diesel_inland'] + Decimal('0.55'))
+    # Petrol: only what the page said. A missing grade stays missing (None);
+    # no figure is ever derived from diesel.
+    prices.setdefault('petrol_95', None)
+    prices.setdefault('petrol_93', None)
     return prices
 
 
@@ -295,8 +297,10 @@ def _fetch_from_fiasa(as_of: Optional[datetime] = None) -> Optional[dict]:
       effective_from                = that column's date, 00:01 SAST
     Zones come from the tab labels (Coastal / Gauteng). Values on the page
     are cents/litre with a comma decimal. Returns None (a failed fetch) if
-    either zone's 50ppm diesel or the 95 price is missing for that column, or
-    the two zones disagree on the effective date."""
+    either zone's 50ppm diesel is missing for that column, or the two zones
+    disagree on the effective date. Petrol (ULP 95 / 93) is stored per zone
+    exactly as published: a grade a zone doesn't publish (coastal 93) is
+    None, never derived from another figure."""
     try:
         from bs4 import BeautifulSoup
         cutoff = as_of or django_timezone.now()
@@ -320,10 +324,6 @@ def _fetch_from_fiasa(as_of: Optional[datetime] = None) -> Optional[dict]:
                            coastal['effective_from'], inland['effective_from'])
             return None
 
-        petrol_95 = inland.get('petrol_95') or coastal.get('petrol_95')
-        if petrol_95 is None:
-            return None
-
         return {
             'diesel_inland': inland['diesel_50ppm'],
             'diesel_coastal': coastal['diesel_50ppm'],
@@ -331,10 +331,11 @@ def _fetch_from_fiasa(as_of: Optional[datetime] = None) -> Optional[dict]:
             'diesel_500ppm_inland': inland.get('diesel_500ppm'),
             'diesel_500ppm_coastal': coastal.get('diesel_500ppm'),
             'effective_from': inland['effective_from'],
-            'petrol_95': petrol_95,
-            # Coastal genuinely has no 93-octane grade — fall back to a
-            # typical differential below 95 rather than leave it unset.
-            'petrol_93': inland.get('petrol_93') or (petrol_95 - Decimal('0.75')),
+            # petrol_95 / petrol_93 are the inland (Gauteng) figures.
+            'petrol_95': inland.get('petrol_95'),
+            'petrol_93': inland.get('petrol_93'),
+            'petrol_95_coastal': coastal.get('petrol_95'),
+            'petrol_93_coastal': coastal.get('petrol_93'),
             'source': 'FIASA',
         }
     except ImportError:
@@ -406,6 +407,7 @@ def _fetch_from_dmre() -> Optional[dict]:
 # ---------------------------------------------------------------------------
 
 _FALLBACK_SOURCES = ('FALLBACK', 'FALLBACK_LATEST')
+PETROL_FIELDS = ('petrol_95', 'petrol_93', 'petrol_95_coastal', 'petrol_93_coastal')
 
 # How much an automated refresh may trust each source. An automated write may
 # only replace a stored row with data of EQUAL OR HIGHER trust (and, at equal
@@ -569,9 +571,11 @@ def fetch_fuel_prices(
     if data is None:
         data = _fallback_data(target_date)
 
-    # Ensure Decimal types
-    for field in ('diesel_inland', 'diesel_coastal', 'petrol_95', 'petrol_93'):
-        if not isinstance(data[field], Decimal):
+    # Ensure Decimal types (petrol may be missing: None, never a made-up figure)
+    for field in PETROL_FIELDS:
+        data.setdefault(field, None)
+    for field in ('diesel_inland', 'diesel_coastal') + PETROL_FIELDS:
+        if data[field] is not None and not isinstance(data[field], Decimal):
             data[field] = _to_decimal(str(data[field]))
 
     # Provenance fields: set every one explicitly so an overwrite can never
@@ -671,20 +675,36 @@ def row_effective_from(row) -> datetime:
     return datetime(row.date.year, row.date.month, row.date.day, tzinfo=_SAST)
 
 
-def _zone_value(row, zone: str, strict_grade: bool):
+PRODUCTS = ('diesel', 'petrol_95', 'petrol_93')
+
+
+def product_column(product: str, zone: str) -> str:
+    """The FuelPrice column holding `product` ('diesel' | 'petrol_95' |
+    'petrol_93') for `zone`."""
     coastal = str(zone or '').upper() == 'COASTAL'
-    value = row.diesel_coastal if coastal else row.diesel_inland
-    return value
+    if product == 'diesel':
+        return 'diesel_coastal' if coastal else 'diesel_inland'
+    if product not in PRODUCTS:
+        raise ValueError(f'unknown fuel product {product!r}')
+    return f'{product}_coastal' if coastal else product
 
 
-def official_row_in_force(at: Optional[datetime] = None, *, strict_grade: bool = True):
+def _zone_value(row, zone: str, strict_grade: bool, product: str = 'diesel'):
+    return getattr(row, product_column(product, zone))
+
+
+def official_row_in_force(at: Optional[datetime] = None, *, strict_grade: bool = True,
+                          column: Optional[str] = None):
     """The official FuelPrice row in force at `at` (default now), or None.
 
     Newest effective_from wins; a FIASA row with a newer effective_from
     supersedes an older MANUAL row; on the same effective moment MANUAL wins.
     strict_grade: FIASA rows only when they hold the 50ppm grade (pricing).
     History lookups (market normalisation) pass False to also accept older
-    FIASA rows whose grade was not recorded."""
+    FIASA rows whose grade was not recorded.
+    column (petrol): only rows that publish that column, e.g. 'petrol_95_coastal'
+    — a diesel-only MANUAL row does not hide the petrol price in force. The
+    diesel grade filter does not apply to petrol columns."""
     from django.db.models import Q
     from core.models.fuel_price import FuelPrice
 
@@ -693,7 +713,9 @@ def official_row_in_force(at: Optional[datetime] = None, *, strict_grade: bool =
     qs = FuelPrice.objects.filter(source__in=OFFICIAL_SOURCES).filter(
         Q(effective_from__lte=at) | Q(effective_from__isnull=True, date__lte=local_day))
     qs = qs.filter(date__gte=local_day - timedelta(days=400))
-    if strict_grade:
+    if column is not None and column.startswith('petrol'):
+        qs = qs.filter(**{f'{column}__isnull': False})
+    elif strict_grade:
         qs = qs.exclude(Q(source='FIASA') & ~Q(diesel_grade='50ppm'))
     else:
         # History (market normalisation): only rows that say when they took
@@ -710,12 +732,15 @@ def official_row_in_force(at: Optional[datetime] = None, *, strict_grade: bool =
     return best[1] if best else None
 
 
-def price_in_force(zone: str, at: Optional[datetime] = None, *, strict_grade: bool = True) -> Optional[dict]:
-    """{'price', 'effective_from', 'source', 'row_id'} for the zone at `at`, or None."""
-    row = official_row_in_force(at, strict_grade=strict_grade)
+def price_in_force(zone: str, at: Optional[datetime] = None, *, strict_grade: bool = True,
+                   product: str = 'diesel') -> Optional[dict]:
+    """{'price', 'effective_from', 'source', 'row_id'} for the zone at `at`, or None.
+    product: 'diesel' (default) | 'petrol_95' | 'petrol_93'."""
+    column = product_column(product, zone)
+    row = official_row_in_force(at, strict_grade=strict_grade, column=None if product == 'diesel' else column)
     if row is None:
         return None
-    value = _zone_value(row, zone, strict_grade)
+    value = _zone_value(row, zone, strict_grade, product)
     if value is None or value <= 0:
         return None
     return {'price': float(value), 'effective_from': row_effective_from(row), 'source': row.source,
@@ -729,12 +754,11 @@ def _store_official(data: dict, now: datetime):
 
     eff = data['effective_from']
     key = eff.astimezone(_SAST).date()
-    for field in ('diesel_inland', 'diesel_coastal', 'petrol_95', 'petrol_93'):
+    for field in ('diesel_inland', 'diesel_coastal') + PETROL_FIELDS:
         if data.get(field) is not None and not isinstance(data[field], Decimal):
             data[field] = _to_decimal(str(data[field]))
     fields = {k: data.get(k) for k in ('diesel_inland', 'diesel_coastal', 'diesel_grade', 'diesel_500ppm_inland',
-                                        'diesel_500ppm_coastal', 'effective_from', 'petrol_95', 'petrol_93',
-                                        'source')}
+                                        'diesel_500ppm_coastal', 'effective_from', 'source') + PETROL_FIELDS}
     fields.update({'fetched_at': now, 'fetch_failed_at': None})
     existing = FuelPrice.objects.filter(date=key).first()
     if existing is not None:
@@ -758,7 +782,8 @@ def refresh_official(*, force: bool = False, now: Optional[datetime] = None):
     fetch_failed_at on the row in force. Never writes fallback rows."""
     now = now or django_timezone.now()
     row = official_row_in_force(now)
-    if row is not None and row_effective_from(row) >= period_start(now) and not force:
+    if row is not None and row_effective_from(row) >= period_start(now) and not force \
+            and not _missing_petrol(row):
         return row
     data = _fetch_from_fiasa(as_of=now)
     if data is not None:
@@ -775,6 +800,15 @@ def refresh_official(*, force: bool = False, now: Optional[datetime] = None):
     else:
         logger.warning('Official fuel price refresh failed and no official price is on record')
     return row
+
+
+def _missing_petrol(row) -> bool:
+    """A current FIASA row stored before petrol was kept per zone (no coastal
+    95, or no inland 95): re-read FIASA so petrol pricing has it — at most
+    once every 6 hours per row, so a page that really lacks it isn't polled."""
+    if row.source != 'FIASA' or (row.petrol_95 is not None and row.petrol_95_coastal is not None):
+        return False
+    return bool(cache.add(f'fuel_price_petrol_reread:{row.pk}', True, 6 * 3600))
 
 
 def enqueue_refresh() -> bool:
@@ -794,8 +828,10 @@ def _read_refresh_enabled() -> bool:
     return bool(getattr(settings, 'FUEL_PRICE_READ_REFRESH', True))
 
 
-def resolve_official(zone: str, now: Optional[datetime] = None, *, refresh: bool = True) -> dict:
-    """The official price for `zone` now, with freshness (§2).
+def resolve_official(zone: str, now: Optional[datetime] = None, *, refresh: bool = True,
+                     product: str = 'diesel') -> dict:
+    """The official price of `product` ('diesel' | 'petrol_95' | 'petrol_93')
+    for `zone` now, with freshness (§2).
 
     If the stored in-force price predates the current period, the read path
     tries one refresh (throttled to once per READ_REFRESH_SECONDS across the
@@ -806,7 +842,7 @@ def resolve_official(zone: str, now: Optional[datetime] = None, *, refresh: bool
     now = now or django_timezone.now()
     zone = 'COASTAL' if str(zone or '').upper() == 'COASTAL' else 'INLAND'
     start = period_start(now)
-    rec = price_in_force(zone, now)
+    rec = price_in_force(zone, now, product=product)
     attempted = False
     if (rec is None or rec['effective_from'] < start) and refresh and _read_refresh_enabled():
         # No network in the request path: queue ONE background refresh
@@ -826,6 +862,7 @@ def resolve_official(zone: str, now: Optional[datetime] = None, *, refresh: bool
         'stale': bool(rec) and stale,
         'period_start': start,
         'refresh_attempted': attempted,
+        'product': product,
     }
 
 
@@ -863,6 +900,83 @@ def resolve_company_diesel(company, now: Optional[datetime] = None, *, refresh: 
         'own': {'price': resolved['own_price'], 'set_at': resolved['own_set_at']},
         'warnings': qc.diesel_warnings(resolved, litres_total),
     }
+
+
+def petrol_grade(company) -> str:
+    """The official petrol grade a company prices on: '93' only when it chose
+    93 and its fuel zone is INLAND (93 is not sold at the coast), else '95'."""
+    zone = str(getattr(company, 'fuel_zone', None) or 'INLAND').upper()
+    chosen = str(getattr(company, 'fuel_price_petrol_grade', None) or '95')
+    return '93' if chosen == '93' and zone != 'COASTAL' else '95'
+
+
+def resolve_company_petrol(company, now: Optional[datetime] = None, *, refresh: bool = True,
+                           use_official: bool = False, override_price=None, litres_total=None) -> dict:
+    """The company's petrol price for a quote (petrol and hybrid trucks), by
+    the same rule as diesel: fuel_price_petrol_mode LIVE (official FIASA
+    ULP 95/93 for the zone, see petrol_grade) or OWN (fuel_price_petrol,
+    set at fuel_price_petrol_set_at). Same shape as resolve_company_diesel,
+    plus 'fuel_type': 'Petrol' and 'grade'."""
+    from core.services import quote_costing as qc
+    now = now or django_timezone.now()
+    zone = getattr(company, 'fuel_zone', None) or 'INLAND'
+    grade = petrol_grade(company)
+    official = resolve_official(zone, now, refresh=refresh, product=f'petrol_{grade}')
+    mode = (getattr(company, 'fuel_price_petrol_mode', None) or 'LIVE').upper()
+    own = getattr(company, 'fuel_price_petrol', None)
+    d_input = {
+        'zone': official['zone'], 'mode': mode,
+        'own_price': float(own) if own is not None else None,
+        'own_set_at': qc.iso(getattr(company, 'fuel_price_petrol_set_at', None)),
+        'official_price': official['price'],
+        'official_effective_from': qc.iso(official['effective_from']),
+        'official_stale': official['stale'],
+        'use_official': bool(use_official),
+        'override_price': float(override_price) if override_price not in (None, '') else None,
+        'fuel_type': 'Petrol',
+        'grade': grade,
+    }
+    resolved = qc.resolve_diesel(d_input)
+    return {
+        'input': d_input,
+        'fuel_type': 'Petrol',
+        'grade': grade,
+        'mode': resolved['mode'],
+        'source': resolved['source'],
+        'price': resolved['price'],
+        'zone': resolved['zone'],
+        'official': {'price': official['price'], 'effective_from': qc.iso(official['effective_from']),
+                     'source': official['source'], 'stale': official['stale'],
+                     'period_start': qc.iso(official['period_start'])},
+        'own': {'price': resolved['own_price'], 'set_at': resolved['own_set_at']},
+        'warnings': qc.diesel_warnings(resolved, litres_total),
+    }
+
+
+def resolve_company_own_fuel(company, fuel_type: str, override_price=None) -> dict:
+    """Fuels with no official price (electric): the company's own price only
+    (Company.fuel_price_<fuel>); missing = blocked."""
+    from core.services import quote_costing as qc
+    own = qc._pos(getattr(company, f'fuel_price_{fuel_type.lower()}', None))
+    d_input = {'zone': getattr(company, 'fuel_zone', None) or 'INLAND', 'mode': 'OWN',
+               'own_price': own, 'own_set_at': None, 'official_price': None,
+               'official_effective_from': None, 'official_stale': False, 'use_official': False,
+               'override_price': qc._pos(override_price), 'fuel_type': fuel_type}
+    return {'input': d_input, 'fuel_type': fuel_type, 'source': 'own' if own else 'missing'}
+
+
+def resolve_company_fuel(company, fuel_type: Optional[str] = None, now: Optional[datetime] = None, *,
+                         refresh: bool = True, use_official: bool = False, override_price=None) -> dict:
+    """The fuel price a quote on a `fuel_type` truck uses: diesel and petrol
+    (petrol + hybrid trucks) are Official/Own; electric is own only."""
+    fuel = str(fuel_type or 'Diesel').strip().lower()
+    if fuel == 'diesel':
+        return resolve_company_diesel(company, now, refresh=refresh, use_official=use_official,
+                                      override_price=override_price)
+    if fuel in ('petrol', 'hybrid'):
+        return resolve_company_petrol(company, now, refresh=refresh, use_official=use_official,
+                                      override_price=override_price)
+    return resolve_company_own_fuel(company, str(fuel_type).strip().capitalize(), override_price=override_price)
 
 
 def company_diesel_price(company, now: Optional[datetime] = None) -> Optional[Decimal]:
