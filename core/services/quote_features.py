@@ -156,7 +156,9 @@ def customer_signals(company, customer_id, as_of, exclude_quote_id=None):
             was_sent=False)
         if exclude_quote_id:
             qs = qs.exclude(id=exclude_quote_id)
-        decided = qs.filter(outcome__in=['accepted', 'rejected'])
+        # Only outcomes already known at as_of: a quote created before as_of
+        # but decided after it is not evidence yet (no training leakage).
+        decided = qs.filter(outcome__in=['accepted', 'rejected']).exclude(outcomes__created_at__gt=as_of)
         total = decided.count()
         accepted = decided.filter(outcome='accepted').count()
         rate = (accepted / total) if total else 0.5
@@ -185,7 +187,7 @@ def user_signals(user_id, as_of, exclude_quote_id=None):
         qs = Quote.objects.filter(created_by_id=user_id, created_at__lte=as_of).exclude(was_sent=False)
         if exclude_quote_id:
             qs = qs.exclude(id=exclude_quote_id)
-        decided = qs.filter(outcome__in=['accepted', 'rejected'])
+        decided = qs.filter(outcome__in=['accepted', 'rejected']).exclude(outcomes__created_at__gt=as_of)
         total = decided.count()
         accepted = decided.filter(outcome='accepted').count()
         rate = (accepted / total) if total else 0.5
@@ -217,7 +219,7 @@ def lane_historical_acceptance_rate(company, origin, destination, as_of, exclude
             _lane_q('origin', origin), _lane_q('destination', destination),
             company=company, created_at__lte=as_of,
             outcome__in=['accepted', 'rejected'],
-        ).exclude(was_sent=False)
+        ).exclude(was_sent=False).exclude(outcomes__created_at__gt=as_of)   # decided by as_of only
         if exclude_quote_id:
             qs = qs.exclude(id=exclude_quote_id)
         total = qs.count()

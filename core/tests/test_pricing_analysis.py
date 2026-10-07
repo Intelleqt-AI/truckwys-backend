@@ -53,6 +53,23 @@ def won_quotes(company, customer, n, *, start=24000, step=500, origin='JHB', des
     return out
 
 
+OTHER_OPERATORS = ('Ridgeback Freight', 'Saltpan Haulage', 'Quiver Tree Logistics')
+
+
+def platform_market(company, customer, n_own=3, n_other=4, start=24000, **kw):
+    """A platform market on the lane under the privacy rules: n_own quotes of
+    the requesting company (never part of its platform range) and n_other
+    won quotes from EACH of three other operators (>= 10 from >= 3 others)."""
+    won_quotes(company, customer, n_own, start=start, prefix='A', **kw)
+    others = []
+    for i, name in enumerate(OTHER_OPERATORS):
+        other = Company.objects.filter(company_name=name).first() or Company.objects.create(company_name=name)
+        won_quotes(other, make_customer(other, f'{name} Customer'), n_other, start=start + 1500 + i * 250,
+                   prefix=f'B{i}', **kw)
+        others.append(other)
+    return others
+
+
 class _Base(IsolatedModelStorageMixin, TestCase):
     def setUp(self):
         super().setUp()
@@ -259,17 +276,17 @@ class CostFloorTests(_Base):
 class RulesWithMarketTests(_Base):
     def setUp(self):
         super().setUp()
-        other = Company.objects.create(company_name='Ridgeback Freight')
-        other_cust = make_customer(other, 'Saltpan Traders')
-        won_quotes(self.company, self.customer, 3, start=24000, prefix='A')
-        won_quotes(other, other_cust, 4, start=25500, prefix='B')
+        platform_market(self.company, self.customer)
 
     def test_platform_tier_drives_choices_and_bands(self):
         r = self.analyze(your_price=26000, customer_id=self.customer.id, include_return=False)
         m = r['market']
         self.assertEqual(m['tier'], 'platform')
         self.assertFalse(m['is_estimate'])
-        self.assertEqual(m['n'], 7)
+        self.assertEqual(m['n'], 12)                  # the 3 other operators only (own quotes excluded)
+        for k in ('p25', 'median', 'p75'):
+            self.assertEqual(m[k] % 500, 0)            # privacy: R500 only
+            self.assertNotIn('raw_' + k, m)
         safe, balanced, stretch = r['choices']
         # Safe sits at p25, or up to 3% under it in a tight market (to keep
         # Balanced at the median rather than pushing it above).
@@ -283,7 +300,7 @@ class RulesWithMarketTests(_Base):
         raw = r['likelihood']['rules']['raw_thresholds']
         self.assertEqual(th['likely_max'], pa._ceil_to(raw['likely_max'], 500))
         self.assertEqual(th['even_max'], max(pa._ceil_to(raw['even_max'], 500),
-                                             th['likely_max'] + pa._ceil_to(max(1000, 0.06 * m['raw_median']), 500)))
+                                             th['likely_max'] + pa._ceil_to(max(1000, 0.06 * m['median']), 500)))
         self.assertEqual(r['likelihood']['level'], 'rules')
         self.assertEqual(safe['likelihood']['band'], 'likely')
         self.assertEqual(r['your_price']['market_position'], 'within')
@@ -783,9 +800,7 @@ class Round1FixTests(_Base):
         self.assertIn('R\u00a014,50/km', fixed['basis'])
 
     def test_empty_return_summaries_match_each_card(self):
-        other = Company.objects.create(company_name='Ridgeback Freight')
-        won_quotes(self.company, self.customer, 3, start=12000, prefix='A')
-        won_quotes(other, make_customer(other, 'Saltpan Traders'), 4, start=12500, prefix='B')
+        platform_market(self.company, self.customer, start=11000)
         r = self.analyze(include_return=True, your_price=26000)
         m = r['market']
         for c in r['choices']:
@@ -915,9 +930,7 @@ class Round3Tests(_ModelMixin, _Base):
     empty-return context, labels and short reasons."""
 
     def _platform(self, n_own=3, n_other=4, start=24000, **kw):
-        other = Company.objects.create(company_name='Ridgeback Freight')
-        won_quotes(self.company, self.customer, n_own, start=start, prefix='A', **kw)
-        won_quotes(other, make_customer(other, 'Saltpan Traders'), n_other, start=start + 1500, prefix='B', **kw)
+        return platform_market(self.company, self.customer, n_own, n_other, start, **kw)[0]
 
     def test_round_trip_market_is_one_way_times_two(self):
         self._platform()
@@ -927,8 +940,8 @@ class Round3Tests(_ModelMixin, _Base):
         self.assertIn('×2 for a return trip', rt['market']['tier_label'])
         self.assertIn('one-way', rt['market']['tier_label'])
         for k in ('p25', 'median', 'p75'):
-            self.assertAlmostEqual(rt['market']['raw_' + k], one['market']['raw_' + k] * 2, delta=0.01)
-            self.assertEqual(rt['market'][k] % 100, 0)
+            self.assertLessEqual(abs(rt['market'][k] - one['market'][k] * 2), 500)   # each rounded to R500
+            self.assertEqual(rt['market'][k] % 500, 0)
         self.assertEqual(rt['market']['basis'], 'one_way_x2')
         self.assertEqual(rt['market']['basis_label'], 'one-way quotes ×2')
         # Choices and bands come from the scaled range.
@@ -948,7 +961,7 @@ class Round3Tests(_ModelMixin, _Base):
     def test_vehicle_filter_is_named_in_the_label(self):
         VehicleType.objects.create(company=self.company, name='Superlink', capacity=34, max_distance=3000,
                                    base_rate=20, fuel_consumption_l_per_100km=42)
-        self._platform(n_own=3, n_other=3, vehicle_type='Superlink')
+        self._platform(n_own=3, n_other=4, vehicle_type='Superlink')
         r = self.analyze(vehicle_type='Superlink')
         self.assertTrue(r['market']['vehicle_specific'])
         self.assertIn('Superlink only', r['market']['tier_label'])
@@ -1091,9 +1104,7 @@ class Round4Tests(_Base):
     setting, company profile fields, agreed price, benchmark back-compat."""
 
     def _platform(self, n_own=3, n_other=4, start=24000, **kw):
-        other = Company.objects.create(company_name='Ridgeback Freight')
-        won_quotes(self.company, self.customer, n_own, start=start, prefix='A', **kw)
-        won_quotes(other, make_customer(other, 'Saltpan Traders'), n_other, start=start + 1500, prefix='B', **kw)
+        return platform_market(self.company, self.customer, n_own, n_other, start, **kw)[0]
         return other
 
     # B1
@@ -1235,18 +1246,19 @@ class Round4Tests(_Base):
         self._platform()
         rt = self.analyze(legs=2, trip_type='ROUND_TRIP', distance_km=1136)
         self.assertEqual(rt['market']['basis'], 'one_way_x2')
-        other = Company.objects.get(company_name='Ridgeback Freight')
-        won_quotes(self.company, self.customer, 3, start=47000, prefix='RA', trip_type='ROUND_TRIP')
-        won_quotes(other, make_customer(other, 'Kraal Foods'), 3, start=48000, prefix='RB', trip_type='ROUND_TRIP')
+        for i, name in enumerate(OTHER_OPERATORS):
+            other = Company.objects.get(company_name=name)
+            won_quotes(other, make_customer(other, f'Kraal Foods {i}'), 4, start=48000, prefix=f'RB{i}',
+                       trip_type='ROUND_TRIP')
         pa._MARKET_MEMO.clear()
         rt = self.analyze(legs=2, trip_type='ROUND_TRIP', distance_km=1136)
         m = rt['market']
         self.assertEqual((m['basis'], m['basis_label'], m['n'], m['legs_scaled']),
-                         ('round_trip', 'return-trip quotes', 6, False))
+                         ('round_trip', 'return-trip quotes', 12, False))
         self.assertIn('return-trip quotes', m['tier_label'])
-        self.assertTrue(47000 <= m['raw_median'] <= 50000)
+        self.assertTrue(47000 <= m['median'] <= 50000)
         # One-way sample unchanged by the return-trip quotes.
-        self.assertEqual(self.analyze()['market']['n'], 7)
+        self.assertEqual(self.analyze()['market']['n'], 12)
 
     # 5b + 8
     def test_round_trip_nights_and_company_allowance_setting(self):
@@ -1277,17 +1289,30 @@ class Round4Tests(_Base):
         self._platform(start=24030)
         m = self.analyze(your_price=25000)['market']
         for k in ('p25', 'median', 'p75'):
-            self.assertEqual(m[k] % 100, 0)
-            self.assertLessEqual(abs(m[k] - m['raw_' + k]), 50)
-        self.assertEqual(m['rounded_to'], 100)
+            self.assertEqual(m[k] % 500, 0)            # platform: R500, no raw figures (privacy)
+            self.assertNotIn('raw_' + k, m)
+        self.assertEqual(m['rounded_to'], 500)
         none = self.analyze(origin='JHB', destination='CPT')['market']
         self.assertFalse(none['available'])            # no hard-coded estimate is shown
         self.assertIsNone(none['median'])
 
     # Never-sent quotes are not evidence
     def test_never_sent_won_quotes_are_not_market_or_customer_evidence(self):
-        self._platform(n_own=3, n_other=3)                     # 6 one-way wins, created as won
+        others = platform_market(self.company, self.customer)   # 12 one-way wins from 3 others, created as won
         base_n = self.analyze()['market']['n']
+        # Another operator's quote decided without ever being sent: not market evidence.
+        o = others[0]
+        o_cust = make_customer(o, 'Other Lane Customer')
+        ns = make_quote(o, o_cust, number='ONS-1', total=25000, destination='DBN', status='DRAFT',
+                        pickup_location='Johannesburg', delivery_location='Durban')
+        ns.status, ns.outcome = 'ACCEPTED', 'accepted'
+        ns.save()
+        os_ = make_quote(o, o_cust, number='OS-1', total=25500, destination='DBN', status='DRAFT',
+                         pickup_location='Johannesburg', delivery_location='Durban')
+        os_.status, os_._skip_send_guard = 'SENT', True
+        os_.save()
+        os_.status = 'ACCEPTED'
+        os_.save()
         q = make_quote(self.company, self.customer, number='NS-1', total=25000, destination='DBN',
                        status='DRAFT', pickup_location='Johannesburg', delivery_location='Durban')
         q.status = 'ACCEPTED'
@@ -1307,13 +1332,15 @@ class Round4Tests(_Base):
         pa._MARKET_MEMO.clear()
         cache.clear()
         r = self.analyze(customer_id=self.customer.id)
-        self.assertEqual(r['market']['n'], base_n + 1)         # only the sent one joins
+        self.assertEqual(r['market']['n'], base_n + 1)         # only the other operator's sent one joins
         self.assertNotIn(q.id, [x['id'] for x in r['customer']['recent_lane_quotes']])
         self.assertIn(sent.id, [x['id'] for x in r['customer']['recent_lane_quotes']])
         # Existing callers of compute_lane_benchmark are unchanged (default).
         from core.services.lane_benchmark import compute_lane_benchmark
-        self.assertEqual(compute_lane_benchmark('JHB', 'DBN')['sample_size'], base_n + 2)
-        self.assertEqual(compute_lane_benchmark('JHB', 'DBN', sent_only=True)['sample_size'], base_n + 1)
+        own = self.company.id
+        self.assertEqual(compute_lane_benchmark('JHB', 'DBN', exclude_company_id=own)['sample_size'], base_n + 2)
+        self.assertEqual(compute_lane_benchmark('JHB', 'DBN', sent_only=True, exclude_company_id=own)['sample_size'],
+                         base_n + 1)
 
     # 7 (M2)
     def test_market_rate_one_way_only_is_opt_in(self):
@@ -1427,9 +1454,7 @@ class Round5Tests(_Base):
     quotes out of the win model's evidence."""
 
     def _platform(self, n_own=3, n_other=4, start=24000, **kw):
-        other = Company.objects.create(company_name='Ridgeback Freight')
-        won_quotes(self.company, self.customer, n_own, start=start, prefix='A', **kw)
-        won_quotes(other, make_customer(other, 'Saltpan Traders'), n_other, start=start + 1500, prefix='B', **kw)
+        return platform_market(self.company, self.customer, n_own, n_other, start, **kw)[0]
         return other
 
     def _items_ok(self, r):
@@ -1597,7 +1622,7 @@ class Round5Tests(_Base):
             self._platform(start=start)
             r = self.analyze(customer_id=self.customer.id)
             th = r['likelihood']['rules']['thresholds']
-            med = r['market']['raw_median']
+            med = r['market']['median']
             self.assertEqual(th['likely_max'] % 500, 0)
             self.assertEqual(th['even_max'] % 500, 0)
             self.assertGreaterEqual(th['even_max'] - th['likely_max'], max(1000, 0.06 * med))
@@ -1948,3 +1973,31 @@ class FinalCopyTests(_Base):
             {'key': 'balanced', 'code': 'empty_return_gap', 'short': 'x.', 'reason': 'Balanced is kept: x.'}, {})
         self.assertIsNone(rec['key'])
         self.assertNotIn('Balanced is kept', rec['reason'])
+
+
+class PlatformPrivacyTests(_Base):
+    """GBE -> HRE: a lane with one other operator (and the requesting
+    company's own quotes) must never show that operator's prices."""
+
+    def test_single_other_operator_never_exposed(self):
+        other = Company.objects.create(company_name='Lone Operator')
+        won_quotes(other, make_customer(other, 'Lone Customer'), 12, start=41000, prefix='LO',
+                   origin='GBE', destination='HRE')
+        won_quotes(self.company, self.customer, 12, start=30000, prefix='OWN', origin='GBE', destination='HRE')
+        r = self.analyze(origin='GBE', destination='HRE', pickup_location='Gaborone', delivery_location='Harare')
+        self.assertNotEqual(r['market']['tier'], 'platform')
+        # Only the company's own quotes (30 000-35 500) may show; the other
+        # operator's (41 000+) never.
+        self.assertTrue(all(r['market'][k] is None or r['market'][k] < 40000 for k in ('p25', 'median', 'p75')))
+
+    def test_platform_needs_three_others_and_ten_quotes(self):
+        from core.services.lane_benchmark import resolve_market_range
+        for i in range(2):
+            o = Company.objects.create(company_name=f'Op {i}')
+            won_quotes(o, make_customer(o, f'C{i}'), 6, start=40000, prefix=f'P{i}', origin='GBE', destination='HRE')
+        self.assertNotEqual(resolve_market_range('GBE', 'HRE', company=self.company)['tier'], 'platform')
+        o = Company.objects.create(company_name='Op 2')
+        won_quotes(o, make_customer(o, 'C2'), 2, start=40000, prefix='P2', origin='GBE', destination='HRE')
+        out = resolve_market_range('GBE', 'HRE', company=self.company)
+        self.assertEqual(out['tier'], 'platform')
+        self.assertTrue(all(out[k] % 500 == 0 for k in ('p25', 'median', 'p75')))

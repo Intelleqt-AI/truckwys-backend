@@ -370,7 +370,7 @@ def compute_lane_benchmark(origin, destination, vehicle_type=None,
                            k_anonymity=5, days=180, exclude_quote_id=None,
                            exclude_created_by_user_id=None, as_of=None, one_way_only=False,
                            round_trip_only=False, sent_only=False, vehicle_class=None,
-                           normalise_fuel=True):
+                           normalise_fuel=True, exclude_company_id=None, min_operators=None):
     """
     Compute an anonymized, cross-platform benchmark for a single lane.
 
@@ -437,7 +437,10 @@ def compute_lane_benchmark(origin, destination, vehicle_type=None,
             _lane_q('destination', destination),
             status__in=WON_STATUSES,
             created_at__gte=since, created_at__lte=as_of,
-        )
+        ).exclude(outcomes__created_at__gt=as_of)   # won only once the win was known at as_of
+        if exclude_company_id:
+            # The requesting company's own quotes are never its "platform" market.
+            qs = qs.exclude(company_id=exclude_company_id)
         if vehicle_type and not vehicle_class and not normalise_fuel:
             qs = qs.filter(vehicle_type__icontains=vehicle_type)
         elif vehicle_type and not vehicle_class:
@@ -512,12 +515,12 @@ def compute_lane_benchmark(origin, destination, vehicle_type=None,
                 'sample_size': sample_size,
             }
 
-        if distinct_operators < MIN_DISTINCT_OPERATORS:
+        if distinct_operators < (min_operators or MIN_DISTINCT_OPERATORS):
             return {
                 'available': False,
                 'reason': (
                     f'k-anonymity not met: data comes from {distinct_operators} '
-                    f'operator(s) (need >= {MIN_DISTINCT_OPERATORS} to anonymize).'
+                    f'operator(s) (need >= {min_operators or MIN_DISTINCT_OPERATORS} to anonymize).'
                 ),
                 'sample_size': sample_size,
             }
@@ -776,6 +779,9 @@ def lane_index(days=180, k_anonymity=5):
 # Below this a p25/p75 is two or three numbers, not a distribution.
 COMPANY_RANGE_MIN_QUOTES = 5
 PLATFORM_WINDOW_DAYS = 180
+PLATFORM_MIN_QUOTES = 10        # privacy: the platform range needs >= 10 quotes ...
+PLATFORM_MIN_OPERATORS = 3      # ... from >= 3 operators other than the requesting company
+PLATFORM_ROUND = 500            # ... and is shown only to the nearest R500
 
 
 def _company_lane_amounts(o, d, vt, company, exclude_quote_id=None, as_of=None, trip='one_way'):
@@ -834,15 +840,23 @@ def resolve_market_range(origin, destination, vehicle_type=None, company=None, e
     try:
         for cls_try in ([cls, None] if cls else [None]):
             vt_try = cls_try
-            b = compute_lane_benchmark(o, d, None, days=PLATFORM_WINDOW_DAYS,
+            # Privacy (shown to other operators): never the requesting
+            # company's own quotes, >= PLATFORM_MIN_QUOTES quotes from >=
+            # PLATFORM_MIN_OPERATORS OTHER operators, percentiles only to the
+            # nearest R500 (no raw figure leaves this function).
+            b = compute_lane_benchmark(o, d, None, k_anonymity=PLATFORM_MIN_QUOTES, days=PLATFORM_WINDOW_DAYS,
                                        exclude_quote_id=exclude_quote_id, as_of=as_of,
                                        one_way_only=not round_trip, round_trip_only=round_trip, sent_only=True,
-                                       vehicle_class=cls_try)
+                                       vehicle_class=cls_try, exclude_company_id=getattr(company, 'id', None),
+                                       min_operators=PLATFORM_MIN_OPERATORS)
             if b.get('available') and b.get('market_median_rate'):
                 n = int(b['sample_size'])
+
+                def r500(v):
+                    return float(int(float(v) / PLATFORM_ROUND + 0.5) * PLATFORM_ROUND)
                 out.update({
                     'available': True, 'tier': 'platform', 'n': n,
-                    'p25': float(b['p25']), 'median': float(b['market_median_rate']), 'p75': float(b['p75']),
+                    'p25': r500(b['p25']), 'median': r500(b['market_median_rate']), 'p75': r500(b['p75']),
                     'window_days': PLATFORM_WINDOW_DAYS, 'vehicle_specific': vt_try is not None,
                     'tier_label': f'TruckWys platform, {n} accepted quotes, last {PLATFORM_WINDOW_DAYS} days',
                 })

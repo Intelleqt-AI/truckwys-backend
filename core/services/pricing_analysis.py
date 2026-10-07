@@ -1484,16 +1484,16 @@ def _round_to(v, unit):
 
 
 def market_display(market):
-    """The market block as shown: p25 / median / p75 to the nearest R100
-    (an estimate to the nearest R500) — whole hundreds, not fake precision.
-    The unrounded figures stay in raw_p25 / raw_median / raw_p75 (2 dp) for
-    audits; the choices and bands are computed from the raw figures."""
+    """The market block as shown: the company's own range to the nearest
+    R100, platform (other operators') figures to the nearest R500 — and no
+    raw figures in the response (privacy)."""
     out = {k: market.get(k) for k in ('available', 'p25', 'median', 'p75', 'n', 'tier', 'tier_label', 'is_estimate',
                                       'legs_scaled', 'vehicle_specific', 'basis', 'basis_label')}
-    unit = 500 if market.get('is_estimate') else 100
+    # Platform figures are other operators' prices: R500 only, no raw values
+    # (privacy). The company's own range keeps R100.
+    unit = 500 if market.get('is_estimate') or market.get('tier') == 'platform' else 100
     for k in ('p25', 'median', 'p75'):
         raw = market.get(k)
-        out['raw_' + k] = round(float(raw), 2) if raw is not None else None
         out[k] = _round_to(raw, unit) if raw is not None else None
     out['rounded_to'] = unit if market.get('available') else None
     return out

@@ -636,7 +636,7 @@ def analyze_quote(payload, company=None, user=None):
 
     m = analysis.get('market') or {}
     usable = bool(m.get('available')) and not m.get('is_estimate')
-    market_rate_val = float(m['raw_median']) if usable and m.get('raw_median') else None
+    market_rate_val = float(m['median']) if usable and m.get('median') else None
     market = {'market_rate': round(market_rate_val, 2) if market_rate_val else None,
               'source': m.get('tier') if usable else 'none',
               'your_vs_market_pct': (round((quote_total - market_rate_val) / market_rate_val * 100, 1)
