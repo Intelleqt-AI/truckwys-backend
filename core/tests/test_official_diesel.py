@@ -110,24 +110,41 @@ class RefreshTests(TestCase):
         self.assertFalse(FuelPrice.objects.filter(source__startswith='FALLBACK').exists())
 
     @override_settings(FUEL_PRICE_READ_REFRESH=True)
-    def test_read_path_refreshes_once_then_marks_stale(self):
+    def test_read_path_queues_one_refresh_and_never_calls_the_network(self):
         row(date(2026, 9, 2), 29.5551, 28.6831, eff=sast(2026, 9, 2, 0, 1))
-        with offline() as get, at(sast(2026, 10, 8, 6)):
+        with offline() as get, at(sast(2026, 10, 8, 6)), \
+                patch('core.services.fuel_price.enqueue_refresh', return_value=True) as q:
             first = fps.resolve_official('INLAND')
             second = fps.resolve_official('INLAND')
-        self.assertEqual(get.call_count, 1)                      # throttled
+        get.assert_not_called()                                  # no network in the request path
+        self.assertEqual(q.call_count, 1)                        # deduplicated by the cache lock
         self.assertTrue(first['refresh_attempted'])
         self.assertFalse(second['refresh_attempted'])
         self.assertTrue(first['stale'])
         self.assertEqual(first['price'], float(SEP_50PPM_GAUTENG))
 
-    @override_settings(FUEL_PRICE_READ_REFRESH=True)
-    def test_read_path_refresh_picks_up_new_period(self):
-        row(date(2026, 9, 2), 29.5551, 28.6831, eff=sast(2026, 9, 2, 0, 1))
-        with serve(OCTOBER_PREPUBLISHED), at(sast(2026, 10, 8, 6)):
-            out = fps.resolve_official('INLAND')
-        self.assertFalse(out['stale'])
-        self.assertEqual(out['price'], 33.3)
+    def test_enqueue_never_raises_when_the_broker_is_down(self):
+        with patch('core.tasks.refresh_fuel_price.apply_async', side_effect=ConnectionError('no broker')):
+            self.assertFalse(fps.enqueue_refresh())
+
+    def test_task_retries_when_fiasa_still_shows_last_period(self):
+        from unittest.mock import MagicMock
+        from core import tasks
+        stale = MagicMock(source='FIASA', effective_from=sast(2026, 9, 2, 0, 1), fetch_failed_at=None,
+                          diesel_inland=Decimal('29.5551'), date=date(2026, 9, 2))
+        for fp in (None, stale):
+            sig = MagicMock()
+            t = tasks.refresh_fuel_price
+            with patch('core.services.fuel_price.fetch_fuel_prices', return_value=fp), at(sast(2026, 10, 8, 6)), \
+                    patch('celery.app.task.Task.signature_from_request', return_value=sig):
+                t.push_request(id='x', retries=0, is_eager=False, called_directly=False)
+                try:
+                    t.run()
+                except Exception:
+                    pass
+                finally:
+                    t.pop_request()
+            self.assertEqual(sig.apply_async.call_count, 1, fp)
 
     def test_two_periods_old_is_not_usable(self):
         row(date(2026, 8, 5), 28.0, 27.1, eff=sast(2026, 8, 5, 0, 1))
@@ -186,6 +203,13 @@ class CurrentEndpointTests(TestCase):
         self.assertIsNone(body['zone_price'])
         self.assertTrue(body['is_stale'])
         self.assertEqual(body['company_price']['source'], 'own')
+
+    def test_force_is_staff_only_and_ignored_for_others(self):
+        row(date(2026, 10, 7), 32.7989, 31.9269, eff=sast(2026, 10, 7, 0, 1))
+        with patch('core.services.fuel_price.refresh_official') as r, at(sast(2026, 10, 7, 9)):
+            resp = self.client.get('/api/v1/fuel-prices/current/?force=true')
+        self.assertEqual(resp.status_code, 200)
+        r.assert_not_called()
 
     def test_zone_price_effective_from_period_and_company_price(self):
         row(date(2026, 9, 2), 29.5551, 28.6831, eff=sast(2026, 9, 2, 0, 1))

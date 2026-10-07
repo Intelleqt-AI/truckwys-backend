@@ -301,7 +301,7 @@ def _fetch_from_fiasa(as_of: Optional[datetime] = None) -> Optional[dict]:
         from bs4 import BeautifulSoup
         cutoff = as_of or django_timezone.now()
         url = 'https://fuelsindustry.org.za/consumer-information/fuel-prices-current-past/'
-        r = requests.get(url, headers=_HEADERS, timeout=8)
+        r = requests.get(url, headers=_HEADERS, timeout=5)   # never hold a worker long
         r.raise_for_status()
         soup = BeautifulSoup(r.text, 'lxml')
 
@@ -773,6 +773,18 @@ def refresh_official(*, force: bool = False, now: Optional[datetime] = None):
     return row
 
 
+def enqueue_refresh() -> bool:
+    """Queue the refresh_fuel_price Celery task; never raises, never blocks
+    on a broker that is down (retry=False)."""
+    try:
+        from core.tasks import refresh_fuel_price
+        refresh_fuel_price.apply_async(retry=False)
+        return True
+    except Exception as exc:
+        logger.warning('Could not queue the fuel price refresh: %s', exc)
+        return False
+
+
 def _read_refresh_enabled() -> bool:
     from django.conf import settings
     return bool(getattr(settings, 'FUEL_PRICE_READ_REFRESH', True))
@@ -793,13 +805,12 @@ def resolve_official(zone: str, now: Optional[datetime] = None, *, refresh: bool
     rec = price_in_force(zone, now)
     attempted = False
     if (rec is None or rec['effective_from'] < start) and refresh and _read_refresh_enabled():
+        # No network in the request path: queue ONE background refresh
+        # (deduplicated by a cache lock for READ_REFRESH_SECONDS) and answer
+        # now with what is stored, flagged stale.
         if cache.add('fuel_price_read_refresh', True, READ_REFRESH_SECONDS):
             attempted = True
-            try:
-                refresh_official(now=now)
-            except Exception as exc:
-                logger.warning('Read-path fuel refresh failed: %s', exc)
-            rec = price_in_force(zone, now)
+            enqueue_refresh()
     stale = rec is not None and rec['effective_from'] < start
     if rec is not None and rec['effective_from'] < previous_period_start(start):
         rec = None   # more than a period out of date: not a price to quote on

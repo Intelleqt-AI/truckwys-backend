@@ -83,7 +83,9 @@ class FuelPriceCurrentView(APIView):
             now = timezone.now()
             company = getattr(request.user, 'company', None)
             zone = getattr(company, 'fuel_zone', None) or 'INLAND'
-            if request.query_params.get('force', '').lower() == 'true':
+            # ?force=true re-checks FIASA now — staff only. Old apps send it
+            # from a "Fetch now" button: for them it is ignored, not an error.
+            if request.query_params.get('force', '').lower() == 'true' and request.user.is_staff:
                 refresh_official(force=True, now=now)
             resolution = resolve_company_diesel(company, now) if company is not None else None
             if resolution is None:

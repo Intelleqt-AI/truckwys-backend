@@ -325,14 +325,17 @@ class FuelNormalisationTests(TestCase):
     def test_snapshot_litres_and_price(self):
         from core.services.lane_benchmark import FuelNormaliser
         n = FuelNormaliser(self.now)
-        row = {'total_amount': 20000, 'fuel_litres': 400, 'fuel_price_used': 30.0, 'fuel_zone': 'INLAND',
-               'created_at': self.sep, 'company_id': None, 'vehicle_type': '', 'distance': 500}
+        row = {'total_amount': 20000, 'fuel_litres': 400, 'fuel_official_at_pricing': 30.0, 'fuel_zone': 'INLAND',
+               'fuel_price_used': 27.0, 'created_at': self.sep, 'company_id': None, 'vehicle_type': '',
+               'distance': 500}
+        # official at pricing, never the own/override price actually used
         self.assertAlmostEqual(n.adjust(row), 20000 + 400 * (32.7989 - 30.0))
 
     def test_no_snapshot_uses_official_on_created_date_and_class_burn(self):
         from core.services.lane_benchmark import FuelNormaliser
         n = FuelNormaliser(self.now)
-        row = {'total_amount': 20000, 'fuel_litres': None, 'fuel_price_used': None, 'fuel_zone': '',
+        row = {'total_amount': 20000, 'fuel_litres': None, 'fuel_official_at_pricing': None, 'fuel_zone': '',
+               'fuel_price_used': 25.0,
                'company__fuel_zone': 'COASTAL', 'created_at': self.sep, 'company_id': None,
                'vehicle_type': 'Superlink', 'distance': 500}
         self.assertAlmostEqual(n.adjust(row), 20000 + 500 * 42.0 / 100 * (31.9269 - 28.6831))
@@ -343,5 +346,5 @@ class FuelNormalisationTests(TestCase):
         from core.services.lane_benchmark import FuelNormaliser
         n = FuelNormaliser(self.now)
         old = datetime(2025, 1, 10, tzinfo=ZoneInfo('Africa/Johannesburg'))
-        self.assertIsNone(n.adjust({'total_amount': 20000, 'fuel_price_used': None, 'created_at': old,
+        self.assertIsNone(n.adjust({'total_amount': 20000, 'fuel_official_at_pricing': None, 'created_at': old,
                                     'company_id': None, 'vehicle_type': '', 'distance': 500}))

@@ -172,8 +172,8 @@ def _lane_q(field, code):
 # today's diesel price before any percentile.
 #   adj_total = total + litres_hist × (price_today − price_hist)
 # litres_hist: the quote's snapshot (fuel_litres), else km × the class's rated
-# burn; price_hist: the price the quote was priced on (fuel_price_used), else
-# the official price in force on its created date (its zone), else the quote
+# burn; price_hist: the official price at pricing (fuel_official_at_pricing),
+# else the official price in force on its created date (its zone), else the quote
 # is left out. With no official price on record at all nothing can be
 # normalised and raw totals are used (flagged fuel_normalised False).
 # ---------------------------------------------------------------------------
@@ -181,7 +181,7 @@ def _lane_q(field, code):
 MARKET_WINDOW_DAYS = 180       # QUOTE-RULES §8: last 180 days, every tier
 CLASS_MIN_N = 5                # same vehicle class only when it has >= 5 quotes
 QUOTE_ROW_FIELDS = ('id', 'total_amount', 'company_id', 'created_at', 'vehicle_type', 'distance', 'trip_type',
-                    'fuel_litres', 'fuel_price_used', 'fuel_zone', 'company__fuel_zone')
+                    'fuel_litres', 'fuel_official_at_pricing', 'fuel_zone', 'company__fuel_zone')
 
 
 class FuelNormaliser:
@@ -241,7 +241,10 @@ class FuelNormaliser:
         today = self._price(zone, self.as_of)
         if today is None:
             return None
-        hist = get('fuel_price_used')
+        # The OFFICIAL price when it was priced (snapshot), else the official
+        # price in force on its created date — never fuel_price_used, which
+        # may be the fleet's own or a per-quote override (not a market move).
+        hist = get('fuel_official_at_pricing')
         hist = float(hist) if hist is not None else self._price(zone, get('created_at'))
         if hist is None:
             return None

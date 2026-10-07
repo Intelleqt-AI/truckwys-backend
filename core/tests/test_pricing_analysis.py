@@ -1283,6 +1283,7 @@ class Round4Tests(_Base):
         sent = make_quote(self.company, self.customer, number='S-1', total=25500, destination='DBN',
                           status='DRAFT', pickup_location='Johannesburg', delivery_location='Durban')
         sent.status = 'SENT'
+        sent._skip_send_guard = True     # the subject here is was_sent, not the send guard
         sent.save()
         sent.status = 'ACCEPTED'
         sent.save()

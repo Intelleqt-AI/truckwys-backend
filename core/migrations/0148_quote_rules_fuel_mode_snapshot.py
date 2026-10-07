@@ -96,10 +96,20 @@ class Migration(migrations.Migration):
             name='priced_at',
             field=models.DateTimeField(blank=True, null=True),
         ),
-        migrations.AddField(
-            model_name='quote',
-            name='priced_vehicle_type',
-            field=models.ForeignKey(blank=True, help_text='Vehicle type the quote was priced on', null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='+', to='core.vehicletype'),
+        # The FK column is added WITHOUT its index here; 0150 builds the index
+        # CONCURRENTLY on Postgres (quotes is a large, hot table). The model
+        # state still says db_index=True, so later migrations see it normally.
+        migrations.SeparateDatabaseAndState(
+            state_operations=[migrations.AddField(
+                model_name='quote',
+                name='priced_vehicle_type',
+                field=models.ForeignKey(blank=True, help_text='Vehicle type the quote was priced on', null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='+', to='core.vehicletype'),
+            )],
+            database_operations=[migrations.AddField(
+                model_name='quote',
+                name='priced_vehicle_type',
+                field=models.ForeignKey(blank=True, db_index=False, help_text='Vehicle type the quote was priced on', null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='+', to='core.vehicletype'),
+            )],
         ),
         migrations.AlterField(
             model_name='company',

@@ -477,7 +477,20 @@ def refresh_fuel_price(self):
 
     try:
         from core.services.fuel_price import fetch_fuel_prices
+        from datetime import datetime as _dt
+        from core.services.fuel_price import period_start
         fp = fetch_fuel_prices(force_update=True)
+        if fp is None:
+            logger.warning('refresh_fuel_price: no official price on record and the refresh failed — '
+                           'will retry (attempt %d/3)', self.request.retries + 1)
+            raise self.retry()
+        eff = getattr(fp, 'effective_from', None)
+        if isinstance(eff, _dt) and eff < period_start():
+            # FIASA still shows last period's column (e.g. early on the
+            # change Wednesday): not a success, try again later.
+            logger.warning('refresh_fuel_price: official price in force is from %s, before this period — '
+                           'will retry (attempt %d/3)', eff, self.request.retries + 1)
+            raise self.retry()
         if fp.source in ('FALLBACK', 'FALLBACK_LATEST') or getattr(fp, 'fetch_failed_at', None):
             logger.warning(
                 'refresh_fuel_price: live refresh failed (stored source=%s, kept=%s) — '

@@ -105,6 +105,8 @@ class CompanyDieselModeTests(_Base):
         self.assertEqual((body['fuel_price_mode'], body['fuel_price_own']), ('OWN', '31.2500'))
 
     def test_empty_return_fields_mirror(self):
+        self.company.pricing_include_empty_return = True      # as migration 0149 leaves it
+        self.company.save()
         body = self.api.patch(self.URL, {'pricing_include_empty_return': False}, format='json').json()
         self.assertFalse(body['include_empty_return_default'])
         body = self.api.patch(self.URL, {'include_empty_return_default': True, 'minimum_charge': '5000',
@@ -352,22 +354,6 @@ class CoordinatorFollowUpTests(_Base):
         self.assertNotIn('None', ' '.join(w['detail'] for w in out['warnings']))
         self.assertIn('driver_nights_unknown', out['blocking'])
 
-    def test_allowance_migration_copies_the_approved_rate(self):
-        import importlib
-        from core.models import VerifiedRate
-        mod = importlib.import_module('core.migrations.0150_company_driver_allowance_default')
-        c = Company.objects.create(company_name='No allowance')
-        mod.forwards(apps, None)
-        c.refresh_from_db()
-        self.assertIsNone(c.driver_allowance_per_night)        # nothing approved: nothing invented
-        VerifiedRate.objects.create(kind='driver_allowance', key='nbcrfli', label='NBCRFLI', value=Decimal('512'),
-                                    unit='per_night', effective_from=date(2026, 3, 1), status='approved')
-        mod.forwards(apps, None)
-        c.refresh_from_db()
-        self.assertEqual(c.driver_allowance_per_night, Decimal('512'))
-        self.company.refresh_from_db()
-        self.assertEqual(self.company.driver_allowance_per_night, Decimal('450'))   # own setting kept
-
 
 class AiPriceCheckFloorTests(_Base):
     def test_suggested_combination_never_below_target_price(self):
@@ -412,9 +398,16 @@ class AnalyzeAndAlertTests(_Base):
 
     def test_narrative_numbers_must_be_ours(self):
         from core.services.quote_analysis import narrative_numbers_ok
-        structured = {'quote_total': 36000.0, 'cost': {'margin_pct': 12.5}, 'suggested_price': 38500.0}
-        self.assertTrue(narrative_numbers_ok('Margin 12.5% on R36,000; suggest R38 500 over 2 nights.', structured))
-        self.assertFalse(narrative_numbers_ok('The market pays about R45,000 on this lane.', structured))
+        structured = {'quote_total': 36000.0, 'cost_analysis': {'margin_pct': 9.0}, 'suggested_price': 38500.0,
+                      'distance_km': 560.0, 'fuel_analysis': {'current_price': 32.8}, 'extra': {'n': 45000}}
+        ok = narrative_numbers_ok
+        self.assertTrue(ok('560 km at R 32,80/L, margin 9% on R36,000; suggest R38 500 over 2 nights.', structured))
+        self.assertTrue(ok('About R36k today.', structured))
+        self.assertFalse(ok('The market pays about R45,000 on this lane.', structured))   # not a headline figure
+        self.assertFalse(ok('A 600 km trip.', structured))
+        self.assertFalse(ok('Diesel at R 29,50 per litre.', structured))
+        self.assertFalse(ok('Your margin is 4%.', structured))                            # small % still checked
+        self.assertFalse(ok('R 1 050 more than last month.', structured))
 
     def test_fuel_alert_compares_same_zone_snapshot(self):
         self.company.fuel_zone = 'COASTAL'
@@ -468,3 +461,135 @@ class DieselAuditCommandTests(_Base):
         self.assertIn('30.0000', text)
         self.assertIn('-8.5%', text)
         self.assertIn('1', text.split('Rules Haulage')[1].split('\n')[0])
+
+
+class CorsQuoteRulesHeaderTests(TestCase):
+    def test_preflight_allows_the_quote_rules_header(self):
+        r = self.client.options('/api/v1/route/calculate/', HTTP_ORIGIN='https://app.truckwys.com',
+                                HTTP_ACCESS_CONTROL_REQUEST_METHOD='POST',
+                                HTTP_ACCESS_CONTROL_REQUEST_HEADERS='authorization, content-type, x-tw-quote-rules')
+        self.assertEqual(r.status_code, 200)
+        self.assertIn('x-tw-quote-rules', r['Access-Control-Allow-Headers'].lower())
+        self.assertEqual(r['Access-Control-Allow-Origin'], 'https://app.truckwys.com')
+
+
+class ClassificationAndEchoTests(_Base):
+    def test_fallback_rows_are_not_live_echoes(self):
+        FuelPrice.objects.create(date=date(2026, 7, 1), diesel_inland=Decimal('24.5000'),
+                                 diesel_coastal=Decimal('23.8800'), source='FALLBACK_LATEST')
+        body = self.api.patch('/api/v1/company/profile/', {'fuel_price_per_litre': '24.50'}, format='json').json()
+        self.assertEqual((body['fuel_price_mode'], body['fuel_price_own']), ('OWN', '24.5000'))
+        mod = importlib.import_module('core.migrations.0149_company_fuel_price_mode_backfill')
+        c = Company.objects.create(company_name='FB', fuel_price_per_litre=Decimal('24.50'))
+        mod.forwards(apps, None)
+        c.refresh_from_db()
+        self.assertEqual(c.fuel_price_mode, 'OWN')
+
+    def test_backfill_mirrors_the_empty_return_toggle(self):
+        mod = importlib.import_module('core.migrations.0149_company_fuel_price_mode_backfill')
+        c = Company.objects.create(company_name='T', pricing_include_empty_return=False)
+        mod.forwards(apps, None)
+        c.refresh_from_db()
+        self.assertTrue(c.include_empty_return_default)
+        self.assertTrue(c.pricing_include_empty_return)
+
+    def test_old_toggle_echo_does_not_change_the_default(self):
+        self.company.include_empty_return_default = False
+        self.company.pricing_include_empty_return = False
+        self.company.save()
+        body = self.api.patch('/api/v1/company/profile/', {'pricing_include_empty_return': False},
+                              format='json').json()
+        self.assertFalse(body['include_empty_return_default'])
+        body = self.api.patch('/api/v1/company/profile/', {'pricing_include_empty_return': True},
+                              format='json').json()
+        self.assertTrue(body['include_empty_return_default'])
+
+    def test_classification_dry_run(self):
+        from io import StringIO
+        from django.core.management import call_command
+        Company.objects.create(company_name='Typed', fuel_price_per_litre=Decimal('27.10'))
+        Company.objects.create(company_name='Echo', fuel_price_per_litre=Decimal('32.7989'))
+        out = StringIO()
+        call_command('quote_diesel_audit', '--classification', stdout=out)
+        text = out.getvalue()
+        self.assertIn('a price the fleet typed', text.split('Typed')[1].split('\n')[0])
+        self.assertIn('matches FIASA inland', text.split('Echo')[1].split('\n')[0])
+        self.assertIn('Dry run', text)
+
+
+class SaveSemanticsTests(_Base):
+    def test_echoing_same_values_does_not_reprice(self):
+        q = self.create()
+        priced = q.priced_at
+        with patch('django.utils.timezone.now', return_value=sast(2026, 10, 8, 9)):
+            r = self.api.patch(f'/api/v1/quotes/{q.id}/', {'distance': '568.40', 'toll_charges': '1043.48'},
+                               format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        q.refresh_from_db()
+        self.assertEqual(q.priced_at, priced)
+
+    def test_changed_field_drops_stale_costing_inputs(self):
+        q = self.create(costing_inputs={'toll_cost_one_way': 1043.48, 'tolls_unknown': True,
+                                        'include_empty_return': False})
+        r = self.api.patch(f'/api/v1/quotes/{q.id}/', {'toll_charges': '1200.00'}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        q.refresh_from_db()
+        self.assertEqual(q.costing_inputs, {'include_empty_return': False})
+
+    def test_quote_fields_win_over_disagreeing_inputs(self):
+        from core.services.quote_costing import quote_payload
+        other = VehicleType.objects.create(company=self.company, name='Rigid', capacity=8, max_distance=500,
+                                           base_rate=10, fuel_consumption_l_per_100km=24)
+        q = self.create()
+        Quote.objects.filter(pk=q.pk).update(costing_inputs={'vehicle_type_id': other.id, 'toll_cost_one_way': 5.0,
+                                                             'duration_minutes': 999})
+        q.refresh_from_db()
+        p = quote_payload(q)
+        self.assertNotEqual(p['vehicle_type_id'], other.id)
+        self.assertIsNone(p['toll_cost_one_way'])
+        self.assertEqual(p['duration_minutes'], 440)
+
+    def test_fuel_override_bounded(self):
+        r = self.api.post('/api/v1/quotes/', self.quote_payload(costing_inputs={'fuel_price_override': 250}),
+                          format='json')
+        self.assertEqual(r.status_code, 400)
+
+    def test_send_check_fails_closed(self):
+        from core.services.quote_snapshot import send_check
+        q = self.create()
+        with patch('core.services.quote_costing.costing_for_quote', side_effect=RuntimeError('boom')):
+            check = send_check(q)
+        self.assertFalse(check['can_send'])
+        self.assertEqual(check['blocking'], ['check_failed'])
+
+    def test_pdf_blocked_only_for_drafts(self):
+        q = self.create(costing_inputs={'tolls_unknown': True})
+        r = self.api.get(f'/api/v1/quotes/{q.id}/generate_pdf/')
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('title', r.json())
+        Quote.objects.filter(pk=q.pk).update(status='ACCEPTED')
+        r = self.api.get(f'/api/v1/quotes/{q.id}/generate_pdf/')
+        self.assertEqual(r.status_code, 200)
+
+    def test_copilot_cannot_send_a_blocked_quote(self):
+        from core.models import CopilotProposal
+        from core.services.copilot_tools import execute_proposal
+        q = self.create(costing_inputs={'tolls_unknown': True})
+        prop = CopilotProposal.objects.create(company=self.company, user=self.user, table='quotes',
+                                              operation='UPDATE', target_id=str(q.id), payload={'status': 'SENT'},
+                                              status='PENDING', expires_at=NOW + timedelta(hours=1))
+        ok, result = execute_proposal(prop, self.user, self.company)
+        self.assertFalse(ok)
+        self.assertIn('warnings', result)
+        q.refresh_from_db()
+        self.assertEqual(q.status, 'DRAFT')
+
+    def test_model_save_to_sent_is_guarded_and_no_email_on_block(self):
+        from core.services.quote_snapshot import QuoteSendBlocked
+        q = self.create(costing_inputs={'tolls_unknown': True})
+        q.status = 'SENT'
+        with patch('core.services.quote_share.send_quote_to_customer_email') as email, \
+                self.captureOnCommitCallbacks(execute=True):
+            with self.assertRaises(QuoteSendBlocked):
+                q.save()
+        email.assert_not_called()

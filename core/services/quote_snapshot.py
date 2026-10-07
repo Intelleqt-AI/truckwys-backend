@@ -62,25 +62,31 @@ def snapshot_quote(quote, now=None):
     (a save is never failed by its snapshot)."""
     from core.models import Quote
     from core.services.quote_costing import costing_for_quote
+    from django.db import transaction
     now = now or timezone.now()
     try:
-        costing = costing_for_quote(quote, now)
-        fields = snapshot_fields(costing, now)
-        if fields['priced_vehicle_type_id'] is not None:
-            from core.models import VehicleType
-            if not VehicleType.objects.filter(id=fields['priced_vehicle_type_id']).exists():
-                fields['priced_vehicle_type_id'] = None
-        if quote.fuel_price_at_creation is None and fields['fuel_price_used'] is not None:
-            # Legacy field, kept for old readers: the zone price this quote
-            # was priced on (never a fallback figure).
-            fields['fuel_price_at_creation'] = fields['fuel_price_used']
-        Quote.objects.filter(pk=quote.pk).update(**fields)
-        for k, v in fields.items():
-            setattr(quote, k, v)
-        return costing
+        with transaction.atomic():      # savepoint: a failed snapshot never poisons the save's transaction
+            return _snapshot(quote, now, Quote, costing_for_quote)
     except Exception:
         logger.exception('quote %s: pricing snapshot failed', getattr(quote, 'pk', None))
         return None
+
+
+def _snapshot(quote, now, Quote, costing_for_quote):
+    costing = costing_for_quote(quote, now)
+    fields = snapshot_fields(costing, now)
+    if fields['priced_vehicle_type_id'] is not None:
+        from core.models import VehicleType
+        if not VehicleType.objects.filter(id=fields['priced_vehicle_type_id']).exists():
+            fields['priced_vehicle_type_id'] = None
+    if quote.fuel_price_at_creation is None and fields['fuel_price_used'] is not None:
+        # Legacy field, kept for old readers: the zone price this quote
+        # was priced on (never a fallback figure).
+        fields['fuel_price_at_creation'] = fields['fuel_price_used']
+    Quote.objects.filter(pk=quote.pk).update(**fields)
+    for k, v in fields.items():
+        setattr(quote, k, v)
+    return costing
 
 
 def period_changed_warning(quote, now=None):
@@ -111,8 +117,11 @@ def send_check(quote, now=None):
         costing = costing_for_quote(quote, now, use_snapshot_diesel=True)
         warnings = list(costing['warnings'])
     except Exception:
-        logger.exception('quote %s: send check failed', getattr(quote, 'pk', None))
-        warnings = []
+        # Fail CLOSED: a quote we couldn't check is not sent.
+        logger.error('quote %s: send check failed', getattr(quote, 'pk', None), exc_info=True)
+        from core.services.quote_costing import warning
+        warnings = [warning('check_failed', 'block', 'Couldn\'t check this quote', 'Try again in a minute.',
+                            actions=())]
     changed = period_changed_warning(quote, now)
     if changed:
         warnings.append(changed)
@@ -160,3 +169,31 @@ def fuel_change_since_pricing(quote, now=None):
         impact = round(fuel * delta / baseline, 2) if fuel else None
     return {'zone': zone, 'baseline': baseline, 'current': current, 'delta': round(delta, 4),
             'delta_pct': round(delta / baseline * 100, 2), 'litres': litres, 'impact_zar': impact}
+
+
+
+from rest_framework.exceptions import APIException  # noqa: E402
+
+
+class QuoteSendBlocked(APIException):
+    """A send path hit a blocking warning (QUOTE-RULES.md §11). Renders as
+    400 {code: quote_send_blocked, error, warnings, blocking} in any DRF view."""
+    status_code = 400
+    default_code = 'quote_send_blocked'
+
+    def __init__(self, check):
+        super().__init__('quote send blocked')
+        self.check = check
+        self.detail = blocked_response_body(check)
+
+
+def enforce_send_guard(quote, now=None):
+    """THE send guard: raise QuoteSendBlocked when the quote has a blocking
+    warning, else return the check (its warn-level warnings). Called from the
+    Quote pre_save signal on every transition to SENT (any path: API, board,
+    update_status, send_to_customer, copilot), from QuoteSerializer.create
+    for a quote created as SENT, and by send_to_customer's resend."""
+    check = send_check(quote, now)
+    if not check['can_send']:
+        raise QuoteSendBlocked(check)
+    return check

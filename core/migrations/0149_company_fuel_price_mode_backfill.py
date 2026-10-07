@@ -2,16 +2,20 @@
 
 fuel_price_per_litre used to receive the live price ("Fetch now", settings
 on-load fill) and the 23.50 model default, so a value equal to 23.50, null,
-or (within half a cent) any stored FuelPrice figure — inland/coastal, 50 or
-500ppm — is not a price the fleet chose: LIVE. Anything else was typed in:
+or (within half a cent) any official (FIASA / MANUAL, never FALLBACK) FuelPrice
+figure — inland/coastal, 50 or 500ppm — is not a price the fleet chose: LIVE. Anything else was typed in:
 OWN at that value, set_at = the company's updated_at.
 
-bulk_update of the three fields only, so updated_at is not touched. Reverse: clears the new
-fields (fuel_price_per_litre is never modified, so nothing is lost).
+bulk_update of the three fields only, so updated_at is not touched;
+fuel_price_per_litre is never modified, so nothing is lost.
+
+Also sets pricing_include_empty_return = include_empty_return_default (the old
+toggle becomes a mirror). Reverse clears the LIVE/OWN fields; the toggle is
+left as mirrored (its pre-migration values are not kept).
 """
 from decimal import Decimal
 
-from django.db import migrations
+from django.db import migrations, models
 
 TOLERANCE = Decimal('0.005')
 FACTORY_DEFAULT = Decimal('23.50')
@@ -21,8 +25,10 @@ def forwards(apps, schema_editor):
     Company = apps.get_model('core', 'Company')
     FuelPrice = apps.get_model('core', 'FuelPrice')
     known = set()
-    for row in FuelPrice.objects.values_list('diesel_inland', 'diesel_coastal', 'diesel_500ppm_inland',
-                                             'diesel_500ppm_coastal'):
+    # Only prices a client could have been served as the live price: official
+    # rows (FIASA / MANUAL), never the FALLBACK table.
+    for row in FuelPrice.objects.filter(source__in=('FIASA', 'MANUAL')).values_list(
+            'diesel_inland', 'diesel_coastal', 'diesel_500ppm_inland', 'diesel_500ppm_coastal'):
         known.update(Decimal(v) for v in row if v is not None)
 
     def is_live(value):
@@ -49,6 +55,9 @@ def forwards(apps, schema_editor):
             batch = []
     if batch:
         Company.objects.bulk_update(batch, fields)
+    # The old empty-return toggle mirrors the new default (True, QUOTE-RULES
+    # §5) so old and new clients read the same setting.
+    Company.objects.update(pricing_include_empty_return=models.F('include_empty_return_default'))
 
 
 def backwards(apps, schema_editor):

@@ -733,6 +733,9 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
                     num = float(v)
                     if num != num or num < 0:
                         raise ValueError
+                    if key == 'fuel_price_override' and not (5 <= num <= 100):
+                        raise serializers.ValidationError('costing_inputs.fuel_price_override must be between '
+                                                          'R5 and R100 per litre.')
                     out[key] = int(num) if kind is int else num
             except (TypeError, ValueError):
                 raise serializers.ValidationError(f'costing_inputs.{key} must be '
@@ -740,9 +743,45 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
         return out
 
     def _snapshot(self, instance, validated_data, created):
-        from core.services.quote_snapshot import PRICING_FIELDS, snapshot_quote
-        if created or PRICING_FIELDS & set(validated_data):
-            snapshot_quote(instance)
+        from core.services.quote_snapshot import snapshot_quote
+        snapshot_quote(instance)
+
+    @staticmethod
+    def _pricing_changed(instance, validated_data):
+        """Pricing fields whose value actually changes (M2: a PATCH echoing
+        the same values does not re-price)."""
+        from core.services.quote_snapshot import PRICING_FIELDS
+        out = set()
+        for k in PRICING_FIELDS & set(validated_data):
+            old = getattr(instance, k, None)
+            new = validated_data[k]
+            try:
+                same = (old == new) or (old is not None and new is not None and float(old) == float(new))
+            except (TypeError, ValueError):
+                same = old == new
+            if not same:
+                out.add(k)
+        return out
+
+    # costing_inputs keys that restate a quote field; stale once that field changes.
+    CONFLICTING_INPUTS = {
+        'toll_charges': ('toll_cost_one_way', 'tolls_unknown'),
+        'vehicle_type': ('vehicle_type_id',),
+        'estimated_duration_minutes': ('duration_minutes',),
+        'distance': ('distance_estimated', 'distance_confirmed', 'duration_minutes', 'toll_cost_one_way'),
+        'pickup_location': ('distance_estimated', 'distance_confirmed', 'tolls_unknown', 'toll_cost_one_way'),
+        'delivery_location': ('distance_estimated', 'distance_confirmed', 'tolls_unknown', 'toll_cost_one_way'),
+    }
+
+    def _prune_costing_inputs(self, instance, validated_data, changed):
+        """H4: when pricing fields change and the client didn't send
+        costing_inputs, drop the stored keys those fields make stale."""
+        if 'costing_inputs' in validated_data or not changed:
+            return
+        ci = dict(getattr(instance, 'costing_inputs', None) or {})
+        drop = {k for f in changed for k in self.CONFLICTING_INPUTS.get(f, ())}
+        if drop & set(ci):
+            validated_data['costing_inputs'] = {k: v for k, v in ci.items() if k not in drop}
 
     def create(self, validated_data):
         from django.db import transaction
@@ -756,18 +795,27 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
             instance = super().create(validated_data)
             if decision:
                 self._save_pricing_decision(instance, decision, scored)
-        self._snapshot(instance, validated_data, created=True)
+            self._snapshot(instance, validated_data, created=True)
+            if instance.status == 'SENT':
+                # Created straight as SENT: the same guard as every other send
+                # (the pre_save signal guards transitions of saved quotes);
+                # raising rolls the whole create back.
+                from core.services.quote_snapshot import enforce_send_guard
+                enforce_send_guard(instance)
         return instance
 
     def update(self, instance, validated_data):
         from django.db import transaction
         decision = validated_data.pop('pricing_decision', None)
         scored = self._score_decision(instance, validated_data, decision) if decision else None
+        changed = self._pricing_changed(instance, validated_data)
+        self._prune_costing_inputs(instance, validated_data, changed)
         with transaction.atomic():
             instance = super().update(instance, validated_data)
             if decision:
                 self._save_pricing_decision(instance, decision, scored)
-        self._snapshot(instance, validated_data, created=False)
+            if changed:
+                self._snapshot(instance, validated_data, created=False)
         return instance
 
     def _request_user(self):
@@ -1357,7 +1405,9 @@ def _is_live_echo(value):
     q = Q()
     for field in ('diesel_inland', 'diesel_coastal', 'diesel_500ppm_inland', 'diesel_500ppm_coastal'):
         q |= Q(**{f'{field}__gte': value - tol, f'{field}__lte': value + tol})
-    return FuelPrice.objects.filter(q).exists()
+    # Only official rows (FIASA / MANUAL): prices a client could have been
+    # served as the live price — never the FALLBACK table.
+    return FuelPrice.objects.filter(source__in=('FIASA', 'MANUAL')).filter(q).exists()
 
 
 class CompanySerializer(serializers.ModelSerializer):
@@ -1482,7 +1532,12 @@ class CompanySerializer(serializers.ModelSerializer):
         if 'include_empty_return_default' in attrs:
             attrs['pricing_include_empty_return'] = attrs['include_empty_return_default']
         elif 'pricing_include_empty_return' in attrs:
-            attrs['include_empty_return_default'] = attrs['pricing_include_empty_return']
+            # An old client saving its whole settings form echoes the old
+            # toggle back; only a real change of it is a change of the default.
+            if attrs['pricing_include_empty_return'] != getattr(instance, 'pricing_include_empty_return', None):
+                attrs['include_empty_return_default'] = attrs['pricing_include_empty_return']
+            else:
+                attrs.pop('pricing_include_empty_return')
         return attrs
 
     def get_margin_target_range(self, obj):

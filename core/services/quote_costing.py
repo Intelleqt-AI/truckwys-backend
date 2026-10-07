@@ -840,13 +840,29 @@ def quote_payload(quote):
     ci = dict(quote.costing_inputs or {})
     legs = 2 if quote.trip_type == 'ROUND_TRIP' else 1
     distance = _pos(quote.distance)
+    # The quote's own fields win where costing_inputs restates them and
+    # disagrees (a field edited by a client that didn't update the inputs).
+    if quote.estimated_duration_minutes:
+        ci.pop('duration_minutes', None)
+    toll_total = _num(quote.toll_charges)
+    if ci.get('toll_cost_one_way') is not None and toll_total is not None \
+            and abs(float(ci['toll_cost_one_way']) * legs - toll_total) > 0.01:
+        ci.pop('toll_cost_one_way')
+    name = (quote.vehicle_type or '').strip().lower()
+    vt_id = ci.get('vehicle_type_id') or getattr(quote, 'priced_vehicle_type_id', None)
+    if vt_id and name:
+        from core.models import VehicleType
+        vt_name = VehicleType.objects.filter(id=vt_id).values_list('name', flat=True).first()
+        if (vt_name or '').strip().lower() != name:
+            vt_id = None
+    ci['vehicle_type_id'] = vt_id
     payload = {
         'trip_type': quote.trip_type,
         'distance_km': distance,
         'duration_minutes': ci.get('duration_minutes') or quote.estimated_duration_minutes,
         'weight': _num(quote.weight),
         'vehicle_type': quote.vehicle_type,
-        'vehicle_type_id': ci.get('vehicle_type_id') or getattr(quote, 'priced_vehicle_type_id', None),
+        'vehicle_type_id': ci.get('vehicle_type_id'),
         'toll_cost': _num(quote.toll_charges),
         'toll_cost_one_way': ci.get('toll_cost_one_way'),
         'tolls_unknown': ci.get('tolls_unknown'),

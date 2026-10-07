@@ -428,41 +428,78 @@ def _llm_narrative(structured):
         return None
 
 
-_NUM_RE = None
+# The figures a narrative may state (QUOTE-RULES: no number that isn't ours).
+HEADLINE_PATHS = (
+    ('quote_total',), ('suggested_price',), ('cost_basis',), ('distance_km',),
+    ('cost_floor', 'floor'), ('cost_floor', 'target_price'), ('cost_floor', 'minimum_charge'),
+    ('cost_analysis', 'margin_pct'), ('cost_analysis', 'cost_per_km'), ('cost_analysis', 'margin_floor'),
+    ('cost_analysis', 'full_cost_floor'), ('cost_analysis', 'margin_vs_floor'), ('cost_analysis', 'margin_floor_pct'),
+    ('cost_analysis', 'target_margin_pct'),
+    ('fuel_analysis', 'fuel_cost_zar'), ('fuel_analysis', 'fuel_usage_litres'), ('fuel_analysis', 'fuel_price_used'),
+    ('fuel_analysis', 'current_price'), ('fuel_analysis', 'fuel_pct_of_total'),
+    ('price_optimization', 'optimal_price'), ('price_optimization', 'optimal_margin_pct'),
+    ('price_optimization', 'expected_profit'), ('price_optimization', 'win_probability_at_optimal'),
+    ('market_analysis', 'market_rate'), ('market_analysis', 'your_vs_market_pct'),
+    ('ai_prediction', 'win_probability'), ('ai_prediction', 'recommended_price'),
+    ('ai_prediction', 'margin_pct'), ('ai_prediction', 'price_vs_market_pct'),
+)
+
+_NUMBER = r'(\d{1,3}(?:[ \u00a0]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)*)'
 
 
-def _numbers_in(value, out):
-    if isinstance(value, bool) or value is None:
-        return
-    if isinstance(value, (int, float)):
-        out.append(float(value))
-    elif isinstance(value, dict):
-        for v in value.values():
-            _numbers_in(v, out)
-    elif isinstance(value, (list, tuple)):
-        for v in value:
-            _numbers_in(v, out)
+def _headline_numbers(structured):
+    out = []
+    for path in HEADLINE_PATHS:
+        v = structured
+        for key in path:
+            v = v.get(key) if isinstance(v, dict) else None
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            continue
+        out.append(float(v))
+        if 0 < abs(v) <= 1:                       # probabilities said as %
+            out.append(float(v) * 100)
+    return out
+
+
+def _parse_number(raw):
+    """'1 050' / '36,000' / '32,80' / '12.5' -> float (SA style: comma
+    decimals, space thousands; a comma before exactly three digits with
+    nothing after is a thousands separator)."""
+    txt = raw.replace('\u00a0', ' ').replace(' ', '')
+    if ',' in txt and '.' in txt:
+        txt = txt.replace(',', '')                 # 36,000.50
+    elif ',' in txt:
+        parts = txt.split(',')
+        txt = txt.replace(',', '') if all(len(p) == 3 for p in parts[1:]) else txt.replace(',', '.')
+    return float(txt)
 
 
 def narrative_numbers_ok(text, structured):
-    """True when every number the narrative states is one of ours: a figure
-    in `structured` (also as a %, i.e. ×100, and in thousands 'k'), within
-    rounding. Small counts (<= 10) are allowed (sentences, nights)."""
+    """True when every figure the narrative states is one of the headline
+    figures (within rounding). Rand amounts, percentages (any size), km and
+    'k' thousands are checked; bare counts up to 10 (nights, sentences) are
+    allowed."""
     import re
-    known = []
-    _numbers_in(structured, known)
-    known += [k * 100 for k in known if abs(k) <= 1]
-    for m in re.finditer(r'(\d[\d\s,]*(?:\.\d+)?)\s*(k|%)?', text):
-        raw = m.group(1).replace(' ', '').replace('\u00a0', '').replace(',', '')
+    known = _headline_numbers(structured)
+    # Not IGNORECASE: 'R' is the rand sign, 'r' ends words ("over 2").
+    pattern = re.compile(r'(?<![A-Za-z])(R\s?)?' + _NUMBER + r'(\s?%|[kK](?![a-zA-Z])|\s?km\b)?')
+    for m in pattern.finditer(text or ''):
+        rand, raw, suffix = m.group(1), m.group(2), (m.group(3) or '').strip().lower()
         try:
-            v = float(raw)
+            v = _parse_number(raw)
         except ValueError:
             continue
-        if m.group(2) == 'k':
+        if suffix == 'k':
             v *= 1000
-        if v <= 10:
+        is_pct = suffix == '%'
+        if not rand and not is_pct and suffix not in ('k', 'km') and v <= 10:
             continue
-        tol = max(1.0, abs(v) * 0.006) if m.group(2) != 'k' else max(500.0, abs(v) * 0.05)
+        if is_pct:
+            tol = 0.6
+        elif suffix == 'k':
+            tol = max(500.0, v * 0.05)
+        else:
+            tol = max(1.0, v * 0.006)
         if not any(abs(abs(k) - v) <= tol for k in known):
             return False
     return True
@@ -656,6 +693,7 @@ def analyze_quote(payload, company=None, user=None):
 
     structured = {
         'route': f"{origin} → {destination}" if origin and destination else None,
+        'distance_km': round(distance_km, 1) if distance_km else None,
         'quote_total': round(quote_total, 2),
         'cost_analysis': cost,
         'fuel_analysis': fuel,

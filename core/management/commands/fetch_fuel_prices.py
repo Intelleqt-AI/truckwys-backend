@@ -79,8 +79,19 @@ class Command(BaseCommand):
                     f"Try {target.replace(day=1)}."
                 )
         else:
-            today = date.today()
-            target = today.replace(day=1)
+            # No date: the CURRENT official price (QUOTE-RULES §2) — FIASA read
+            # now and stored under its effective date; never a fallback row.
+            from core.services.fuel_price import refresh_official, row_effective_from
+            fp = refresh_official(force=True)
+            if fp is None:
+                raise CommandError('No official diesel price could be read from FIASA and none is on record. '
+                                   'Enter one by hand: POST /api/v1/fuel-prices/current/ as staff '
+                                   '(see docs/QUOTE_RULES_DEPLOY.md).')
+            self.stdout.write(self.style.SUCCESS(
+                f'Official price in force: {fp.source} {fp.diesel_grade or ""} inland R{fp.diesel_inland} '
+                f'coastal R{fp.diesel_coastal}, effective {row_effective_from(fp):%Y-%m-%d %H:%M %Z}'
+                + (f' (last check FAILED at {fp.fetch_failed_at:%Y-%m-%d %H:%M})' if fp.fetch_failed_at else '')))
+            return
 
         self.stdout.write(f'Fetching fuel prices for {target:%B %Y}…')
         fp = fetch_fuel_prices(target_date=target, force_update=force)

@@ -29,6 +29,14 @@ def quote_pre_save(sender, instance, **kwargs):
             instance._old_status = None
     else:
         instance._old_status = None
+    # QUOTE-RULES §11: the ONE send guard. Every path that moves a saved
+    # quote to SENT passes here before the row is written (and before the
+    # post_save email), so a blocked quote is never sent. Raises
+    # QuoteSendBlocked (a DRF 400 with structured warnings).
+    if instance.pk and instance.status == 'SENT' and instance._old_status not in (None, 'SENT') \
+            and not getattr(instance, '_skip_send_guard', False):
+        from core.services.quote_snapshot import enforce_send_guard
+        instance._send_check = enforce_send_guard(instance)
 
 
 @receiver(pre_save, sender='core.Invoice')
@@ -431,14 +439,21 @@ def quote_saved(sender, instance, created, **kwargs):
     # Kanban drag on the quotes board — so they all behave identically and
     # a quote is never "Sent" in the UI without actually having been sent.
     if not created and instance.status == 'SENT' and getattr(instance, '_old_status', None) != 'SENT':
-        try:
-            from core.services.quote_share import ensure_quote_token, send_quote_to_customer_email
-            ensure_quote_token(instance)
-            email_sent, recipient = send_quote_to_customer_email(instance)
-            instance._share_email_sent = email_sent
-            instance._share_recipient = recipient
-        except Exception:
-            pass
+        from django.db import transaction
+
+        def _email():
+            # After commit: a send rolled back (guard, failed save) never
+            # emails the customer. In autocommit this runs immediately, so
+            # send_to_customer still reads _share_email_sent.
+            try:
+                from core.services.quote_share import ensure_quote_token, send_quote_to_customer_email
+                ensure_quote_token(instance)
+                email_sent, recipient = send_quote_to_customer_email(instance)
+                instance._share_email_sent = email_sent
+                instance._share_recipient = recipient
+            except Exception:
+                pass
+        transaction.on_commit(_email)
 
     # DECLINED transition — separate block so it can surface the customer's
     # typed reason without complicating the generic dict above.

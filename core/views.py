@@ -16,6 +16,7 @@
 import logging as _logging
 from rest_framework import viewsets, status, filters, mixins
 from rest_framework.decorators import action
+from rest_framework.exceptions import APIException
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.throttling import ScopedRateThrottle
@@ -2790,19 +2791,6 @@ class QuoteFilterSet(django_filters.FilterSet):
         return queryset.filter(status=value)
 
 
-class QuoteSendBlocked(Exception):
-    """A send path hit a blocking warning (QUOTE-RULES.md §11)."""
-
-    def __init__(self, check):
-        super().__init__('quote send blocked')
-        self.check = check
-
-
-def _send_blocked_response(check):
-    from core.services.quote_snapshot import blocked_response_body
-    return Response(blocked_response_body(check), status=status.HTTP_400_BAD_REQUEST)
-
-
 class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
     queryset = Quote.objects.all().select_related('company', 'pricing_decision').prefetch_related('loads')
     serializer_class = QuoteSerializer
@@ -2842,8 +2830,6 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         from django.db import DatabaseError
         try:
             return super().update(request, *args, **kwargs)
-        except QuoteSendBlocked as blocked:
-            return _send_blocked_response(blocked.check)
         except DatabaseError:
             # The quote and its pricing decision save in one transaction
             # (QuoteSerializer.update), so nothing was written: say so plainly.
@@ -2865,21 +2851,9 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
                           'use "Convert to booking" to create the Order, which tracks delivery status.'
             })
         previous_status = serializer.instance.status if serializer.instance is not None else None
-        if serializer.validated_data.get('status') == 'SENT' and previous_status != 'SENT':
-            # A status change to SENT is a send (QUOTE-RULES.md §11): save the
-            # other changes, check, and only then make the transition (whose
-            # post_save signal emails the customer) — all or nothing.
-            from django.db import transaction
-            from core.services.quote_snapshot import send_check
-            with transaction.atomic():
-                serializer.validated_data.pop('status')
-                quote = serializer.save()
-                check = send_check(quote)
-                if not check['can_send']:
-                    raise QuoteSendBlocked(check)
-                quote.status = 'SENT'
-                quote.save()
-            return
+        # A change to SENT is guarded in ONE place: the Quote pre_save signal
+        # (core.services.quote_snapshot.enforce_send_guard), inside
+        # QuoteSerializer.update's transaction — all or nothing.
         quote = serializer.save()
         # A status change to Accepted / Declined through the plain PATCH (the
         # status menu and board drags use it) is a decision too: record it as
@@ -2938,8 +2912,8 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
                         Company.objects.filter(pk=company.pk).update(demo_quota_used=F('demo_quota_used') + 1)
                     return response
             return super().create(request, *args, **kwargs)
-        except QuoteSendBlocked as blocked:
-            return _send_blocked_response(blocked.check)
+        except APIException:
+            raise      # incl. QuoteSendBlocked (structured 400)
         except IntegrityError as exc:
             msg = str(exc)
             if 'quote_number' in msg.lower():
@@ -2983,16 +2957,7 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         # The pricing snapshot (QUOTE-RULES.md §9) is written by
         # QuoteSerializer.create (core.services.quote_snapshot), including
         # fuel_price_at_creation — never a fallback or inland-only figure.
-        if serializer.validated_data.get('status') == 'SENT':
-            # Created straight as SENT: same guard as every other send path.
-            from django.db import transaction
-            from core.services.quote_snapshot import send_check
-            with transaction.atomic():
-                quote = serializer.save(**save_kwargs)
-                check = send_check(quote)
-                if not check['can_send']:
-                    raise QuoteSendBlocked(check)
-            return
+        # Created as SENT: guarded in QuoteSerializer.create.
         serializer.save(**save_kwargs)
 
     @action(detail=True, methods=['patch'])
@@ -3018,12 +2983,7 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        if new_status == 'SENT' and quote.status != 'SENT':
-            from core.services.quote_snapshot import send_check
-            check = send_check(quote)
-            if not check['can_send']:
-                return _send_blocked_response(check)
-        quote.status = new_status
+        quote.status = new_status      # to SENT: guarded by the Quote pre_save signal
         # Read by the Quote post_save signal: an authenticated user made this
         # change, so exclude them from their own "quote accepted/declined/…"
         # notification — everyone else in the company still gets it. And for
@@ -3216,11 +3176,15 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         from core.services.quote_pdf import generate_quote_pdf_bytes
 
         quote = self.get_object()
-        # The PDF is what goes to the customer: same guard as sending.
-        from core.services.quote_snapshot import send_check
-        check = send_check(quote)
-        if not check['can_send']:
-            return _send_blocked_response(check)
+        # A DRAFT's PDF is how a quote gets sent by hand: same guard as
+        # sending. Any other status (already sent, accepted...) downloads.
+        if quote.status == 'DRAFT':
+            from core.services.quote_snapshot import QuoteSendBlocked, send_check
+            check = send_check(quote)
+            if not check['can_send']:
+                body = QuoteSendBlocked(check).detail
+                body['title'] = 'This quote can\'t be downloaded to send yet'
+                return Response(body, status=status.HTTP_400_BAD_REQUEST)
         pdf_bytes = generate_quote_pdf_bytes(quote)
 
         response = HttpResponse(pdf_bytes, content_type='application/pdf')
@@ -3240,21 +3204,19 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         transition and so wouldn't re-fire the signal on its own.
         """
         from core.services.quote_share import ensure_quote_token, quote_share_url, send_quote_to_customer_email
-        from core.services.quote_snapshot import send_check
+        from core.services.quote_snapshot import enforce_send_guard
         quote = self.get_object()
 
-        # QUOTE-RULES.md §11: any blocking warning stops the send (structured
-        # warnings in the 400 body); an earlier diesel period only warns.
-        check = send_check(quote)
-        if not check['can_send']:
-            return _send_blocked_response(check)
-
+        # QUOTE-RULES.md §11: blocking warnings stop the send (QuoteSendBlocked
+        # -> structured 400); warn-level ones come back in `warnings`.
         if quote.status != 'SENT':
             quote.status = 'SENT'
-            quote.save()  # fires quote_saved -> send_quote_to_customer_email once
+            quote.save()  # pre_save guard, then quote_saved -> email once (on commit)
+            check = getattr(quote, '_send_check', None) or {'warnings': []}
             email_sent = getattr(quote, '_share_email_sent', False)
             recipient = getattr(quote, '_share_recipient', None)
         else:
+            check = enforce_send_guard(quote)     # a resend is a send too
             ensure_quote_token(quote)
             email_sent, recipient = send_quote_to_customer_email(quote)
 
@@ -3710,6 +3672,25 @@ import math
 import requests as http_requests
 
 
+def _legacy_route_shape(data, extra_costs):
+    """Old clients (no X-TW-Quote-Rules: 1 header) get the numeric shape
+    they were built for: unknown toll / fuel figures as 0 and a numeric
+    total, as before QUOTE-RULES. The flags (tolls_unknown,
+    distance_estimated, fuel_unknown_reason) stay, additively. Clients that
+    send the header get nulls for unknowns (QUOTE-RULES §6)."""
+    def fix(d, extras):
+        for k in ('toll_cost_zar', 'fuel_cost_zar', 'fuel_usage_litres'):
+            if d.get(k) is None:
+                d[k] = 0.0
+        if 'fuel_rate_l_per_100km' in d and d['fuel_rate_l_per_100km'] is None:
+            d['fuel_rate_l_per_100km'] = 0.0
+        if d.get('total_cost_zar') is None:
+            d['total_cost_zar'] = round(d['fuel_cost_zar'] + d['toll_cost_zar'] + extras, 2)
+    fix(data, sum((data.get('additional_costs') or {}).values()))
+    for rt in data.get('routes') or []:
+        fix(rt, extra_costs)
+
+
 class RouteCalculatorView(APIView):
     """POST /api/v1/route/calculate/ — TomTom routing with fuel/toll calc + cross-border costs"""
     permission_classes = [IsAuthenticated]
@@ -4118,7 +4099,8 @@ class RouteCalculatorView(APIView):
             })
         response_data['routes'] = routes_out
         response_data['best_index'] = 0
-
+        if request.headers.get('X-TW-Quote-Rules') != '1':
+            _legacy_route_shape(response_data, extra_costs)
         return Response(response_data)
 
     def _geocode(self, query):

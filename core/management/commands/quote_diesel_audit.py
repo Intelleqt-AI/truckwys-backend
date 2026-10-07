@@ -2,6 +2,11 @@
 (QUOTE-RULES.md §1). For the dev team to run on production after deploy:
 
     python manage.py quote_diesel_audit [--days 30] [--all]
+    python manage.py quote_diesel_audit --classification
+
+--classification is a dry run of the LIVE/OWN rule (migration 0149 and the
+legacy fuel_price_per_litre write): each company's stored
+fuel_price_per_litre, the mode the rule gives and why. It changes nothing.
 
 One row per company with fuel_price_mode=OWN (or every company with --all):
 own price, when it was set, the official zone price in force now, the gap,
@@ -22,8 +27,12 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument('--days', type=int, default=30, help='Quote window in days (default 30)')
         parser.add_argument('--all', action='store_true', help='Include LIVE companies too')
+        parser.add_argument('--classification', action='store_true',
+                            help='Dry run: the LIVE/OWN mode the backfill rule gives each company, and why')
 
     def handle(self, *args, **opts):
+        if opts['classification']:
+            return self._classification()
         from core.models import Company, Quote
         from core.services.fuel_price import resolve_official
 
@@ -63,3 +72,36 @@ class Command(BaseCommand):
                           + ', '.join(f'{z} {v["price"]} (from {v["effective_from"]:%Y-%m-%d})' if v['price']
                                       else f'{z} none' for z, v in official.items())
                           + '. Read-only: nothing was changed.')
+
+    def _classification(self):
+        from decimal import Decimal
+        from core.models import Company, FuelPrice
+        tol = Decimal('0.005')
+        official = list(FuelPrice.objects.filter(source__in=('FIASA', 'MANUAL'))
+                        .values_list('date', 'source', 'diesel_inland', 'diesel_coastal', 'diesel_500ppm_inland',
+                                     'diesel_500ppm_coastal'))
+        names = ('inland', 'coastal', '500ppm inland', '500ppm coastal')
+
+        def why(value):
+            if value is None:
+                return 'LIVE', 'empty'
+            if abs(value - Decimal('23.50')) <= Decimal('0.00001'):
+                return 'LIVE', 'factory default 23.50'
+            for day, source, *prices in official:
+                for name, p in zip(names, prices):
+                    if p is not None and abs(value - p) <= tol:
+                        return 'LIVE', f'matches {source} {name} R{p} ({day})'
+            return 'OWN', 'a price the fleet typed (no official match within R0.005)'
+
+        header = f'{"id":>5}  {"company":<32} {"per_litre":>9} {"now":<4} {"rule":<4}  why'
+        self.stdout.write(header)
+        self.stdout.write('-' * 100)
+        changes = 0
+        for c in Company.objects.order_by('company_name').iterator():
+            mode, reason = why(c.fuel_price_per_litre)
+            if mode != c.fuel_price_mode:
+                changes += 1
+            self.stdout.write(f'{c.id:>5}  {(c.company_name or "")[:32]:<32} {str(c.fuel_price_per_litre):>9} '
+                              f'{c.fuel_price_mode:<4} {mode:<4}  {reason}')
+        self.stdout.write(f'\n{changes} compan{"y" if changes == 1 else "ies"} where the rule differs from the stored '
+                          'mode. Dry run: nothing was changed.')

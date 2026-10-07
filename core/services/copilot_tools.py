@@ -7,6 +7,8 @@ so the model can read them and correct course. Nothing here ever raises to
 the tool loop.
 """
 import logging
+
+from core.services.quote_snapshot import QuoteSendBlocked
 from datetime import timedelta
 from decimal import Decimal
 
@@ -777,6 +779,12 @@ def _execute_write_proposal(proposal, request_user, company):
         proposal.result = {'error': str(e)}
         proposal.save(update_fields=['status', 'result'])
         return False, {'error': str(e)}
+    except QuoteSendBlocked as e:
+        # QUOTE-RULES §11: the copilot can't send a quote with a blocking warning.
+        proposal.status = 'FAILED'
+        proposal.result = {'error': e.detail['error'], 'warnings': e.detail['warnings']}
+        proposal.save(update_fields=['status', 'result'])
+        return False, {'error': e.detail['error'], 'warnings': e.detail['warnings']}
     except ProtectedError as e:
         related = ', '.join(sorted({o._meta.verbose_name_plural.lower() for o in e.protected_objects})) or 'records'
         msg = f"Cannot delete this {label.lower()}: existing {related} reference it."

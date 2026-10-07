@@ -190,7 +190,8 @@ class _GoldenBase(TestCase):
         with mock.patch('core.views.http_requests.get', side_effect=fake), \
                 mock.patch('core.services.fuel_price._fetch_from_fiasa', side_effect=_no_network), \
                 mock.patch('django.utils.timezone.now', return_value=CAPTURE_NOW):
-            resp = self.client.post('/api/v1/route/calculate/', fx['request'], format='json')
+            resp = self.client.post('/api/v1/route/calculate/', fx['request'], format='json',
+                                    HTTP_X_TW_QUOTE_RULES='1')
         self.assertEqual(resp.status_code, 200, resp.content[:500])
         self.assertEqual(len(fake.calls), 1, 'exactly one routing call per calculation')
         return resp.json()

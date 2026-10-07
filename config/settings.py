@@ -327,7 +327,12 @@ CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_ALL_ORIGINS = config('CORS_ALLOW_ALL_ORIGINS', default=False, cast=bool)  # Safe default; opt in per-env
 
 # Add these for better CORS handling
-CORS_ALLOW_HEADERS = [
+from corsheaders.defaults import default_headers as _cors_default_headers  # noqa: E402
+
+# corsheaders' defaults plus our own. x-tw-quote-rules: clients on the
+# QUOTE-RULES route shape (nulls for unknowns) send it on route calculation;
+# without it here every cross-origin preflight for that request fails.
+CORS_ALLOW_HEADERS = list(dict.fromkeys(list(_cors_default_headers) + [
     'accept',
     'accept-encoding',
     'authorization',
@@ -338,7 +343,8 @@ CORS_ALLOW_HEADERS = [
     'x-api-key',
     'x-csrftoken',
     'x-requested-with',
-]
+    'x-tw-quote-rules',
+]))
 
 # Email Configuration
 EMAIL_HOST = config('EMAIL_HOST', default='smtp.gmail.com')
