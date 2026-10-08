@@ -95,6 +95,8 @@ def pair_of(load):
 
 def get_return(load):
     from core.models import Load
+    if load.pk is None:
+        return None       # an unsaved job (booking preview) has no pair yet
     try:
         return load.return_load
     except Load.DoesNotExist:
@@ -212,7 +214,7 @@ def _free_loads(company, exclude_ids):
     """Company loads that could still join a pair."""
     from core.models import Load
     return (Load.objects.filter(company=company, trip_type='ONE_WAY')
-            .exclude(status__in=EXCLUDED_STATUSES).exclude(pk__in=exclude_ids)
+            .exclude(status__in=EXCLUDED_STATUSES).exclude(pk__in=[i for i in exclude_ids if i is not None])
             .filter(return_of__isnull=True, return_load__isnull=True)
             .select_related('vehicle', 'customer'))
 

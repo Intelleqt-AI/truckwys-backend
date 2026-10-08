@@ -3059,6 +3059,15 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         serializer = self.get_serializer(quote)
         return Response(serializer.data)
 
+    @action(detail=True, methods=['get'], url_path='booking-preview')
+    def booking_preview(self, request, pk=None):
+        """GET /quotes/{id}/booking-preview/?pickup_date=&delivery_date=
+        &candidate_days=: convert_to_load's `booking` block (return /
+        outbound candidates, invoice preview, costing) WITHOUT creating the
+        job; `can_book` / `blocked` say whether booking would be refused."""
+        from core.services.booking import booking_preview_response
+        return booking_preview_response(request, self.get_object())
+
     @action(detail=True, methods=['post'])
     def convert_to_load(self, request, pk=None):
         """Convert quote to load. Body: { driver_id?, vehicle_id? }

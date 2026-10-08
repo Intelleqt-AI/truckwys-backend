@@ -247,3 +247,11 @@ is `tolls_unknown` with the prompt. Deduped per job + locations; re-routed only 
 per-company daily cap `TMS_ROUTING_DAILY_CAP` (default 200, the rest wait until tomorrow). State in
 `load.costing_inputs.route_job {state: pending|deferred|done|failed, reason}`. Needs a Celery worker and
 `TOMTOM_API_KEY` in production.
+
+### Booking preview and analyze
+- `GET /api/v1/quotes/{id}/booking-preview/?pickup_date=&delivery_date=&candidate_days=` returns
+  `{preview, can_book, blocked, load_id, booking: {return_candidates, outbound_candidates, invoice_preview,
+  costing, ...}}` — the same shapes as convert_to_load's `booking`, without creating the job (a converted quote
+  answers with its job's block, `preview: false`). The preview's invoice line reads "Transport (A → B)" (no load
+  number yet); amounts are exactly what delivery raises.
+- `POST /quotes/analyze/` adds `return_load_history` (same shape as the pricing analysis).

@@ -109,3 +109,42 @@ class BookingTests(TestCase):
         self.assertFalse(Load.objects.filter(quote=draft).exists())
         ok = priced_quote(self.co, self.cust, 'BK-9', vt=self.vt, status='DRAFT')
         self.assertEqual(self.book(ok).status_code, 201)
+
+
+class BookingPreviewTests(BookingTests):
+    def test_preview_matches_booking_and_creates_nothing(self):
+        outbound = make_load(self.co, self.cust, 'BP-OUT', pickup='Johannesburg', delivery='Durban',
+                             pickup_in_days=0, days=1)
+        q = priced_quote(self.co, self.cust, 'BP-1', vt=self.vt, origin='Durban', destination='Johannesburg')
+        day = (date.today() + timedelta(days=2)).isoformat()
+        r = self.api.get(f'/api/v1/quotes/{q.id}/booking-preview/?pickup_date={day}')
+        self.assertEqual(r.status_code, 200, r.content)
+        body = r.json()
+        self.assertTrue(body['preview'])
+        self.assertTrue(body['can_book'])
+        self.assertFalse(Load.objects.filter(quote=q).exists())
+        self.assertEqual([c['load_id'] for c in body['booking']['outbound_candidates']], [outbound.id])
+        booked = self.book(q, {'pickup_date': day}).json()['booking']
+        for key in ('outbound_candidates', 'return_candidates'):
+            self.assertEqual(body['booking'][key], booked[key], key)
+        prev, real = body['booking']['invoice_preview'], booked['invoice_preview']
+        self.assertEqual((prev['subtotal'], prev['vat_amount'], prev['total'], prev['state']),
+                         (real['subtotal'], real['vat_amount'], real['total'], real['state']))
+        self.assertEqual(prev['lines'][0]['description'], 'Transport (Durban → Johannesburg)')
+        self.assertEqual(body['booking']['costing']['cost_floor'], booked['costing']['cost_floor'])
+        again = self.api.get(f'/api/v1/quotes/{q.id}/booking-preview/').json()
+        self.assertFalse(again['preview'])
+        self.assertEqual(again['load_id'], booked and Load.objects.get(quote=q).id)
+
+    def test_preview_says_when_booking_would_be_refused(self):
+        q = priced_quote(self.co, self.cust, 'BP-2', vt=self.vt, status='DECLINED')
+        body = self.api.get(f'/api/v1/quotes/{q.id}/booking-preview/').json()
+        self.assertFalse(body['can_book'])
+        self.assertEqual(body['blocked']['code'], 'quote_not_bookable')
+
+    def test_preview_of_other_company_quote_is_404(self):
+        other_user = make_user('book_o', self.other)
+        q = priced_quote(self.co, self.cust, 'BP-3', vt=self.vt)
+        c = APIClient()
+        c.force_authenticate(other_user)
+        self.assertEqual(c.get(f'/api/v1/quotes/{q.id}/booking-preview/').status_code, 404)

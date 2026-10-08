@@ -130,3 +130,75 @@ def booking_response(request, quote, load, *, created, view=None, link=None):
     body = LoadSerializer(load).data
     body['booking'] = booking_block(load, created=created, link=link, days=days)
     return Response(body, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+
+def preview_load(quote, request):
+    """The job convert_to_load would create, NOT saved (booking preview)."""
+    from datetime import datetime, timedelta
+    from django.utils import timezone
+    from core.models import Load
+    from core.services.lane_benchmark import lane_place
+
+    def _day(key, fallback):
+        raw = request.query_params.get(key) if hasattr(request, 'query_params') else None
+        d = None
+        if raw:
+            try:
+                d = datetime.strptime(str(raw)[:10], '%Y-%m-%d').date()
+            except ValueError:
+                d = None
+        d = d or fallback
+        return timezone.make_aware(datetime.combine(d, datetime.min.time())) if d else None
+
+    pickup_city, pickup_state = lane_place(quote.origin, quote.pickup_location)
+    delivery_city, delivery_state = lane_place(quote.destination, quote.delivery_location)
+    load = Load(
+        company=quote.company, customer=quote.customer, quote=quote,
+        pickup_location=quote.pickup_location, pickup_city=pickup_city or 'TBD', pickup_state=pickup_state,
+        pickup_lat=quote.pickup_lat, pickup_lng=quote.pickup_lng,
+        pickup_date=_day('pickup_date', quote.pickup_date) or timezone.now() + timedelta(days=2),
+        delivery_location=quote.delivery_location, delivery_city=delivery_city or 'TBD',
+        delivery_state=delivery_state, delivery_lat=quote.delivery_lat, delivery_lng=quote.delivery_lng,
+        delivery_date=_day('delivery_date', quote.delivery_date) or timezone.now() + timedelta(days=4),
+        stops=quote.stops, cargo_description=quote.cargo_description, weight=quote.weight,
+        distance=quote.distance, rate=quote.base_rate, total_amount=quote.total_amount,
+        is_international=quote.is_international, status='PENDING')
+    from core.services.trip_costing import copy_quote_costing
+    for k, v in copy_quote_costing(quote).items():
+        setattr(load, k, v)
+    return load
+
+
+def booking_preview_response(request, quote):
+    """GET /quotes/{id}/booking-preview/: what booking would give (return /
+    outbound candidates, invoice preview, costing) without creating the job.
+    A converted quote answers with its job's booking block."""
+    from core.services.invoicing import invoice_preview
+    from core.services.return_loads import outbound_candidates, return_candidates
+    from core.services.trip_costing import costing_summary
+    existing = quote.loads.order_by('pk').first()
+    days = request.query_params.get('candidate_days')
+    try:
+        days = int(days) if days else None
+    except ValueError:
+        days = None
+    if existing is not None:
+        from core.models import Load
+        load = Load.objects.select_related('company', 'customer').get(pk=existing.pk)
+        body = booking_block(load, created=False, days=days)
+        return Response({'preview': False, 'can_book': True, 'load_id': load.pk, 'booking': body})
+    refusal = bookable_or_refusal(quote)
+    load = preview_load(quote, request)
+    kw = {'days': days} if days else {}
+    one_way = load.trip_type == 'ONE_WAY'
+    body = {
+        'created': False, 'already_converted': False, 'return_link': None, 'is_return_of': None,
+        'return_load_id': None, 'expecting_return': False,
+        'return_candidates': return_candidates(load, **kw) if one_way else [],
+        'outbound_candidates': outbound_candidates(load, **kw) if one_way else [],
+        'invoice_preview': invoice_preview(load),
+        'costing': costing_summary(load),
+    }
+    return Response({'preview': True, 'can_book': refusal is None,
+                     'blocked': refusal.data if refusal is not None else None,
+                     'load_id': None, 'booking': body})

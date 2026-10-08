@@ -117,7 +117,8 @@ def invoice_preview(load):
     from django.conf import settings
     from core.models.invoice import Invoice
     from core.services.invoice_lines import build_lines, customer_terms, terms_days_for, totals_of
-    existing = Invoice.objects.filter(load=load).exclude(status='CANCELLED').order_by('-id').first()
+    existing = (Invoice.objects.filter(load=load).exclude(status='CANCELLED').order_by('-id').first()
+                if load.pk is not None else None)
     if existing is not None:
         return {'state': 'raised', 'invoice_id': existing.pk, 'invoice_number': existing.invoice_number,
                 'status': existing.status, 'subtotal': float(existing.subtotal),
@@ -148,7 +149,8 @@ def invoice_preview(load):
 
 def _load_line_description(load) -> str:
     route = ' → '.join(p for p in (getattr(load, 'pickup_city', '') or '', getattr(load, 'delivery_city', '') or '') if p)
-    return f'Transport: load {load.load_number}' + (f' ({route})' if route else '')
+    head = f'Transport: load {load.load_number}' if load.load_number else 'Transport'
+    return head + (f' ({route})' if route else '')
 
 
 def email_invoice_to_customer(invoice, additional_recipients=None) -> bool:

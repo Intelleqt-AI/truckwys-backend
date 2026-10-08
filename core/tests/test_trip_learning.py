@@ -136,3 +136,24 @@ class QuoteDetailActualsTests(ActualsTests):
         self.assertIsNotNone(r['actuals']['actual_margin_pct'])
         self.api.patch(f'/api/v1/quotes/{self.q.id}/', {'actuals': {'backhaul_found': True}}, format='json')
         self.assertIs(QuoteOutcome.objects.get(quote=self.q).backhaul_found, False)
+
+
+class AnalyzeReturnHistoryTests(LaneShareTests):
+    def test_quotes_analyze_includes_return_load_history(self):
+        from unittest import mock
+        official_price_now()
+        vt = make_vehicle_type(self.co)
+        add_vehicle(self.co, vt)
+        for i in range(5):
+            self._trip(i, i < 3)
+        user = make_user('analyze_u', self.co)
+        api = APIClient()
+        api.force_authenticate(user)
+        with mock.patch('core.services.quote_analysis._llm_narrative', return_value=None):
+            r = api.post('/api/v1/quotes/analyze/', {
+                'origin': 'JHB', 'destination': 'DBN', 'distance_km': 600, 'weight': 10000, 'quote_total': 30000,
+                'vehicle_type_id': vt.id, 'toll_cost': 800, 'duration_minutes': 420, 'skip_narrative': True},
+                format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json()['return_load_history']['text'],
+                         'On this lane 60% of your trips found a return load (3 of 5).')
