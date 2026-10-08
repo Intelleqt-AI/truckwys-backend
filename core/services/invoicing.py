@@ -5,20 +5,19 @@ Keeping one function means the manual and automatic paths can never drift
 (same VAT, terms, numbering, fast-pay eligibility).
 """
 import logging
-import random
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal
+
+from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
 
 def _unique_invoice_number() -> str:
-    from core.models.invoice import Invoice
-    today = date.today()
-    num = f'INV-{today.strftime("%Y%m%d")}-{random.randint(10000, 99999):05d}'
-    while Invoice.objects.filter(invoice_number=num).exists():
-        num = f'INV-{today.strftime("%Y%m%d")}-{random.randint(10000, 99999):05d}'
-    return num
+    """A provisional number for a new draft. The sequential number is
+    allocated when the invoice is issued (core.services.numbering)."""
+    from core.services.numbering import provisional_number
+    return provisional_number()
 
 
 def create_invoice_for_load(load, *, company=None, mark_sent: bool = False):
@@ -52,28 +51,44 @@ def create_invoice_for_load(load, *, company=None, mark_sent: bool = False):
     if subtotal <= 0:
         return None, False
 
-    today = date.today()
-    vat = (Decimal(str(subtotal)) * Decimal('0.15')).quantize(Decimal('0.01'))
-    total = Decimal(str(subtotal)) + vat
+    from core.services.invoice_lines import apply_lines, customer_terms, due_date_for, load_tax_code
+    from django.db import transaction
 
-    invoice = Invoice.objects.create(
-        invoice_number=_unique_invoice_number(),
-        company=company or getattr(load, 'company', None),
-        customer=load.customer,
-        load=load,
-        issue_date=today,
-        due_date=today + timedelta(days=30),
-        subtotal=subtotal,
-        vat_amount=vat,
-        tax_amount=vat,
-        total_amount=total,
-        paid_amount=Decimal('0'),
-        balance=total,
-        status='SENT' if mark_sent else 'DRAFT',
-        payment_terms='NET30',
-        notes=f'Auto-generated from Load {load.load_number}',
-        early_pay_eligible=True,
-    )
+    company = company or getattr(load, 'company', None)
+    today = date.today()
+    terms = customer_terms(load.customer)
+    with transaction.atomic():
+        invoice = Invoice(
+            invoice_number=_unique_invoice_number(),
+            company=company,
+            customer=load.customer,
+            load=load,
+            issue_date=today,
+            # The customer's own terms, not a hard-coded NET30.
+            payment_terms=terms,
+            due_date=due_date_for(today, terms),
+            subtotal=Decimal('0'), vat_amount=Decimal('0'), total_amount=Decimal('0'),
+            paid_amount=Decimal('0'), balance=Decimal('0'),
+            status='DRAFT',
+            notes=f'Auto-generated from Load {load.load_number}',
+            early_pay_eligible=True,
+        )
+        from core.services.invoice_lines import terms_days_for
+        invoice.terms_days = terms_days_for(terms)
+        apply_lines(invoice, [{
+            'description': _load_line_description(load),
+            'quantity': 1,
+            'unit_price': Decimal(str(subtotal)),
+            # The company's default code (STANDARD for a VAT vendor, NO_VAT
+            # otherwise); an international load is zero-rated (s11(2)(a)),
+            # matching the VAT 0% its quote showed the customer.
+            'tax_code': load_tax_code(load, company),
+            'load': load.pk,
+        }])
+        if mark_sent:
+            invoice.status = 'SENT'
+            invoice.sent_at = timezone.now()
+            invoice.save()
 
     # Flip the load to INVOICED without re-firing the Load post_save signal
     # (we may be called from inside that very signal — avoid re-entrancy).
@@ -81,6 +96,11 @@ def create_invoice_for_load(load, *, company=None, mark_sent: bool = False):
     Load.objects.filter(pk=load.pk).update(status='INVOICED')
 
     return invoice, True
+
+
+def _load_line_description(load) -> str:
+    route = ' → '.join(p for p in (getattr(load, 'pickup_city', '') or '', getattr(load, 'delivery_city', '') or '') if p)
+    return f'Transport: load {load.load_number}' + (f' ({route})' if route else '')
 
 
 def email_invoice_to_customer(invoice, additional_recipients=None) -> bool:
@@ -92,6 +112,11 @@ def email_invoice_to_customer(invoice, additional_recipients=None) -> bool:
     from core.services.email_service import InvoiceEmailService
     from core.services.pdf_generator import InvoicePDFGenerator
 
+    # Issue it first so the PDF and email carry the real sequential number.
+    if invoice.status == 'DRAFT':
+        invoice.status = 'SENT'
+        invoice.sent_at = timezone.now()
+        invoice.save()
     if not invoice.pdf_file:
         invoice.pdf_file = InvoicePDFGenerator.generate_pdf(invoice)
         invoice.save()

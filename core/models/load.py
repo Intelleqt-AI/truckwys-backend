@@ -22,6 +22,9 @@ class Load(models.Model):
     driver = models.ForeignKey(Driver, on_delete=models.SET_NULL, null=True, blank=True, related_name='loads')
     vehicle = models.ForeignKey(Vehicle, on_delete=models.SET_NULL, null=True, blank=True, related_name='loads')
     quote = models.ForeignKey('core.Quote', on_delete=models.SET_NULL, null=True, blank=True, related_name='loads')
+    # International transport: the delivery auto-invoice zero-rates it (VAT
+    # 0%), matching the quote it came from (Quote.is_international).
+    is_international = models.BooleanField(default=False)
     
     pickup_location = models.CharField(max_length=500)
     pickup_city = models.CharField(max_length=100)
@@ -51,6 +54,11 @@ class Load(models.Model):
     rate = models.DecimalField(max_digits=10, decimal_places=2)
     fuel_surcharge = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     additional_charges = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    # Copied from the quote by convert_to_load so a booking itemises the same
+    # lines the quote priced (previously tolls and the driver allowance were
+    # dropped and showed as "Not itemised"). Already inside total_amount.
+    toll_charges = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    driver_allowance = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     total_amount = models.DecimalField(max_digits=10, decimal_places=2)
     
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='PENDING')
@@ -60,7 +68,25 @@ class Load(models.Model):
     pod_signature = models.TextField(blank=True)  # Proof of delivery signature
     pod_received_by = models.CharField(max_length=200, blank=True)
     pod_document = models.FileField(upload_to='pod/', blank=True, null=True)
-    
+
+    # POD evidence metadata (capital-safety 2026-10). A POD photo is what an
+    # advance is funded against, so these are written only by the POD upload
+    # endpoint (and fleet integrations), never by a generic PATCH — see
+    # LoadSerializer.read_only_fields. pod_file_sha256 is computed server-side
+    # so a funder can later prove the file they saw is the file on record.
+    POD_SOURCE_CHOICES = [
+        ('CAMERA', 'Camera'),
+        ('LIBRARY', 'Photo library'),
+        ('UPLOAD', 'File upload'),
+        ('UNKNOWN', 'Unknown'),
+    ]
+    pod_captured_at = models.DateTimeField(null=True, blank=True)
+    pod_latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    pod_longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    pod_device = models.CharField(max_length=200, blank=True)
+    pod_source = models.CharField(max_length=10, choices=POD_SOURCE_CHOICES, blank=True, default='')
+    pod_file_sha256 = models.CharField(max_length=64, blank=True)
+
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name='loads_created')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

@@ -75,10 +75,11 @@ class AIPriceOptimizeView(APIView):
             except (TypeError, ValueError):
                 historical_acceptance_rate = 0.5
 
-            # Ground the benchmark in REAL lane data when origin & destination are
-            # given — never optimise around a UI-passed guess. Cross-platform
-            # benchmark first, then lane-level, then the client value, then a cost
-            # anchor. We report which source was used so the UI can be honest.
+            # The market is the pricing analysis' range (QUOTE-RULES §8 and
+            # privacy): platform tier only from >= 10 accepted quotes by >= 3
+            # operators other than the caller, rounded to R500; else the
+            # caller's own accepted quotes (>= 5). A client-sent figure is the
+            # caller's own number. Never an invented cost x 1,25 anchor.
             market_rate_source = 'client' if market_rate > 0 else 'none'
             origin = str(data.get('origin') or '').strip()
             destination = str(data.get('destination') or '').strip()
@@ -86,21 +87,26 @@ class AIPriceOptimizeView(APIView):
             if origin and destination:
                 try:
                     from core.views import resolve_user_company
-                    from core.services.lane_benchmark import resolve_market_rate
-                    rate, src = resolve_market_rate(
-                        origin, destination, vehicle_type or None,
-                        company=resolve_user_company(request.user),
-                    )
-                    if rate and rate > 0:
-                        market_rate = float(rate)
-                        market_rate_source = src
+                    from core.services.lane_benchmark import resolve_market_range
+                    rng = resolve_market_range(origin, destination, vehicle_type or None,
+                                               company=resolve_user_company(request.user))
+                    if rng.get('available') and not rng.get('is_estimate') and rng.get('median'):
+                        market_rate = float(rng['median'])
+                        market_rate_source = rng['tier']
                 except Exception as exc:
-                    logger.warning('optimize: market-rate resolve failed: %s', exc)
+                    logger.warning('optimize: market range resolve failed: %s', exc)
 
-            # Last-resort anchor so we never optimise around a missing/zero rate.
             if market_rate <= 0:
-                market_rate = total_cost * 1.25
-                market_rate_source = 'cost_anchor'
+                return Response({
+                    'success': True,
+                    'market_rate': None,
+                    'market_rate_source': 'none',
+                    'optimal_price': None, 'optimal_margin_pct': None,
+                    'win_probability_at_optimal': None, 'expected_profit': None, 'curve': [],
+                    'used_heuristic_fallback': False, 'win_probability_source': None,
+                    'reason': 'no_market',
+                    'message': 'No market data for this lane yet, so no price is optimised.',
+                })
 
             result = optimize_price(
                 total_cost=total_cost,
@@ -111,6 +117,23 @@ class AIPriceOptimizeView(APIView):
                 origin=origin or None,
                 destination=destination or None,
             )
+            # The optimizer's margin is markup on cost; the API reports the true
+            # margin on price, (price - cost) / price (QUOTE-RULES §7).
+            def margin_on_price(price):
+                return round((price - total_cost) / price * 100.0, 1) if price else None
+            if result.get('optimal_price'):
+                result['optimal_margin_pct'] = margin_on_price(float(result['optimal_price']))
+            result['curve'] = [{**pt, 'margin_pct': margin_on_price(float(pt['price']))}
+                               for pt in result.get('curve') or []]
+            if result.get('used_heuristic_fallback') or result.get('win_probability_source') != 'model':
+                # A heuristic is not a chance to win: no %, and no expected
+                # profit built on it. The price is labelled heuristic.
+                result['win_probability_at_optimal'] = None
+                result['expected_profit'] = None
+                result['curve'] = [{**pt, 'win_probability': None, 'expected_profit': None}
+                                   for pt in result.get('curve') or []]
+                result['win_probability_source'] = 'heuristic'
+                result['price_basis'] = 'heuristic'
 
             response_data = {
                 'success': True,

@@ -13,9 +13,14 @@ from dataclasses import dataclass
 from django.db.models import Sum, Count, Q
 from core.models import Invoice, Customer
 
-# Sent and unpaid: what a customer actually owes. Drafts aren't owed yet and
-# cancelled invoices never will be. Every receivable figure uses this.
-OUTSTANDING_STATUSES = ['SENT', 'VIEWED', 'PARTIALLY_PAID', 'OVERDUE']
+# What a customer actually owes: every ISSUED invoice with a positive balance
+# (balance = total - payments - credit notes, kept by core.services.ledger).
+# Drafts aren't owed yet and void (CANCELLED) invoices never will be; PAID and
+# CREDITED invoices have no positive balance. This is exactly the population
+# of accounting_reports.debtors_ageing (which also counts DISPUTED invoices -
+# a dispute does not cancel the debt), so the aging report, the dashboards
+# and the debtors ageing always agree. Every receivable figure uses this.
+OUTSTANDING_STATUSES = list(Invoice.ISSUED_STATUSES)
 
 
 @dataclass
@@ -318,12 +323,12 @@ class AgingAnalysisService:
         end_date = self.today
         start_date = end_date - timedelta(days=days)
 
-        # Total credit sales (invoices issued in the period)
-        total_sales = Invoice.objects.filter(
-            company=self.company,
-            issue_date__gte=start_date,
-            issue_date__lte=end_date,
-        ).exclude(status__in=['DRAFT', 'CANCELLED']).aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
+        # Total credit sales in the period: issued invoices less credit notes
+        # (accounting_reports.sales). INCLUDING VAT here on purpose: the
+        # receivable it is compared with is money owed, incl. VAT.
+        from core.services.accounting_reports import sales
+        s = sales(self.company, start_date, end_date)
+        total_sales = s['invoiced_incl_vat'] - s['credited_incl_vat']
 
         # Current receivable
         current_ar = Invoice.objects.filter(
@@ -332,7 +337,7 @@ class AgingAnalysisService:
             status__in=OUTSTANDING_STATUSES,
         ).aggregate(total=Sum('balance'))['total'] or Decimal('0.00')
 
-        if total_sales == 0:
+        if total_sales <= 0:
             return None
 
         # DSO = (AR / Sales) × Days

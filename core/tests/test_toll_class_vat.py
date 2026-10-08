@@ -80,15 +80,16 @@ class _RouteCalcBase(TestCase):
         fuel.start()
         self.addCleanup(fuel.stop)
 
-    def calc(self, vehicle_type, wps=JHB_DBN, distance_km=568.0, routes=None):
+    def calc(self, vehicle_type, wps=JHB_DBN, distance_km=568.0, routes=None, rules=True):
         routes = fake_route(wps, distance_km) if routes is None else routes
+        extra = {'HTTP_X_TW_QUOTE_RULES': '1'} if rules else {}
         with mock.patch('core.views.RouteCalculatorView._route', return_value=routes):
             resp = self.client.post('/api/v1/route/calculate/', {
                 'origin': 'Johannesburg', 'destination': 'Durban',
                 'origin_lat': wps[0][0], 'origin_lon': wps[0][1], 'origin_country': 'ZA',
                 'dest_lat': wps[-1][0], 'dest_lon': wps[-1][1], 'dest_country': 'ZA',
                 'vehicle_type': vehicle_type, 'weight_kg': 8000,
-            }, format='json')
+            }, format='json', **extra)
         self.assertEqual(resp.status_code, 200, resp.content)
         return resp.json()
 
@@ -221,7 +222,11 @@ class TollVatTests(_RouteCalcBase):
         self.assertEqual(sum(Decimal(str(b['tariff_incl_vat'])) for b in data['toll_breakdown']), Decimal('1274.00'))
         # Route option row and totals use the same VAT-exclusive figure.
         self.assertEqual(Decimal(str(data['routes'][0]['toll_cost_zar'])), Decimal('1107.83'))
-        self.assertAlmostEqual(data['total_cost_zar'], round(data['fuel_cost_zar'] + 1107.83, 2), places=2)
+        # QUOTE-RULES §1/§6: no diesel price / vehicle => fuel null => total null.
+        if data['fuel_cost_zar'] is None:
+            self.assertIsNone(data['total_cost_zar'])
+        else:
+            self.assertAlmostEqual(data['total_cost_zar'], round(data['fuel_cost_zar'] + 1107.83, 2), places=2)
 
     def test_jhb_cpt_excl_vat(self):
         data = self.calc('Interlink (34 tonnes)', wps=JHB_CPT, distance_km=1398.0)
@@ -266,7 +271,7 @@ class TollFallbackFlagTests(_RouteCalcBase):
                 'origin_lat': JHB[0], 'origin_lon': JHB[1], 'origin_country': 'ZA',
                 'dest_lat': DBN[0], 'dest_lon': DBN[1], 'dest_country': 'ZA',
                 'vehicle_type': 'Interlink (34 tonnes)',
-            }, format='json')
+            }, format='json', HTTP_X_TW_QUOTE_RULES='1')
         data = resp.json()
         self.assertEqual(data['source'], 'estimated')
         self.assertEqual(data['toll_source'], 'estimated')
@@ -274,7 +279,10 @@ class TollFallbackFlagTests(_RouteCalcBase):
         self.assertIs(data['tolls_estimated'], True)
         self.assertEqual(data['tolls_unavailable_reason'], 'routing_unavailable')
         self.assertTrue(data['toll_warning'])
-        self.assertEqual(data['toll_cost_zar'], 0)
+        # QUOTE-RULES §6: unknown, never R 0 as if known.
+        self.assertIsNone(data['toll_cost_zar'])
+        self.assertIs(data['tolls_unknown'], True)
+        self.assertIs(data['distance_estimated'], True)
         self.assertIs(data['routes'][0]['tolls_unavailable'], True)
 
     def test_toll_calculator_exception_is_flagged(self):
@@ -282,7 +290,19 @@ class TollFallbackFlagTests(_RouteCalcBase):
             data = self.calc('Interlink (34 tonnes)')
         self.assertIs(data['tolls_unavailable'], True)
         self.assertEqual(data['tolls_unavailable_reason'], 'toll_calculation_failed')
+        self.assertIsNone(data['toll_cost_zar'])
+        self.assertIs(data['tolls_unknown'], True)
+
+    def test_old_clients_keep_the_numeric_shape(self):
+        # No X-TW-Quote-Rules header (the live mobile app): R 0 and a numeric
+        # total as before, with the new flags alongside.
+        with mock.patch('core.services.toll_calculator.calculate_tolls_by_geometry', side_effect=RuntimeError('boom')):
+            data = self.calc('Interlink (34 tonnes)', rules=False)
         self.assertEqual(data['toll_cost_zar'], 0)
+        self.assertIs(data['tolls_unknown'], True)
+        self.assertIsInstance(data['total_cost_zar'], float)
+        self.assertIsInstance(data['fuel_cost_zar'], float)
+        self.assertEqual(data['routes'][0]['toll_cost_zar'], 0)
 
     def test_no_plazas_is_flagged(self):
         TollPlaza.objects.all().delete()

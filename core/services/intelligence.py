@@ -9,6 +9,7 @@ from django.db.models import Avg, Sum, Count, Q, F
 from django.utils import timezone
 from core.models import Company, Customer, Invoice, Trip, Vehicle, Notification
 from core.formatting import format_zar
+from core.services.report_figures import invoice_revenue_excl_vat
 
 
 class IntelligenceService:
@@ -23,6 +24,14 @@ class IntelligenceService:
     - Route pricing
     - Fleet efficiency
     """
+
+    def _diesel_price(self):
+        """The company's diesel R/L in use (own or official), cached; None
+        when unknown (QUOTE-RULES §1: fuel_price_per_litre is a mirror only)."""
+        if not hasattr(self, '_diesel_cache'):
+            from core.services.fuel_price import company_diesel_price
+            self._diesel_cache = company_diesel_price(self.company)
+        return self._diesel_cache
 
     def __init__(self, company: Company):
         """
@@ -110,10 +119,13 @@ class IntelligenceService:
             Average margin percentage
         """
         # Get invoices with linked trips
+        # Issued invoices only (drafts and void are not revenue); revenue is
+        # EXCLUDING VAT and net of credit notes (report_figures).
         invoices = Invoice.objects.filter(
             company=self.company,
             customer=customer,
-            trip__isnull=False
+            trip__isnull=False,
+            status__in=Invoice.ISSUED_STATUSES,
         ).select_related('trip')
 
         if not invoices.exists():
@@ -127,13 +139,13 @@ class IntelligenceService:
             if not trip:
                 continue
 
-            # Revenue
-            total_revenue += invoice.subtotal
+            # Revenue (excl. VAT, net of credit notes)
+            total_revenue += invoice_revenue_excl_vat(invoice)
 
             # Costs (fuel + tolls + driver costs, etc.)
             fuel_cost = Decimal('0')
-            if trip.actual_fuel_litres:
-                fuel_cost = trip.actual_fuel_litres * self.company.fuel_price_per_litre
+            if trip.actual_fuel_litres and self._diesel_price() is not None:
+                fuel_cost = trip.actual_fuel_litres * self._diesel_price()
 
             toll_cost = trip.actual_toll_cost or Decimal('0')
 
@@ -142,7 +154,7 @@ class IntelligenceService:
 
             total_costs += trip_cost
 
-        if total_revenue == 0:
+        if total_revenue <= 0:
             return None
 
         margin = ((total_revenue - total_costs) / total_revenue * 100)
@@ -356,19 +368,19 @@ class IntelligenceService:
 
         for trip in trips:
             # Get invoice for revenue
-            invoice = trip.invoices.filter(company=self.company).first()
-            if invoice:
-                total_revenue += invoice.subtotal
+            for invoice in trip.invoices.filter(company=self.company,
+                                                status__in=Invoice.ISSUED_STATUSES):
+                total_revenue += invoice_revenue_excl_vat(invoice)
 
             # Calculate costs
             fuel_cost = Decimal('0')
-            if trip.actual_fuel_litres:
-                fuel_cost = trip.actual_fuel_litres * self.company.fuel_price_per_litre
+            if trip.actual_fuel_litres and self._diesel_price() is not None:
+                fuel_cost = trip.actual_fuel_litres * self._diesel_price()
 
             toll_cost = trip.actual_toll_cost or Decimal('0')
             total_costs += (fuel_cost + toll_cost)
 
-        if total_revenue == 0:
+        if total_revenue <= 0:
             return None
 
         margin = ((total_revenue - total_costs) / total_revenue * 100)

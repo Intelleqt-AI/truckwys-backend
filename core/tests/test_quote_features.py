@@ -180,3 +180,21 @@ class PriceRatioAvailabilityTests(TestCase):
         for name in ('month_sin', 'month_cos', 'dow_sin', 'dow_cos'):
             self.assertNotIn(name, quote_features.CORE_FEATURES)
             self.assertIn(name, quote_features.FULL_FEATURES)
+
+
+class OutcomeLeakageTests(TestCase):
+    def test_outcome_recorded_after_as_of_is_not_a_feature(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from core.models import Company, Customer, QuoteOutcome
+        from core.services.quote_features import customer_signals
+        from core.tests.test_price_analysis import make_quote
+        company = Company.objects.create(company_name='Leak Co')
+        cust = Customer.objects.create(company=company, name='L', email='l@x.test', phone='', address='', city='',
+                                       state='', zip_code='')
+        q = make_quote(company, cust, number='LK-1', status='ACCEPTED', outcome='accepted')
+        as_of = timezone.now() + timedelta(seconds=1)
+        QuoteOutcome.objects.create(quote=q, company=company, outcome='accepted', final_price=q.total_amount)
+        QuoteOutcome.objects.filter(quote=q).update(created_at=as_of + timedelta(days=2))
+        self.assertEqual(customer_signals(company, cust.id, as_of)[2], 0)          # decided later: not known yet
+        self.assertEqual(customer_signals(company, cust.id, as_of + timedelta(days=3))[2], 1)

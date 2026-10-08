@@ -63,151 +63,182 @@ def _sg_extract_json(text):
 
 
 class FuelPriceCurrentView(APIView):
-    """GET /api/v1/fuel-prices/current/ — returns current diesel price with staleness check.
-    Pass ?force=true (e.g. a manual "Fetch Now" button) to bypass the normal
-    once-per-hour live-retry gate and re-check the live sources immediately."""
+    """GET /api/v1/fuel-prices/current/ — the official diesel price in force
+    now, its freshness, and the caller's company price (QUOTE-RULES.md §1-§2).
+
+    Only official rows (FIASA 50ppm / MANUAL) are ever returned as a price;
+    fallback-table rows never are. A price older than the current
+    first-Wednesday period triggers one throttled refresh and is flagged
+    `stale` if still old. ?force=true re-checks FIASA now.
+
+    Legacy keys (inland_price, coastal_price, date, diesel_inland, ...) are
+    kept; additive: zone_price, effective_from, period_start, stale,
+    company_price {mode, source, price, zone, official, own, warnings},
+    petrol {inland_95, inland_93, coastal_95, coastal_93: {price,
+    effective_from, source, stale} | null} (official petrol in force per zone
+    and grade; null = not published) and company_petrol_price (the same
+    shape as company_price, plus fuel_type / grade)."""
     permission_classes = [IsAuthenticated]
 
-    @staticmethod
-    def _provenance(request, fuel_price, is_fallback):
-        """Fields added 2026-09 (all additive; existing keys unchanged): the
-        price for the caller's company fuel zone plus where it came from."""
-        company = getattr(request.user, 'company', None)
-        zone = getattr(company, 'fuel_zone', None) or 'INLAND'
-
-        def num(v):
-            return float(v) if v is not None else None
-
-        effective_from = getattr(fuel_price, 'effective_from', None)
-        failed_at = getattr(fuel_price, 'fetch_failed_at', None)
-        zone_price = None
-        if not is_fallback:
-            zone_price = num(fuel_price.diesel_coastal if zone == 'COASTAL' else fuel_price.diesel_inland)
-        return {
-            'zone': zone,
-            'zone_price': zone_price,
-            'diesel_grade': getattr(fuel_price, 'diesel_grade', None),
-            'price_basis': 'WHOLESALE_LIST',
-            'effective_from': timezone.localtime(effective_from).isoformat() if effective_from else None,
-            'diesel_500ppm_inland': None if is_fallback else num(getattr(fuel_price, 'diesel_500ppm_inland', None)),
-            'diesel_500ppm_coastal': None if is_fallback else num(getattr(fuel_price, 'diesel_500ppm_coastal', None)),
-            'last_failed_check_at': timezone.localtime(failed_at).isoformat() if failed_at else None,
-        }
-
     def get(self, request):
+        from core.services.fuel_price import (official_row_in_force, period_start, refresh_official,
+                                              resolve_company_diesel, resolve_company_petrol, resolve_official,
+                                              row_effective_from)
         try:
-            force = request.query_params.get('force', '').lower() == 'true'
-            fuel_price = fetch_fuel_prices(force_update=force)
+            now = timezone.now()
+            company = getattr(request.user, 'company', None)
+            zone = getattr(company, 'fuel_zone', None) or 'INLAND'
+            # ?force=true re-checks FIASA now — staff only. Old apps send it
+            # from a "Fetch now" button: for them it is ignored, not an error.
+            if request.query_params.get('force', '').lower() == 'true' and request.user.is_staff:
+                refresh_official(force=True, now=now)
+            resolution = resolve_company_diesel(company, now) if company is not None else None
+            if resolution is None:
+                from core.services.fuel_price import resolve_official
+                official = resolve_official(zone, now)
+                stale_flag = official['stale']
+            else:
+                stale_flag = resolution['official']['stale']
+            row = official_row_in_force(now)
+            start = period_start(now)
 
-            # Stale if: source is a fallback (live scrape failed), or data is >35 days old
-            days_old = (timezone.now().date() - fuel_price.date).days
-            is_fallback = fuel_price.source in ('FALLBACK', 'FALLBACK_LATEST')
-            # A refresh that failed after this price was stored leaves the
-            # last good price in place (never overwritten by a fallback) —
-            # still usable, but flagged.
-            refresh_failed_at = getattr(fuel_price, 'fetch_failed_at', None)
-            is_stale = is_fallback or days_old > 35 or refresh_failed_at is not None
-            provenance = self._provenance(request, fuel_price, is_fallback)
+            def num(v):
+                return float(v) if v is not None else None
 
-            if is_fallback:
-                # Don't hand over a substituted number dressed up as current —
-                # the live sources (AA SA, SAPIA, DMRE) are all presently
-                # broken (moved page / 404 / unreachable, not a transient
-                # blip — see fuel_price.py's scraper functions), so silently
-                # substituting an old figure would read as "the price" to
-                # anyone glancing at it. Leave the fields empty and say so
-                # plainly instead; a human can enter today's real price below.
+            company_price = None
+            if resolution is not None:
+                company_price = {k: v for k, v in resolution.items() if k != 'input'}
+            from core.services.quote_costing import iso as _iso
+            petrol = {}
+            for z in ('INLAND', 'COASTAL'):
+                for grade in ('95', '93'):
+                    rec = resolve_official(z, now, product=f'petrol_{grade}')
+                    petrol[f'{z.lower()}_{grade}'] = None if rec['price'] is None else {
+                        'price': rec['price'], 'effective_from': _iso(rec['effective_from']),
+                        'source': rec['source'], 'stale': rec['stale']}
+            company_petrol_price = None
+            if company is not None:
+                company_petrol_price = {k: v for k, v in resolve_company_petrol(company, now).items()
+                                        if k != 'input'}
+            if row is None:
                 return Response({
                     'success': True,
-                    'inland_price': None,
-                    'coastal_price': None,
-                    'last_updated': None,
-                    # When we actually last checked a live source — distinct
-                    # from `last_updated`/`date`, which is just the calendar
-                    # month a price represents. Shown even on a fallback so
-                    # "checked 20 seconds ago and got nothing live" reads
-                    # differently from "hasn't been checked in days."
-                    'last_checked_at': fuel_price.fetched_at.isoformat(),
-                    'is_stale': True,
-                    'source': fuel_price.source,
-                    'stale_warning': "Couldn't reach any live fuel-price source right now — enter today's price manually below.",
-                    'date': None,
-                    'diesel_inland': None,
-                    'diesel_coastal': None,
-                    'petrol_95': None,
-                    'petrol_93': None,
-                    **provenance,
+                    'inland_price': None, 'coastal_price': None, 'last_updated': None,
+                    'last_checked_at': None, 'is_stale': True, 'stale': True, 'source': None,
+                    'stale_warning': 'No official diesel price is on record right now.',
+                    'date': None, 'diesel_inland': None, 'diesel_coastal': None,
+                    'petrol_95': None, 'petrol_93': None,
+                    'zone': zone, 'zone_price': None, 'diesel_grade': None, 'price_basis': 'WHOLESALE_LIST',
+                    'effective_from': None, 'period_start': timezone.localtime(start).isoformat(),
+                    'diesel_500ppm_inland': None, 'diesel_500ppm_coastal': None, 'last_failed_check_at': None,
+                    'company_price': company_price,
+                    'petrol': petrol, 'company_petrol_price': company_petrol_price,
                 })
-
-            if refresh_failed_at is not None:
-                stale_warning = (
-                    f"The latest price check failed ({timezone.localtime(refresh_failed_at):%Y-%m-%d %H:%M} SAST); "
-                    f"showing the last confirmed {fuel_price.source} price."
-                )
-            elif is_stale:
-                stale_warning = f"Last update {days_old} days ago; consider manual refresh"
+            effective_from = row_effective_from(row)
+            failed_at = row.fetch_failed_at
+            stale = effective_from < start
+            if stale:
+                stale_warning = (f"The latest official price on record took effect "
+                                 f"{timezone.localtime(effective_from):%-d %b %Y}; this month's is not loaded yet.")
+            elif failed_at is not None:
+                stale_warning = (f"The latest price check failed ({timezone.localtime(failed_at):%Y-%m-%d %H:%M} SAST); "
+                                 f"showing the last confirmed {row.source} price.")
             else:
                 stale_warning = None
-
+            zone_price = num(row.diesel_coastal if zone == 'COASTAL' else row.diesel_inland)
             return Response({
                 'success': True,
-                'inland_price': float(fuel_price.diesel_inland),
-                'coastal_price': float(fuel_price.diesel_coastal),
-                'last_updated': fuel_price.date.isoformat(),
-                'last_checked_at': fuel_price.fetched_at.isoformat(),
-                'is_stale': is_stale,
-                'source': fuel_price.source,
+                'inland_price': num(row.diesel_inland),
+                'coastal_price': num(row.diesel_coastal),
+                'last_updated': row.date.isoformat(),
+                'last_checked_at': timezone.localtime(row.fetched_at).isoformat() if row.fetched_at else None,
+                'is_stale': stale or stale_flag or failed_at is not None,
+                'stale': stale,
+                'source': row.source,
                 'stale_warning': stale_warning,
-                # Legacy fields for backwards compatibility
-                'date': fuel_price.date.isoformat(),
-                'diesel_inland': float(fuel_price.diesel_inland),
-                'diesel_coastal': float(fuel_price.diesel_coastal),
-                'petrol_95': float(fuel_price.petrol_95) if fuel_price.petrol_95 else 0,
-                'petrol_93': float(fuel_price.petrol_93) if fuel_price.petrol_93 else 0,
-                **provenance,
+                'date': row.date.isoformat(),
+                'diesel_inland': num(row.diesel_inland),
+                'diesel_coastal': num(row.diesel_coastal),
+                'petrol_95': num(row.petrol_95),      # null when not published (never 0)
+                'petrol_93': num(row.petrol_93),
+                'zone': zone,
+                'zone_price': zone_price,
+                'diesel_grade': row.diesel_grade,
+                'price_basis': 'WHOLESALE_LIST',
+                'effective_from': timezone.localtime(effective_from).isoformat(),
+                'period_start': timezone.localtime(start).isoformat(),
+                'diesel_500ppm_inland': num(row.diesel_500ppm_inland),
+                'diesel_500ppm_coastal': num(row.diesel_500ppm_coastal),
+                'last_failed_check_at': timezone.localtime(failed_at).isoformat() if failed_at else None,
+                'company_price': company_price,
+                'petrol': petrol, 'company_petrol_price': company_petrol_price,
             })
         except Exception as e:
+            logger.exception('fuel price current failed')
             return Response({
                 'success': False,
                 'error': str(e),
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     def post(self, request):
-        """Admin override: POST {diesel_inland, diesel_coastal} to set current month's price."""
+        """Staff override: POST {diesel_inland, diesel_coastal} (both required,
+        R5-R100/L), optional petrol_95_inland, petrol_93_inland,
+        petrol_95_coastal, petrol_93_coastal (same bounds, as published, never
+        derived). Stored as its OWN row (source MANUAL, effective now, keyed by
+        today's SAST date): it never overwrites or replaces a FIASA row, and a
+        later FIASA row (newer effective date) supersedes it."""
         if not request.user.is_staff:
             return Response({'error': 'Staff only'}, status=status.HTTP_403_FORBIDDEN)
 
-        diesel_inland = request.data.get('diesel_inland')
-        diesel_coastal = request.data.get('diesel_coastal')
-        if not diesel_inland:
-            return Response({'error': 'diesel_inland is required'}, status=status.HTTP_400_BAD_REQUEST)
-
-        from decimal import Decimal
-        from datetime import date
+        from decimal import Decimal, InvalidOperation
         from core.models.fuel_price import FuelPrice
 
-        today = date.today().replace(day=1)
+        errors, values = {}, {}
+
+        def bounded(key, required):
+            raw = request.data.get(key)
+            if raw in (None, ''):
+                if required:
+                    errors[key] = 'Required: the price in R per litre (R5 to R100).'
+                return None
+            try:
+                v = Decimal(str(raw).strip().replace(',', '.'))
+            except (InvalidOperation, ValueError):
+                errors[key] = 'Enter a number in R per litre (R5 to R100).'
+                return None
+            if not v.is_finite() or not (Decimal('5') <= v <= Decimal('100')):
+                errors[key] = 'Enter a price between R5 and R100 per litre.'
+                return None
+            return v.quantize(Decimal('0.0001'))
+
+        values['diesel_inland'] = bounded('diesel_inland', True)
+        values['diesel_coastal'] = bounded('diesel_coastal', True)      # never copied from inland
+        values['petrol_95'] = bounded('petrol_95_inland', False) or bounded('petrol_95', False)
+        values['petrol_93'] = bounded('petrol_93_inland', False) or bounded('petrol_93', False)
+        values['petrol_95_coastal'] = bounded('petrol_95_coastal', False)
+        values['petrol_93_coastal'] = bounded('petrol_93_coastal', False)
+        if errors:
+            return Response({'error': 'Check the prices.', 'fields': errors}, status=status.HTTP_400_BAD_REQUEST)
+
         now = timezone.now()
-        # A staff override is the price in force from now until a person
-        # replaces it: automated refreshes never overwrite a MANUAL row (see
-        # fetch_fuel_prices). Every provenance field is reset so nothing from
-        # the scraped row it replaces (grade, 500ppm figures, failure flag)
-        # is left behind looking as if it described the typed price.
-        FuelPrice.objects.update_or_create(
-            date=today,
-            defaults={
-                'diesel_inland': Decimal(str(diesel_inland)),
-                'diesel_coastal': Decimal(str(diesel_coastal or diesel_inland)),
-                'source': 'MANUAL',
-                'fetched_at': now,
-                'effective_from': now,
-                'fetch_failed_at': None,
-                'diesel_grade': None,
-                'diesel_500ppm_inland': None,
-                'diesel_500ppm_coastal': None,
-            }
+        today = timezone.localdate(now)
+        manual, _ = FuelPrice.objects.update_or_create(
+            date=today, source='MANUAL',
+            defaults={**values, 'fetched_at': now, 'effective_from': now, 'fetch_failed_at': None,
+                      'diesel_grade': None, 'diesel_500ppm_inland': None, 'diesel_500ppm_coastal': None},
         )
-        return Response({'success': True, 'date': today.isoformat(), 'diesel_inland': float(diesel_inland)})
+        # Within one period FIASA's price supersedes a manual one: say whether
+        # this manual price is the one pricing quotes now.
+        from core.services.fuel_price import official_row_in_force
+        in_force_row = official_row_in_force(now)
+        in_force = in_force_row is not None and in_force_row.pk == manual.pk
+        return Response({'success': True, 'date': today.isoformat(), 'source': 'MANUAL',
+                         'in_force': in_force,
+                         'message': (None if in_force else
+                                     "This period's official FIASA price is already recorded and takes precedence."),
+                         'effective_from': timezone.localtime(now).isoformat(),
+                         'diesel_inland': float(values['diesel_inland']),
+                         'diesel_coastal': float(values['diesel_coastal'])})
 
 
 # UNREACHABLE FROM LIVE UI — no reference in frontend/src as of the two-tier
@@ -215,175 +246,69 @@ class FuelPriceCurrentView(APIView):
 # fixed for the features-dict interface, see win_prediction) rather than
 # deleted, since an external/internal caller could still curl it directly —
 # candidate for deletion in a future cleanup pass if that's confirmed unused.
+def _pricing_payload_from(data):
+    """The pricing-analysis payload from an older endpoint's body (its own
+    names mapped, the costing fields passed through)."""
+    p = {k: v for k, v in dict(data).items() if v is not None}
+    if 'distance' in p and 'distance_km' not in p:
+        p['distance_km'] = p['distance']
+    if 'load_weight' in p and 'weight' not in p:
+        p['weight'] = p['load_weight']
+    if 'client_id' in p and 'customer_id' not in p:
+        p['customer_id'] = p['client_id']
+    return p
+
+
+def _chance(likelihood):
+    """A model % as 0-1, else None (bands are not a probability)."""
+    if (likelihood or {}).get('level') == 'model' and likelihood.get('pct') is not None:
+        return round(likelihood['pct'] / 100.0, 2)
+    return None
+
+
 class AIQuoteSuggestionView(APIView):
-    """POST /api/v1/quotes/suggest/ — AI-suggested margin and price."""
+    """POST /api/v1/quotes/suggest/ — the suggested price, now the pricing
+    analysis' recommendation (QUOTE-RULES: the same floor, market, gates and
+    choices; no invented market or cost x 1,25 anchor). Old response keys kept:
+    suggested_price (null when the floor is incomplete or nothing is
+    recommended), margin_pct (true margin: (price - floor) / price),
+    margin_range, market_rate (the market median shown, or null),
+    win_probability only from a real model."""
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        """
-        Expects:
-        {
-          "distance_km": 1400,
-          "truck_type": 0,  # e.g., 0 = Flatbed
-          "load_type": 0,
-          "load_weight": 15000,
-          "fuel_cost": 5000,
-          "toll_cost": 1200,
-          "driver_cost": 800,
-          "actual_cost": 10000
-        }
-        Returns AI suggestion or 503 if model not trained.
-        """
+        from core.services.pricing_analysis import analyze_pricing
+        from core.views import resolve_user_company
+        company = resolve_user_company(request.user)
+        payload = _pricing_payload_from(request.data)
         try:
-            data = request.data
-            actual_cost = float(data.get('actual_cost', 0))
-            if actual_cost <= 0:
-                return Response({
-                    'success': False,
-                    'error': 'actual_cost must be > 0',
-                }, status=status.HTTP_400_BAD_REQUEST)
-
-            # The LightGBM margin model is OPTIONAL. If its libraries are missing or
-            # it isn't trained, we DON'T error — we ground the suggestion in the real
-            # cost breakdown + real lane market rate + the expected-profit optimiser,
-            # and let OpenAI produce/justify the price (validated so it stays real).
-            distance_km = _sg_float(data.get('distance_km'), 0.0)
-            fuel_cost = _sg_float(data.get('fuel_cost'), 0.0)
-            toll_cost = _sg_float(data.get('toll_cost'), 0.0)
-            driver_cost = _sg_float(data.get('driver_cost'), 0.0)
-            client_tier = _sg_int(data.get('client_tier'), 1)
-            days_until = _sg_int(data.get('days_until_departure'), 7)
-            hist = _sg_clamp(_sg_float(data.get('historical_acceptance_rate'), 0.5), 0.0, 1.0)
-
-            from core.views import resolve_user_company
-            company = resolve_user_company(request.user)
-
-            # 1) Real lane market rate (cross-platform -> own quotes -> SA estimate -> cost anchor).
-            origin = str(data.get('origin') or '').strip()
-            destination = str(data.get('destination') or '').strip()
-            vehicle_type = str(data.get('vehicle_type') or '').strip()
-            market_rate, market_rate_source = 0.0, 'none'
-            try:
-                from core.services.lane_benchmark import resolve_market_rate
-                rate, src = resolve_market_rate(origin, destination, vehicle_type or None, company=company)
-                if rate and rate > 0:
-                    market_rate, market_rate_source = float(rate), src
-            except Exception as exc:
-                logger.warning('suggest: market-rate resolve failed: %s', exc)
-            if market_rate <= 0:
-                market_rate = actual_cost * 1.25
-                market_rate_source = 'cost_anchor'
-
-            # 2) Deterministic, grounded expected-profit optimum (anchor + sane band).
-            from core.services.margin_optimizer import optimize_price, _route_popularity
-            opt = optimize_price(
-                total_cost=actual_cost, market_rate=market_rate,
-                client_tier=client_tier, days_until_departure=days_until,
-                historical_acceptance_rate=hist,
-                origin=origin or None, destination=destination or None,
-            )
-            anchor_price = _sg_float(opt.get('optimal_price'), 0.0) or round(actual_cost * 1.18, 2)
-            curve = opt.get('curve') or []
-            band_low = min((p['price'] for p in curve), default=round(actual_cost * 1.05, 2))
-            band_high = max((p['price'] for p in curve), default=round(actual_cost * 1.45, 2))
-
-            suggested_price = anchor_price
-            confidence = 0.7
-            rationale = ''
-            source = 'optimizer'
-
-            # 3) OpenAI layer — reasons over the REAL numbers; output validated + clamped.
-            try:
-                from core.services import agent as agent_svc
-                if agent_svc._provider():
-                    import json
-                    payload = {
-                        'actual_cost': round(actual_cost, 2),
-                        'distance_km': distance_km,
-                        'fuel_cost': round(fuel_cost, 2),
-                        'toll_cost': round(toll_cost, 2),
-                        'driver_cost': round(driver_cost, 2),
-                        'market_rate': round(market_rate, 2),
-                        'market_rate_source': market_rate_source,
-                        'optimizer_anchor_price': round(anchor_price, 2),
-                        'price_band': {'low': round(band_low, 2), 'high': round(band_high, 2)},
-                        'client_tier': client_tier,
-                        'days_until_departure': days_until,
-                    }
-                    sys_prompt = (
-                        "You are a pricing analyst for a South African road-freight operator. "
-                        "Suggest ONE quote price in ZAR that balances winning the load against margin, "
-                        "grounded ONLY in the numbers provided (real cost breakdown, real market rate, "
-                        "and the optimiser anchor/band). Never invent figures. The price MUST be >= "
-                        "actual_cost and SHOULD stay within price_band. Reply with STRICT JSON only: "
-                        '{"suggested_price": number, "confidence": number between 0 and 1, '
-                        '"rationale": "one or two sentences"}'
-                    )
-                    raw = agent_svc._llm_generate(
-                        sys_prompt, [{'role': 'user', 'content': json.dumps(payload)}]
-                    )
-                    parsed = _sg_extract_json(raw)
-                    if parsed and parsed.get('suggested_price') is not None:
-                        lo = max(actual_cost, band_low, anchor_price * 0.90)
-                        hi = max(lo, min(band_high, anchor_price * 1.10))
-                        suggested_price = _sg_clamp(_sg_float(parsed.get('suggested_price'), anchor_price), lo, hi)
-                        confidence = _sg_clamp(_sg_float(parsed.get('confidence'), 0.7), 0.3, 0.95)
-                        rationale = str(parsed.get('rationale') or '').strip()[:400]
-                        source = 'openai'
-            except Exception as exc:
-                logger.warning('suggest: OpenAI layer failed, using optimizer: %s', exc)
-
-            # 4) Win probabilities at the chosen price (and +/-5%). Resolves the
-            # same two-tier (user -> global -> heuristic) model as the live
-            # quote-creation flow — see core.services.win_prediction.
-            win_probability = win_low = win_high = None
-            try:
-                from core.services.win_prediction import resolve_prediction_context
-
-                _pop = _route_popularity(origin or None, destination or None)
-                prediction_ctx = resolve_prediction_context(request.user, company)
-
-                def _pw(price):
-                    ratio = (price / market_rate) if market_rate > 0 else 1.0
-                    features = {
-                        'price_ratio': ratio, 'client_tier': client_tier,
-                        'days_until_departure': days_until, 'historical_acceptance_rate': hist,
-                        'route_popularity': _pop,
-                    }
-                    return round(float(prediction_ctx.predict_proba(features)), 2)
-                win_probability = _pw(suggested_price)
-                win_low = _pw(suggested_price * 0.95)
-                win_high = _pw(suggested_price * 1.05)
-            except Exception as exc:
-                logger.warning('suggest: win-probability failed: %s', exc)
-
-            margin_pct = round((suggested_price - actual_cost) / actual_cost * 100, 1) if actual_cost else 0.0
-            margin_lower = round((band_low - actual_cost) / actual_cost * 100, 1) if actual_cost else 5.0
-            margin_upper = round((band_high - actual_cost) / actual_cost * 100, 1) if actual_cost else 45.0
-
-            response_data = {
-                'success': True,
-                'suggested_price': round(suggested_price, 2),
-                'margin_pct': margin_pct,
-                'confidence': round(confidence, 2),
-                'margin_range': {'lower': margin_lower, 'upper': margin_upper},
-                'source': source,
-                'rationale': rationale,
-                'market_rate': round(market_rate, 2),
-                'market_rate_source': market_rate_source,
-            }
-            if win_probability is not None:
-                response_data['win_probability'] = win_probability
-                response_data['win_probability_at_lower_price'] = win_low
-                response_data['win_probability_at_higher_price'] = win_high
-
-            return Response(response_data)
-
-        except Exception as e:
-            return Response({
-                'success': False,
-                'error': str(e),
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            r = analyze_pricing(payload, company=company, user=request.user)
+        except (TypeError, ValueError, KeyError, AttributeError):
+            return Response({'success': False, 'error': 'Check the quote details.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        choices = r.get('choices') or []
+        rec = next((c for c in choices if c.get('recommended')), None)
+        m = r.get('market') or {}
+        lk = r.get('likelihood') or {}
+        margins = [c['margin_pct'] for c in choices if c.get('margin_pct') is not None]
+        return Response({
+            'success': True,
+            'suggested_price': rec['price'] if rec and not r.get('blocking') else None,
+            'margin_pct': rec['margin_pct'] if rec else None,
+            'margin_range': {'lower': min(margins), 'upper': max(margins)} if margins else None,
+            'confidence': None,
+            'source': 'pricing_analysis',
+            'rationale': (r.get('recommendation') or {}).get('reason') or '',
+            'market_rate': m.get('median') if m.get('available') else None,
+            'market_rate_source': m.get('tier') if m.get('available') else 'none',
+            'cost_floor': (r.get('cost_floor') or {}).get('total'),
+            'blocking': r.get('blocking') or [],
+            'warnings': r.get('warnings') or [],
+            'available': lk.get('level') == 'model',
+            'level': 'model' if lk.get('level') == 'model' else 'bands',
+            'model_scope': (lk.get('model') or {}).get('scope'),
+            'win_probability': _chance(rec.get('likelihood')) if rec else None,
+        })
 
 
 class RevenueGuardView(APIView):
@@ -437,6 +362,7 @@ class RevenueGuardView(APIView):
                 total_cost=total_cost, quote_price=quote_price,
                 distance_km=distance_km, fuel_cost=fuel_cost,
                 company=company, quote=quote, customer=customer,
+                vehicle_type=data.get('vehicle_type') or None,
             )
             result.setdefault('factors', [])  # legacy field
             return Response(result)
@@ -448,12 +374,11 @@ class RevenueGuardView(APIView):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-# UNREACHABLE FROM LIVE UI — QuoteBuilder.tsx's AI panel now calls
-# AIQuotePriceAnalysisView (POST /quotes/ai-price-analysis/) below instead.
-# Left in place (not deleted): the underlying win-probability ML system is
-# only paused, not removed, pending more accept/reject data (see PLAN doc
-# Part 8) — this endpoint and analyze_quote() keep working for anyone who
-# still calls them directly.
+# Still called by QuoteBuilder.tsx (debounced, skip_narrative) on main — only
+# for the win_probability it used to save. That figure is now server-owned
+# (QuoteSerializer: set from pricing_decision, model level only), and the
+# pricing analysis endpoint (/quotes/pricing-analysis/) replaces this call in
+# the redesigned builder. Kept for mobile / older clients.
 class AIQuoteAnalyzeView(APIView):
     """POST /api/v1/quotes/analyze/ — one comprehensive AI analysis of a quote.
 
@@ -531,6 +456,16 @@ class AIQuoteAnalyzeView(APIView):
                 'customer_id': customer_id,
                 'skip_narrative': bool(data.get('skip_narrative')),
             }
+            # The full costing payload (QUOTE-RULES): the same inputs the
+            # builder's floor and the AI price check use.
+            for key in ('duration_minutes', 'trip_type', 'legs', 'one_way_distance_km', 'vehicle_type_id',
+                        'include_empty_return', 'include_return', 'tolls_unknown', 'tolls_confirmed_none',
+                        'toll_cost_one_way', 'toll_cost_empty_return', 'distance_estimated', 'distance_confirmed',
+                        'driver_cost_is_override', 'driver_nights', 'is_international', 'cross_border_cost',
+                        'use_official_fuel', 'fuel_price_override', 'pickup_location', 'delivery_location',
+                        'cargo_description', 'route', 'pickup_date', 'quote_id'):
+                if data.get(key) is not None:
+                    payload[key] = data.get(key)
             from core.services.quote_analysis import analyze_quote
             result = analyze_quote(payload, company=company, user=request.user)
             if not result.get('success'):
@@ -633,7 +568,11 @@ class AIQuotePriceAnalysisView(APIView):
             # to the requesting company.
             'customer_id': self._own_customer_id(data.get('customer_id'), company),
             'route': self._route(data.get('route')),
+            'cargo_description': self._text(data.get('cargo_description')),
             **{key: self._number(data.get(key), cap) for key, cap in self.NUMBER_CAPS.items()},
+            # The costing flags (QUOTE-RULES): the same inputs the builder's
+            # cost floor uses, so this check prices on the same floor.
+            **{key: self._flag(data.get(key)) for key in self.FLAG_KEYS if data.get(key) is not None},
         }
         result = quote_ai_pricing.analyze_quote_price(
             payload=payload, user=request.user, company=company, quote=quote,
@@ -651,7 +590,17 @@ class AIQuotePriceAnalysisView(APIView):
         'weight': 200_000, 'fuel_cost': 5_000_000, 'toll_cost': 1_000_000, 'driver_cost': 1_000_000,
         'cross_border_cost': 1_000_000, 'fuel_usage_litres': 100_000, 'fuel_price_used': 1_000,
         'fuel_consumption_l_per_100km': 500, 'base_rate_per_km': 1_000, 'market_rate': 10_000_000,
+        'vehicle_type_id': 10_000_000, 'fuel_price_override': 100, 'driver_nights': 60,
+        'toll_cost_one_way': 500_000, 'toll_cost_empty_return': 500_000,
     }
+    FLAG_KEYS = ('include_empty_return', 'include_return', 'tolls_unknown', 'tolls_confirmed_none',
+                 'distance_estimated', 'distance_confirmed', 'use_official_fuel', 'driver_cost_is_override')
+
+    @staticmethod
+    def _flag(value):
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in ('1', 'true', 'yes', 'on')
 
     @staticmethod
     def _number(value, cap):
@@ -1334,6 +1283,9 @@ class QuoteOutcomeView(APIView):
             quote, outcome,
             rejection_reason=rejection_reason, final_price=final_price,
             allow_flip=True,
+            # Optional, additive: structured loss reason for a rejection.
+            loss_reason=request.data.get('loss_reason') or '',
+            loss_reason_note=request.data.get('loss_reason_note') or '',
         )
         if record is None:
             return Response({
@@ -1341,10 +1293,25 @@ class QuoteOutcomeView(APIView):
                 'error': 'Failed to record outcome',
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+        # Keep the quote's status in step with the recorded answer (a DRAFT
+        # or SENT quote marked won otherwise read "Draft · Won"): accepted ->
+        # ACCEPTED unless already won/in transit; rejected -> DECLINED. Same
+        # direction as a status change recording the outcome (QuoteViewSet).
+        target = None
+        if outcome == 'accepted' and quote.status not in ('ACCEPTED', 'IT', 'COMPLETED'):
+            target = 'ACCEPTED'
+        elif outcome == 'rejected' and quote.status != 'DECLINED' and not quote.loads.exists():
+            target = 'DECLINED'
+        if target:
+            quote.status = target
+            quote._notify_actor_id = request.user.id
+            quote.save(update_fields=['status', 'updated_at'])
+
         return Response({
             'success': True,
             'id': quote.id,
             'outcome': quote.outcome,
+            'status': quote.status,
             'updated_at': quote.updated_at.isoformat(),
         })
 
@@ -1382,8 +1349,8 @@ class QuoteModelStatsView(APIView):
 
             # Win-probability model status — this is the one that drives the
             # profit sweet-spot curve. Two-tier: {'user': {...}, 'global': {...}}
-            # progress, each with its own outcomes_collected/outcomes_needed/
-            # qualifies — see core.services.win_prediction.model_progress.
+            # progress, each with its own outcomes_collected/accepted_needed/
+            # rejected_needed/qualifies — see core.services.win_prediction.model_progress.
             try:
                 from core.services.win_prediction import model_progress
                 win = model_progress(request.user, company)
@@ -1434,39 +1401,31 @@ class FuelPriceSurchargeCheckView(APIView):
 
             quote = Quote.objects.get(id=quote_id, company=request.user.company)
 
-            # Get current fuel price
-            try:
-                current_fuel = fetch_fuel_prices()
-                fuel_current = float(current_fuel.diesel_inland)
-            except Exception:
-                fuel_current = 20.0  # fallback
-
-            fuel_at_creation = float(quote.fuel_price_at_creation) if quote.fuel_price_at_creation else fuel_current
-
-            if fuel_at_creation == 0:
-                delta_pct = 0
-                delta_zar = 0
-            else:
-                delta_pct = ((fuel_current - fuel_at_creation) / fuel_at_creation) * 100
-                delta_zar = fuel_current - fuel_at_creation
-
+            # Like-for-like (QUOTE-RULES §9): the official price for the
+            # quote's own zone when it was priced vs now. Unknown => no
+            # surcharge advice (never a 20.0 / fallback figure).
+            from core.services.quote_snapshot import fuel_change_since_pricing
+            change = fuel_change_since_pricing(quote)
+            if change is None:
+                return Response({
+                    'success': True, 'fuel_at_creation': None, 'fuel_current': None, 'delta_pct': None,
+                    'delta_zar': None, 'surcharge_required': False, 'recommended_surcharge_zar': 0,
+                    'fuel_impact_on_total': 'The diesel price change since this quote can\'t be worked out.',
+                    'fuel_zone': None, 'unknown': True,
+                })
+            delta_pct, delta_zar = change['delta_pct'], change['delta']
+            from core.services.quote_costing import _half_up_decimal as _hu
             surcharge_required = delta_pct > 3.0
-
-            # Calculate recommended surcharge
-            # Formula: delta_pct × original fuel_surcharge
-            original_fuel_cost = float(quote.fuel_surcharge) if quote.fuel_surcharge else 0
-            if surcharge_required and original_fuel_cost > 0:
-                recommended_surcharge_zar = original_fuel_cost * (delta_pct / 100)
-            else:
-                recommended_surcharge_zar = 0
-
+            recommended_surcharge_zar = max(change['impact_zar'] or 0, 0) if surcharge_required else 0
             distance = float(quote.distance) if quote.distance else 0
-            fuel_impact_message = f"Diesel price increase costs ~R{int(recommended_surcharge_zar)} more for this {int(distance)} km job" if surcharge_required else "No significant fuel price change"
+            fuel_impact_message = (f"Diesel price increase costs ~R{int(_hu(recommended_surcharge_zar, 0))} more for this "
+                                   f"{int(distance)} km job" if surcharge_required else "No significant fuel price change")
 
             return Response({
                 'success': True,
-                'fuel_at_creation': fuel_at_creation,
-                'fuel_current': fuel_current,
+                'fuel_at_creation': change['baseline'],
+                'fuel_current': change['current'],
+                'fuel_zone': change['zone'],
                 'delta_pct': round(delta_pct, 2),
                 'delta_zar': round(delta_zar, 2),
                 'surcharge_required': surcharge_required,
@@ -1495,39 +1454,24 @@ class QuoteFuelAlertView(APIView):
         try:
             quote = Quote.objects.get(id=quote_id, company=request.user.company)
 
-            # Get current fuel price
-            try:
-                current_fuel = fetch_fuel_prices()
-                fuel_current = float(current_fuel.diesel_inland)
-            except Exception:
-                fuel_current = 20.0
-
-            fuel_at_creation = float(quote.fuel_price_at_creation) if quote.fuel_price_at_creation else fuel_current
-
-            if fuel_at_creation == 0:
-                return Response({
-                    'success': True,
-                    'has_alert': False,
-                })
-
-            delta_pct = ((fuel_current - fuel_at_creation) / fuel_at_creation) * 100
-            delta_zar = fuel_current - fuel_at_creation
-
-            has_alert = abs(delta_pct) > 3.0
-
-            if not has_alert:
-                return Response({
-                    'success': True,
-                    'has_alert': False,
-                })
-
-            # Calculate cost impact
-            distance = float(quote.distance) if quote.distance else 0
-            original_fuel_cost = float(quote.fuel_surcharge) if quote.fuel_surcharge else 0
-            estimated_cost_impact = int(original_fuel_cost * (abs(delta_pct) / 100))
+            # Like-for-like zone, against the snapshot (QUOTE-RULES §9).
+            from core.services.quote_snapshot import fuel_change_since_pricing
+            change = fuel_change_since_pricing(quote)
+            if change is None:
+                return Response({'success': True, 'has_alert': False})
+            delta_pct, delta_zar = change['delta_pct'], change['delta']
+            if abs(delta_pct) <= 3.0:
+                return Response({'success': True, 'has_alert': False})
+            # Whole rand half-up of the fuel-lines delta: the same figure the
+            # reopen notice shows (never truncated).
+            from core.services.quote_costing import _half_up_decimal
+            estimated_cost_impact = int(_half_up_decimal(abs(change['impact_zar'] or 0), 0))
 
             alert_type = 'FUEL_INCREASE' if delta_zar > 0 else 'FUEL_DECREASE'
-            message = f"Diesel {'up' if delta_zar > 0 else 'down'} R{abs(delta_zar):.2f}/L since this quote was created. This job now costs ~R{estimated_cost_impact} {'more' if delta_zar > 0 else 'less'}."
+            from core.services.quote_costing import fmt_rand
+            message = (f"{change.get('fuel_word') or 'Diesel'} {'up' if delta_zar > 0 else 'down'} "
+                       f"{fmt_rand(abs(delta_zar), 2)}/L since this quote was priced. This job now costs "
+                       f"~{fmt_rand(estimated_cost_impact)} {'more' if delta_zar > 0 else 'less'}.")
             action = 'Consider requesting a surcharge adjustment' if delta_zar > 0 else 'You may have extra margin to offer a discount'
 
             return Response({
@@ -1537,6 +1481,7 @@ class QuoteFuelAlertView(APIView):
                 'fuel_delta_pct': round(delta_pct, 2),
                 'fuel_delta_zar': round(delta_zar, 2),
                 'estimated_cost_impact': estimated_cost_impact,
+                'fuel_product': change.get('product', 'diesel'),
                 'message': message,
                 'action': action,
             })
@@ -1564,7 +1509,7 @@ class QuoteBenchmarkView(APIView):
         """
         try:
             from core.services.lane_benchmark import (
-                compute_lane_benchmark, derive_lane_code, lookup_sa_estimate, _lane_q,
+                derive_lane_code,
             )
             # derive_lane_code, not bare canon_code: the browser sends whatever
             # its address parsing produced, which has included street numbers
@@ -1588,55 +1533,32 @@ class QuoteBenchmarkView(APIView):
                     'error': 'origin, destination, and vehicle_type are required'
                 }, status=status.HTTP_400_BAD_REQUEST)
 
-            # Cross-platform anonymized benchmark first (pools won quotes across
-            # ALL operators, k-anonymity enforced so no single operator's pricing
-            # is exposed). Falls back to own-company data, then hardcoded estimates.
-            platform = compute_lane_benchmark(origin, destination, vehicle_type)
-            if not platform.get('available'):
-                # Retry at lane level (all vehicle types) before falling back.
-                platform = compute_lane_benchmark(origin, destination)
-
-            # Query this operator's own accepted quotes on this lane (fallback
-            # layer). _lane_q matches historical alias spellings (DUR/DURBAN)
-            # against the canonical query code.
+            # The SAME market range the pricing analysis shows (QUOTE-RULES §8,
+            # privacy): platform tier only from >= 10 accepted quotes by >= 3
+            # operators OTHER than the caller, p25 / median / p75 rounded to
+            # R500, never an average, a min / max or anything from which one
+            # operator's price could be derived; else the caller's own accepted
+            # quotes (>= 5, last 180 days); else no market data.
+            from core.services.lane_benchmark import resolve_market_range
             from core.views import resolve_user_company
-            lane_quotes = Quote.objects.filter(
-                _lane_q('origin', origin),
-                _lane_q('destination', destination),
-                company=resolve_user_company(request.user),
-                vehicle_type__icontains=vehicle_type,
-                outcome='accepted',
-                created_at__gte=timezone.now() - timedelta(days=90)
-            )
-
-            data_points = lane_quotes.count()
-            source = 'company'
+            company = resolve_user_company(request.user)
+            rng = resolve_market_range(origin, destination, vehicle_type, company=company)
+            usable = rng.get('available') and not rng.get('is_estimate')
+            data_points = int(rng.get('n') or 0) if usable else 0
+            source = rng.get('tier') if usable else 'none'
             distinct_operators = None
 
-            # Hardcoded SA market averages live in lane_benchmark (single source).
-            sa_estimate = lookup_sa_estimate(origin, destination, vehicle_type)
+            # No invented stats (owner rule): the hard-coded SA lane table is
+            # never shown as market data. No real quotes = "No market data".
+            sa_estimate = None
 
-            if platform.get('available'):
-                # Real cross-platform benchmark (preferred)
-                market_avg_rate = round(platform['market_avg_rate'])
-                market_range_low = round(platform.get('p25') or platform['market_avg_rate'])
-                market_range_high = round(platform.get('p75') or platform['market_avg_rate'])
-                data_points = platform['sample_size']
-                distinct_operators = platform.get('distinct_operators')
+            if usable:
+                # market_avg_rate keeps its key for old clients but is the
+                # median (rounded to R500 on the platform tier), not a mean.
+                market_avg_rate = rng['median']
+                market_range_low = rng['p25']
+                market_range_high = rng['p75']
                 confidence = 'high'
-                source = 'platform'
-            elif data_points >= 10:
-                # Use this operator's own real data
-                stats = lane_quotes.aggregate(
-                    avg_price=Avg('total_amount'),
-                    min_price=Min('total_amount'),
-                    max_price=Max('total_amount'),
-                )
-                market_avg_rate = int(stats['avg_price'] or 0)
-                market_range_low = int(stats['min_price'] or 0)
-                market_range_high = int(stats['max_price'] or 0)
-                confidence = 'high'
-                source = 'company'
             elif sa_estimate:
                 # Fallback to hardcoded
                 market_avg_rate = sa_estimate['avg']
@@ -1657,13 +1579,43 @@ class QuoteBenchmarkView(APIView):
                     'recommendation': 'Market data not available for this lane yet.',
                 })
 
-            # Calculate recommendation (mock for now)
-            your_rate = request.query_params.get('your_rate', market_avg_rate)
-            your_rate = float(your_rate)
-            your_vs_market_pct = ((your_rate - market_avg_rate) / market_avg_rate) * 100 if market_avg_rate > 0 else 0
+            # The caller's price (your_rate, or your_price). Previously it
+            # defaulted to the market average itself, so the verdict was always
+            # "0% — competitive" whenever a client didn't send one.
+            raw_rate = request.query_params.get('your_rate') or request.query_params.get('your_price')
+            try:
+                your_rate = float(raw_rate) if raw_rate not in (None, '') else None
+            except (TypeError, ValueError):
+                your_rate = None
+            if your_rate is not None and your_rate <= 0:
+                your_rate = None
+            is_estimate = source == 'estimate'
+            from core.services.quote_costing import fmt_rand
+            your_vs_market_pct = (
+                ((your_rate - market_avg_rate) / market_avg_rate) * 100
+                if your_rate is not None and market_avg_rate > 0 else None
+            )
+            source_label = {
+                'platform': rng.get('tier_label') or 'TruckWys platform',
+                'company': rng.get('tier_label') or f'Your accepted quotes on this lane, {data_points}',
+                'estimate': 'Rough South African estimate, not market data',
+            }.get(source, source)
 
-            if your_vs_market_pct < -10:
-                recommendation = f"Your quote is {abs(your_vs_market_pct):.0f}% below market. Consider R{int(market_avg_rate * 0.9)}-R{int(market_avg_rate)} for better margin."
+            if is_estimate:
+                # A hardcoded estimate is never "the market" and never makes a
+                # price "competitive" (pricing analysis rule 7).
+                recommendation = (
+                    f"No real quotes on this lane yet. A rough estimate is {fmt_rand(market_range_low)} – "
+                    f"{fmt_rand(market_range_high)}; treat it as a reference only."
+                )
+            elif your_vs_market_pct is None:
+                recommendation = (
+                    f"Accepted quotes on this lane mostly ran {fmt_rand(market_range_low)} – "
+                    f"{fmt_rand(market_range_high)}."
+                )
+            elif your_vs_market_pct < -10:
+                recommendation = (f"Your quote is {abs(your_vs_market_pct):.0f}% below market. Consider "
+                                  f"{fmt_rand(market_avg_rate * 0.9)} – {fmt_rand(market_avg_rate)} for better margin.")
             elif your_vs_market_pct > 10:
                 recommendation = f"Your quote is {your_vs_market_pct:.0f}% above market. May be difficult to win at this price."
             else:
@@ -1682,7 +1634,10 @@ class QuoteBenchmarkView(APIView):
                 'source': source,
                 'distinct_operators': distinct_operators,
                 'your_rate': your_rate,
-                'your_vs_market_pct': round(your_vs_market_pct, 1),
+                'your_vs_market_pct': round(your_vs_market_pct, 1) if your_vs_market_pct is not None else None,
+                # Additive: provenance a client can show as-is.
+                'is_estimate': is_estimate,
+                'source_label': source_label,
                 'recommendation': recommendation,
             })
 
@@ -1696,114 +1651,47 @@ class QuoteBenchmarkView(APIView):
 # UNREACHABLE FROM LIVE UI — see the note above AIQuoteSuggestionView; same
 # reasoning applies here.
 class QuoteWinProbabilityView(APIView):
-    """POST /api/v1/quotes/win-probability/ — Predict win probability for a quote."""
+    """POST /api/v1/quotes/win-probability/ — the chance to win at `price`,
+    from the pricing analysis (same engine, features, gates and market as the
+    builder; no invented R43 800 market). A probability only from a real
+    model (`available`, level 'model'); otherwise null with the band
+    (Likely / Even chance / Less likely) where there is market evidence."""
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        """
-        Given quote parameters, predict win probability.
-        Body: {
-            "price": 42000,
-            "distance": 1580,
-            "vehicle_type": "interlink",
-            "client_id": 42,
-            "origin": "JHB",
-            "destination": "CPT",
-            "days_until_departure": 2
-        }
-        """
+        from core.services.pricing_analysis import analyze_pricing
+        from core.views import resolve_user_company
+        data = request.data
         try:
-            from core.services.win_prediction import resolve_prediction_context
-            from core.services.margin_optimizer import _route_popularity
+            price = float(data.get('price') or 0)
+        except (TypeError, ValueError):
+            price = 0
+        if price <= 0 or not data.get('client_id'):
+            return Response({'success': False, 'error': 'price and client_id are required'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        company = resolve_user_company(request.user)
+        base = _pricing_payload_from(data)
 
-            price = float(request.data.get('price', 0))
-            distance = float(request.data.get('distance', 0))
-            client_id = request.data.get('client_id')
-            days_until_departure = int(request.data.get('days_until_departure', 2))
-            origin = str(request.data.get('origin') or '').strip()
-            destination = str(request.data.get('destination') or '').strip()
-            vehicle_type = str(request.data.get('vehicle_type') or '').strip()
-
-            if not price or not client_id:
-                return Response({
-                    'success': False,
-                    'error': 'price and client_id are required'
-                }, status=status.HTTP_400_BAD_REQUEST)
-
-            from core.views import resolve_user_company
-            company = resolve_user_company(request.user)
-
-            # Real lane market rate (cross-platform -> own quotes -> SA
-            # estimate), falling back to the old hardcoded JHB-CPT interlink
-            # figure only when nothing real is resolvable.
-            market_rate = 43800.0
-            if origin and destination:
-                try:
-                    from core.services.lane_benchmark import resolve_market_rate
-                    rate, _src = resolve_market_rate(origin, destination, vehicle_type or None, company=company)
-                    if rate and rate > 0:
-                        market_rate = float(rate)
-                except Exception as exc:
-                    logger.warning('win-probability: market-rate resolve failed: %s', exc)
-            price_ratio = price / market_rate if market_rate > 0 else 1.0
-
-            # Get client historical acceptance rate
-            try:
-                customer = Customer.objects.get(id=client_id, company=company)
-                accepted_count = Quote.objects.filter(
-                    customer=customer,
-                    outcome='accepted'
-                ).count()
-                total_count = Quote.objects.filter(
-                    customer=customer,
-                    outcome__in=['accepted', 'rejected']
-                ).count()
-                historical_acceptance_rate = accepted_count / total_count if total_count > 0 else 0.7
-
-                # Determine client tier
-                if total_count >= 10:
-                    client_tier = 2  # VIP
-                elif total_count >= 3:
-                    client_tier = 1  # Regular
-                else:
-                    client_tier = 0  # New
-            except Exception:
-                historical_acceptance_rate = 0.7
-                client_tier = 0
-
-            route_popularity = _route_popularity(origin or None, destination or None)
-
-            # Predict win probability — resolves the same two-tier
-            # (user -> global -> heuristic) model as the live quote-creation flow.
-            prediction_ctx = resolve_prediction_context(request.user, company)
-
-            def _features(p):
-                return {
-                    'price_ratio': (p / market_rate) if market_rate > 0 else 1.0,
-                    'client_tier': client_tier,
-                    'days_until_departure': days_until_departure,
-                    'historical_acceptance_rate': historical_acceptance_rate,
-                    'route_popularity': route_popularity,
-                }
-
-            win_probability = prediction_ctx.predict_proba(_features(price))
-
-            # Calculate win probability at ±5%
-            price_lower = price * 0.95
-            price_higher = price * 1.05
-
-            win_probability_lower = prediction_ctx.predict_proba(_features(price_lower))
-            win_probability_higher = prediction_ctx.predict_proba(_features(price_higher))
-
-            return Response({
-                'success': True,
-                'win_probability': round(win_probability, 2),
-                'win_probability_lower': round(win_probability_lower, 2),
-                'win_probability_higher': round(win_probability_higher, 2),
-            })
-
-        except Exception as e:
-            return Response({
-                'success': False,
-                'error': str(e),
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        def at(p):
+            r = analyze_pricing({**base, 'your_price': p}, company=company, user=request.user)
+            return r, (r.get('your_price') or {}).get('likelihood')
+        r, lk = at(price)
+        model = (lk or {}).get('level') == 'model'
+        lower = _chance(at(price * 0.95)[1]) if model else None
+        higher = _chance(at(price * 1.05)[1]) if model else None
+        return Response({
+            'success': True,
+            'win_probability': _chance(lk),
+            'win_probability_lower': lower,
+            'win_probability_higher': higher,
+            'band': (lk or {}).get('band'),
+            'band_label': (lk or {}).get('label'),
+            'margin': (r.get('your_price') or {}).get('margin'),
+            'margin_pct': (r.get('your_price') or {}).get('margin_pct'),
+            'blocking': r.get('blocking') or [],
+            'available': model,
+            # Never 'heuristic': no heuristic figure is given. 'bands' when a
+            # band is shown, 'none' when there is nothing to go on.
+            'level': 'model' if model else ('bands' if (lk or {}).get('band') else 'none'),
+            'model_scope': ((r.get('likelihood') or {}).get('model') or {}).get('scope') if model else None,
+        })

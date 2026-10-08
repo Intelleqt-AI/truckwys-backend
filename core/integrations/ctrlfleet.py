@@ -26,7 +26,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.models import Load, Vehicle, Driver, ActivityEvent
-from core.utils.crypto import decrypt_secret
+from core.utils.crypto import DecryptionError, decrypt_secret
 
 logger = logging.getLogger(__name__)
 
@@ -54,8 +54,18 @@ class CtrlFleetClient:
 
     @classmethod
     def for_company(cls, company) -> 'CtrlFleetClient':
-        """Build a client from a Company's stored (encrypted) CtrlFleet key."""
-        return cls(api_key=decrypt_secret(company.ctrlfleet_api_key))
+        """Build a client from a Company's stored (encrypted) CtrlFleet key.
+
+        An undecryptable key is a broken connection: logged and raised as
+        CtrlFleetAPIError, which views already turn into a "reconnect" error.
+        """
+        try:
+            api_key = decrypt_secret(company.ctrlfleet_api_key)
+        except DecryptionError:
+            logger.error('CtrlFleet API key for company %s cannot be decrypted; '
+                         'treating integration as disconnected', getattr(company, 'id', None))
+            raise CtrlFleetAPIError('Stored CtrlFleet API key is unreadable; reconnect CtrlFleet')
+        return cls(api_key=api_key)
 
     def _request(self, method: str, path: str, **kwargs) -> Any:
         url = f'{self.base_url}{path}'

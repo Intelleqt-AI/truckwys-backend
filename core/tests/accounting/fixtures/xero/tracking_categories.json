@@ -1,0 +1,48 @@
+{
+  "Id": "e3f5b7d9-1a2c-4e6f-8b0d-2c4e6a8b0d1f",
+  "Status": "OK",
+  "ProviderName": "TruckWys",
+  "DateTimeUTC": "/Date(1753002903517+0000)/",
+  "TrackingCategories": [
+    {
+      "Name": "Region",
+      "Status": "ACTIVE",
+      "TrackingCategoryID": "351953c4-8127-4009-88c3-f9cd8c9cbe9f",
+      "Options": [
+        {
+          "TrackingOptionID": "ae777a87-5ef3-4fa0-a4f0-d10e1f13073a",
+          "Name": "Gauteng",
+          "Status": "ACTIVE",
+          "HasValidationErrors": false,
+          "IsDeleted": false,
+          "IsArchived": false,
+          "IsActive": true
+        },
+        {
+          "TrackingOptionID": "9e1b1f2c-6c3d-4a8e-9b0f-2d4c6e8a0b1c",
+          "Name": "KZN",
+          "Status": "ACTIVE",
+          "HasValidationErrors": false,
+          "IsDeleted": false,
+          "IsArchived": false,
+          "IsActive": true
+        },
+        {
+          "TrackingOptionID": "1f3a5c7e-9b0d-4f2a-8c4e-6a8c0e2a4c6e",
+          "Name": "Free State",
+          "Status": "ARCHIVED",
+          "HasValidationErrors": false,
+          "IsDeleted": false,
+          "IsArchived": true,
+          "IsActive": false
+        }
+      ]
+    },
+    {
+      "Name": "Vehicle",
+      "Status": "ACTIVE",
+      "TrackingCategoryID": "f2a4c6e8-0b1d-4f3a-a5c7-e9b1d3f5a7c9",
+      "Options": []
+    }
+  ]
+}

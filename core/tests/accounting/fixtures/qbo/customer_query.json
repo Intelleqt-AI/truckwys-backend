@@ -1,0 +1,43 @@
+{
+  "QueryResponse": {
+    "Customer": [
+      {
+        "Taxable": true,
+        "Job": false,
+        "BillWithParent": false,
+        "Balance": 23275.0,
+        "BalanceWithJobs": 23275.0,
+        "CurrencyRef": {
+          "value": "ZAR",
+          "name": "South African Rand"
+        },
+        "PreferredDeliveryMethod": "Email",
+        "IsProject": false,
+        "PrimaryTaxIdentifier": "XXXXXX6789",
+        "domain": "QBO",
+        "sparse": false,
+        "Id": "58",
+        "SyncToken": "2",
+        "MetaData": {
+          "CreateTime": "2026-07-01T05:01:12-07:00",
+          "LastUpdatedTime": "2026-09-30T08:14:31.112-07:00"
+        },
+        "FullyQualifiedName": "Acme Mining (Pty) Ltd",
+        "CompanyName": "Acme Mining (Pty) Ltd",
+        "DisplayName": "Acme Mining (Pty) Ltd",
+        "PrintOnCheckName": "Acme Mining (Pty) Ltd",
+        "Active": true,
+        "PrimaryPhone": {
+          "FreeFormNumber": "011 555 0199"
+        },
+        "PrimaryEmailAddr": {
+          "Address": "ar@acme.test"
+        },
+        "Notes": "TruckWys TW-C-12"
+      }
+    ],
+    "startPosition": 1,
+    "maxResults": 1
+  },
+  "time": "2026-09-30T08:14:31.112-07:00"
+}

@@ -7,7 +7,7 @@ quote_analysis, views_ai_quote). Owns:
 - Tiered model resolution (user -> global -> unavailable), wrapped as a
   PredictionContext so callers never have to branch on whether a real model
   is behind the callable they got back.
-- Two-tier progress reporting for the "N/40 outcomes" UI chip.
+- Two-tier progress reporting for the "N accepted / N rejected" UI chip.
 
 Requirement (from the redesign spec): never let the heuristic be presented as
 a trained AI prediction. PredictionContext.available is exactly that signal —
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class PredictionContext:
     available: bool
-    scope: Optional[str]              # 'user' | 'global' | None
+    scope: Optional[str]              # 'company' | 'user' | 'global' | None
     sample_count: int
     predict_proba: Callable[[dict], float]   # ALWAYS callable — heuristic when unavailable
 
@@ -68,13 +68,25 @@ def heuristic_win_proba(features: dict) -> float:
     return max(0.02, min(0.98, prob))
 
 
+def global_model_allowed(company) -> bool:
+    """The pooled global model may serve this company only when it opted in
+    (Company.pool_pricing_data). No company (legacy/public callers) keeps the
+    old behaviour: there is no tenant to protect."""
+    if company is None:
+        return True
+    return bool(getattr(company, 'pool_pricing_data', False))
+
+
 def resolve_prediction_context(user, company) -> PredictionContext:
-    """Try the user's model, then the global model, then unavailable. Never
-    raises. `user` may be None (unauthenticated/public flow) -> unavailable."""
+    """Try the company's model, then the user's, then the global model (only
+    if the company opted into pooling), then unavailable. Never raises.
+    `user` may be None (unauthenticated/public flow)."""
     user_id = getattr(user, 'id', None)
+    company_id = getattr(company, 'id', None)
     try:
         from core.services.quote_ml import WinProbabilityModel
-        model, scope, sample_count = WinProbabilityModel.resolve_for_user(user_id)
+        model, scope, sample_count = WinProbabilityModel.resolve(
+            company_id=company_id, user_id=user_id, allow_global=global_model_allowed(company))
     except Exception as exc:
         logger.warning('win model resolution failed: %s', exc)
         return PredictionContext(False, None, 0, heuristic_win_proba)
@@ -84,30 +96,35 @@ def resolve_prediction_context(user, company) -> PredictionContext:
     return PredictionContext(True, scope, sample_count, model.predict_proba)
 
 
-def _tier_artifact_exists(scope: str, user_id=None) -> bool:
+def _tier_artifact_exists(scope: str, user_id=None, company_id=None) -> bool:
     """Whether a trained artifact actually exists for one tier. Never raises —
     model_progress is called from a status endpoint and must not be the thing
     that takes it down."""
-    if scope == 'user' and not user_id:
+    if (scope == 'user' and not user_id) or (scope == 'company' and not company_id):
         # Constructing one anyway would mkdir ml_models/users/None.
         return False
     try:
         from core.services.quote_ml import WIN_ML_AVAILABLE, WinProbabilityModel
         if not WIN_ML_AVAILABLE:
             return False
-        return WinProbabilityModel(scope=scope, user_id=user_id).is_trained()
+        return WinProbabilityModel(scope=scope, user_id=user_id, company_id=company_id).is_trained()
     except Exception as exc:
         logger.warning('win model artifact check failed (scope=%s, user=%s): %s', scope, user_id, exc)
         return False
 
 
-def _last_rejection_reason(scope: str, user_id=None) -> Optional[str]:
+def _last_rejection_reason(scope: str, user_id=None, company_id=None) -> Optional[str]:
     """Why the most recent training attempt for this tier produced nothing —
     the AUC regression gate and the round-trip sanity check both record one."""
     try:
         from core.models import MLModelVersion
         qs = MLModelVersion.objects.filter(scope=scope, status__in=['failed', 'rejected'])
-        qs = qs.filter(user_id=user_id) if scope == 'user' else qs.filter(user__isnull=True)
+        if scope == 'user':
+            qs = qs.filter(user_id=user_id)
+        elif scope == 'company':
+            qs = qs.filter(company_id=company_id)
+        else:
+            qs = qs.filter(user__isnull=True, company__isnull=True)
         row = qs.order_by('-created_at').first()
         return (row.rejection_reason or None) if row else None
     except Exception:
@@ -130,15 +147,11 @@ def model_progress(user, company) -> dict:
     mismatch, the AUC regression gate) surfaces here rather than reappearing as
     the same silent contradiction.
     """
-    from django.conf import settings
-    from django.db.models import Count
-    from core.models import QuoteOutcome
+    from django.db.models import Count, Q
     from core.services.quote_ml import WIN_ML_AVAILABLE
+    from core.services.quote_training import _min_class_counts, closed_outcomes
 
-    user_needed = int(getattr(settings, 'WIN_MODEL_USER_MIN_SAMPLES', 40))
-    global_needed = int(getattr(settings, 'WIN_MODEL_GLOBAL_MIN_SAMPLES', 40))
-
-    def _counts(qs, needed, scope, user_id=None):
+    def _counts(qs, needed_accepted, needed_rejected, scope, user_id=None, company_id=None):
         by_label = {
             row['outcome']: row['n']
             for row in qs.values('outcome').annotate(n=Count('id'))
@@ -146,7 +159,7 @@ def model_progress(user, company) -> dict:
         accepted = by_label.get('accepted', 0)
         rejected = by_label.get('rejected', 0)
         n = accepted + rejected
-        ready = _tier_artifact_exists(scope, user_id)
+        ready = _tier_artifact_exists(scope, user_id, company_id)
 
         blocker = None
         detail = None
@@ -154,32 +167,38 @@ def model_progress(user, company) -> dict:
             blocker = 'ml_unavailable'
         elif ready:
             pass
-        elif n < needed:
+        elif accepted < needed_accepted and rejected < needed_rejected:
             blocker = 'insufficient_data'
-        elif rejected == 0:
+        elif rejected < needed_rejected:
             blocker = 'needs_lost_quotes'
-        elif accepted == 0:
+        elif accepted < needed_accepted:
             blocker = 'needs_won_quotes'
         else:
             # Every gate this layer can see is satisfied, so the artifact is
             # simply not written yet: the nightly retrain hasn't run, or the
             # last attempt was rejected for a reason only training knows.
             blocker = 'awaiting_retrain'
-            detail = _last_rejection_reason(scope, user_id)
+            detail = _last_rejection_reason(scope, user_id, company_id)
 
         return {
             'outcomes_collected': n,
-            'outcomes_needed': needed,
-            'progress_pct': min(100, round(n / needed * 100)) if needed else 0,
-            'qualifies': n >= needed,
             'accepted': accepted,
             'rejected': rejected,
+            'accepted_needed': needed_accepted,
+            'rejected_needed': needed_rejected,
+            # The slower class is the real bottleneck — a count that is
+            # 300/200 accepted but 10/200 rejected is not "75% there".
+            'progress_pct': (min(100, round(min(accepted / needed_accepted, rejected / needed_rejected) * 100))
+                             if needed_accepted and needed_rejected else 0),
+            'qualifies': accepted >= needed_accepted and rejected >= needed_rejected,
             'ready': ready,
             'blocker': blocker,
             'blocker_detail': detail,
         }
 
-    base = QuoteOutcome.objects.filter(outcome__in=['accepted', 'rejected'])
+    # Same "closed quote" definition training uses (never-sent quotes out).
+    base = closed_outcomes()
+    min_accepted, min_rejected = _min_class_counts('user')  # same bar for every scope today
 
     user_id = getattr(user, 'id', None)
     user_qs = base.filter(created_by_id=user_id) if user_id else base.none()
@@ -187,7 +206,14 @@ def model_progress(user, company) -> dict:
     # Global tier is platform-wide, not gated by any single company's own
     # ai_training_started_at reset — one tenant resetting their own clock
     # shouldn't hide the rest of the platform's contribution to the shared model.
+    company_id = getattr(company, 'id', None)
+    company_qs = base.filter(quote__company_id=company_id) if company_id else base.none()
+    if company is not None and getattr(company, 'ai_training_started_at', None) is not None:
+        company_qs = company_qs.filter(created_at__gte=company.ai_training_started_at)
     return {
-        'user': _counts(user_qs, user_needed, 'user', user_id),
-        'global': _counts(base, global_needed, 'global'),
+        'user': _counts(user_qs, min_accepted, min_rejected, 'user', user_id),
+        # Only opted-in companies' outcomes can train the global model.
+        'global': _counts(base.filter(quote__company__pool_pricing_data=True), min_accepted, min_rejected, 'global'),
+        # Additive (pricing analysis): the per-company tier, checked first.
+        'company': _counts(company_qs, min_accepted, min_rejected, 'company', company_id=company_id),
     }

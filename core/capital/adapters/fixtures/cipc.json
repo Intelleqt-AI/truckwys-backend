@@ -1,0 +1,33 @@
+{
+  "_comment": "Recorded FAKE CIPC enterprise lookups for tests and demos. Keyed by normalised CIPC number (YYYY/NNNNNN/NN). Fictional companies; never real data.",
+  "2004/111111/07": {
+    "status": "IN_BUSINESS",
+    "legal_name": "Highveld Fresh Retail (Pty) Ltd",
+    "incorporation_date": "2004-03-15",
+    "enterprise_type": "Private Company"
+  },
+  "2011/222222/07": {
+    "status": "BUSINESS_RESCUE",
+    "legal_name": "Karoo Build Contractors (Pty) Ltd",
+    "incorporation_date": "2011-08-02",
+    "enterprise_type": "Private Company"
+  },
+  "2009/333333/07": {
+    "status": "LIQUIDATION",
+    "legal_name": "Limpopo Mining Supplies (Pty) Ltd",
+    "incorporation_date": "2009-05-20",
+    "enterprise_type": "Private Company"
+  },
+  "2025/444444/07": {
+    "status": "IN_BUSINESS",
+    "legal_name": "Fynbos Agri Traders (Pty) Ltd",
+    "incorporation_date": "2025-06-01",
+    "enterprise_type": "Private Company"
+  },
+  "2015/555555/07": {
+    "status": "DEREGISTERED",
+    "legal_name": "Vaal Fuel Distributors (Pty) Ltd",
+    "incorporation_date": "2015-01-12",
+    "enterprise_type": "Private Company"
+  }
+}

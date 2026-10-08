@@ -5,7 +5,7 @@ production quotes: the coarse estimate table only listed one direction per
 lane, and the own-company tier filtered by vehicle type with no lane-level
 retry, so excluding the quote being priced took every group under its floor.
 """
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
@@ -85,7 +85,7 @@ class OwnCompanyTierTests(TestCase):
             company or self.company, customer or self.customer,
             number=f'LB-{self._n:04d}', total=amount, origin=origin,
             destination=destination, status='ACCEPTED', outcome='accepted',
-            vehicle_type=vehicle_type, created_by=created_by or self.user,
+            vehicle_type=vehicle_type, created_by=created_by or self.user, was_sent=True,
         )
 
     def test_lane_level_retry_rescues_a_vehicle_type_split(self):
@@ -102,11 +102,12 @@ class OwnCompanyTierTests(TestCase):
             'CPT', 'JHB', 'flat bed', company=self.company, exclude_quote_id=priced.id,
         )
         self.assertEqual(source, 'company')
-        # Averaged across all five remaining won quotes on the lane.
-        self.assertAlmostEqual(rate, (30000 + 31000 + 32000 + 40000 + 41000) / 5, places=2)
+        # QUOTE-RULES §8: the MEDIAN of all five remaining won quotes on the lane.
+        self.assertAlmostEqual(rate, 32000, places=2)
 
     def test_vehicle_specific_average_is_preferred_when_it_qualifies(self):
-        for amt in (30000, 31000, 32000):
+        # QUOTE-RULES §8: same vehicle class once it has >= 5 quotes.
+        for amt in (30000, 31000, 32000, 33000, 34000):
             self._won('Heavy Truck (8-16 tonnes)', amt)
         self._won('Interlink / B-Train (34 tonnes)', 99000)
 
@@ -114,15 +115,17 @@ class OwnCompanyTierTests(TestCase):
             'CPT', 'JHB', 'Heavy Truck (8-16 tonnes)', company=self.company,
         )
         self.assertEqual(source, 'company')
-        self.assertAlmostEqual(rate, 31000, places=2)  # the interlink outlier excluded
+        self.assertAlmostEqual(rate, 32000, places=2)  # the interlink excluded
 
     def test_falls_through_to_estimate_below_the_floor(self):
         self._won('Heavy Truck (8-16 tonnes)', 30000)
         rate, source = resolve_market_rate(
             'CPT', 'JHB', 'Heavy Truck (8-16 tonnes)', company=self.company,
         )
-        self.assertEqual(source, 'estimate')  # the mirrored JHB->CPT truck rate
-        self.assertEqual(rate, 38900.0)
+        # Below the company floor and no platform tier: no market rate (the
+        # hard-coded lane estimate is not market evidence).
+        self.assertEqual(source, 'none')
+        self.assertIsNone(rate)
 
     def test_no_data_and_no_estimate_reports_none(self):
         rate, source = resolve_market_rate(
@@ -158,7 +161,7 @@ class OwnCompanyTierTests(TestCase):
         rate, source = resolve_market_rate(
             'CPT', 'JHB', 'Heavy Truck (8-16 tonnes)', company=self.company,
         )
-        self.assertEqual(source, 'estimate')  # not 'company' — all too old
+        self.assertEqual(source, 'none')  # not 'company' — all too old
 
 
 class LaneCodeDerivationTests(TestCase):
@@ -184,7 +187,9 @@ class LaneCodeDerivationTests(TestCase):
 
     def test_city_name_inside_a_word_is_not_a_match(self):
         # The 'PE' -> Port Elizabeth substring bug.
-        self.assertEqual(derive_lane_code('', '14 PEPPER STREET, Nelspruit'), '')
+        # (Nelspruit itself is a known lane city since the pricing analysis:
+        # it must resolve to Mbombela, never to Port Elizabeth.)
+        self.assertEqual(derive_lane_code('', '14 PEPPER STREET, Nelspruit'), 'MBM')
         self.assertEqual(derive_lane_code('', 'Speedway Industrial Park'), '')
 
     def test_unknown_city_yields_blank_not_junk(self):
@@ -286,16 +291,117 @@ class PlatformBenchmarkOutlierTests(TestCase):
         self.assertFalse(result['available'])
 
     def test_resolve_market_rate_uses_the_median_not_the_mean(self):
+        # Platform privacy: >= 10 quotes from >= 3 operators other than the
+        # caller; the median only to the nearest R500.
+        company_c = Company.objects.create(company_name='Platform Co C')
+        user_c = User.objects.create_user(username='pc', email='pc@test.com', password='x', company=company_c)
+        cust_c = Customer.objects.create(company=company_c, name='C', email='c@platform.test')
         for amt in (20000, 21000, 22000, 23000):
             self._won(self.company_a, self.cust_a, self.user_a, amt)
+        for amt in (22100, 22300, 22400):
+            self._won(self.company_b, self.cust_b, self.user_b, amt)
         # A legitimately pricier quote, well inside the sanity cap (< 10x),
         # that would still drag a mean noticeably off-centre.
-        self._won(self.company_b, self.cust_b, self.user_b, 60000)
+        for amt in (22600, 23100, 60000):
+            self._won(company_c, cust_c, user_c, amt)
 
         rate, source = resolve_market_rate('CPT', 'DBN')
         self.assertEqual(source, 'platform')
-        amounts = sorted([20000, 21000, 22000, 23000, 60000])
+        amounts = sorted([20000, 21000, 22000, 23000, 22100, 22300, 22400, 22600, 23100, 60000])
         mean = sum(amounts) / len(amounts)
-        median = amounts[2]
-        self.assertNotAlmostEqual(rate, mean, delta=1)
-        self.assertAlmostEqual(rate, median, places=2)
+        self.assertNotAlmostEqual(rate, mean, delta=500)
+        self.assertEqual(rate, 22500.0)       # median 22 350 -> nearest R500
+        # The caller's own quotes are never its platform market.
+        rate, source = resolve_market_rate('CPT', 'DBN', company=company_c)
+        self.assertNotEqual(source, 'platform')
+
+    def test_platform_needs_three_other_operators(self):
+        for amt in (20000, 21000, 22000, 23000, 24000):
+            self._won(self.company_a, self.cust_a, self.user_a, amt)
+        for amt in (22100, 22300, 22400, 22600, 23100):
+            self._won(self.company_b, self.cust_b, self.user_b, amt)
+        self.assertEqual(resolve_market_rate('CPT', 'DBN'), (None, 'none'))
+
+    def test_platform_tier_counts_a_recorded_win_like_the_company_tier(self):
+        # Platform consistency: an accepted outcome on a quote that left
+        # DRAFT is won in every tier (won_quote_q), not only status ACCEPTED.
+        from core.services.lane_benchmark import compute_lane_benchmark
+        for amt in (30000, 31000, 32000):
+            self._won(self.company_a, self.cust_a, self.user_a, amt)
+        self._won(self.company_b, self.cust_b, self.user_b, 33000)
+        make_quote(self.company_b, self.cust_b, number='PB-SENT-WON', total=34000, origin='CPT',
+                   destination='DBN', status='SENT', outcome='accepted', created_by=self.user_b)
+        self.assertEqual(compute_lane_benchmark('CPT', 'DBN')['sample_size'], 5)
+        # ...and a DRAFT with an accepted outcome never is.
+        make_quote(self.company_b, self.cust_b, number='PB-DRAFT', total=35000, origin='CPT',
+                   destination='DBN', status='DRAFT', outcome='accepted', created_by=self.user_b)
+        self.assertEqual(compute_lane_benchmark('CPT', 'DBN')['sample_size'], 5)
+
+class FuelNormalisationTests(TestCase):
+    """QUOTE-RULES §8: totals moved to today's diesel before percentiles."""
+
+    def setUp(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        from core.models import FuelPrice
+        sast = ZoneInfo('Africa/Johannesburg')
+        FuelPrice.objects.create(date=date(2026, 9, 2), diesel_inland=Decimal('29.5551'),
+                                 diesel_coastal=Decimal('28.6831'), source='FIASA', diesel_grade='50ppm',
+                                 effective_from=datetime(2026, 9, 2, 0, 1, tzinfo=sast))
+        FuelPrice.objects.create(date=date(2026, 10, 7), diesel_inland=Decimal('32.7989'),
+                                 diesel_coastal=Decimal('31.9269'), source='FIASA', diesel_grade='50ppm',
+                                 effective_from=datetime(2026, 10, 7, 0, 1, tzinfo=sast))
+        self.now = datetime(2026, 10, 8, 9, tzinfo=sast)
+        self.sep = datetime(2026, 9, 15, 9, tzinfo=sast)
+
+    def test_snapshot_litres_and_price(self):
+        from core.services.lane_benchmark import FuelNormaliser
+        n = FuelNormaliser(self.now)
+        row = {'total_amount': 20000, 'fuel_litres': 400, 'fuel_official_at_pricing': 30.0, 'fuel_zone': 'INLAND',
+               'fuel_price_used': 27.0, 'created_at': self.sep, 'company_id': None, 'vehicle_type': '',
+               'distance': 500}
+        # official at pricing, never the own/override price actually used
+        self.assertAlmostEqual(n.adjust(row), 20000 + 400 * (32.7989 - 30.0))
+
+    def test_no_snapshot_uses_official_on_created_date_and_class_burn(self):
+        from core.services.lane_benchmark import FuelNormaliser
+        n = FuelNormaliser(self.now)
+        row = {'total_amount': 20000, 'fuel_litres': None, 'fuel_official_at_pricing': None, 'fuel_zone': '',
+               'fuel_price_used': 25.0,
+               'company__fuel_zone': 'COASTAL', 'created_at': self.sep, 'company_id': None,
+               'vehicle_type': 'Superlink', 'distance': 500}
+        self.assertAlmostEqual(n.adjust(row), 20000 + 500 * 42.0 / 100 * (31.9269 - 28.6831))
+
+    def test_unpriceable_history_is_excluded(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        from core.services.lane_benchmark import FuelNormaliser
+        n = FuelNormaliser(self.now)
+        old = datetime(2025, 1, 10, tzinfo=ZoneInfo('Africa/Johannesburg'))
+        self.assertIsNone(n.adjust({'total_amount': 20000, 'fuel_official_at_pricing': None, 'created_at': old,
+                                    'company_id': None, 'vehicle_type': '', 'distance': 500}))
+
+
+class PetrolNormalisationTests(FuelNormalisationTests):
+    def test_petrol_quote_moves_with_petrol(self):
+        from core.models import FuelPrice, VehicleType
+        from core.services.lane_benchmark import FuelNormaliser
+        FuelPrice.objects.filter(date=date(2026, 9, 2)).update(petrol_95=Decimal('25.00'))
+        FuelPrice.objects.filter(date=date(2026, 10, 7)).update(petrol_95=Decimal('27.00'))
+        VehicleType.objects.create(company=None, name='Petrol LDV', capacity=1, max_distance=1000, base_rate=5,
+                                   fuel_consumption_l_per_100km=12, fuel_type='Petrol')
+        n = FuelNormaliser(self.now)
+        row = {'total_amount': 5000, 'fuel_litres': 100, 'fuel_official_at_pricing': None, 'fuel_zone': 'INLAND',
+               'created_at': self.sep, 'company_id': None, 'vehicle_type': 'Petrol LDV', 'distance': 500}
+        self.assertAlmostEqual(n.adjust(row), 5000 + 100 * (27.0 - 25.0))
+
+
+class PricedVehicleFuelTests(TestCase):
+    def test_product_comes_from_the_priced_truck_not_the_name(self):
+        from core.services.lane_benchmark import FuelNormaliser
+        n = FuelNormaliser()
+        row = {'company_id': None, 'vehicle_type': 'Superlink', 'priced_vehicle_type__fuel_type': 'Petrol',
+               'company__fuel_price_petrol_grade': '93', 'fuel_zone': 'INLAND'}
+        self.assertEqual(n.product(row.get), 'petrol_93')
+        self.assertEqual(n.product({**row, 'fuel_zone': 'COASTAL'}.get), 'petrol_95')   # 93 is inland only
+        self.assertEqual(n.product({**row, 'priced_vehicle_type__fuel_type': 'Diesel'}.get), 'diesel')

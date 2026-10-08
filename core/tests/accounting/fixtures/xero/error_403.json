@@ -1,0 +1,12 @@
+{
+  "status": 403,
+  "headers": {},
+  "body": {
+    "Type": null,
+    "Title": "Forbidden",
+    "Status": 403,
+    "Detail": "AuthenticationUnsuccessful",
+    "Instance": "1f3b5d7f-9b1d-4f3b-b5d7-f9b1d3f5b7d9",
+    "Extensions": {}
+  }
+}

@@ -47,6 +47,23 @@ class IntegrationAPIKey(models.Model):
         help_text="If set, POST the scoring result to this URL after every successful score."
     )
 
+    # --- Lender scoping (capital-safety 2026-10) ---
+    # A LENDER key sees and acts on these transporters only. Empty = nothing
+    # (fail closed). Bound by platform staff in Django admin, deliberately NOT
+    # exposed on IntegrationAPIKeySerializer: a tenant must never be able to
+    # grant a lender access to another tenant's book.
+    allowed_companies = models.ManyToManyField(
+        'Company', blank=True, related_name='lender_api_keys',
+        help_text="Transporters this LENDER key may see and fund. Empty = none."
+    )
+
+    # Fast Pay (0139): a LENDER key acts for one funder. Its view of the book
+    # is that funder's lines, still narrowed to allowed_companies.
+    funder = models.ForeignKey(
+        'Funder', on_delete=models.PROTECT, null=True, blank=True, related_name='api_keys',
+        help_text="Funder this LENDER key acts for (book, approvals, ledger, data room)."
+    )
+
     class Meta:
         db_table = 'integration_api_keys'
         ordering = ['-created_at']

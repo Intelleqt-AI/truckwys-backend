@@ -82,6 +82,11 @@ class Quote(models.Model):
     weight = models.DecimalField(max_digits=10, decimal_places=2)
     distance = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     vehicle_type = models.CharField(max_length=50, blank=True, default='')
+    # International transport (the route leaves South Africa): zero-rated
+    # for VAT (s11(2)(a)), so the customer is shown VAT 0%. Set by the quote
+    # builder from the route, copied to the Load by convert_to_load, and used
+    # by the delivery auto-invoice (core.services.quote_vat / invoicing).
+    is_international = models.BooleanField(default=False)
 
     # Estimated collection & delivery dates shown to the customer on the quote
     pickup_date = models.DateField(null=True, blank=True, help_text="Estimated collection date")
@@ -97,7 +102,12 @@ class Quote(models.Model):
     additional_charges = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     total_amount = models.DecimalField(max_digits=10, decimal_places=2)
     
-    margin_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=0, help_text="Profit margin %")
+    # Margin on price over the full cost floor; null when the floor is unknown
+    # (never a 0,00 that reads as "no margin").
+    # Wide enough for a real loss-making margin on price (−4 000 % is a real
+    # figure for a price far under cost); never clamped to a fake ±999,99.
+    margin_percentage = models.DecimalField(max_digits=9, decimal_places=2, null=True, blank=True, default=None,
+                                            help_text="Profit margin %")
     
     confidence = models.CharField(max_length=20, choices=CONFIDENCE_CHOICES, default='MEDIUM')
 
@@ -106,6 +116,12 @@ class Quote(models.Model):
     notes = models.TextField(blank=True)
 
     token = models.CharField(max_length=64, unique=True, blank=True)
+    # Pricing analysis (additive): True once the quote has been SENT, False
+    # when it was decided (won/lost) straight from DRAFT without ever being
+    # sent, None for older rows where it isn't known. Set by core.signals on
+    # status transitions; never written by clients. A never-sent quote is not
+    # market evidence (lane_benchmark.never_sent_q).
+    was_sent = models.BooleanField(null=True, blank=True, default=None, editable=False)
 
     # Sprint 1: Quote Feedback Loop
     outcome = models.CharField(max_length=20, choices=OUTCOME_CHOICES, default='pending', help_text="Quote outcome for ML training")
@@ -113,6 +129,34 @@ class Quote(models.Model):
     accepted_at = models.DateTimeField(null=True, blank=True, help_text="Timestamp when quote was accepted")
     rejected_at = models.DateTimeField(null=True, blank=True, help_text="Timestamp when quote was rejected")
     fuel_price_at_creation = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True, help_text="Fuel price snapshot at quote creation time")
+    # Pricing snapshot (QUOTE-RULES.md §9), written by the server on every
+    # create and every pricing update (core.services.quote_snapshot). Alerts,
+    # surcharge checks and insights compare like-for-like against these.
+    fuel_price_used = models.DecimalField(max_digits=8, decimal_places=4, null=True, blank=True,
+                                          help_text='Diesel R/L the quote was priced on')
+    fuel_price_source = models.CharField(max_length=10, blank=True, default='',
+                                         help_text='own | official | override (blank = not priced)')
+    fuel_zone = models.CharField(max_length=10, blank=True, default='', help_text='INLAND | COASTAL')
+    fuel_effective_from = models.DateTimeField(null=True, blank=True,
+                                               help_text='Effective date of the official price in force when priced')
+    fuel_official_at_pricing = models.DecimalField(max_digits=8, decimal_places=4, null=True, blank=True,
+                                                   help_text='Official zone price in force when priced')
+    fuel_litres = models.DecimalField(max_digits=10, decimal_places=3, null=True, blank=True,
+                                      help_text='Litres priced in (loaded + empty return)')
+    priced_at = models.DateTimeField(null=True, blank=True)
+    priced_vehicle_type = models.ForeignKey('VehicleType', on_delete=models.SET_NULL, null=True, blank=True,
+                                            related_name='+', help_text='Vehicle type the quote was priced on')
+    empty_return_included = models.BooleanField(null=True, blank=True)
+    cost_floor = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True,
+                                     help_text='Cost floor when priced (null = incomplete)')
+    costing_snapshot = models.JSONField(default=dict, blank=True,
+                                        help_text='quote_costing output when priced (lines, warnings)')
+    # Client-supplied costing inputs the quote fields don't carry (validated
+    # by QuoteSerializer): distance_estimated / distance_confirmed,
+    # tolls_unknown / tolls_confirmed_none / tolls_empty_return,
+    # include_empty_return, use_official_fuel, fuel_price_override,
+    # vehicle_type_id, driver_nights.
+    costing_inputs = models.JSONField(default=dict, blank=True)
     win_probability = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True, help_text="Predicted win probability (0-100)")
 
     # Round trip support

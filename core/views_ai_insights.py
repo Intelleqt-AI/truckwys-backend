@@ -278,7 +278,9 @@ class ProposalExecuteView(APIView):
                 status=status.HTTP_409_CONFLICT,
             )
 
-        ok, payload = execute_proposal(proposal, request.user, company)
+        ack = request.data.get('acknowledge_price_warnings') if hasattr(request, 'data') else None
+        acknowledged = ack is True or str(ack).strip().lower() in ('1', 'true', 'yes')
+        ok, payload = execute_proposal(proposal, request.user, company, acknowledged=acknowledged)
         if not ok:
             proposal.refresh_from_db()
             return Response(

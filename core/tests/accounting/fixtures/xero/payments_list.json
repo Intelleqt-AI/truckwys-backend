@@ -1,0 +1,82 @@
+{
+  "Id": "e3f5b7d9-1a2c-4e6f-8b0d-2c4e6a8b0d1f",
+  "Status": "OK",
+  "ProviderName": "TruckWys",
+  "DateTimeUTC": "/Date(1753002903517+0000)/",
+  "pagination": {
+    "page": 1,
+    "pageSize": 100,
+    "pageCount": 1,
+    "itemCount": 2
+  },
+  "Payments": [
+    {
+      "PaymentID": "b26fd49a-cbae-470a-a8f8-bcbc119e0379",
+      "Date": "/Date(1752105600000+0000)/",
+      "BankAmount": 8000.0,
+      "Amount": 8000.0,
+      "Reference": "EFT ACME 0710",
+      "CurrencyRate": 1.0,
+      "PaymentType": "ACCRECPAYMENT",
+      "Status": "AUTHORISED",
+      "UpdatedDateUTC": "/Date(1752156129177+0000)/",
+      "HasAccount": true,
+      "IsReconciled": false,
+      "HasValidationErrors": false,
+      "Account": {
+        "AccountID": "13918178-849a-4823-9a31-57b7eac713d7",
+        "Code": "090"
+      },
+      "Invoice": {
+        "Type": "ACCREC",
+        "InvoiceID": "243216c5-369e-4056-ac67-05388f86dc81",
+        "InvoiceNumber": "INV-0042",
+        "Contact": {
+          "ContactID": "9b9ba9e5-e907-4b4e-8210-54d82b0aa479",
+          "Name": "Acme Mining (Pty) Ltd"
+        },
+        "Payments": [],
+        "CreditNotes": [],
+        "Prepayments": [],
+        "Overpayments": [],
+        "IsDiscounted": false,
+        "HasErrors": false,
+        "CurrencyCode": "ZAR"
+      }
+    },
+    {
+      "PaymentID": "7e1c3a5b-9d2f-4b6e-8a0c-1e3f5a7b9c2d",
+      "Date": "/Date(1752192000000+0000)/",
+      "BankAmount": 500.0,
+      "Amount": 500.0,
+      "Reference": "Duplicate EFT",
+      "CurrencyRate": 1.0,
+      "PaymentType": "ACCRECPAYMENT",
+      "Status": "DELETED",
+      "UpdatedDateUTC": "/Date(1752303341003+0000)/",
+      "HasAccount": true,
+      "IsReconciled": false,
+      "HasValidationErrors": false,
+      "Account": {
+        "AccountID": "13918178-849a-4823-9a31-57b7eac713d7",
+        "Code": "090"
+      },
+      "Invoice": {
+        "Type": "ACCREC",
+        "InvoiceID": "243216c5-369e-4056-ac67-05388f86dc81",
+        "InvoiceNumber": "INV-0042",
+        "Contact": {
+          "ContactID": "9b9ba9e5-e907-4b4e-8210-54d82b0aa479",
+          "Name": "Acme Mining (Pty) Ltd"
+        },
+        "Payments": [],
+        "CreditNotes": [],
+        "Prepayments": [],
+        "Overpayments": [],
+        "IsDiscounted": false,
+        "HasErrors": false,
+        "CurrencyCode": "ZAR"
+      }
+    }
+  ]
+}

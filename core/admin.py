@@ -7,6 +7,7 @@ from .models import (
 from .models.border_crossing_fee import BorderCrossingFee
 from .models.verified_rate import VerifiedRate
 from .models.country_transit_rate import CountryTransitRate
+from .models.integration_api_key import IntegrationAPIKey
 
 @admin.register(User)
 class UserAdmin(admin.ModelAdmin):
@@ -112,10 +113,22 @@ def run_billing_sweeps(modeladmin, request, queryset):
 
 @admin.register(Company)
 class CompanyAdmin(admin.ModelAdmin):
-    list_display = ['company_name', 'subscription_status', 'cancel_at_period_end', 'subscription_plan', 'grace_period_expires_at', 'next_billing_date', 'updated_at']
-    list_filter = ['subscription_status', 'cancel_at_period_end', 'subscription_plan']
-    search_fields = ['company_name', 'registration_number']
-    actions = [run_billing_sweeps]
+    list_display = ['company_name', 'vat_registered', 'vat_number', 'subscription_status', 'cancel_at_period_end', 'subscription_plan', 'grace_period_expires_at', 'next_billing_date', 'updated_at']
+    list_filter = ['vat_registered', 'subscription_status', 'cancel_at_period_end', 'subscription_plan']
+    search_fields = ['company_name', 'registration_number', 'vat_number']
+    actions = [run_billing_sweeps, 'mark_vat_registered', 'mark_not_vat_registered']
+
+    # A company that isn't a SARS VAT vendor may not charge VAT: switching it
+    # off issues new invoices as INVOICE without VAT. Past invoices never change.
+    @admin.action(description='Mark as VAT registered (charges 15% VAT)')
+    def mark_vat_registered(self, request, queryset):
+        n = queryset.update(vat_registered=True)
+        self.message_user(request, f'{n} marked as VAT registered.')
+
+    @admin.action(description='Mark as not VAT registered (no VAT on new invoices)')
+    def mark_not_vat_registered(self, request, queryset):
+        n = queryset.update(vat_registered=False)
+        self.message_user(request, f'{n} marked as not VAT registered.')
 
 
 @admin.register(Trip)
@@ -128,10 +141,12 @@ class TripAdmin(admin.ModelAdmin):
 
 @admin.register(Facility)
 class FacilityAdmin(admin.ModelAdmin):
-    list_display = ['id', 'company', 'limit', 'outstanding', 'utilization_percent', 'status']
+    list_display = ['id', 'company', 'limit', 'outstanding', 'reserved', 'utilization_percent', 'status']
     list_filter = ['status']
     search_fields = ['company__company_name']
-    readonly_fields = ['created_at', 'updated_at', 'utilization_percent', 'available']
+    # outstanding/reserved are moved only by core.services.facility_ledger.
+    readonly_fields = ['created_at', 'updated_at', 'utilization_percent', 'available',
+                       'outstanding', 'reserved']
 
 
 @admin.register(RiskScore)
@@ -147,7 +162,20 @@ class AdvanceRequestAdmin(admin.ModelAdmin):
     list_display = ['id', 'invoice', 'facility', 'amount', 'fee_amount', 'net_amount', 'status', 'requested_at']
     list_filter = ['status']
     search_fields = ['invoice__invoice_number']
-    readonly_fields = ['created_at', 'updated_at']
+    # Status and capacity change only through the lifecycle (facility_ledger);
+    # editing them here would desync the facility ledger.
+    readonly_fields = ['created_at', 'updated_at', 'status', 'capacity_reserved',
+                       'settlement_reference', 'settlement_payment', 'settled_by']
+
+
+@admin.register(IntegrationAPIKey)
+class IntegrationAPIKeyAdmin(admin.ModelAdmin):
+    """Where platform staff bind a LENDER key to the transporters it funds."""
+    list_display = ['id', 'name', 'key_type', 'operator', 'active', 'last_used_at']
+    list_filter = ['key_type', 'active']
+    search_fields = ['name', 'operator__username']
+    filter_horizontal = ['allowed_companies']
+    readonly_fields = ['key', 'created_at', 'last_used_at', 'usage_count', 'quota_used', 'quota_period']
 
 
 @admin.register(AuditLog)
@@ -229,3 +257,74 @@ class VerifiedRateAdmin(admin.ModelAdmin):
         from core.services import verified_rates
         for rate in queryset.filter(status=VerifiedRate.STATUS_PENDING):
             verified_rates.reject(rate.id, request.user)
+
+
+# Foundation (accounting). Read-mostly: money moves through the services
+# (ledger, credit notes, payments), never by editing rows here.
+from .models import CreditNote, Supplier, DocumentSequence, DebtorIdentity  # noqa: E402
+
+
+@admin.register(CreditNote)
+class CreditNoteAdmin(admin.ModelAdmin):
+    list_display = ['credit_note_number', 'company', 'invoice', 'issue_date', 'total_amount', 'status']
+    list_filter = ['status']
+    search_fields = ['credit_note_number', 'invoice__invoice_number']
+    readonly_fields = [f.name for f in CreditNote._meta.fields]
+
+
+@admin.register(Supplier)
+class SupplierAdmin(admin.ModelAdmin):
+    list_display = ['name', 'company', 'vat_number', 'category', 'is_active']
+    search_fields = ['name', 'vat_number']
+
+
+@admin.register(DocumentSequence)
+class DocumentSequenceAdmin(admin.ModelAdmin):
+    list_display = ['company', 'doc_type', 'prefix', 'next_number', 'padding']
+
+
+@admin.register(DebtorIdentity)
+class DebtorIdentityAdmin(admin.ModelAdmin):
+    list_display = ['registration_number', 'vat_number', 'legal_name_key', 'country']
+    search_fields = ['registration_number', 'vat_number', 'legal_name_key']
+
+
+# ---- Accounting integrations (core.accounting). Tokens are never shown.
+from .models.accounting import (  # noqa: E402
+    AccountingConnection, AccountingSyncEvent, AccountingWebhookEvent, ExternalLink, ReconciliationRun,
+)
+
+
+@admin.register(AccountingConnection)
+class AccountingConnectionAdmin(admin.ModelAdmin):
+    list_display = ['company', 'provider', 'status', 'tenant_name', 'connected_at', 'last_payment_sync_at']
+    list_filter = ['provider', 'status']
+    search_fields = ['company__company_name', 'tenant_name', 'tenant_id']
+    exclude = ['access_token', 'refresh_token']
+    readonly_fields = ['tenant_id', 'provider_connection_id', 'access_token_expires_at', 'refresh_token_expires_at',
+                       'scopes', 'cursors', 'backfill', 'connected_at', 'disconnected_at', 'created_at', 'updated_at']
+
+
+@admin.register(ExternalLink)
+class ExternalLinkAdmin(admin.ModelAdmin):
+    list_display = ['company', 'provider', 'object_type', 'local_id', 'external_number', 'status', 'attempts',
+                    'last_synced_at']
+    list_filter = ['provider', 'object_type', 'status']
+    search_fields = ['external_id', 'external_number', 'last_error']
+
+
+@admin.register(AccountingSyncEvent)
+class AccountingSyncEventAdmin(admin.ModelAdmin):
+    list_display = ['created_at', 'company', 'level', 'action', 'label', 'message']
+    list_filter = ['level', 'action']
+
+
+@admin.register(AccountingWebhookEvent)
+class AccountingWebhookEventAdmin(admin.ModelAdmin):
+    list_display = ['received_at', 'provider', 'tenant_id', 'resource_type', 'resource_id', 'processed_at', 'error']
+    list_filter = ['provider', 'resource_type']
+
+
+@admin.register(ReconciliationRun)
+class ReconciliationRunAdmin(admin.ModelAdmin):
+    list_display = ['ran_at', 'company', 'status', 'difference_count']

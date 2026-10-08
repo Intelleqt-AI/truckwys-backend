@@ -16,10 +16,11 @@ are decided.
 """
 import logging
 from datetime import datetime
+from typing import Tuple
 
 import numpy as np
 from django.conf import settings
-from django.db.models import F, Q
+from django.db.models import Count, F, Q
 
 from core.services import quote_features
 
@@ -32,9 +33,13 @@ logger = logging.getLogger(__name__)
 CANDIDATE_ALGORITHMS = ['logistic_regression', 'gradient_boosting', 'lightgbm']
 
 
-def _min_samples_for(scope: str) -> int:
-    setting_name = 'WIN_MODEL_USER_MIN_SAMPLES' if scope == 'user' else 'WIN_MODEL_GLOBAL_MIN_SAMPLES'
-    return int(getattr(settings, setting_name, 40))
+def _min_class_counts(scope: str) -> Tuple[int, int]:
+    """(min_accepted, min_rejected) a scope needs to qualify — the SAME bar
+    for user/company/global today (kept scope-parameterised for whenever
+    that changes), checked independently: 200 accepted + 2 rejected does
+    not qualify just because the total clears 200."""
+    return (int(getattr(settings, 'WIN_MODEL_MIN_ACCEPTED', 200)),
+            int(getattr(settings, 'WIN_MODEL_MIN_REJECTED', 200)))
 
 
 def _cv_threshold() -> int:
@@ -45,7 +50,55 @@ def _cv_threshold() -> int:
 # Training matrix
 # ---------------------------------------------------------------------------
 
-def build_win_training_matrix_for_scope(scope: str, user_id=None):
+def closed_outcomes():
+    """Every decided (accepted/rejected) QuoteOutcome the win model may learn
+    from — the ONE definition of a "closed quote" for training, the nightly
+    sweeps and every "N closed quotes" count shown to users (train and serve
+    stay consistent).
+
+    Quotes that were never sent to the customer (Quote.was_sent False: straight
+    from DRAFT to won/lost) are excluded — they are not evidence of how a
+    customer reacts to a price (r5 M1; the same rule quote_features and the
+    lane benchmark already apply). was_sent NULL (older rows, unknown) still
+    counts.
+    """
+    from core.models import QuoteOutcome
+    return (QuoteOutcome.objects.filter(outcome__in=['accepted', 'rejected'])
+            .exclude(quote__was_sent=False))
+
+
+def live_class_counts(scope: str, user_id=None, company_id=None) -> Tuple[int, int]:
+    """(accepted, rejected) this scope could train from RIGHT NOW — the same
+    filters as build_win_training_matrix_for_scope, minus the feature
+    engineering, so a resolve()-time re-check is cheap (one query, two
+    conditional counts).
+
+    Used both to gate training (200 accepted + 200 rejected, checked
+    independently) and to catch a company/user that has fallen back below
+    that bar since a model was last trained (deleted quotes, a shrinking
+    rolling window, etc.) — a model's frozen training-time metadata can't
+    detect that on its own.
+    """
+    qs = closed_outcomes().filter(
+        Q(quote__company__ai_training_started_at__isnull=True)
+        | Q(created_at__gte=F('quote__company__ai_training_started_at'))
+    )
+    if scope == 'user':
+        if not user_id:
+            return 0, 0
+        qs = qs.filter(created_by_id=user_id)
+    elif scope == 'company':
+        if not company_id:
+            return 0, 0
+        qs = qs.filter(quote__company_id=company_id)
+    else:
+        qs = qs.filter(quote__company__pool_pricing_data=True)
+    agg = qs.aggregate(accepted=Count('id', filter=Q(outcome='accepted')),
+                       rejected=Count('id', filter=Q(outcome='rejected')))
+    return agg['accepted'] or 0, agg['rejected'] or 0
+
+
+def build_win_training_matrix_for_scope(scope: str, user_id=None, company_id=None):
     """Return (X, y, n, feature_names) engineered from QuoteOutcome. Never raises.
 
     scope='global': every company's pooled outcomes (minus each company's own
@@ -53,6 +106,13 @@ def build_win_training_matrix_for_scope(scope: str, user_id=None):
     original single-tier design.
     scope='user': only outcomes this user (Quote.created_by, snapshotted onto
     QuoteOutcome.created_by at record time) has personally decided.
+    scope='company': only this company's own decided quotes (pricing
+    analysis' company tier, checked before the user tier).
+
+    The global pool only takes outcomes from companies that opted in
+    (Company.pool_pricing_data) — the same flag that lets a company be served
+    the global model — so no tenant's outcomes shape another's likelihoods
+    without consent.
 
     Prefers each row's feature_snapshot (frozen, versioned, at outcome-record
     time) when present and current-version; falls back to live reconstruction
@@ -61,10 +121,8 @@ def build_win_training_matrix_for_scope(scope: str, user_id=None):
     frozen against future changes to the feature-computation code the way a
     stored snapshot is.
     """
-    from core.models import QuoteOutcome
-
     qs = (
-        QuoteOutcome.objects.filter(outcome__in=['accepted', 'rejected'])
+        closed_outcomes()
         # Exclude pre-launch/test outcomes for companies that reset their
         # training clock (Company.ai_training_started_at).
         .filter(
@@ -77,6 +135,12 @@ def build_win_training_matrix_for_scope(scope: str, user_id=None):
         if not user_id:
             return np.empty((0, 0)), np.empty((0,)), 0, []
         qs = qs.filter(created_by_id=user_id)
+    elif scope == 'company':
+        if not company_id:
+            return np.empty((0, 0)), np.empty((0,)), 0, []
+        qs = qs.filter(quote__company_id=company_id)
+    else:
+        qs = qs.filter(quote__company__pool_pricing_data=True)
 
     outcomes = list(qs)
     n = len(outcomes)
@@ -158,7 +222,13 @@ def _price_sensitivity(model, X, feature_names, *, multipliers=(0.9, 1.0, 1.1, 1
     idx = feature_names.index('price_ratio')
     avail_idx = feature_names.index('price_ratio_available') if 'price_ratio_available' in feature_names else None
 
-    rows = X[:probe_rows]
+    # Evenly spaced across the whole training set rather than the first rows
+    # only (which are whatever order the query returned them in), so one
+    # period's or one lane's rows can't stand in for the model's behaviour.
+    if len(X) > probe_rows:
+        rows = X[np.linspace(0, len(X) - 1, probe_rows).round().astype(int)]
+    else:
+        rows = X
     drops, ordered = [], 0
     for row in rows:
         own = float(row[idx])
@@ -180,6 +250,23 @@ def _price_sensitivity(model, X, feature_names, *, multipliers=(0.9, 1.0, 1.1, 1
     if not drops:
         return 0.0, 0.0
     return float(np.mean(drops)), ordered / len(drops)
+
+
+def _price_ratio_range(X, feature_names):
+    """[lo, hi] price_ratio over the training rows that had a real market
+    reference, or None. Never raises."""
+    try:
+        if 'price_ratio' not in feature_names or not len(X):
+            return None
+        col = X[:, feature_names.index('price_ratio')]
+        if 'price_ratio_available' in feature_names:
+            col = col[X[:, feature_names.index('price_ratio_available')] > 0.5]
+        col = col[col > 0]
+        if len(col) < 5:
+            return None
+        return [round(float(np.percentile(col, 2.5)), 4), round(float(np.percentile(col, 97.5)), 4)]
+    except Exception:
+        return None
 
 
 def _candidates_for_size(n: int):
@@ -237,20 +324,32 @@ def benchmark_candidates(X, y, names) -> list:
 # MLModelVersion bookkeeping
 # ---------------------------------------------------------------------------
 
-def _current_active_version(scope, user_id):
+def _scope_filter(qs, scope, user_id, company_id=None):
+    """Narrow an MLModelVersion queryset to exactly one tier's rows."""
+    if scope == 'user':
+        return qs.filter(user_id=user_id)
+    if scope == 'company':
+        return qs.filter(company_id=company_id)
+    return qs.filter(user__isnull=True, company__isnull=True)
+
+
+def _current_active_version(scope, user_id, company_id=None):
     from core.models import MLModelVersion
     qs = MLModelVersion.objects.filter(scope=scope, status='active')
-    qs = qs.filter(user_id=user_id) if scope == 'user' else qs.filter(user__isnull=True)
+    qs = _scope_filter(qs, scope, user_id, company_id)
     return qs.order_by('-created_at').first()
 
 
 def _record_model_version(scope, user_id, *, status, algorithm='', feature_names=None,
                            sample_count=0, accepted_count=0, rejected_count=0,
-                           evaluation_metrics=None, hyperparameters=None, rejection_reason=''):
+                           evaluation_metrics=None, hyperparameters=None, rejection_reason='',
+                           company_id=None):
     from django.utils import timezone
     from core.models import MLModelVersion
+    owner = user_id if scope == 'user' else company_id if scope == 'company' else None
     return MLModelVersion.objects.create(
-        scope=scope, user_id=(user_id if scope == 'user' else None), status=status,
+        scope=scope, user_id=(user_id if scope == 'user' else None),
+        company_id=(company_id if scope == 'company' else None), status=status,
         algorithm=algorithm, feature_version=quote_features.FEATURE_VERSION,
         # Compact stamp, not isoformat(): the field is varchar(40) and
         # "global:-:2026-09-15T13:06:47.716726+00:00" is 41 characters, so
@@ -260,14 +359,14 @@ def _record_model_version(scope, user_id, *, status, algorithm='', feature_names
         # local runs and the test suite never saw it. This also matches the
         # field's own documented shape ("user:123:v7, global:v42").
         feature_names=feature_names or [],
-        model_version=f'{scope}:{user_id or "-"}:{timezone.now():%Y%m%dT%H%M%S}',
+        model_version=f'{scope}:{owner or "-"}:{timezone.now():%Y%m%dT%H%M%S}',
         training_sample_count=sample_count, accepted_count=accepted_count, rejected_count=rejected_count,
         evaluation_metrics=evaluation_metrics or {}, hyperparameters=hyperparameters or {},
         rejection_reason=rejection_reason, trained_at=timezone.now(),
     )
 
 
-def _activate_model_version(scope, user_id, **kwargs):
+def _activate_model_version(scope, user_id, company_id=None, **kwargs):
     """Supersede any prior active row and record the new one as active — only
     ever called AFTER the artifact is already safely written to disk (file
     write is the source of truth; this is bookkeeping around it). Guarded by
@@ -281,9 +380,9 @@ def _activate_model_version(scope, user_id, **kwargs):
 
     with transaction.atomic():
         existing = MLModelVersion.objects.select_for_update().filter(scope=scope, status='active')
-        existing = existing.filter(user_id=user_id) if scope == 'user' else existing.filter(user__isnull=True)
+        existing = _scope_filter(existing, scope, user_id, company_id)
         existing.update(status='superseded', superseded_at=timezone.now())
-        new_version = _record_model_version(scope, user_id, status='active', **kwargs)
+        new_version = _record_model_version(scope, user_id, status='active', company_id=company_id, **kwargs)
         new_version.activated_at = timezone.now()
         new_version.save(update_fields=['activated_at'])
     return new_version
@@ -293,30 +392,40 @@ def _activate_model_version(scope, user_id, **kwargs):
 # Retrain entrypoints
 # ---------------------------------------------------------------------------
 
-def retrain_win_model_for_scope(scope: str, user_id=None, min_samples=None) -> dict:
+def retrain_win_model_for_scope(scope: str, user_id=None, min_accepted=None, min_rejected=None,
+                                company_id=None) -> dict:
     """Fit, validate, and (if it clears the gate) activate a win-probability
-    model for one scope. Never raises."""
+    model for one scope ('user' | 'company' | 'global'). Never raises."""
     from core.services.quote_ml import WIN_ML_AVAILABLE, WinProbabilityModel
 
     if not WIN_ML_AVAILABLE:
         return {'trained': False, 'reason': 'sklearn/joblib not available'}
     if scope == 'user' and not user_id:
         return {'trained': False, 'reason': 'user scope requires a user_id'}
+    if scope == 'company' and not company_id:
+        return {'trained': False, 'reason': 'company scope requires a company_id'}
+    # Every bookkeeping call below takes the tier's owner the same way.
+    owner = {'company_id': company_id} if scope == 'company' else {}
 
-    min_samples = min_samples if min_samples is not None else _min_samples_for(scope)
+    default_accepted, default_rejected = _min_class_counts(scope)
+    min_accepted = min_accepted if min_accepted is not None else default_accepted
+    min_rejected = min_rejected if min_rejected is not None else default_rejected
     try:
-        X, y, n, feature_names = build_win_training_matrix_for_scope(scope, user_id=user_id)
+        X, y, n, feature_names = build_win_training_matrix_for_scope(scope, user_id=user_id, company_id=company_id)
     except Exception as exc:
         logger.warning('win training matrix build failed (scope=%s, user=%s): %s', scope, user_id, exc)
         return {'trained': False, 'reason': f'feature build failed: {exc}'}
 
-    if n < min_samples:
-        return {'trained': False, 'reason': f'insufficient data ({n}/{min_samples})', 'samples': n}
-    if len(set(y.tolist())) < 2:
-        return {'trained': False, 'reason': 'only one outcome class present', 'samples': n}
-
-    accepted_count = int(y.sum())
+    accepted_count = int(y.sum()) if n else 0
     rejected_count = n - accepted_count
+
+    # Checked independently, not as a combined total: 398 accepted + 2
+    # rejected must not qualify just because the sum clears 400.
+    if accepted_count < min_accepted or rejected_count < min_rejected:
+        return {'trained': False,
+                'reason': f'insufficient data ({accepted_count}/{min_accepted} accepted, '
+                          f'{rejected_count}/{min_rejected} rejected)',
+                'samples': n, 'accepted': accepted_count, 'rejected': rejected_count}
 
     candidate_names = _candidates_for_size(n)
     bench = []
@@ -356,7 +465,7 @@ def retrain_win_model_for_scope(scope: str, user_id=None, min_samples=None) -> d
     except Exception as exc:
         logger.error('round-trip sanity check failed (scope=%s, user=%s): %s', scope, user_id, exc)
         _record_model_version(
-            scope, user_id, status='failed', algorithm=winner_name, feature_names=feature_names,
+            scope, user_id, **owner, status='failed', algorithm=winner_name, feature_names=feature_names,
             sample_count=n, accepted_count=accepted_count, rejected_count=rejected_count,
             evaluation_metrics=winner_metrics, hyperparameters={'candidates_considered': bench},
             rejection_reason=f'round-trip sanity check failed: {exc}',
@@ -370,14 +479,14 @@ def retrain_win_model_for_scope(scope: str, user_id=None, min_samples=None) -> d
     # larger than what's currently active (a bigger, more representative
     # dataset legitimately moving the decision boundary shouldn't be blocked
     # by comparison against an undertrained predecessor).
-    previous = _current_active_version(scope, user_id)
+    previous = _current_active_version(scope, user_id, company_id)
     if n >= _cv_threshold() and previous is not None:
         prev_auc = (previous.evaluation_metrics or {}).get('roc_auc')
         new_auc = winner_metrics.get('roc_auc')
         substantially_bigger = n >= (previous.training_sample_count or 0) * 1.5
         if prev_auc is not None and new_auc is not None and new_auc < prev_auc - 0.03 and not substantially_bigger:
             _record_model_version(
-                scope, user_id, status='rejected', algorithm=winner_name, feature_names=feature_names,
+                scope, user_id, **owner, status='rejected', algorithm=winner_name, feature_names=feature_names,
                 sample_count=n, accepted_count=accepted_count, rejected_count=rejected_count,
                 evaluation_metrics=winner_metrics, hyperparameters={'candidates_considered': bench},
                 rejection_reason=f'roc_auc regressed {prev_auc:.3f} -> {new_auc:.3f} vs active model',
@@ -411,7 +520,7 @@ def retrain_win_model_for_scope(scope: str, user_id=None, min_samples=None) -> d
             f'monotonic on {ordered_frac:.0%} of probe rows (need >= 50%)'
         )
         _record_model_version(
-            scope, user_id, status='rejected', algorithm=winner_name, feature_names=feature_names,
+            scope, user_id, **owner, status='rejected', algorithm=winner_name, feature_names=feature_names,
             sample_count=n, accepted_count=accepted_count, rejected_count=rejected_count,
             evaluation_metrics={**winner_metrics, 'price_sensitivity': round(sensitivity, 4),
                                 'price_monotonic_fraction': round(ordered_frac, 4)},
@@ -428,13 +537,15 @@ def retrain_win_model_for_scope(scope: str, user_id=None, min_samples=None) -> d
     # does the DB bookkeeping flip. A crash mid-sequence leaves the DB row
     # briefly stale (self-heals next run) rather than ever claiming an active
     # model that isn't actually what's on disk.
-    win = WinProbabilityModel(scope=scope, user_id=user_id)
+    win = WinProbabilityModel(scope=scope, user_id=user_id, company_id=company_id)
     win.model = final_model
     win.metadata = {
         'trained_at': datetime.now().isoformat(),
         'training_count': int(n),
         'sample_count': int(n),
         'training_sample_count': int(n),
+        'accepted_count': int(accepted_count),
+        'rejected_count': int(rejected_count),
         'accuracy': winner_metrics.get('accuracy'),
         'auc': winner_metrics.get('roc_auc'),
         'brier': winner_metrics.get('brier'),
@@ -442,11 +553,15 @@ def retrain_win_model_for_scope(scope: str, user_id=None, min_samples=None) -> d
         'feature_version': quote_features.FEATURE_VERSION,
         'algorithm': winner_name,
         'version': '2.0.0',
+        # Price ratios this model actually saw (2.5th-97.5th percentile of
+        # rows with a real market reference) — the pricing analysis only
+        # shows a model % for prices inside it.
+        'price_ratio_range': _price_ratio_range(X, feature_names),
     }
     win._save_model()
 
     _activate_model_version(
-        scope=scope, user_id=user_id, algorithm=winner_name, feature_names=feature_names,
+        scope=scope, user_id=user_id, **owner, algorithm=winner_name, feature_names=feature_names,
         sample_count=n, accepted_count=accepted_count, rejected_count=rejected_count,
         # Stored alongside AUC so the admin panel can show whether the live
         # model actually prices, not just whether it ranks.
@@ -463,12 +578,58 @@ def retrain_win_model_for_scope(scope: str, user_id=None, min_samples=None) -> d
     }
 
 
-def retrain_win_model(min_samples=None) -> dict:
+def retrain_win_model(min_accepted=None, min_rejected=None) -> dict:
     """Thin wrapper delegating to the global scope — keeps the existing
     Celery task name, Beat schedule entry, TaskRunLog tracking, and
     management command all working unchanged. The real, scope-aware
     implementation is retrain_win_model_for_scope()."""
-    return retrain_win_model_for_scope('global', user_id=None, min_samples=min_samples)
+    return retrain_win_model_for_scope('global', user_id=None, min_accepted=min_accepted,
+                                       min_rejected=min_rejected)
+
+
+def retrain_company_win_models(min_growth: int = 5) -> dict:
+    """(Re)train the per-company tier for every company that qualifies:
+    >= WIN_MODEL_MIN_ACCEPTED accepted AND >= WIN_MODEL_MIN_REJECTED rejected
+    decided outcomes (checked independently, by retrain_win_model_for_scope
+    itself — this prefilter is a cheap combined-total skip only). Skips a
+    company whose decided-outcome count grew by fewer than `min_growth`
+    since its last training attempt, so the nightly run is not a blind
+    refit of everyone. Never raises.
+    Returns {'considered', 'trained', 'skipped', 'results'}."""
+    from core.models import MLModelVersion
+
+    min_accepted, min_rejected = _min_class_counts('company')
+    min_total = min_accepted + min_rejected
+    summary = {'considered': 0, 'trained': 0, 'skipped': 0, 'results': {}}
+    try:
+        counts = (
+            closed_outcomes().filter(quote__company__isnull=False)
+            .filter(
+                Q(quote__company__ai_training_started_at__isnull=True)
+                | Q(created_at__gte=F('quote__company__ai_training_started_at'))
+            )
+            .values('quote__company_id').annotate(n=Count('id'))
+        )
+        rows = [(r['quote__company_id'], r['n']) for r in counts]
+    except Exception as exc:
+        logger.warning('retrain_company_win_models: count failed: %s', exc)
+        return summary
+    for company_id, n in rows:
+        # Cheap combined-total skip; the real accepted/rejected gate is
+        # enforced inside retrain_win_model_for_scope below.
+        if n < min_total:
+            continue
+        summary['considered'] += 1
+        latest = (MLModelVersion.objects.filter(scope='company', company_id=company_id)
+                  .order_by('-created_at').first())
+        if latest is not None and n < (latest.training_sample_count or 0) + min_growth:
+            summary['skipped'] += 1
+            continue
+        result = retrain_win_model_for_scope('company', company_id=company_id)
+        summary['results'][company_id] = result
+        if result.get('trained'):
+            summary['trained'] += 1
+    return summary
 
 
 def win_model_status(company=None) -> dict:
@@ -481,14 +642,20 @@ def win_model_status(company=None) -> dict:
     function is kept for the `retrain_win_model` management command's
     startup message and any other pre-existing global-only caller.
     """
-    from core.models import QuoteOutcome
-    qs = QuoteOutcome.objects.filter(outcome__in=['accepted', 'rejected'])
+    qs = closed_outcomes()
     if company is not None:
         qs = qs.filter(company=company)
         if company.ai_training_started_at is not None:
             qs = qs.filter(created_at__gte=company.ai_training_started_at)
-    outcomes = qs.count()
-    min_needed = _min_samples_for('global')
+    else:
+        # Platform-wide: only what the global model can actually train on —
+        # outcomes from companies that opted into pooling.
+        qs = qs.filter(quote__company__pool_pricing_data=True)
+    agg = qs.aggregate(accepted=Count('id', filter=Q(outcome='accepted')),
+                       rejected=Count('id', filter=Q(outcome='rejected')))
+    accepted, rejected = agg['accepted'] or 0, agg['rejected'] or 0
+    outcomes = accepted + rejected
+    min_accepted, min_rejected = _min_class_counts('global')
 
     meta = {}
     try:
@@ -503,8 +670,13 @@ def win_model_status(company=None) -> dict:
         'mode': 'learned' if trained else 'heuristic',
         'trained': trained,
         'outcomes_collected': outcomes,
-        'outcomes_needed': min_needed,
-        'progress_pct': min(100, round(outcomes / min_needed * 100)) if min_needed else 0,
+        'accepted': accepted,
+        'rejected': rejected,
+        'accepted_needed': min_accepted,
+        'rejected_needed': min_rejected,
+        # The slower class is the real bottleneck, not the combined total.
+        'progress_pct': min(100, round(min(accepted / min_accepted, rejected / min_rejected) * 100))
+                        if min_accepted and min_rejected else 0,
         'auc': meta.get('auc'),
         'accuracy': meta.get('accuracy'),
         'last_trained': meta.get('trained_at'),

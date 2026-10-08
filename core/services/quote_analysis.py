@@ -10,10 +10,17 @@ LLM narrative uses the project's configured provider via core.services.agent
 summary.
 """
 import logging
+import re
 
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
+
+
+def _fr(v, dp=0):
+    """SA rand format ('R 24 000', 'R 32,80')."""
+    from core.services.quote_costing import fmt_rand
+    return fmt_rand(v, dp)
 
 
 def _f(v, default=0.0):
@@ -33,22 +40,41 @@ def _i(v, default=0):
 # ---------------------------------------------------------------------------
 # Cost correctness / revenue guard — shared by RevenueGuardView and analyze_quote
 # ---------------------------------------------------------------------------
-def _fleet_avg_cpk(company):
-    """This company's real cost-per-km from completed trips' expenses over the
-    last 12 months (cached 1h). Falls back to the industry default when there
-    are fewer than 10 costed trips. Never raises."""
-    FALLBACK = 19.80
+# Trip-linked expense categories that make up the FIXED cost per km in the
+# pricing analysis floor. Fuel, tolls and subcontractor costs are excluded:
+# fuel and tolls are their own floor lines (the builder's figures), and a
+# subcontracted load isn't run on the fleet's own trucks.
+FIXED_COST_CATEGORIES = ('MAINTENANCE', 'INSURANCE', 'OVERHEAD', 'OTHER', 'DRIVER_COST')
+FLEET_CPK_MIN_TRIPS = 10
+
+
+def fleet_cost_per_km(company, categories=None, *, net_of_vat=False, exclude_rejected=False,
+                      use_cache=True):
+    """This company's cost per km from completed trips' expenses over the last
+    12 months. Generalises the Revenue Guard's fleet average.
+
+    `categories` (None = every category) picks which expenses count; the km
+    denominator is always every COSTED trip (a completed trip with distance
+    and at least one expense in the window), so a category logged on a few
+    trips is spread over the whole fleet's distance, not just those trips.
+    Returns {'value': float|None, 'trips': int, 'km': float} — value is None
+    with fewer than FLEET_CPK_MIN_TRIPS costed trips. Cached 1 h. Never raises.
+    """
+    empty = {'value': None, 'trips': 0, 'km': 0.0}
     if company is None or not getattr(company, 'id', None):
-        return FALLBACK
+        return empty
     from django.core.cache import cache
-    cache_key = f'fleet_avg_cpk_{company.id}'
-    cached = cache.get(cache_key)
-    if cached is not None:
-        return cached
-    cpk = FALLBACK
+    key_parts = ['all' if categories is None else '-'.join(sorted(categories)),
+                 'net' if net_of_vat else 'gross', 'norej' if exclude_rejected else 'all']
+    cache_key = f'fleet_cpk_{company.id}_{"_".join(key_parts)}'
+    if use_cache:
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+    out = dict(empty)
     try:
         from datetime import timedelta
-        from django.db.models import Sum
+        from django.db.models import F, Sum
         from core.models import Expense, Trip
 
         year_ago = timezone.now().date() - timedelta(days=365)
@@ -56,22 +82,77 @@ def _fleet_avg_cpk(company):
             company=company, trip__isnull=False, trip__status='COMPLETED',
             trip__distance_km__gt=0, expense_date__gte=year_ago,
         )
+        if exclude_rejected:
+            exp = exp.exclude(status='REJECTED')
         trip_ids = list(exp.values_list('trip_id', flat=True).distinct())
-        if len(trip_ids) >= 10:
-            total_cost = float(exp.aggregate(s=Sum('amount'))['s'] or 0)
-            total_km = float(
-                Trip.objects.filter(id__in=trip_ids).aggregate(s=Sum('distance_km'))['s'] or 0
-            )
-            if total_cost > 0 and total_km > 0:
-                cpk = round(total_cost / total_km, 2)
+        out['trips'] = len(trip_ids)
+        total_km = float(Trip.objects.filter(id__in=trip_ids).aggregate(s=Sum('distance_km'))['s'] or 0)
+        out['km'] = round(total_km, 1)
+        if len(trip_ids) >= FLEET_CPK_MIN_TRIPS and total_km > 0:
+            counted = exp if categories is None else exp.filter(category__in=list(categories))
+            if net_of_vat:
+                total_cost = float(counted.aggregate(s=Sum(F('amount') - F('vat_amount')))['s'] or 0)
+            else:
+                total_cost = float(counted.aggregate(s=Sum('amount'))['s'] or 0)
+            if total_cost > 0:
+                out['value'] = round(total_cost / total_km, 2)
     except Exception as exc:
-        logger.warning('fleet CPK aggregate failed: %s', exc)
-    cache.set(cache_key, cpk, 3600)
+        logger.warning('fleet cost-per-km aggregate failed: %s', exc)
+    cache.set(cache_key, out, 3600)
+    return out
+
+
+def _fleet_avg_cpk(company):
+    """This company's real cost-per-km from completed trips' expenses over the
+    last 12 months (cached 1h). Falls back to the industry default when there
+    are fewer than 10 costed trips: then None (no invented "fleet average").
+    Never raises. (Every category, gross; see fleet_cost_per_km.)"""
+    if company is None or not getattr(company, 'id', None):
+        return None
+    from django.core.cache import cache
+    cache_key = f'fleet_avg_cpk_{company.id}'
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+    result = fleet_cost_per_km(company, None, use_cache=False)
+    cpk = result['value'] or None
+    if cpk is not None:
+        cache.set(cache_key, cpk, 3600)
     return cpk
 
 
+def _full_floor_fields(total_cost, quote_price, distance_km, company, vehicle_type=None, is_full_floor=False):
+    """Additive Revenue Guard fields on the ONE margin definition the pricing
+    analysis uses (core.services.pricing_analysis.margin_against_floor):
+    margin = price − full cost floor, where the floor adds fixed cost/km × km
+    to the direct costs the caller sent. The guard's original margin_pct /
+    margin_floor keep their meaning (direct-cost margin) for existing clients.
+    Never raises."""
+    try:
+        from core.services.pricing_analysis import fixed_cost_per_km, margin_against_floor
+        # total_cost that is already THE floor (quote_costing) includes the
+        # operating cost: never add it twice.
+        fixed = fixed_cost_per_km(company, None, vehicle_type) if distance_km > 0 and not is_full_floor else None
+        # To the cent (as quote_costing): never whole-rand rounded.
+        from core.services.quote_costing import cents
+        fixed_zar = cents(fixed['value'] * distance_km) if fixed else 0.0
+        floor = cents(float(total_cost) + fixed_zar)
+        m = margin_against_floor(quote_price, floor)
+        return {
+            'full_cost_floor': floor,
+            'fixed_cost_per_km': fixed['value'] if fixed else None,
+            'fixed_cost_source': fixed['source'] if fixed else None,
+            'margin_vs_floor': m['margin'],
+            'margin_floor_pct': m['margin_pct'],
+        }
+    except Exception as exc:
+        logger.warning('revenue guard: full floor failed: %s', exc)
+        return {}
+
+
 def assess_revenue_guard(*, total_cost, quote_price, distance_km=0.0,
-                         fuel_cost=0.0, company=None, quote=None, customer=None):
+                         fuel_cost=0.0, company=None, quote=None, customer=None, vehicle_type=None,
+                         is_full_floor=False):
     """Assess margin health for a quote.
 
     total_cost = direct operating cost; quote_price = price being charged.
@@ -109,25 +190,20 @@ def assess_revenue_guard(*, total_cost, quote_price, distance_km=0.0,
 
     cost_per_km = round(total_cost / distance_km, 2) if distance_km > 0 else None
     fleet_avg_cpk = _fleet_avg_cpk(company)
-    if cost_per_km is not None and cost_per_km > fleet_avg_cpk * 1.1:
-        explanations.append(f"Cost-per-km on this route is R{cost_per_km:.2f} — above the fleet average of R{fleet_avg_cpk:.2f}")
+    if cost_per_km is not None and fleet_avg_cpk and cost_per_km > fleet_avg_cpk * 1.1:
+        explanations.append(f"Cost-per-km on this route is {_fr(cost_per_km, 2)} — above the fleet average of {_fr(fleet_avg_cpk, 2)}")
         suggestions.append("Review your cost model — this route may need a base rate increase")
 
-    # Fuel-delta analysis for an already-saved quote.
+    # Fuel-delta analysis for an already-saved quote: like-for-like zone
+    # against its pricing snapshot (QUOTE-RULES §9).
     if quote is not None:
         try:
-            from core.services.fuel_price import fetch_fuel_prices
-
-            if getattr(quote, 'fuel_price_at_creation', None):
-                fuel_at_creation = _f(quote.fuel_price_at_creation)
-                if fuel_at_creation > 0:
-                    fuel_current = _f(fetch_fuel_prices().diesel_inland)
-                    delta_pct = ((fuel_current - fuel_at_creation) / fuel_at_creation) * 100
-                    if delta_pct > 3:
-                        delta_zar = fuel_current - fuel_at_creation
-                        explanations.append(f"Fuel has risen R{delta_zar:.2f}/L since this quote was created")
-                        surcharge = int(fuel_cost * (delta_pct / 100))
-                        suggestions.append(f"Add a fuel surcharge of R{surcharge} to protect the margin")
+            from core.services.quote_snapshot import fuel_change_since_pricing
+            change = fuel_change_since_pricing(quote)
+            if change and change['delta_pct'] > 3:
+                explanations.append(f"Fuel has risen {_fr(change['delta'], 2)}/L since this quote was priced")
+                surcharge = int(change['impact_zar'] or fuel_cost * (change['delta_pct'] / 100))
+                suggestions.append(f"Add a fuel surcharge of {_fr(surcharge)} to protect the margin")
         except Exception as exc:  # never break the assessment
             logger.warning('revenue-guard fuel analysis failed: %s', exc)
 
@@ -155,20 +231,25 @@ def assess_revenue_guard(*, total_cost, quote_price, distance_km=0.0,
         # Margin is defined on revenue, so the price hitting target t is cost/(1-t).
         increase_needed = total_cost / (1 - t) - quote_price
         if increase_needed > 0:
-            suggestions.append(f"Increase price by ~R{int(increase_needed)} to reach a {target_margin:.0f}% margin")
+            from core.services.quote_costing import fmt_rand
+            suggestions.append(f"Increase price by ~{fmt_rand(increase_needed)} to reach a {target_margin:.0f}% margin")
 
-    margin_floor = int(total_cost)
+    from core.services.quote_costing import cents, fmt_rand
+    margin_floor = cents(float(total_cost))
+    floor_fields = _full_floor_fields(total_cost, quote_price, distance_km, company,
+                                      vehicle_type or getattr(quote, 'vehicle_type', None), is_full_floor)
     return {
+        **floor_fields,
         'success': True,
         'status': risk_level,
         'risk_level': risk_level,
         'color': color,
-        'margin_pct': round(margin_pct, 2),
+        'margin_pct': margin_pct,           # unrounded: displays round it
         'cost_per_km': cost_per_km,
         'explanations': explanations,
         'suggestions': suggestions,
         'margin_floor': margin_floor,
-        'margin_floor_display': f"R{margin_floor:,}",
+        'margin_floor_display': fmt_rand(margin_floor, 2),
         'target_margin_pct': target_margin,
         'warnings': explanations if risk_level != 'SAFE' else [],
     }
@@ -177,7 +258,7 @@ def assess_revenue_guard(*, total_cost, quote_price, distance_km=0.0,
 # ---------------------------------------------------------------------------
 # Section builders
 # ---------------------------------------------------------------------------
-def _fuel_analysis(fuel_cost, fuel_usage_litres, fuel_price_used, quote_total):
+def _fuel_analysis(fuel_cost, fuel_usage_litres, fuel_price_used, quote_total, company=None):
     """Current diesel price + freshness, and this quote's fuel usage/cost."""
     out = {
         'fuel_cost_zar': round(fuel_cost, 2),
@@ -191,22 +272,29 @@ def _fuel_analysis(fuel_cost, fuel_usage_litres, fuel_price_used, quote_total):
         'price_note': None,
     }
     try:
-        from core.services.fuel_price import fetch_fuel_prices
-        fp = fetch_fuel_prices()
-        current = _f(fp.diesel_inland)
-        days_old = (timezone.now().date() - fp.date).days
-        out['current_price'] = round(current, 2)
-        out['last_updated'] = fp.date.isoformat()
-        out['source'] = fp.source
-        if days_old > 7:
+        # The company's own price in force (official zone price or its own),
+        # freshness by the first-Wednesday period (QUOTE-RULES §1-§2).
+        from core.services.fuel_price import resolve_company_diesel
+        res = resolve_company_diesel(company) if company is not None else None
+        current = (res or {}).get('price')
+        official = (res or {}).get('official') or {}
+        out['current_price'] = round(current, 2) if current else None
+        from core.services.quote_costing import parse_dt
+        eff = parse_dt(official.get('effective_from'))
+        out['last_updated'] = timezone.localtime(eff).date().isoformat() if eff else None   # SAST date
+        out['source'] = (res or {}).get('source')
+        if official.get('stale'):
             out['is_stale'] = True
-            out['stale_warning'] = f"Diesel price last updated {days_old} days ago — consider refreshing."
-        # Flag a meaningful gap between the price used and the live price.
+            out['stale_warning'] = 'The official diesel price for this month is not loaded yet.'
+        if current is None:
+            out['is_stale'] = True
+            out['stale_warning'] = 'No diesel price is available right now.'
+        # Flag a meaningful gap between the price used and the price in use.
         if fuel_price_used and current and abs(current - fuel_price_used) / current > 0.02:
             direction = 'higher' if current > fuel_price_used else 'lower'
             out['price_note'] = (
-                f"The price used (R{fuel_price_used:.2f}/L) is {direction} than the live price "
-                f"(R{current:.2f}/L) — fuel cost may be off."
+                f"The price used ({_fr(fuel_price_used, 2)}/L) is {direction} than your current price "
+                f"({_fr(current, 2)}/L) — fuel cost may be off."
             )
     except Exception as exc:
         logger.warning('fuel analysis failed: %s', exc)
@@ -235,6 +323,7 @@ def _market_analysis(origin, destination, vehicle_type, company, market_rate, qu
             rate, src = resolve_market_rate(
                 origin, destination, vehicle_type or None, company=company,
                 exclude_created_by_user_id=getattr(user, 'id', None),
+                one_way_only=True, sent_only=True,   # QUOTE-RULES §8
             )
             if rate and rate > 0:
                 out['market_rate'] = round(float(rate), 2)
@@ -288,9 +377,12 @@ def _optimization(cost_basis, market_rate, client_tier, days,
         return optimize_price(**kwargs)
     except Exception as exc:
         logger.warning('price optimization failed: %s', exc)
+        # No invented +15%: the company's target margin over the cost floor.
+        t = min(max(_f(getattr(company, 'margin_target_pct', None), 10.0) or 10.0, 1.0), 40.0)
+        price = round(cost_basis / (1 - t / 100), 2) if cost_basis else None
         return {
-            'optimal_price': round(cost_basis * 1.15, 2) if cost_basis else 0.0,
-            'optimal_margin_pct': 15.0,
+            'optimal_price': price,
+            'optimal_margin_pct': t if price else None,
             'win_probability_at_optimal': None,
             'expected_profit': 0.0,
             'curve': [],
@@ -301,22 +393,23 @@ def _optimization(cost_basis, market_rate, client_tier, days,
 # Narrative
 # ---------------------------------------------------------------------------
 def _rule_based_narrative(cost, fuel, opt, market, suggested_price, quote_total):
+    from core.services.quote_costing import fmt_rand
     parts = []
     if cost.get('success'):
-        parts.append(f"Margin is {cost['margin_pct']:.1f}% ({cost['risk_level'].replace('_', ' ').lower()}).")
+        parts.append(f"Margin is {cost['margin_pct']:.1f}% ({cost['risk_level'].replace('_', ' ').lower()}).".replace('.', ',', 1))
     if suggested_price:
         delta = suggested_price - quote_total
         move = 'above' if delta >= 0 else 'below'
         parts.append(
-            f"Suggested price R{suggested_price:,.0f}"
+            f"Suggested price {fmt_rand(suggested_price)}"
             + (f" ({opt['optimal_margin_pct']:.0f}% margin" if opt.get('optimal_margin_pct') is not None else "")
             + (f", {round((opt['win_probability_at_optimal'] or 0) * 100)}% win chance)" if opt.get('win_probability_at_optimal') is not None else ")" if opt.get('optimal_margin_pct') is not None else "")
-            + f" — R{abs(delta):,.0f} {move} your current total."
+            + f" — {fmt_rand(abs(delta))} {move} your current total."
         )
     if market.get('market_rate') and market.get('your_vs_market_pct') is not None:
         vs = market['your_vs_market_pct']
         rel = 'above' if vs >= 0 else 'below'
-        parts.append(f"Market rate ~R{market['market_rate']:,.0f} (you're {abs(vs):.0f}% {rel} market).")
+        parts.append(f"Market rate ~{fmt_rand(market['market_rate'])} (you're {abs(vs):.0f}% {rel} market).")
     elif not market.get('market_rate'):
         parts.append("No market data exists for this lane yet, so there's no market comparison.")
     if fuel.get('is_stale'):
@@ -324,6 +417,9 @@ def _rule_based_narrative(cost, fuel, opt, market, suggested_price, quote_total)
     elif fuel.get('price_note'):
         parts.append(fuel['price_note'])
     return " ".join(parts) or "Analysis complete."
+
+
+NARRATIVE_BUDGET_SECONDS = 20
 
 
 def _llm_narrative(structured):
@@ -345,11 +441,228 @@ def _llm_narrative(structured):
     )
     convo = [{"role": "user", "content": "Summarise this quote analysis and justify the suggested price."}]
     try:
-        text = agent._llm_generate(system, convo)
+        # One budget for the narrative (QUOTE-RULES: <= 20 s), enforced by the
+        # SDK itself with no retries: a slow call is CANCELLED at the budget
+        # (the connection is closed), not left running in a thread we no
+        # longer wait for. A short answer only needs a few hundred tokens.
+        try:
+            text = agent._llm_generate(system, convo, timeout=NARRATIVE_BUDGET_SECONDS, max_retries=0,
+                                       max_tokens=350)
+        except Exception as exc:
+            if 'timeout' in type(exc).__name__.lower() or 'timed out' in str(exc).lower():
+                logger.warning('LLM narrative over its %ss budget; using the rule-based summary',
+                               NARRATIVE_BUDGET_SECONDS)
+                return None
+            raise
         return text.strip() or None
     except Exception as exc:
         logger.warning('LLM narrative failed, using rule-based: %s', exc)
         return None
+
+
+# The figures a narrative may state (QUOTE-RULES: no number that isn't ours).
+HEADLINE_PATHS = (
+    ('quote_total',), ('suggested_price',), ('cost_basis',), ('distance_km',),
+    ('cost_floor', 'floor'), ('cost_floor', 'target_price'), ('cost_floor', 'minimum_charge'),
+    ('cost_analysis', 'margin_pct'), ('cost_analysis', 'cost_per_km'), ('cost_analysis', 'margin_floor'),
+    ('cost_analysis', 'full_cost_floor'), ('cost_analysis', 'margin_vs_floor'), ('cost_analysis', 'margin_floor_pct'),
+    ('cost_analysis', 'target_margin_pct'),
+    ('fuel_analysis', 'fuel_cost_zar'), ('fuel_analysis', 'fuel_usage_litres'), ('fuel_analysis', 'fuel_price_used'),
+    ('fuel_analysis', 'current_price'), ('fuel_analysis', 'fuel_pct_of_total'),
+    ('price_optimization', 'optimal_price'), ('price_optimization', 'optimal_margin_pct'),
+    ('price_optimization', 'expected_profit'), ('price_optimization', 'win_probability_at_optimal'),
+    ('market_analysis', 'market_rate'), ('market_analysis', 'your_vs_market_pct'),
+    ('ai_prediction', 'win_probability'), ('ai_prediction', 'recommended_price'),
+    ('ai_prediction', 'margin_pct'), ('ai_prediction', 'price_vs_market_pct'),
+)
+
+_NUMBER = r'(\d{1,3}(?:[  ]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)*)'
+
+# Units of the headline figures: a stated % is only checked against our
+# percentages, a rand amount only against rand, km against km.
+_PCT_KEYS = {'margin_pct', 'margin_floor_pct', 'target_margin_pct', 'fuel_pct_of_total', 'optimal_margin_pct',
+             'your_vs_market_pct', 'price_vs_market_pct'}
+_PROB_KEYS = {'win_probability_at_optimal', 'win_probability'}
+_KM_KEYS = {'distance_km'}
+_LITRE_KEYS = {'fuel_usage_litres'}
+
+
+def _headline_numbers(structured):
+    """[(value, unit)] for every headline figure; unit is 'rand', 'pct',
+    'km' or 'litres' (probabilities as %)."""
+    out = []
+    for path in HEADLINE_PATHS:
+        v = structured
+        for key in path:
+            v = v.get(key) if isinstance(v, dict) else None
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            continue
+        key = path[-1]
+        if key in _PROB_KEYS:
+            out.append((float(v) * 100 if 0 < abs(v) <= 1 else float(v), 'pct'))
+        elif key in _PCT_KEYS:
+            out.append((float(v), 'pct'))
+        elif key in _KM_KEYS:
+            out.append((float(v), 'km'))
+        elif key in _LITRE_KEYS:
+            out.append((float(v), 'litres'))
+        else:
+            out.append((float(v), 'rand'))
+    return out
+
+
+def _parse_number(raw):
+    """'1 050' / '36,000' / '32,80' / '12.5' -> float (SA style: comma
+    decimals, space thousands; a comma before exactly three digits with
+    nothing after is a thousands separator)."""
+    txt = raw.replace(' ', ' ').replace(' ', '')
+    if ',' in txt and '.' in txt:
+        txt = txt.replace(',', '')                 # 36,000.50
+    elif ',' in txt:
+        parts = txt.split(',')
+        txt = txt.replace(',', '') if all(len(p) == 3 for p in parts[1:]) else txt.replace(',', '.')
+    return float(txt)
+
+
+def _decimals(raw):
+    """Decimal places as written ('32,80' -> 2, '36,000' -> 0)."""
+    txt = raw.replace(' ', ' ').replace(' ', '')
+    if ',' in txt and '.' in txt:
+        return len(txt.rsplit('.', 1)[1])
+    for sep in (',', '.'):
+        if sep in txt:
+            tail = txt.rsplit(sep, 1)[1]
+            if sep == ',' and all(len(p) == 3 for p in txt.split(',')[1:]):
+                return 0
+            return len(tail)
+    return 0
+
+
+_UNITS_WORDS = {w: i for i, w in enumerate(
+    'zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen '
+    'sixteen seventeen eighteen nineteen'.split())}
+_TENS_WORDS = {w: 10 * (i + 2) for i, w in enumerate(
+    'twenty thirty forty fifty sixty seventy eighty ninety'.split())}
+_SCALE_WORDS = {'hundred': 100, 'thousand': 1000, 'million': 1_000_000}
+_WORD = '|'.join(sorted([*_UNITS_WORDS, *_TENS_WORDS, *_SCALE_WORDS], key=len, reverse=True))
+_WORDS_NUMBER = r'((?:' + _WORD + r')(?:(?:[\s-]+|\s+and\s+)(?:' + _WORD + r'))*)'
+
+
+def _words_value(phrase):
+    """'forty-five thousand' -> 45000; None when it isn't a number."""
+    total = current = 0
+    seen = False
+    for w in re.split(r'[\s-]+', phrase.lower()):
+        if w == 'and' or not w:
+            continue
+        if w in _UNITS_WORDS:
+            current += _UNITS_WORDS[w]
+        elif w in _TENS_WORDS:
+            current += _TENS_WORDS[w]
+        elif w == 'hundred':
+            current = (current or 1) * 100
+        elif w in _SCALE_WORDS:
+            total += (current or 1) * _SCALE_WORDS[w]
+            current = 0
+        else:
+            return None
+        seen = True
+    return float(total + current) if seen else None
+
+
+# Sign cues next to a figure: "lose R 1 200", "5% below the market".
+_NEG_BEFORE = re.compile(r'(?:\b(?:lose|losing|lost|loss of|minus|negative(?: margin)?(?: of)?|shortfall of|'
+                         r'down(?: by)?|fell(?: by)?|fallen(?: by)?|dropped(?: by)?|drop of|fall of|decrease of|'
+                         r'deficit of|short by|under by|below by)\s*|[-−]\s?)$', re.I)
+_POS_BEFORE = re.compile(r'\b(?:gain of|profit of|plus|up(?: by)?|rose(?: by)?|risen(?: by)?|rise of|increase of|'
+                         r'ahead by|above by|over by)\s*$', re.I)
+_NEG_AFTER = re.compile(r'^\s*(?:below|under|less|lower|cheaper|short|loss|down|negative|in the red)\b', re.I)
+_POS_AFTER = re.compile(r'^\s*(?:above|over|more|higher|ahead|profit|up)\b', re.I)
+
+
+def _stated_sign(text, start, end):
+    before, after = text[max(0, start - 30):start], text[end:end + 30]
+    if _NEG_BEFORE.search(before) or _NEG_AFTER.match(after):
+        return -1
+    if _POS_BEFORE.search(before) or _POS_AFTER.match(after):
+        return 1
+    return 0
+
+
+_UNIT_SUFFIX = (r'(\s?%|\s*(?:per\s?cent|percent)\b|\s?[kK](?![a-zA-Z])|\s?km\b|\s*kilomet(?:re|er)s?\b|'
+                r'\s?(?:L|l|litres?|liters?)\b(?!/)|\s*rand\b)?')
+_DIGITS_RE = re.compile(r'(?<![A-Za-z\d])(R\s?|ZAR\s?)?' + _NUMBER + _UNIT_SUFFIX)
+_WORDS_RE = re.compile(r'(?<![A-Za-z])(R\s?)?\b' + _WORDS_NUMBER + r'\b' + _UNIT_SUFFIX, re.I)
+
+
+def _stated_figures(text):
+    """Every figure the text states: (value, unit or None, decimals, sign,
+    from_k). unit None = no unit written."""
+    out, spans = [], []
+    for m in _DIGITS_RE.finditer(text):
+        try:
+            v = _parse_number(m.group(2))
+        except ValueError:
+            continue
+        out.append((m, v, _decimals(m.group(2))))
+        spans.append(m.span())
+    for m in _WORDS_RE.finditer(text):
+        if any(s <= m.start() < e for s, e in spans):
+            continue
+        v = _words_value(m.group(2))
+        if v is None:
+            continue
+        out.append((m, v, 0))
+    figures = []
+    for m, v, dec in out:
+        rand = bool(m.group(1))
+        suffix = re.sub(r'\s', '', (m.group(3) or '').lower())
+        from_k = suffix == 'k'
+        if from_k:
+            v *= 1000
+        if suffix == '%' or suffix.startswith('per'):       # %, percent, per cent
+            unit = 'pct'
+        elif suffix == 'km' or suffix.startswith('kilomet'):
+            unit = 'km'
+        elif suffix in ('l', 'litre', 'litres', 'liter', 'liters'):
+            unit = 'litres'
+        elif rand or from_k or suffix == 'rand':
+            unit = 'rand'
+        else:
+            unit = None
+        figures.append((v, unit, dec, _stated_sign(text, m.start(), m.end()), from_k))
+    return figures
+
+
+def narrative_numbers_ok(text, structured):
+    """True when every figure the narrative states is one of the headline
+    figures. Unit-aware (a % only against our percentages, R only against
+    rand amounts, km against km, litres against litres; a figure with no unit
+    against any). Within rounding of the figure as written or 0,1%, whichever
+    is larger ('R36k' = nearest thousand). Number words ("nine percent",
+    "forty-five thousand rand") are checked like digits. A sign cue ("lose
+    R 1 200", "5% below the market", "-5%") must agree with the sign of the
+    figure it matches. Bare counts up to 10 (nights, sentences) are allowed."""
+    known = _headline_numbers(structured)
+    for v, unit, dec, sign, from_k in _stated_figures(text or ''):
+        if unit is None and v <= 10:
+            continue
+        tol = max(500.0 if from_k else 0.5 * 10 ** -dec, abs(v) * 0.001)
+
+        def matches(k):
+            kv, ku = k
+            if unit is not None and ku != unit:
+                return False
+            if abs(abs(kv) - v) > tol:
+                return False
+            if sign < 0 and kv > 0:
+                return False
+            if sign > 0 and kv < 0:
+                return False
+            return True
+        if not any(matches(k) for k in known):
+            return False
+    return True
 
 
 def _build_ai_prediction(opt, real_market_rate, prediction_ctx):
@@ -430,130 +743,132 @@ def analyze_quote(payload, company=None, user=None):
     if quote_total <= 0:
         return {'success': False, 'error': 'quote_total must be > 0'}
 
-    # Expected profit must be computed against what the job COSTS, not the
-    # price being asked — otherwise the optimum is forced above the current total.
-    cost_basis = direct_cost or quote_total
-
     customer = None
     if payload.get('customer_id') and company is not None:
         try:
             from core.models import Customer
-            customer = Customer.objects.filter(
-                id=payload['customer_id'], company=company,
-            ).first()
+            customer = Customer.objects.filter(id=payload['customer_id'], company=company).first()
         except Exception as exc:
             logger.warning('analyze: customer lookup failed: %s', exc)
 
-    market = _market_analysis(origin, destination, vehicle_type, company, market_rate, quote_total, user=user)
-    # market_rate is now either a REAL benchmark or None (no fabricated anchor).
-    # When it's None, _optimization anchors its search band on cost internally
-    # (cost_basis * 1.25) — that's a private search bound, never shown as a
-    # "market rate".
-    real_market_rate = market.get('market_rate')
+    # THE engine (QUOTE-RULES): the pricing analysis — compute() floor on the
+    # full payload (trip type, legs, duration, flags), the fuel-normalised
+    # market (no hard-coded estimates) and the same three choices.
+    from core.services.pricing_analysis import analyze_pricing
+    pa_payload = dict(payload)
+    pa_payload['your_price'] = quote_total
+    analysis = {}
+    if company is not None:
+        try:
+            analysis = analyze_pricing(pa_payload, company=company, user=user)
+        except Exception as exc:
+            logger.warning('analyze: pricing analysis failed: %s', exc)
+            analysis = {}
+    floor_block = analysis.get('cost_floor') or {}
+    costing = analysis.get('costing') or floor_block.get('costing')
+    blocking = analysis.get('blocking') or []
+    floor = floor_block.get('total') if floor_block.get('complete') else None
+    if floor is not None:
+        cost_basis, cost_basis_source = floor, 'cost_floor'
+    elif direct_cost > 0 and not blocking:
+        cost_basis, cost_basis_source = direct_cost, 'client_direct_cost'
+    else:
+        cost_basis, cost_basis_source = 0.0, 'none'
 
-    try:
-        from core.services.win_prediction import resolve_prediction_context
-        prediction_ctx = resolve_prediction_context(user, company)
-    except Exception as exc:
-        logger.warning('analyze_quote: prediction context resolution failed: %s', exc)
-        prediction_ctx = None
+    m = analysis.get('market') or {}
+    usable = bool(m.get('available')) and not m.get('is_estimate')
+    market_rate_val = float(m['median']) if usable and m.get('median') else None
+    market = {'market_rate': round(market_rate_val, 2) if market_rate_val else None,
+              'source': m.get('tier') if usable else 'none',
+              'your_vs_market_pct': (round((quote_total - market_rate_val) / market_rate_val * 100, 1)
+                                     if market_rate_val else None)}
 
-    # Full v2 feature vector for the resolved model (if any) to score
-    # candidate prices against — same computation used at training time, so a
-    # trained model sees the feature distribution it was fitted on. Falling
-    # back to None (letting _optimization build a minimal legacy dict) if this
-    # fails for any reason; the heuristic/model still gets SOMETHING sane.
-    base_features = None
-    try:
-        from core.services import quote_features
-        customer_id_for_features = customer.id if customer is not None else payload.get('customer_id')
-        base_features = quote_features.compute_features(
-            company=company, customer_id=customer_id_for_features,
-            created_by_user_id=getattr(user, 'id', None),
-            origin=origin, destination=destination, vehicle_type=vehicle_type,
-            total_amount=quote_total, base_rate=cost_basis,
-            weight_kg=payload.get('weight'), distance_km=distance_km,
-            market_rate=real_market_rate,
-        )
-        # days_until_departure is already correctly derived upstream (from the
-        # request's pickup_date) — use that exact value rather than letting
-        # compute_features fall back to its own no-pickup-date default.
-        base_features['days_until_departure'] = days
-    except Exception as exc:
-        logger.warning('analyze_quote: base_features build failed: %s', exc)
-        base_features = None
+    choices = analysis.get('choices') or []
+    rec = next((c for c in choices if c.get('recommended')), None)
+    lk = analysis.get('likelihood') or {}
+    model = lk.get('model') if lk.get('level') == 'model' else None
+    suggested_price = float(rec['price']) if rec and cost_basis > 0 and not blocking else None
+    if suggested_price is None and cost_basis_source == 'client_direct_cost':
+        # No floor of ours (no company context / route): the company target
+        # margin over the client's own direct cost, labelled as such.
+        t = min(max(_f(getattr(company, 'margin_target_pct', None), 10.0) or 10.0, 1.0), 40.0)
+        suggested_price = round(cost_basis / (1 - t / 100), 2)
+        rec = {'price': suggested_price, 'margin_pct': round(t, 1), 'margin': suggested_price - cost_basis,
+               'likelihood': {'level': 'rules'}}
+    win_at = ((rec['likelihood'].get('pct') or 0) / 100.0
+              if rec and (rec.get('likelihood') or {}).get('level') == 'model' else None)
+    opt = {
+        'optimal_price': suggested_price,
+        'optimal_margin_pct': rec['margin_pct'] if rec and suggested_price else None,
+        'win_probability_at_optimal': win_at,
+        'expected_profit': round(win_at * rec['margin'], 2) if win_at is not None and rec else 0.0,
+        'curve': [{'price': p['price'], 'win_probability': p['pct'] / 100.0, 'expected_profit': p['expected_profit']}
+                  for p in (model or {}).get('curve') or []],
+        'choices': choices,
+    }
+    if cost_basis > 0:
+        cost = assess_revenue_guard(
+            total_cost=cost_basis, quote_price=quote_total, distance_km=distance_km, fuel_cost=fuel_cost,
+            # Never adds operating cost on top: the floor already has it, and a
+            # client's own direct cost is taken as given (labelled).
+            company=company, customer=customer, is_full_floor=True)
+    else:
+        cost = {'success': False, 'error': 'The cost floor is not known yet.', 'blocking': blocking}
+    fuel = _fuel_analysis(fuel_cost, fuel_usage_litres, fuel_price_used, quote_total, company)
 
-    opt = _optimization(
-        cost_basis, real_market_rate, client_tier, days,
-        historical_acceptance_rate=hist_rate, origin=origin, destination=destination,
-        company=company, prediction_ctx=prediction_ctx, base_features=base_features,
-    )
-
-    # With NO market data the optimizer's "optimum" is an artefact of its own
-    # synthetic cost*1.25 anchor — effectively a fixed ~30% markup pulled from
-    # thin air, contradicting the Revenue Guard's margin-target advice shown on
-    # the same screen. Until the lane has a real benchmark, recommend the
-    # company's own target margin instead (same formula the guard uses), so
-    # both panels agree. The curve is kept so the sweet-spot chart still renders.
-    no_market_data = not real_market_rate
-    if no_market_data and cost_basis > 0:
-        t = _f(getattr(company, 'margin_target_pct', None), 10.0) or 10.0
-        t = min(max(t, 1.0), 40.0)  # sane bounds; t is margin-on-price in %
-        target_price = round(cost_basis / (1 - t / 100), 2)
-        curve = opt.get('curve') or []
-        nearest = min(curve, key=lambda p: abs(_f(p.get('price')) - target_price)) if curve else None
-        p_win = nearest.get('win_probability') if nearest else None
-        opt['optimal_price'] = target_price
-        opt['optimal_margin_pct'] = round((target_price - cost_basis) / cost_basis * 100, 1)
-        opt['win_probability_at_optimal'] = p_win
-        opt['expected_profit'] = round(
-            (target_price - cost_basis) * (p_win if p_win is not None else 1.0), 2)
-
-    cost = assess_revenue_guard(
-        total_cost=cost_basis, quote_price=quote_total,
-        distance_km=distance_km, fuel_cost=fuel_cost, company=company,
-        customer=customer,
-    )
-    fuel = _fuel_analysis(fuel_cost, fuel_usage_litres, fuel_price_used, quote_total)
-
-    suggested_price = _f(opt.get('optimal_price')) or round(quote_total * 1.15, 2)
+    ai_prediction = ({'available': True, 'model_scope': model.get('scope'), 'training_samples': model.get('n_closed'),
+                      'win_probability': win_at, 'recommended_price': suggested_price,
+                      'expected_profit': opt['expected_profit'], 'margin_pct': opt['optimal_margin_pct'],
+                      'market_rate': market_rate_val,
+                      'price_vs_market_pct': (round((suggested_price - market_rate_val) / market_rate_val * 100, 2)
+                                              if market_rate_val and suggested_price else None)}
+                     if model and win_at is not None else {'available': False, 'reason': 'insufficient_training_data'})
 
     structured = {
         'route': f"{origin} → {destination}" if origin and destination else None,
+        'distance_km': round(distance_km, 1) if distance_km else None,
         'quote_total': round(quote_total, 2),
         'cost_analysis': cost,
         'fuel_analysis': fuel,
         'price_optimization': opt,
         'market_analysis': market,
-        'suggested_price': round(suggested_price, 2),
-        # The ONLY block that ever claims to be a trained-AI prediction —
-        # price_optimization above may be heuristic-driven and stays
-        # populated either way, so the manual quote flow never breaks.
-        'ai_prediction': _build_ai_prediction(opt, real_market_rate, prediction_ctx),
+        'suggested_price': round(suggested_price, 2) if suggested_price else None,
+        'cost_basis': round(cost_basis, 2) if cost_basis else None,
+        'cost_basis_source': cost_basis_source,
+        'cost_floor': ({k: costing.get(k) for k in ('floor', 'floor_known', 'target_price', 'minimum_charge',
+                                                    'lines', 'warnings', 'blocking')} if costing else None),
+        'blocking': blocking,
+        'recommendation': analysis.get('recommendation'),
+        'ai_prediction': ai_prediction,
     }
 
-    # skip_narrative: callers that never display the narrative (e.g. the Quote
-    # Builder's live panel, which re-analyzes on every cost change) skip the
-    # synchronous OpenAI call — it dominates response time by seconds.
-    narrative = None if payload.get('skip_narrative') else _llm_narrative(structured)
+    narrative = None if (payload.get('skip_narrative') or blocking) else _llm_narrative(
+        {k: v for k, v in structured.items() if k not in ('cost_floor',)})
+    if narrative and not narrative_numbers_ok(narrative, structured):
+        # The model stated a number that isn't ours: never shown.
+        logger.info('analyze: LLM narrative rejected (unsupported numbers)')
+        narrative = None
     narrative_source = 'llm' if narrative else 'rules'
     if not narrative:
         narrative = _rule_based_narrative(cost, fuel, opt, market, suggested_price, quote_total)
 
+    no_market_data = not market_rate_val
     rationale = None
     if no_market_data and cost_basis > 0:
         t = _f(getattr(company, 'margin_target_pct', None), 10.0) or 10.0
         t = min(max(t, 1.0), 40.0)
         rationale = (
             f"No market data for this lane yet — priced to your target margin of {t:.0f}%. "
-            "As you win quotes on this lane, pricing will optimise for expected profit."
+            "Market figures appear once real quotes on this lane have been sent and decided."
         )
+    elif opt.get('optimal_margin_pct') is not None and opt.get('win_probability_at_optimal') is not None:
+        # Only a real model gives an expected-profit optimum.
+        rationale = (f"Maximises expected profit at a {opt['optimal_margin_pct']:.0f}% margin with a "
+                     f"{round(opt['win_probability_at_optimal'] * 100)}% chance to win.")
     elif opt.get('optimal_margin_pct') is not None:
-        rationale = (
-            f"Maximises expected profit at a {opt['optimal_margin_pct']:.0f}% margin"
-            + (f" with a {round((opt['win_probability_at_optimal'] or 0) * 100)}% win probability."
-               if opt.get('win_probability_at_optimal') is not None else ".")
-        )
+        rationale = f"Priced at a {opt['optimal_margin_pct']:.0f}% margin over your costs."
+    if blocking:
+        rationale = 'No suggested price until the blocking items are fixed.'
 
     return {
         'success': True,

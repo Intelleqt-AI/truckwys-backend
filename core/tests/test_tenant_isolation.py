@@ -18,7 +18,7 @@ from decimal import Decimal
 from unittest import mock
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -266,6 +266,7 @@ class AdvanceCreateIsolationTests(_TwoTenantFixture):
 # ---------------------------------------------------------------------------
 # 3c. POST /api/v1/lender/advance-request/
 # ---------------------------------------------------------------------------
+@override_settings(CAPITAL_LAUNCHED=True)
 @mock.patch.dict('core.views_lender.DEMO_API_KEYS', {'ISO-LENDER-KEY': 'Iso Lender'}, clear=True)
 class LenderAdvanceIsolationTests(_TwoTenantFixture):
     URL = '/api/v1/lender/advance-request/'
@@ -287,6 +288,24 @@ class LenderAdvanceIsolationTests(_TwoTenantFixture):
             issue_date=today, due_date=today + timedelta(days=30),
             subtotal=Decimal('50.00'), status='SENT',
         )
+        # Capital-safety 2026-10: lender keys are DB keys bound to the
+        # transporters they fund, and only offered invoices with a delivered,
+        # POD-backed load can be advanced. Bind this key to both tenants so the
+        # test still isolates the facility choice, not the key scope.
+        from core.models import IntegrationAPIKey
+        key = IntegrationAPIKey.objects.create(
+            name='Iso Lender', key='ISO-LENDER-KEY', key_type='LENDER', operator=cls.staff_none)
+        key.allowed_companies.set([cls.co_a, cls.co_b])
+        Load.objects.filter(pk__in=[cls.load_a.pk, cls.load_b.pk]).update(
+            status='DELIVERED', pod_signature='signed-on-glass')
+        Invoice.objects.filter(pk=cls.lend_b.pk).update(load=cls.load_b, early_pay_eligible=True)
+        Invoice.objects.filter(pk=cls.lend_a.pk).update(load=cls.load_a, early_pay_eligible=True)
+        # Fast Pay risk release: the lender API runs the decision engine, so
+        # both tenants are made fundable under one funder.
+        from core.tests.capital_fixtures import make_funder, make_fundable
+        funder = make_funder('iso-funder')
+        make_fundable(cls.co_a, cls.customer_a, cls.facility_a, cls.load_a, funder=funder)
+        make_fundable(cls.co_b, cls.customer_b, cls.facility_b, cls.load_b, funder=funder)
 
     def _post(self, invoice, amount):
         c = APIClient()
@@ -424,8 +443,10 @@ class SerializerRelationScopingTests(_TwoTenantFixture):
 
     def test_owner_quote_create_and_edit(self):
         c = self.client_for(self.user_a)
+        from core.tests.quote_rules_fixtures import official_price_now, sendable_quote_fields
+        official_price_now()
         resp = c.post('/api/v1/quotes/', self._quote_payload(
-            vehicle=self.vehicle_a.id, driver=self.driver_a.id), format='json')
+            vehicle=self.vehicle_a.id, driver=self.driver_a.id, **sendable_quote_fields(self.co_a)), format='json')
         self.assertEqual(resp.status_code, 201, resp.content)
         q = Quote.objects.get(id=resp.json()['id'])
         self.assertEqual(q.company_id, self.co_a.id)

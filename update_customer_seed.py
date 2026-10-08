@@ -14,11 +14,11 @@ from core.models import Customer
 def update_customers():
     """Update Customers with realistic payment history."""
 
-    # Good payers (Woolworths, Shoprite, Pick n Pay, etc.)
-    good_payers = ['Woolworths', 'Shoprite', 'Pick n Pay', 'Clicks', 'Dis-Chem']
+    # Good payers (Fynbos Home & Food, Karoo Fresh Markets, Kestrel Grocers, etc.)
+    good_payers = ['Fynbos Home & Food', 'Karoo Fresh Markets', 'Kestrel Grocers', 'Rooibos Pharmacy', 'Fever Tree Chemists']
 
     # Average payers
-    average_payers = ['Nampak', 'Bidvest', 'RCL Foods', 'Tiger Brands', 'AVI']
+    average_payers = ['Tin Can Packaging', 'Kudu Group', 'Mopane Foods', 'Marula Pantry Foods', 'Springbok Snacks']
 
     # Poor payers
     poor_payers = ['ABC Trading', 'XYZ Logistics']

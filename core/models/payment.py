@@ -24,6 +24,18 @@ class Payment(models.Model):
     payment_date = models.DateField(db_index=True)
     payment_method = models.CharField(max_length=50, choices=PAYMENT_METHOD_CHOICES, db_index=True)
 
+    SOURCE_CHOICES = [
+        ('MANUAL', 'Entered in TruckWys'),
+        ('XERO', 'Xero'),
+        ('QBO', 'QuickBooks Online'),
+        ('BANK', 'Bank feed'),
+    ]
+    # Where the payment came from, and its id there. (company, source,
+    # external_id) is unique, so a re-run accounting/bank sync can't record
+    # the same payment twice.
+    source = models.CharField(max_length=10, choices=SOURCE_CHOICES, default='MANUAL', db_index=True)
+    external_id = models.CharField(max_length=100, blank=True, default='')
+
     reference_number = models.CharField(max_length=100, blank=True)
     notes = models.TextField(blank=True)
 
@@ -33,6 +45,11 @@ class Payment(models.Model):
     class Meta:
         db_table = 'payments'
         ordering = ['-payment_date']
+        constraints = [
+            models.UniqueConstraint(fields=['company', 'source', 'external_id'],
+                                    condition=~models.Q(external_id=''),
+                                    name='uniq_payment_external_id'),
+        ]
         indexes = [
             models.Index(fields=['invoice']),
             models.Index(fields=['payment_method']),

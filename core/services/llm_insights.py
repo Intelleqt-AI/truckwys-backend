@@ -66,14 +66,15 @@ def build_company_metrics(company, from_date=None, to_date=None) -> dict:
     invoices = Invoice.objects.filter(company=company)
 
     # --- Flow: within the window ---
-    revenue_collected = invoices.filter(
-        status='PAID', paid_at__gte=start, paid_at__lte=end
-    ).aggregate(s=Sum('total_amount'))['s'] or Decimal('0')
-    # APPROVED only: pending and rejected claims are not spend (audit #43).
-    expenses_period = Expense.objects.filter(
-        company=company, status='APPROVED',
-        expense_date__gte=from_date, expense_date__lte=to_date,
-    ).aggregate(s=Sum('amount'))['s'] or Decimal('0')
+    # One revenue definition (accounting_reports): EXCLUDING VAT. "Collected"
+    # is the cash basis (ex-VAT share of payments by payment_date); the
+    # invoiced (accrual) figure is reported alongside. Expenses: the
+    # accounting_reports definition, net of VAT (rejected never count).
+    # (Was: PAID invoice totals incl. VAT by paid_at; APPROVED gross expenses.)
+    from core.services import accounting_reports as ar
+    revenue_collected = ar.cash(company, from_date, to_date)['cash_revenue_excl_vat']
+    revenue_invoiced = ar.sales(company, from_date, to_date)['revenue_excl_vat']
+    expenses_period = ar.expenses(company, from_date, to_date)['expenses_excl_vat']
     net_margin = revenue_collected - expenses_period
     net_margin_pct = (
         float(round((net_margin / revenue_collected * 100), 1)) if revenue_collected else 0.0
@@ -88,13 +89,13 @@ def build_company_metrics(company, from_date=None, to_date=None) -> dict:
     ).count()
 
     # --- Snapshot: as-of to_date ---
-    overdue_cutoff = min(to_date, today)
-    outstanding = invoices.exclude(status='PAID').filter(
-        issue_date__lte=to_date
-    ).aggregate(s=Sum('balance'))['s'] or Decimal('0')
-    overdue = invoices.exclude(status='PAID').filter(
-        due_date__lt=overdue_cutoff
-    ).aggregate(s=Sum('balance'))['s'] or Decimal('0')
+    # Debtors as at the date (accounting_reports.debtors_ageing): issued
+    # invoices less payments and credit notes dated on/before it; drafts and
+    # void invoices are never owed. (Was: every non-PAID invoice's balance,
+    # drafts and void included.)
+    ageing = ar.debtors_ageing(company, min(to_date, today))
+    outstanding = ageing['total']
+    overdue = ageing['total'] - ageing['buckets']['current']
 
     try:
         recommendations = IntelligenceService(company).generate_recommendations() or []
@@ -109,7 +110,11 @@ def build_company_metrics(company, from_date=None, to_date=None) -> dict:
         "invoices_issued_in_period": invoices_issued,
         "loads_delivered_in_period": loads_delivered,
         "quotes_in_period": quotes_in_period,
+        "revenue_basis": "cash",
+        "vat_treatment": "excl_vat",
         "revenue_collected": _money(revenue_collected),
+        "revenue_excl_vat": _money(revenue_collected),
+        "revenue_invoiced_excl_vat": _money(revenue_invoiced),
         "expenses_period": _money(expenses_period),
         "net_margin": _money(net_margin),
         "net_margin_pct": net_margin_pct,
@@ -133,7 +138,7 @@ def _fallback_briefing(m: dict) -> dict:
     window = f"{p.get('from')} to {p.get('to')}" if p.get("from") else "the selected period"
     lines = [
         f"{m['company_name']} — {window}: collected R{m['revenue_collected']:,.0f} against "
-        f"R{m['expenses_period']:,.0f} of costs (net margin R{m['net_margin']:,.0f}, "
+        f"R{m['expenses_period']:,.0f} of costs, both excl. VAT (net margin R{m['net_margin']:,.0f}, "
         f"{m['net_margin_pct']:.1f}%). {m['invoices_issued_in_period']} invoices issued, "
         f"{m['loads_delivered_in_period']} loads delivered, {m['quotes_in_period']} quotes.",
         f"As of {p.get('to', 'today')}: R{m['outstanding_total']:,.0f} outstanding across "

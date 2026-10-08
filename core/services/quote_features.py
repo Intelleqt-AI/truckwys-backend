@@ -151,10 +151,14 @@ def customer_signals(company, customer_id, as_of, exclude_quote_id=None):
         # __lte not __lt: a coarse system clock can give a just-created row the
         # exact same timestamp as `as_of`; safe to include since the row this
         # is computed FOR is always excluded separately, by id, below.
-        qs = Quote.objects.filter(company=company, customer_id=customer_id, created_at__lte=as_of)
+        # Never-sent quotes (decided straight from DRAFT) are not evidence.
+        qs = Quote.objects.filter(company=company, customer_id=customer_id, created_at__lte=as_of).exclude(
+            was_sent=False)
         if exclude_quote_id:
             qs = qs.exclude(id=exclude_quote_id)
-        decided = qs.filter(outcome__in=['accepted', 'rejected'])
+        # Only outcomes already known at as_of: a quote created before as_of
+        # but decided after it is not evidence yet (no training leakage).
+        decided = qs.filter(outcome__in=['accepted', 'rejected']).exclude(outcomes__created_at__gt=as_of)
         total = decided.count()
         accepted = decided.filter(outcome='accepted').count()
         rate = (accepted / total) if total else 0.5
@@ -180,17 +184,17 @@ def user_signals(user_id, as_of, exclude_quote_id=None):
     try:
         from core.models import Quote, QuoteOutcome
 
-        qs = Quote.objects.filter(created_by_id=user_id, created_at__lte=as_of)
+        qs = Quote.objects.filter(created_by_id=user_id, created_at__lte=as_of).exclude(was_sent=False)
         if exclude_quote_id:
             qs = qs.exclude(id=exclude_quote_id)
-        decided = qs.filter(outcome__in=['accepted', 'rejected'])
+        decided = qs.filter(outcome__in=['accepted', 'rejected']).exclude(outcomes__created_at__gt=as_of)
         total = decided.count()
         accepted = decided.filter(outcome='accepted').count()
         rate = (accepted / total) if total else 0.5
 
         ratio_qs = QuoteOutcome.objects.filter(
             created_by_id=user_id, created_at__lte=as_of, price_ratio__isnull=False,
-        )
+        ).exclude(quote__was_sent=False)
         if exclude_quote_id:
             ratio_qs = ratio_qs.exclude(quote_id=exclude_quote_id)
         ratios = [float(v) for v in ratio_qs.values_list('price_ratio', flat=True)]
@@ -215,7 +219,7 @@ def lane_historical_acceptance_rate(company, origin, destination, as_of, exclude
             _lane_q('origin', origin), _lane_q('destination', destination),
             company=company, created_at__lte=as_of,
             outcome__in=['accepted', 'rejected'],
-        )
+        ).exclude(was_sent=False).exclude(outcomes__created_at__gt=as_of)   # decided by as_of only
         if exclude_quote_id:
             qs = qs.exclude(id=exclude_quote_id)
         total = qs.count()
@@ -273,7 +277,7 @@ def compute_features(
             from core.services.lane_benchmark import resolve_market_rate
             market_rate, _source = resolve_market_rate(
                 origin, destination, vehicle_type, company=company,
-                exclude_quote_id=exclude_quote_id, as_of=as_of,
+                exclude_quote_id=exclude_quote_id, as_of=as_of, one_way_only=True, sent_only=True,
             )
         except Exception as exc:
             logger.warning('compute_features: market rate resolve failed: %s', exc)

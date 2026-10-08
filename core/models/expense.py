@@ -3,6 +3,8 @@ from django.conf import settings
 from django.utils import timezone
 from .vehicle import Vehicle
 from .driver import Driver
+from decimal import Decimal
+from core.tax_codes import TAX_CODE_CHOICES, NO_VAT
 
 
 class Expense(models.Model):
@@ -11,6 +13,9 @@ class Expense(models.Model):
         ('TOLLS', 'Tolls'),
         ('MAINTENANCE', 'Maintenance'),
         ('DRIVER_COST', 'Driver Cost'),
+        # Another carrier hauling the load: the largest single cost on a
+        # brokered load, so it gets its own line in margin and P&L.
+        ('SUBCONTRACTOR', 'Subcontractor'),
         ('INSURANCE', 'Insurance'),
         ('OVERHEAD', 'Overhead'),
         ('OTHER', 'Other'),
@@ -27,7 +32,17 @@ class Expense(models.Model):
     expense_number = models.CharField(max_length=100, unique=True, db_index=True)
     category = models.CharField(max_length=50, choices=CATEGORY_CHOICES, db_index=True)
     description = models.TextField()
+    # GROSS amount as on the receipt, INCLUDING VAT. Cost excl. VAT is
+    # net_amount = amount - vat_amount.
     amount = models.DecimalField(max_digits=10, decimal_places=2)
+    # Input VAT on the receipt. Pre-foundation expenses were migrated as
+    # NO_VAT / 0.00, which reproduces their old reporting exactly.
+    tax_code = models.CharField(max_length=20, choices=TAX_CODE_CHOICES, default=NO_VAT)
+    vat_amount = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
+    supplier = models.ForeignKey('Supplier', on_delete=models.PROTECT, null=True, blank=True,
+                                 related_name='expenses')
+    # The load this cost belongs to (lane margin uses actual costs per load).
+    load = models.ForeignKey('Load', on_delete=models.SET_NULL, null=True, blank=True, related_name='expenses')
 
     vehicle = models.ForeignKey(Vehicle, on_delete=models.SET_NULL, null=True, blank=True, related_name='expenses')
     driver = models.ForeignKey(Driver, on_delete=models.SET_NULL, null=True, blank=True, related_name='expenses')
@@ -43,6 +58,7 @@ class Expense(models.Model):
     )
 
     expense_date = models.DateField(db_index=True)
+    # Free-text vendor kept for back-compat; supplier is the structured link.
     vendor = models.CharField(max_length=200, blank=True)
     receipt_number = models.CharField(max_length=100, blank=True)
 
@@ -98,6 +114,10 @@ class Expense(models.Model):
 
     def __str__(self):
         return f"{self.category} - {self.amount} - {self.expense_date}"
+
+    @property
+    def net_amount(self) -> Decimal:
+        return (self.amount or Decimal('0')) - (self.vat_amount or Decimal('0'))
 
     def approve(self, user):
         """Approve this expense."""

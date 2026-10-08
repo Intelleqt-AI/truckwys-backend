@@ -105,6 +105,11 @@ SYSTEM_PROMPT_BASE = (
 )
 
 
+# Hard ceiling on one extraction call (no retries), so a slow provider can't
+# hold the chat request open.
+LLM_TIMEOUT_SECONDS = 20.0
+
+
 def _system_prompt(vehicle_types: Optional[List[str]] = None, customer_names: Optional[List[str]] = None,
                     detected_language: Optional[str] = None) -> str:
     # Built per-call (not a module constant) so "today"/"tomorrow"/"in N days"
@@ -447,23 +452,26 @@ def extract(message: str, history: Optional[List[Dict[str, Any]]] = None,
         vt_records = [{"name": n, "capacity_t": None} for n in vehicle_types]
     else:
         vt_records = list(vehicle_types)
+    # Privacy: the company's customer list is never sent to the model. It
+    # extracts the name as the user said it; matching against the real
+    # customer records happens here, locally, after extraction.
     customer_names = [c["name"] for c in customers] if customers else None
 
     if provider == "anthropic":
-        client = anthropic.Anthropic()
+        client = anthropic.Anthropic(timeout=LLM_TIMEOUT_SECONDS, max_retries=0)
         response = client.messages.create(
             model=QUOTE_MODEL,
             max_tokens=600,
             temperature=0,
-            system=_system_prompt(_candidate_labels(vt_records), customer_names, detected_language),
+            system=_system_prompt(_candidate_labels(vt_records), None, detected_language),
             messages=msgs,
             output_config={"format": {"type": "json_schema", "schema": EXTRACTION_SCHEMA}},
         )
         text = next((b.text for b in response.content if b.type == "text"), "")
         data = json.loads(text)
     elif provider == "openai":
-        client = OpenAI(api_key=_openai_key())
-        sys = _system_prompt(_candidate_labels(vt_records), customer_names, detected_language) + (
+        client = OpenAI(api_key=_openai_key(), timeout=LLM_TIMEOUT_SECONDS, max_retries=0)
+        sys = _system_prompt(_candidate_labels(vt_records), None, detected_language) + (
             "\n\nRespond ONLY with a JSON object with exactly these keys: pickup_location, "
             "delivery_location, weight_kg, vehicle_type, customer_name, cargo_description, "
             "pickup_date, delivery_date, valid_until, trip_type, reply."

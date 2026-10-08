@@ -1,6 +1,12 @@
 """
 Cash Flow Forecast Service
 Predicts future cash in/out based on actual invoice due dates and scheduled expenses.
+
+This is a CASH forecast, so - unlike every revenue/expense report, which is
+excl. VAT (docs/foundation/REPORTS.md) - amounts here are deliberately
+INCLUDING VAT: invoice balances are what will land in the bank and
+Expense.amount is what will leave it. Balances already net payments and
+credit notes (core.services.ledger); drafts and void invoices are excluded.
 """
 from typing import List, Dict, Any, Optional
 from datetime import timedelta, date

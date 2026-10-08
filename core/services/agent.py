@@ -130,9 +130,16 @@ def build_agent_context(company, user=None) -> dict:
     overdue_qs = outstanding_qs.filter(due_date__lt=today)
     overdue = overdue_qs.aggregate(s=Sum('balance'))['s'] or Decimal('0')
     # Cash collected = every rand actually received, including partial payments,
-    # not just fully-PAID invoices' face value.
-    collected = (invoices.exclude(status='CANCELLED')
-                 .aggregate(s=Sum('paid_amount'))['s'] or Decimal('0'))
+    # not just fully-PAID invoices' face value. Revenue figures follow the one
+    # definition (accounting_reports): EXCLUDING VAT; the incl.-VAT cash
+    # received is kept alongside, clearly named.
+    from core.services import report_figures as rf
+    from core.services.accounting_reports import sales
+    _collected = rf.collected_to_date(company)
+    collected = _collected['cash_revenue_excl_vat']
+    _month_start = today.replace(day=1)
+    revenue_mtd = sales(company, _month_start, today)['revenue_excl_vat']
+    revenue_ytd = sales(company, today.replace(month=1, day=1), today)['revenue_excl_vat']
 
     quotes = Quote.objects.filter(company=company)
     quote_counts = {row['status']: row['n'] for row in quotes.values('status').annotate(n=Count('id'))}
@@ -259,6 +266,10 @@ def build_agent_context(company, user=None) -> dict:
             "overdue_total": _money(overdue),
             "overdue_count": overdue_qs.count(),
             "revenue_collected": _money(collected),
+            "revenue_collected_basis": "cash, excl. VAT",
+            "cash_received_incl_vat": _money(_collected['cash_received_incl_vat']),
+            "revenue_invoiced_excl_vat_mtd": _money(revenue_mtd),
+            "revenue_invoiced_excl_vat_ytd": _money(revenue_ytd),
             "top_overdue": top_overdue,
         },
         "quotes": {
@@ -451,7 +462,7 @@ def _fallback_reply(ctx: dict, user_text: str) -> str:
             return no_access
         return (
             f"{fmt(inv.get('outstanding_total'))} is outstanding across {inv.get('count', 0)} invoices "
-            f"({fmt(inv.get('overdue_total'))} overdue). {fmt(inv.get('revenue_collected'))} has been collected to date."
+            f"({fmt(inv.get('overdue_total'))} overdue). {fmt(inv.get('revenue_collected'))} (excl. VAT) has been collected to date."
         )
 
     if any(w in t for w in ["advance", "fast pay", "capital", "factor"]):
@@ -613,7 +624,8 @@ def _retrieved_block(company, query: str) -> str:
     )
 
 
-def _llm_generate(system: str, convo: list) -> str:
+def _llm_generate(system: str, convo: list, *, timeout: float = None, max_retries: int = None,
+                  max_tokens: int = 700) -> str:
     """Generate a reply from the selected provider. Caller handles exceptions.
 
     Both providers receive the same instructions + grounding: Anthropic takes the
@@ -622,19 +634,21 @@ def _llm_generate(system: str, convo: list) -> str:
     """
     provider = _provider()
     if provider == "anthropic":
-        client = anthropic.Anthropic(timeout=LLM_TIMEOUT_SECONDS, max_retries=LLM_MAX_RETRIES)
+        client = anthropic.Anthropic(timeout=timeout or LLM_TIMEOUT_SECONDS,
+                                     max_retries=LLM_MAX_RETRIES if max_retries is None else max_retries)
         response = client.messages.create(
             model=AGENT_MODEL,
-            max_tokens=700,
+            max_tokens=max_tokens,
             system=system,
             messages=convo,
         )
         return next((b.text for b in response.content if b.type == "text"), "").strip()
     if provider == "openai":
-        client = OpenAI(api_key=_openai_key(), timeout=LLM_TIMEOUT_SECONDS, max_retries=LLM_MAX_RETRIES)
+        client = OpenAI(api_key=_openai_key(), timeout=timeout or LLM_TIMEOUT_SECONDS,
+                        max_retries=LLM_MAX_RETRIES if max_retries is None else max_retries)
         response = client.chat.completions.create(
             model=OPENAI_CHAT_MODEL,
-            max_tokens=700,
+            max_tokens=max_tokens,
             temperature=0,  # grounding: quote the provided figures exactly, don't "helpfully" derive
             messages=[{"role": "system", "content": system}, *convo],
         )

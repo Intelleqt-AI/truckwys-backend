@@ -1,10 +1,14 @@
-# TENANCY AUDIT: 2026-03-15 — Lender API intentionally multi-company
-# This is an EXTERNAL API for lenders/partners to view operator data.
-# Lenders are authenticated via API key and can see all companies they finance.
-# Company isolation is INTENTIONALLY NOT APPLIED here - this is by design.
-# Views: LenderHealthView, LenderRiskProfileView, LenderEligibleInvoicesView,
-#        LenderAdvanceRequestView, LenderPortfolioView
-# Status: EXEMPT from single-company filtering (multi-tenant lender platform) ✓
+# TENANCY (capital-safety 2026-10, audit §6 #2): the 2026-03-15 note that this
+# API was "intentionally multi-company" meant any valid key saw and could raise
+# advances on EVERY tenant's invoices. Rules now:
+# - a lender key is an IntegrationAPIKey(key_type='LENDER') bound to the
+#   transporters it funds via allowed_companies; every query is filtered to
+#   request.user.company_ids
+# - no bound companies => sees nothing (fail closed). Legacy LENDER_API_KEYS env
+#   keys still authenticate (health check) but are bound to nothing
+# - advances only on collectable invoices (SENT/VIEWED/OVERDUE/PARTIALLY_PAID)
+#   with a load + POD, early_pay_eligible, no active advance, and an amount in
+#   (0, balance]
 
 """
 Lender-facing Fast Pay API.
@@ -85,13 +89,18 @@ class LenderUser:
     """Pseudo-user for API key authenticated lender requests."""
     is_authenticated = True
     is_active = True
+    is_staff = False
+    is_superuser = False
     pk = None
     id = None
 
-    def __init__(self, api_key, lender_name):
+    def __init__(self, api_key, lender_name, company_ids=frozenset(), key_obj=None):
         self.api_key = api_key
         self.lender = lender_name
         self.username = lender_name
+        # The transporters this key may see. Empty => nothing (fail closed).
+        self.company_ids = frozenset(company_ids)
+        self.key_obj = key_obj
 
     def __str__(self):
         return self.lender
@@ -106,14 +115,33 @@ class LenderAPIKeyAuthentication(BaseAuthentication):
         key = request.META.get('HTTP_X_API_KEY')
         if not key:
             return None  # Not an API key request — try other auth
+
+        from core.models.integration_api_key import IntegrationAPIKey
+        key_obj = IntegrationAPIKey.objects.filter(
+            key=key, active=True, key_type='LENDER',
+        ).first()
+        if key_obj is not None:
+            if not key_obj.is_ip_allowed(_client_ip(request)):
+                raise AuthenticationFailed('API key not permitted from this IP.')
+            company_ids = set(key_obj.allowed_companies.values_list('id', flat=True))
+            return (LenderUser(api_key=key, lender_name=key_obj.name,
+                               company_ids=company_ids, key_obj=key_obj), key)
+
         lender_name = DEMO_API_KEYS.get(key)
         if not lender_name:
             raise AuthenticationFailed('Invalid API key.')
-        # Return a proper user-like object
+        # Env keys carry no tenant binding, so they see no tenant data.
         return (LenderUser(api_key=key, lender_name=lender_name), key)
 
     def authenticate_header(self, request):
         return 'X-API-Key'
+
+
+def _client_ip(request) -> str:
+    fwd = request.META.get('HTTP_X_FORWARDED_FOR', '')
+    if fwd:
+        return fwd.split(',')[0].strip()
+    return request.META.get('REMOTE_ADDR', '')
 
 
 class LenderBaseView(APIView):
@@ -135,6 +163,23 @@ class LenderBaseView(APIView):
             return request.user.lender
         return 'Unknown Lender'
 
+    def _company_ids(self, request):
+        """Transporters this key is bound to (empty set => sees nothing)."""
+        if isinstance(request.user, LenderUser):
+            return request.user.company_ids
+        return frozenset()
+
+    def _funder_matches(self, request, invoice) -> bool:
+        """A key bound to a funder acts only on that funder's lines. Keys from
+        before the funder model (no funder) keep their company binding only."""
+        key = getattr(request.user, 'key_obj', None)
+        funder_id = getattr(key, 'funder_id', None)
+        if not funder_id:
+            return True
+        from core.models import Facility
+        return Facility.objects.filter(company_id=invoice.company_id, status='ACTIVE',
+                                       funder_id=funder_id).exists()
+
 
 # ---------------------------------------------------------------------------
 # GET /api/v1/lender/health/
@@ -152,9 +197,14 @@ class LenderHealthView(LenderBaseView):
         from core.models.invoice import Invoice
         from core.models.risk_score import RiskScore
 
-        latest_load = Load.objects.order_by('-updated_at').first()
-        latest_invoice = Invoice.objects.order_by('-updated_at').first()
-        latest_risk = RiskScore.objects.order_by('-calculated_at').first()
+        # Platform-wide counts/timestamps would disclose other tenants' volume.
+        ids = self._company_ids(request)
+        loads = Load.objects.filter(company_id__in=ids)
+        invoices = Invoice.objects.filter(company_id__in=ids)
+        risks = RiskScore.objects.filter(company_id__in=ids)
+        latest_load = loads.order_by('-updated_at').first()
+        latest_invoice = invoices.order_by('-updated_at').first()
+        latest_risk = risks.order_by('-calculated_at').first()
 
         return Response({
             'status': 'healthy',
@@ -166,9 +216,9 @@ class LenderHealthView(LenderBaseView):
                 'risk_scores_last_calculated': latest_risk.calculated_at.isoformat() if latest_risk else None,
             },
             'counts': {
-                'total_loads': Load.objects.count(),
-                'total_invoices': Invoice.objects.count(),
-                'risk_scores': RiskScore.objects.count(),
+                'total_loads': loads.count(),
+                'total_invoices': invoices.count(),
+                'risk_scores': risks.count(),
             },
             'timestamp': timezone.now().isoformat(),
         })
@@ -194,12 +244,30 @@ class LenderRiskProfileView(LenderBaseView):
         from core.models.risk_score import RiskScore
         from core.models.advance_request import AdvanceRequest
 
-        company = Company.objects.first()
+        # Was Company.objects.first(): every key got the first tenant's profile
+        # (and platform-wide metrics). Now the caller names a bound company,
+        # or gets its only one.
+        ids = self._company_ids(request)
+        raw_id = request.query_params.get('company_id')
+        if raw_id:
+            try:
+                company_id = int(raw_id)
+            except (TypeError, ValueError):
+                return Response({'error': 'company_id must be an integer'}, status=400)
+            if company_id not in ids:
+                return Response({'error': 'Company not found'}, status=404)
+        elif len(ids) == 1:
+            company_id = next(iter(ids))
+        elif not ids:
+            return Response({'error': 'No company data available'}, status=404)
+        else:
+            return Response({'error': 'company_id required (key is bound to several companies)'}, status=400)
+        company = Company.objects.filter(id=company_id).first()
         if not company:
             return Response({'error': 'No company data available'}, status=404)
 
         # Invoice metrics
-        all_invoices = Invoice.objects.all()
+        all_invoices = Invoice.objects.filter(company=company)
         paid_invoices = all_invoices.filter(status='PAID')
         overdue_invoices = all_invoices.filter(status='OVERDUE')
         total_inv = all_invoices.count()
@@ -219,6 +287,7 @@ class LenderRiskProfileView(LenderBaseView):
         # Revenue (last 90 days)
         ninety_days_ago = timezone.now() - timedelta(days=90)
         recent_loads = Load.objects.filter(
+            company=company,
             status='DELIVERED',
             delivery_date__gte=ninety_days_ago
         )
@@ -232,7 +301,7 @@ class LenderRiskProfileView(LenderBaseView):
             avg_invoice = total_val / total_inv
 
         # Risk scores summary
-        risk_scores = RiskScore.objects.all()
+        risk_scores = RiskScore.objects.filter(company=company)
         avg_score = 0
         if risk_scores.exists():
             avg_score = round(sum(rs.total_score for rs in risk_scores) / risk_scores.count())
@@ -242,8 +311,10 @@ class LenderRiskProfileView(LenderBaseView):
         for rs in risk_scores:
             tier_dist[rs.tier] = tier_dist.get(rs.tier, 0) + 1
 
-        # Active advances
-        advances = AdvanceRequest.objects.filter(status__in=['ACTIVE', 'DISBURSED', 'FUNDED'])
+        # Outstanding = paid out and not yet settled. ACTIVE/FUNDED were never
+        # AdvanceRequest statuses.
+        company_advances = AdvanceRequest.objects.filter(facility__company=company)
+        advances = company_advances.filter(status='DISBURSED')
         outstanding = sum(float(a.amount or 0) for a in advances)
 
         # Payment performance
@@ -279,11 +350,11 @@ class LenderRiskProfileView(LenderBaseView):
                 'outstanding_advances_zar': outstanding,
             },
             'fleet': {
-                'vehicles': Vehicle.objects.count(),
-                'active_vehicles': Vehicle.objects.filter(status__in=['AVAILABLE', 'IN_USE']).count(),
-                'drivers': Driver.objects.count(),
-                'active_drivers': Driver.objects.filter(status='ACTIVE').count(),
-                'active_loads': Load.objects.filter(status='IN_TRANSIT').count(),
+                'vehicles': Vehicle.objects.filter(company=company).count(),
+                'active_vehicles': Vehicle.objects.filter(company=company, status__in=['AVAILABLE', 'IN_USE']).count(),
+                'drivers': Driver.objects.filter(company=company).count(),
+                'active_drivers': Driver.objects.filter(company=company, status='ACTIVE').count(),
+                'active_loads': Load.objects.filter(company=company, status='IN_TRANSIT').count(),
                 'delivered_90d': recent_loads.count(),
             },
             'advance_history': [
@@ -293,7 +364,7 @@ class LenderRiskProfileView(LenderBaseView):
                     'status': a.status,
                     'created': a.created_at.isoformat(),
                 }
-                for a in AdvanceRequest.objects.order_by('-created_at')[:5]
+                for a in company_advances.order_by('-created_at')[:5]
             ],
             'generated_at': timezone.now().isoformat(),
         })
@@ -314,50 +385,65 @@ class LenderEligibleInvoicesView(LenderBaseView):
         from core.models.invoice import Invoice
         from core.models.risk_score import RiskScore
 
-        # Get SENT/DRAFT invoices not already advanced
-        eligible_statuses = ['SENT', 'DRAFT']
+        from core.services.capital_guard import FUNDABLE_INVOICE_STATUSES, load_has_pod_evidence
+        from core.services.facility_ledger import ACTIVE_STATUSES
+
+        # Bound transporters only; collectable, offered (early_pay_eligible),
+        # backed by a load, and not already advanced. The old fallback listed
+        # every SENT/DRAFT invoice when none were early_pay_eligible.
         invoices = Invoice.objects.filter(
-            status__in=eligible_statuses,
+            company_id__in=self._company_ids(request),
+            status__in=FUNDABLE_INVOICE_STATUSES,
             early_pay_eligible=True,
+            load__isnull=False,
+        ).exclude(
+            advance_requests__status__in=ACTIVE_STATUSES,
         ).select_related('customer', 'load')
 
-        if not invoices.exists():
-            # Fallback: get any SENT invoices
-            invoices = Invoice.objects.filter(status__in=eligible_statuses).select_related('customer', 'load')
-
+        # Fast Pay (2026-10): every row comes from core.capital.engine, the
+        # one decision path. The old per-tier fee map and the default score 55
+        # for unscored invoices are gone.
+        from core.capital import engine as fp_engine
         result = []
         for inv in invoices:
-            # Get risk score for this customer
-            risk = RiskScore.objects.filter(customer=inv.customer).order_by('-calculated_at').first()
-            tier = risk.tier if risk else 'FAIR'
-            score = risk.total_score if risk else 55
-
-            fee_map = {
-                'EXCELLENT': 2.0, 'GOOD': 2.5, 'FAIR': 3.0,
-                'ELEVATED': 3.5, 'INELIGIBLE': 0.0,
-            }
-            fee_rate = fee_map.get(tier, 3.0)
+            if not load_has_pod_evidence(inv.load):
+                continue
+            if not self._funder_matches(request, inv):
+                continue
+            try:
+                ev = fp_engine.evaluate(inv)
+            except Exception:
+                continue
+            if not ev.eligible or ev.decision == 'DECLINE':
+                continue
             amount = float(inv.total_amount)
-            net_payout = round(amount * (1 - fee_rate / 100), 2)
-
-            age_days = (date.today() - inv.issue_date).days
-
             result.append({
                 'id': inv.id,
                 'invoice_number': inv.invoice_number,
                 'customer': inv.customer.name,
                 'customer_id': inv.customer.id,
+                'debtor_registration_number': getattr(ev.debtor, 'registration_number', None),
                 'amount_zar': amount,
                 'subtotal_zar': float(inv.subtotal),
                 'vat_zar': float(inv.vat_amount),
                 'issue_date': inv.issue_date.isoformat(),
                 'due_date': inv.due_date.isoformat(),
-                'age_days': age_days,
-                'risk_score': score,
-                'risk_tier': tier,
-                'fee_rate_pct': fee_rate,
-                'fee_amount_zar': round(amount * fee_rate / 100, 2),
-                'net_payout_zar': net_payout,
+                'age_days': (date.today() - inv.issue_date).days,
+                'decision': ev.decision,
+                'invoice_grade': ev.invoice_grade,
+                'risk_tier': ev.invoice_grade,
+                'debtor_grade': getattr(ev.debtor_score, 'grade', None),
+                'transporter_grade': getattr(ev.transporter_score, 'grade', None),
+                'expected_loss_pct': float(ev.el_pct),
+                'advance_rate_pct': float(ev.advance_rate_pct),
+                'fundable_amount_zar': float(ev.fundable_amount),
+                'fee_rate_pct': float(ev.fee_pct),
+                'fee_amount_zar': float(ev.fee_amount),
+                'fee_vat_zar': float(ev.fee_vat_amount),
+                'net_payout_zar': float(ev.net_payout),
+                'expected_payment_date': ev.expected_payment_date.isoformat() if ev.expected_payment_date else None,
+                'verification_tier': ev.verification_tier,
+                'reason_codes': [r['code'] for r in ev.reasons],
                 'load_reference': inv.load.load_number if inv.load else None,
                 'route': f'{inv.load.pickup_city} → {inv.load.delivery_city}' if inv.load else None,
             })
@@ -385,10 +471,11 @@ class LenderAdvanceRequestView(LenderBaseView):
         if err:
             return err
 
+        from decimal import InvalidOperation
         from core.models.invoice import Invoice
-        from core.models.advance_request import AdvanceRequest
         from core.models.facility import Facility
-        from core.models.company import Company
+        from core.services.capital_guard import financing_block_reason
+        from core.services.facility_ledger import open_advance, CapacityError
 
         invoice_id = request.data.get('invoice_id')
         requested_amount = request.data.get('requested_amount')
@@ -397,41 +484,66 @@ class LenderAdvanceRequestView(LenderBaseView):
         if not invoice_id:
             return Response({'error': 'invoice_id required'}, status=400)
 
+        # Only invoices of transporters this key is bound to; anything else is
+        # indistinguishable from a missing invoice.
         try:
-            invoice = Invoice.objects.get(id=invoice_id)
-        except Invoice.DoesNotExist:
+            invoice = Invoice.objects.select_related('load', 'customer').get(
+                id=invoice_id, company_id__in=self._company_ids(request))
+        except (Invoice.DoesNotExist, ValueError, TypeError):
             return Response({'error': f'Invoice {invoice_id} not found'}, status=404)
 
-        if invoice.status not in ['SENT', 'DRAFT']:
-            return Response({'error': f'Invoice status {invoice.status} not eligible for advance'}, status=400)
+        block = financing_block_reason(invoice)
+        if block:
+            return Response({'error': block}, status=400)
+        if not invoice.early_pay_eligible:
+            return Response({'error': 'Invoice has not been offered for early payment'}, status=400)
 
-        # Check facility — the INVOICE's company facility (tenant isolation,
-        # 2026-09). This used Company.objects.first(), so any tenant's invoice
-        # was checked against (and disclosed) the first tenant's facility.
+        balance = Decimal(str(invoice.balance if invoice.balance is not None else invoice.total_amount))
+        if requested_amount in (None, ''):
+            amount = balance
+        else:
+            try:
+                amount = Decimal(str(requested_amount)).quantize(Decimal('0.01'))
+            except (InvalidOperation, ValueError, TypeError):
+                return Response({'error': 'requested_amount must be a number'}, status=400)
+        if amount <= 0:
+            return Response({'error': 'requested_amount must be greater than zero'}, status=400)
+        if amount > balance:
+            return Response({'error': f'requested_amount exceeds the invoice balance (R{balance})'}, status=400)
+
+        if not self._funder_matches(request, invoice):
+            return Response({'error': f'Invoice {invoice_id} not found'}, status=404)
         facility = Facility.objects.filter(
             company_id=invoice.company_id, status='ACTIVE'
         ).first() if invoice.company_id else None
         if not facility:
             return Response({'error': 'No active facility found'}, status=400)
 
-        amount = Decimal(str(requested_amount or invoice.total_amount))
-        if amount > facility.available:
+        # Fast Pay (2026-10): the same decision path as an in-app request:
+        # evaluate under the funder lock, record the decision, open the advance.
+        from core.capital import engine as fp_engine
+        if not fp_engine.can_request(invoice.company):
+            return Response({'code': 'not_launched', 'error': 'Fast Pay is not live yet.'}, status=403)
+        try:
+            advance, assessment, ev, created = fp_engine.request(
+                invoice, actor=request.user, actor_label=f'funder API: {lender_name}', purpose='LENDER',
+                requested_amount=amount)
+        except CapacityError as exc:
+            return Response({'error': f'Requested amount exceeds available capacity: {exc}'}, status=400)
+        if advance is None:
             return Response({
-                'error': f'Requested amount R{amount} exceeds available facility R{facility.available}'
+                'error': 'Invoice is not fundable',
+                'decision': ev.decision,
+                'reason_codes': [r['code'] for r in ev.reasons],
+                'reasons': [r['text'] for r in ev.reasons if r['direction'] in ('!', '-')],
+                'assessment_id': assessment.pk,
             }, status=400)
-
-        # Create advance
-        # 'PENDING' is not an AdvanceRequest status — full_clean() rejected it,
-        # so this path always 500'd. REQUESTED is the status the operator-side
-        # create flow uses for a new, not-yet-scored request.
-        advance = AdvanceRequest.objects.create(
-            invoice=invoice,
-            facility=facility,
-            amount=amount,
-            status='REQUESTED',
-            requested_at=timezone.now(),
-            notes=f'Submitted by lender: {lender_name}',
-        )
+        if not created:
+            return Response({
+                'error': 'Invoice already has an active advance',
+                'advance_id': advance.id,
+                'reference': f'ADV-{advance.id:06d}',
+            }, status=409)
 
         return Response({
             'advance_id': advance.id,
@@ -439,11 +551,19 @@ class LenderAdvanceRequestView(LenderBaseView):
             'invoice_number': invoice.invoice_number,
             'customer': invoice.customer.name,
             'requested_amount_zar': float(amount),
+            'decision': ev.decision,
+            'advance_amount_zar': float(advance.amount),
+            'fee_rate_pct': float(ev.fee_pct),
+            'fee_amount_zar': float(ev.fee_amount),
+            'net_payout_zar': float(ev.net_payout),
+            'queued_amount_zar': float(ev.queued_amount),
+            'assessment_id': assessment.pk,
             'status': advance.status,
             'lender': lender_name,
             'submitted_at': timezone.now().isoformat(),
-            'expected_disbursement': (date.today() + timedelta(hours=4)).isoformat(),
-            'message': 'Advance request received. Funds disbursed within 4 business hours upon approval.',
+            'message': ('Decision recorded. The advance needs the funder\'s approval (Mode A) before it is '
+                        'paid out.' if advance.status in ('REQUESTED', 'SCORING') else
+                        'Decision recorded. The request is queued until capacity frees.'),
         }, status=201)
 
 
@@ -461,15 +581,22 @@ class LenderPortfolioView(LenderBaseView):
 
         from core.models.advance_request import AdvanceRequest
 
-        advances = AdvanceRequest.objects.select_related('invoice__customer', 'facility').order_by('-created_at')
+        from core.services.facility_ledger import ACTIVE_STATUSES
 
-        active = advances.filter(status__in=['ACTIVE', 'DISBURSED', 'FUNDED', 'PENDING'])
-        completed = advances.filter(status='REPAID')
+        advances = AdvanceRequest.objects.filter(
+            facility__company_id__in=self._company_ids(request),
+        ).select_related('invoice__customer', 'facility').order_by('-created_at')
+
+        # ACTIVE/FUNDED/PENDING/REPAID were never AdvanceRequest statuses, so
+        # the book always showed (almost) nothing outstanding.
+        active = advances.filter(status__in=ACTIVE_STATUSES)
+        disbursed = advances.filter(status='DISBURSED')
+        completed = advances.filter(status='SETTLED')
 
         return Response({
             'summary': {
                 'active_advances': active.count(),
-                'total_outstanding_zar': round(sum(float(a.amount or 0) for a in active), 2),
+                'total_outstanding_zar': round(sum(float(a.amount or 0) for a in disbursed), 2),
                 'completed_advances': completed.count(),
                 'total_repaid_zar': round(sum(float(a.amount or 0) for a in completed), 2),
             },

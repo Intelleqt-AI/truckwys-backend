@@ -1,0 +1,48 @@
+{
+  "Id": "e3f5b7d9-1a2c-4e6f-8b0d-2c4e6a8b0d1f",
+  "Status": "OK",
+  "ProviderName": "TruckWys",
+  "DateTimeUTC": "/Date(1753002903517+0000)/",
+  "pagination": {
+    "page": 1,
+    "pageSize": 100,
+    "pageCount": 1,
+    "itemCount": 2
+  },
+  "Contacts": [
+    {
+      "ContactID": "9b9ba9e5-e907-4b4e-8210-54d82b0aa479",
+      "ContactNumber": "TW-C-17",
+      "ContactStatus": "ACTIVE",
+      "Name": "Acme Mining (Pty) Ltd",
+      "EmailAddress": "ar@acme-mining.co.za",
+      "TaxNumber": "4123456789",
+      "CompanyNumber": "2011/004455/07",
+      "Addresses": [],
+      "Phones": [],
+      "UpdatedDateUTC": "/Date(1751360531040+0000)/",
+      "ContactGroups": [],
+      "IsSupplier": false,
+      "IsCustomer": true,
+      "DefaultCurrency": "ZAR",
+      "ContactPersons": [],
+      "HasAttachments": false,
+      "HasValidationErrors": false
+    },
+    {
+      "ContactID": "565acaa9-e7f3-4fbf-80c3-16b081ddae10",
+      "ContactStatus": "ARCHIVED",
+      "Name": "Acme Mining (old)",
+      "EmailAddress": "ar@acme-mining.co.za",
+      "Addresses": [],
+      "Phones": [],
+      "UpdatedDateUTC": "/Date(1706788800000+0000)/",
+      "ContactGroups": [],
+      "IsSupplier": false,
+      "IsCustomer": true,
+      "ContactPersons": [],
+      "HasAttachments": false,
+      "HasValidationErrors": false
+    }
+  ]
+}

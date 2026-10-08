@@ -147,17 +147,17 @@ class FiasaParserTests(TestCase):
 
 
 class HistoricalDateTests(TestCase):
-    """F3: a historical target_date must never be stamped with today's price."""
+    """A historical month gets FIASA's column for that month, stored under its
+    effective date, or nothing — never today's price, never a fallback figure."""
 
     def setUp(self):
         cache.clear()
 
-    def test_month_not_on_the_page_does_not_get_todays_price(self):
-        # Review demo D2 stored 29.1111 FIASA under 2024-03-01.
+    def test_month_not_on_the_page_stores_nothing(self):
         with serve(), at(_sast(2026, 9, 28, 10)):
             fp = fps.fetch_fuel_prices(target_date=date(2024, 3, 1))
-        self.assertEqual(fp.source, 'FALLBACK')
-        self.assertEqual(fp.diesel_inland, Decimal('22.1000'))
+        self.assertIsNone(fp)
+        self.assertFalse(FuelPrice.objects.exists())
 
     def test_month_on_the_page_gets_that_months_column(self):
         with serve(), at(_sast(2026, 9, 28, 10)):
@@ -165,16 +165,14 @@ class HistoricalDateTests(TestCase):
         self.assertEqual(fp.source, 'FIASA')
         self.assertEqual(fp.diesel_inland, JUN_50PPM_GAUTENG)
         self.assertEqual(fp.effective_from, _sast(2026, 6, 3, 0, 1))
+        self.assertEqual(fp.date, date(2026, 6, 3))           # keyed by its effective date
 
     def test_current_price_scrapers_are_not_used_for_a_past_month(self):
-        live_today = {'diesel_inland': Decimal('29.00'), 'diesel_coastal': Decimal('28.00'),
-                      'petrol_95': Decimal('26.00'), 'petrol_93': Decimal('25.00'),
-                      'source': 'SAPIA'}
+        live_today = {'diesel_inland': Decimal('29.00'), 'diesel_coastal': Decimal('28.00'), 'source': 'SAPIA'}
         with offline(), at(_sast(2026, 9, 28, 10)), \
                 patch('core.services.fuel_price._fetch_from_sapia', return_value=live_today):
-            fp = fps.fetch_fuel_prices(target_date=date(2024, 3, 1))
-        self.assertEqual(fp.source, 'FALLBACK')
-        self.assertEqual(fp.diesel_inland, Decimal('22.1000'))
+            self.assertIsNone(fps.fetch_fuel_prices(target_date=date(2024, 3, 1)))
+        self.assertFalse(FuelPrice.objects.exists())
 
     def test_current_month_before_first_wednesday_gets_price_in_force(self):
         # 1-6 Oct: September's price is still in force; it must say so.
@@ -185,61 +183,46 @@ class HistoricalDateTests(TestCase):
 
 
 class NeverDowngradeTests(TestCase):
-    """F2: a failed or lower-trust fetch must never overwrite a good row."""
+    """A failed refresh never overwrites a good row; a successful one only
+    ever writes FIASA's own row for its effective date."""
 
     def setUp(self):
         cache.clear()
-        self.month = date(2026, 9, 1)
 
     def _good_row(self):
         with serve(), at(_sast(2026, 9, 27, 6)):
-            return fps.fetch_fuel_prices(target_date=self.month, force_update=True)
+            return fps.refresh_official(force=True)
 
     def test_failed_forced_refresh_keeps_good_row_and_flags_failure(self):
         good = self._good_row()
         good_fetched_at = good.fetched_at
-        # Review demo D3: FIASA times out on the next nightly forced refresh.
         with offline(), at(_sast(2026, 9, 28, 6)):
-            fp = fps.fetch_fuel_prices(target_date=self.month, force_update=True)
-        row = FuelPrice.objects.get(date=self.month)
-        self.assertEqual(row.source, 'FIASA')
-        self.assertEqual(row.diesel_inland, SEP_50PPM_GAUTENG)
+            fp = fps.refresh_official(force=True)
+        row = FuelPrice.objects.get(pk=good.pk)
+        self.assertEqual((row.source, row.diesel_inland), ('FIASA', SEP_50PPM_GAUTENG))
         self.assertEqual(row.fetched_at, good_fetched_at)  # last *successful* check
         self.assertEqual(row.fetch_failed_at, _sast(2026, 9, 28, 6))
         self.assertEqual(fp.pk, row.pk)
 
-    def test_lower_trust_live_source_does_not_replace_fiasa(self):
-        self._good_row()
-        regex_guess = {'diesel_inland': Decimal('22.50'), 'diesel_coastal': Decimal('21.63'),
-                       'petrol_95': Decimal('23.80'), 'petrol_93': Decimal('23.05'),
-                       'source': 'AA_SA'}
+    def test_regex_scrapers_are_never_used_for_the_official_price(self):
+        good = self._good_row()
+        regex_guess = {'diesel_inland': Decimal('22.50'), 'diesel_coastal': Decimal('21.63'), 'source': 'AA_SA'}
         with offline(), at(_sast(2026, 9, 28, 6)), \
                 patch('core.services.fuel_price._fetch_from_aa_sa', return_value=regex_guess):
-            fps.fetch_fuel_prices(target_date=self.month, force_update=True)
-        row = FuelPrice.objects.get(date=self.month)
-        self.assertEqual(row.source, 'FIASA')
-        self.assertEqual(row.diesel_inland, SEP_50PPM_GAUTENG)
-        self.assertIsNotNone(row.fetch_failed_at)
+            fps.refresh_official(force=True)
+        self.assertEqual(list(FuelPrice.objects.values_list('source', flat=True)), ['FIASA'])
+        good.refresh_from_db()
+        self.assertIsNotNone(good.fetch_failed_at)
 
     def test_successful_refresh_clears_the_failure_flag(self):
-        self._good_row()
+        good = self._good_row()
         with offline(), at(_sast(2026, 9, 28, 6)):
-            fps.fetch_fuel_prices(target_date=self.month, force_update=True)
+            fps.refresh_official(force=True)
         with serve(), at(_sast(2026, 9, 29, 6)):
-            fps.fetch_fuel_prices(target_date=self.month, force_update=True)
-        row = FuelPrice.objects.get(date=self.month)
-        self.assertIsNone(row.fetch_failed_at)
-        self.assertEqual(row.fetched_at, _sast(2026, 9, 29, 6))
-
-    def test_fallback_row_is_still_replaced_by_live_data(self):
-        # Unchanged behaviour guard: a fallback placeholder is upgraded.
-        with offline(), at(_sast(2026, 9, 28, 6)):
-            fb = fps.fetch_fuel_prices(target_date=self.month, force_update=True)
-        self.assertTrue(fb.source.startswith('FALLBACK'))
-        with serve(), at(_sast(2026, 9, 28, 7)):
-            fp = fps.fetch_fuel_prices(target_date=self.month, force_update=True)
-        self.assertEqual(fp.source, 'FIASA')
-        self.assertEqual(fp.diesel_inland, SEP_50PPM_GAUTENG)
+            fps.refresh_official(force=True)
+        good.refresh_from_db()
+        self.assertIsNone(good.fetch_failed_at)
+        self.assertEqual(good.fetched_at, _sast(2026, 9, 29, 6))
 
 
 class ManualOverrideTests(TestCase):
@@ -249,15 +232,16 @@ class ManualOverrideTests(TestCase):
         cache.clear()
         self.month = date.today().replace(day=1)
 
-    def test_forced_refresh_does_not_overwrite_manual_row(self):
-        # Review demo D3b.
-        FuelPrice.objects.create(date=self.month, diesel_inland=Decimal('29.9000'),
-                                 diesel_coastal=Decimal('29.0000'), source='MANUAL')
-        with serve() as get:
-            fp = fps.fetch_fuel_prices(target_date=self.month, force_update=True)
-        self.assertEqual(fp.source, 'MANUAL')
-        self.assertEqual(fp.diesel_inland, Decimal('29.9000'))
-        get.assert_not_called()  # no scrape at all for a confirmed row
+    def test_fiasa_never_overwrites_a_manual_row_and_a_newer_fiasa_supersedes_it(self):
+        manual = FuelPrice.objects.create(date=date(2026, 9, 2), diesel_inland=Decimal('29.9000'),
+                                          diesel_coastal=Decimal('29.0000'), source='MANUAL',
+                                          effective_from=_sast(2026, 9, 1, 8))
+        with serve(), at(_sast(2026, 9, 28, 10)):
+            fp = fps.refresh_official(force=True)
+        manual.refresh_from_db()
+        self.assertEqual((manual.source, manual.diesel_inland), ('MANUAL', Decimal('29.9000')))   # untouched
+        self.assertEqual(FuelPrice.objects.filter(date=date(2026, 9, 2)).count(), 2)              # its own row
+        self.assertEqual((fp.source, fp.diesel_inland), ('FIASA', SEP_50PPM_GAUTENG))           # newer wins
 
     def test_staff_post_replaces_price_and_stamps_fetched_at(self):
         staff = get_user_model().objects.create_user(
@@ -271,7 +255,11 @@ class ManualOverrideTests(TestCase):
             r = client.post('/api/v1/fuel-prices/current/',
                             {'diesel_inland': '30.10', 'diesel_coastal': '29.20'}, format='json')
         self.assertEqual(r.status_code, 200, r.content)
-        row = FuelPrice.objects.get(date=self.month)
+        # Keyed by the SAST day it was entered; the FIASA row stays on record.
+        from django.utils import timezone as dj_tz
+        row = FuelPrice.objects.get(date=dj_tz.localdate())
+        self.assertTrue(FuelPrice.objects.filter(date=self.month, source='FIASA').exists()
+                        or dj_tz.localdate() == self.month)
         self.assertEqual(row.source, 'MANUAL')
         self.assertEqual(row.diesel_inland, Decimal('30.1000'))
         self.assertGreater(row.fetched_at, _sast(2026, 1, 2))
@@ -372,17 +360,3 @@ class CurrentEndpointTests(TestCase):
         self.assertTrue(body['is_stale'])
         self.assertTrue(body['stale_warning'])
         self.assertEqual(body['last_failed_check_at'], _sast(2026, 9, 28, 6).isoformat())
-
-
-class LegacyDailyScraperTests(TestCase):
-    """F13: the regex daily scraper wrote competing rows dated *today*."""
-
-    @override_settings(FUEL_PRICE_DAILY_SCRAPER_ENABLED=False)
-    def test_daily_command_is_disabled_by_default(self):
-        FuelPrice.objects.create(date=date(2026, 9, 1), diesel_inland=SEP_50PPM_GAUTENG,
-                                 diesel_coastal=SEP_50PPM_COASTAL, source='FIASA')
-        page = '<html>Call 011 22.50 ... Est. 19.95 ... 2026.09 ... 24.99</html>'
-        with patch('core.services.fuel_price_live.requests.get', return_value=_resp(page)), \
-                patch('time.sleep'):
-            call_command('fetch_fuel_price_daily', stdout=MagicMock())
-        self.assertEqual(list(FuelPrice.objects.values_list('date', flat=True)), [date(2026, 9, 1)])

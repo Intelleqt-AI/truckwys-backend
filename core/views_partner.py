@@ -155,8 +155,14 @@ class PartnerAdvanceViewSet(viewsets.ReadOnlyModelViewSet):
         serializer = ApproveAdvanceSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
+        # Fast Pay (2026-10): the same gate as the capital desk (Mode A, funder
+        # scoping); the approver is recorded so they cannot also pay out.
+        from core.capital.access import check_advance_action
+        from core.services import facility_ledger
+        check_advance_action(request.user, advance, 'approve')
         try:
-            advance.approve()
+            facility_ledger.approve_advance(advance, actor=request.user,
+                                            actor_label=getattr(request.user, 'username', 'partner'))
             if serializer.validated_data.get('notes'):
                 advance.notes = serializer.validated_data['notes']
                 advance.save()
@@ -178,9 +184,14 @@ class PartnerAdvanceViewSet(viewsets.ReadOnlyModelViewSet):
         serializer = RejectAdvanceSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
+        from core.capital.access import check_advance_action
+        from core.capital.queue import capacity_freed
+        from core.services import facility_ledger
+        check_advance_action(request.user, advance, 'decline')
         try:
             reason = serializer.validated_data['reason']
-            advance.deny(reason)
+            facility_ledger.deny_advance(advance, reason, actor=request.user)
+            capacity_freed(advance.funder or advance.facility.funder)
 
             if serializer.validated_data.get('notes'):
                 advance.notes = serializer.validated_data['notes']
@@ -203,8 +214,12 @@ class PartnerAdvanceViewSet(viewsets.ReadOnlyModelViewSet):
         serializer = DisburseAdvanceSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
+        from core.capital.access import check_advance_action
+        from core.services import facility_ledger
+        check_advance_action(request.user, advance, 'disburse')
         try:
-            advance.disburse()
+            facility_ledger.disburse_advance(advance, actor=request.user,
+                                             reference=serializer.validated_data.get('notes', '') or '')
 
             if serializer.validated_data.get('notes'):
                 advance.notes = serializer.validated_data['notes']

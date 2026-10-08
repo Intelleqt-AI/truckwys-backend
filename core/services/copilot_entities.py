@@ -155,7 +155,7 @@ def _quote_execute_create(company, user, payload):
     payload = dict(payload)
     new_customer = payload.pop('_new_customer', None)
     if new_customer:
-        customer, _created = _resolve_customer(company, new_customer)
+        customer, _created = _resolve_customer(company, new_customer, user)
         payload['customer'] = customer.id
     if not payload.get('quote_number'):
         payload['quote_number'] = _gen_quote_number()
@@ -163,15 +163,10 @@ def _quote_execute_create(company, user, payload):
     serializer = QuoteSerializer(data=payload, context={'company': company})
     if not serializer.is_valid():
         raise ToolError(_serializer_errors(serializer))
+    # QuoteSerializer.create writes the pricing snapshot (QUOTE-RULES.md §9:
+    # fuel price used / source / zone / litres / floor, and
+    # fuel_price_at_creation) exactly as the quote builder's save does.
     quote = serializer.save(company=company, created_by=user)
-
-    # Snapshot the fuel price like QuoteViewSet.perform_create does.
-    try:
-        from core.services.fuel_price import current_fuel_price
-        quote.fuel_price_at_creation = Decimal(str(current_fuel_price()))
-        quote.save(update_fields=['fuel_price_at_creation'])
-    except Exception:
-        pass
     return quote
 
 
@@ -205,8 +200,11 @@ def _payment_execute_create(company, user, payload):
 
 
 def _payment_execute_delete(company, user, instance):
-    from core.services.payments import reverse_payment
-    reverse_payment(company, instance)
+    from core.services.payments import reverse_payment, PaymentError
+    try:
+        reverse_payment(company, instance, user)
+    except PaymentError as e:
+        raise ToolError(str(e))
 
 
 def _vehicle_pre_validate(company, user, payload):
@@ -218,23 +216,29 @@ def _vehicle_pre_validate(company, user, payload):
 
 def _invoice_pre_validate(company, user, payload):
     from decimal import Decimal, InvalidOperation
+    from core.services.invoice_lines import default_tax_code
+    from core.tax_codes import compute_line
     payload = dict(payload)
-    if not payload.get('invoice_number'):
-        payload['invoice_number'] = _unique_number(Invoice, 'invoice_number', 'INV')
-    # total_amount/balance are serializer-required but recomputed by Invoice.save()
-    # (total = subtotal + 15% VAT - discount). Compute the SAME figure here so the
-    # confirmation card shows the real total the user will be charged, not the
-    # pre-VAT subtotal (which is what the old setdefault(subtotal) displayed).
+    # The number is allocated by the server (a provisional DRAFT- number until
+    # the invoice is issued); totals come from the one line the serializer
+    # builds from `subtotal` at the company's default tax code. Compute the
+    # SAME figure here so the confirmation card shows the real total.
     try:
         subtotal = Decimal(str(payload.get('subtotal') or '0'))
         discount = Decimal(str(payload.get('discount') or '0'))
     except (InvalidOperation, ValueError, TypeError):
         subtotal, discount = Decimal('0'), Decimal('0')
-    vat = (subtotal * Decimal('0.15')).quantize(Decimal('0.01'))
-    total = (subtotal + vat - discount).quantize(Decimal('0.01'))
+    code = default_tax_code(company)
+    try:
+        line = compute_line(1, subtotal, code, discount_amount=discount or None)
+        total = line['total']
+    except ValueError:
+        total = subtotal
     payload.setdefault('total_amount', str(total))
     payload.setdefault('balance', str(total))
-    return payload, 'Total shown includes 15% VAT; final VAT/total/balance are confirmed on save.'
+    note = ('Total shown includes 15% VAT (discount taken before VAT)' if code == 'STANDARD'
+            else 'No VAT: the company is not VAT registered')
+    return payload, f'{note}; final totals are confirmed on save.'
 
 
 def _load_pre_validate(company, user, payload):
@@ -431,11 +435,10 @@ ENTITY_REGISTRY = {
         'required': [
             ('customer', "Which customer is being invoiced?"),
             ('subtotal', "What is the subtotal (ZAR, excl. VAT)?"),
-            ('due_date', "When is payment due? (YYYY-MM-DD)"),
         ],
         'fk': {'customer': ('customers', 'name')},
         # Money-integrity fields the AI must never set directly: totals/VAT are
-        # recomputed by Invoice.save(); paid_amount/balance and status only move
+        # computed from the invoice lines; paid_amount/balance and status only move
         # through the locked payment flow (record_payment) and lifecycle events.
         # Letting the LLM write them would fabricate cash outside any audit trail.
         'protected_fields': ['paid_amount', 'balance', 'total_amount',
@@ -452,7 +455,10 @@ ENTITY_REGISTRY = {
         # aggregating 'subtotal' when asked for "total balance" or even literally
         # "total_amount", silently undercounting by the VAT portion.
         'field_notes': {
-            'subtotal': 'pre-VAT amount — NOT what "total"/"balance"/"total_amount" means',
+            'subtotal': 'pre-VAT amount — NOT what "total"/"balance"/"total_amount" means. '
+                        'For "revenue"/"sales"/"turnover" do NOT sum invoice fields: use the '
+                        'company snapshot revenue figures (EXCLUDING VAT, net of credit notes, '
+                        'drafts and void invoices excluded)',
             'total_amount': 'full invoiced amount INCLUDING VAT — use for "total_amount"/"invoice total"',
             'balance': 'amount STILL OWED — use for "balance"/"outstanding"/"amount owed"',
             'paid_amount': 'amount already paid on this invoice',

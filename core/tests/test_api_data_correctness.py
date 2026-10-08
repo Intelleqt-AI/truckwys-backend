@@ -7,7 +7,7 @@ before the fix:
 - FinanceFilterTests       invoices/payments/expenses filters applied; bad values 400
 - FleetOverviewHonestyTests no invented fallback numbers on fleet/overview
 - SignalsHonestyTests      no invented fee/timing/revenue-loss copy in signals
-- BriefingExpenseTests     briefing spend counts APPROVED expenses only (audit #43)
+- BriefingExpenseTests     briefing spend never counts REJECTED expenses (audit #43; foundation: pending counts, net of VAT)
 - IntelligenceErrorTests   recommendations/cashflow failures are not 200 + zeros (#44, #45)
 - SchemaTests              /api/schema/ builds (C2)
 - ThrottlePolicyTests      normal read navigation is not throttled at 60/min (H3)
@@ -285,7 +285,9 @@ class SignalsHonestyTests(_Base):
         cust = _customer(cls.co, 'DC Signals')
         Invoice.objects.create(
             company=cls.co, customer=cust, invoice_number='INV-DC-S1',
-            due_date=date.today() + timedelta(days=30), subtotal=Decimal('1000.00'), status='SENT',
+            # VAT is stated, never invented by Invoice.save() (foundation).
+            due_date=date.today() + timedelta(days=30), subtotal=Decimal('1000.00'),
+            vat_amount=Decimal('150.00'), status='SENT',
         )
 
     def _bodies(self):
@@ -319,7 +321,12 @@ class SignalsHonestyTests(_Base):
 
 
 class BriefingExpenseTests(_Base):
-    def test_only_approved_expenses_count_as_spend(self):
+    def test_rejected_expenses_never_count_as_spend(self):
+        # Foundation (2026-10): the briefing uses the ONE expense definition,
+        # accounting_reports.expenses — every expense except REJECTED, net of
+        # VAT — so it agrees with the P&L and the dashboards. Rejected claims
+        # still never count; pending ones now do (they are incurred costs
+        # awaiting sign-off). See docs/foundation/REPORTS.md.
         from core.services.llm_insights import build_company_metrics
         today = date.today()
         Expense.objects.bulk_create([
@@ -328,7 +335,7 @@ class BriefingExpenseTests(_Base):
             _expense(self.co, 'r', status='REJECTED', amount='13.00', expense_date=today),
         ])
         m = build_company_metrics(self.co, today.replace(day=1), today)
-        self.assertEqual(m['expenses_period'], 100.0)
+        self.assertEqual(m['expenses_period'], 140.0)  # approved 100 + pending 40, never rejected 13
 
 
 class IntelligenceErrorTests(_Base):

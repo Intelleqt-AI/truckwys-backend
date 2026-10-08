@@ -72,13 +72,18 @@ def send_login_otp_email_task(email: str, code: str, first_name: str) -> bool:
         logger.error('send_login_otp_email failed for %s: %s', email, exc)
         return False
 
-# South African diesel price (ZAR/litre). Override via settings.FUEL_PRICE_ZAR.
-_DEFAULT_FUEL_PRICE = Decimal('22.50')
-
-
-def _fuel_price() -> Decimal:
-    from django.conf import settings
-    return Decimal(str(getattr(settings, 'FUEL_PRICE_ZAR', _DEFAULT_FUEL_PRICE)))
+def _fuel_price(company=None):
+    """The company's diesel R/L in use (own or official zone price), else the
+    official inland price in force; None when unknown — never a hard-coded
+    figure (QUOTE-RULES §1). Callers then leave the fuel-based figures as they
+    were."""
+    from core.services.fuel_price import company_diesel_price, price_in_force
+    if company is not None:
+        p = company_diesel_price(company)
+        if p is not None:
+            return p
+    rec = price_in_force('INLAND')
+    return Decimal(str(rec['price'])) if rec else None
 
 
 # ---------------------------------------------------------------------------
@@ -243,7 +248,9 @@ def _economics(vehicle, loads) -> tuple:
 
     completed = [l for l in loads if l.status in ('DELIVERED', 'INVOICED')]
     fuel_per_km = vehicle.fuel_consumption_per_km or Decimal('0.35')
-    fp = _fuel_price()
+    fp = _fuel_price(getattr(vehicle, 'company', None))
+    if fp is None:
+        return None, None       # diesel price unknown: fuel-based economics not worked out
 
     # Total km from completed loads
     total_km = sum(Decimal(str(l.distance or 0)) for l in completed)
@@ -308,21 +315,15 @@ def compute_vehicle_scores(vehicle_id: int):
             age          * 0.15
         )
 
-        Vehicle.objects.filter(pk=vehicle_id).update(
-            maintenance_score=maint,
-            uptime_score=uptime_score,
-            uptime_percentage=uptime_pct,
-            fuel_efficiency_score=fuel,
-            cost_per_km=cost_per_km,
-            margin_per_trip=margin_per_trip,
-            ai_health_score=ai_health,
-        )
+        updates = dict(maintenance_score=maint, uptime_score=uptime_score, uptime_percentage=uptime_pct,
+                       fuel_efficiency_score=fuel, ai_health_score=ai_health)
+        if cost_per_km is not None:
+            updates.update(cost_per_km=cost_per_km, margin_per_trip=margin_per_trip)
+        Vehicle.objects.filter(pk=vehicle_id).update(**updates)
 
         logger.info(
-            'Vehicle %s scored: health=%d maint=%d uptime=%d(%s%%) '
-            'fuel=%d age=%d cost/km=%.2f margin/trip=%.2f',
-            vehicle.plate, ai_health, maint, uptime_score, uptime_pct,
-            fuel, age, cost_per_km, margin_per_trip,
+            'Vehicle %s scored: health=%d maint=%d uptime=%d(%s%%) fuel=%d age=%d cost/km=%s margin/trip=%s',
+            vehicle.plate, ai_health, maint, uptime_score, uptime_pct, fuel, age, cost_per_km, margin_per_trip,
         )
 
     except Exception as exc:
@@ -377,10 +378,12 @@ def _driver_fuel_efficiency(loads) -> int:
 
 def _driver_margin_per_trip(loads):
     from decimal import Decimal
-    fp = _fuel_price()
     completed = [l for l in loads if l.status in ('DELIVERED', 'INVOICED')]
     if not completed:
         return Decimal('0')
+    fp = _fuel_price(getattr(completed[0], 'company', None))
+    if fp is None:
+        return None     # diesel price unknown
     margins = []
     for load in completed:
         revenue = Decimal(str(load.total_amount or 0))
@@ -432,7 +435,7 @@ def compute_driver_scores(driver_id: int):
             trips_this_month=trips_this_month,
             revenue_generated=round(total_revenue, 2),
             avg_revenue_per_trip=avg_rev,
-            margin_per_trip=margin,
+            **({'margin_per_trip': margin} if margin is not None else {}),
         )
 
         logger.info(
@@ -477,7 +480,20 @@ def refresh_fuel_price(self):
 
     try:
         from core.services.fuel_price import fetch_fuel_prices
+        from datetime import datetime as _dt
+        from core.services.fuel_price import period_start
         fp = fetch_fuel_prices(force_update=True)
+        if fp is None:
+            logger.warning('refresh_fuel_price: no official price on record and the refresh failed — '
+                           'will retry (attempt %d/3)', self.request.retries + 1)
+            raise self.retry()
+        eff = getattr(fp, 'effective_from', None)
+        if isinstance(eff, _dt) and eff < period_start():
+            # FIASA still shows last period's column (e.g. early on the
+            # change Wednesday): not a success, try again later.
+            logger.warning('refresh_fuel_price: official price in force is from %s, before this period — '
+                           'will retry (attempt %d/3)', eff, self.request.retries + 1)
+            raise self.retry()
         if fp.source in ('FALLBACK', 'FALLBACK_LATEST') or getattr(fp, 'fetch_failed_at', None):
             logger.warning(
                 'refresh_fuel_price: live refresh failed (stored source=%s, kept=%s) — '
@@ -508,10 +524,10 @@ def refresh_fuel_price(self):
 @track_task_run('retrain_win_model')
 def retrain_win_model():
     """Nightly retrain of the quote win-probability model from captured
-    QuoteOutcome data. Idempotent: no-ops with a clear reason until enough
-    outcomes exist (WIN_MODEL_GLOBAL_MIN_SAMPLES) and both outcome classes are
-    present — an all-accepted dataset cannot train a classifier."""
-    from core.services.quote_training import retrain_win_model as _retrain
+    QuoteOutcome data. Idempotent: no-ops with a clear reason until both
+    WIN_MODEL_MIN_ACCEPTED accepted AND WIN_MODEL_MIN_REJECTED rejected
+    outcomes exist — an all-accepted dataset cannot train a classifier."""
+    from core.services.quote_training import retrain_company_win_models, retrain_win_model as _retrain
     result = _retrain()
     if result.get('trained'):
         logger.info(
@@ -520,6 +536,15 @@ def retrain_win_model():
         )
     else:
         logger.info('Win model not retrained: %s', result.get('reason'))
+    # Per-company tier (pricing analysis checks it before the user and global
+    # tiers). Same nightly run, so no new Beat entry; additive result key.
+    try:
+        companies = retrain_company_win_models()
+        logger.info('Company win models: %s considered, %s trained, %s skipped',
+                    companies['considered'], companies['trained'], companies['skipped'])
+        result['companies'] = {k: v for k, v in companies.items() if k != 'results'}
+    except Exception as exc:  # never fail the global retrain over the company sweep
+        logger.warning('Company win-model sweep failed: %s', exc)
     return result
 
 
@@ -587,20 +612,22 @@ def sweep_user_win_model_training():
     grew meaningfully since their last MLModelVersion, or who qualifies but
     has no model yet — not a blind nightly refit of every user.
     """
-    from django.conf import settings
     from django.db.models import Count
-    from core.models import MLModelVersion, QuoteOutcome
+    from core.models import MLModelVersion
     from core.services.ml_training_queue import schedule_user_retrain
+    from core.services.quote_training import _min_class_counts, closed_outcomes
 
-    min_samples = int(getattr(settings, 'WIN_MODEL_USER_MIN_SAMPLES', 40))
+    min_accepted, min_rejected = _min_class_counts('user')
     counts = (
-        QuoteOutcome.objects.filter(outcome__in=['accepted', 'rejected'], created_by__isnull=False)
+        closed_outcomes().filter(created_by__isnull=False)
         .values('created_by_id').annotate(n=Count('id'))
     )
     scheduled = 0
     for row in counts:
         user_id, n = row['created_by_id'], row['n']
-        if n < min_samples:
+        # Cheap combined-total skip; the real accepted/rejected gate is
+        # enforced inside retrain_win_model_for_scope (via schedule_user_retrain).
+        if n < min_accepted + min_rejected:
             continue
         latest = MLModelVersion.objects.filter(scope='user', user_id=user_id).order_by('-created_at').first()
         if latest is None or n >= (latest.training_sample_count or 0) + 5:
@@ -883,3 +910,55 @@ def alert_stale_scheduled_tasks():
             # line above is already on record either way.
             logger.exception('alert_stale_scheduled_tasks: could not email %s', user.pk)
     return {'stale': len(problems), 'notified': sent, 'tasks': [n for n, _ in problems]}
+
+
+# ---------------------------------------------------------------------------
+# Fast Pay (Capital) book automation — job bodies in core.capital.jobs
+# ---------------------------------------------------------------------------
+
+@shared_task(name='core.tasks.capital_process_queue')
+def capital_process_queue(funder_id=None):
+    """Release queued advances / top up part-funded ones. With ``funder_id``
+    (fired by core.capital.queue.capacity_freed after a commit) only that
+    funder runs and no TaskRunLog row is written (it fires often); the beat
+    run (no argument) covers every funder and is tracked."""
+    from core.capital import jobs
+    if funder_id is not None:
+        return jobs.process_queue_for(int(funder_id))
+    return track_task_run('capital_process_queue')(jobs.process_queues)()
+
+
+@shared_task(name='core.tasks.capital_monitor')
+@track_task_run('capital_monitor')
+def capital_monitor():
+    from core.capital import jobs
+    return jobs.monitor()
+
+
+@shared_task(name='core.tasks.capital_nightly_rescore')
+@track_task_run('capital_nightly_rescore')
+def capital_nightly_rescore():
+    from core.capital import jobs
+    return jobs.nightly_rescore()
+
+
+@shared_task(name='core.tasks.capital_reconcile')
+@track_task_run('capital_reconcile')
+def capital_reconcile():
+    from core.capital import jobs
+    return jobs.reconcile_all()
+
+
+@shared_task(name='core.tasks.capital_monthly_data_room')
+@track_task_run('capital_monthly_data_room')
+def capital_monthly_data_room(period=None):
+    from core.capital import jobs
+    return jobs.monthly_data_room(period)
+
+
+# Accounting integrations (Xero, QuickBooks Online): registered here so
+# autodiscovery and the beat schedule find them.
+from core.accounting.tasks import (  # noqa: E402,F401
+    poll_all_payments, poll_connection, process_webhooks, push_link, reconcile_all,
+    reconcile_connection, retry_due, run_backfill,
+)

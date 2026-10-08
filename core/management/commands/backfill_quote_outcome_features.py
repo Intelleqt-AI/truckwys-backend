@@ -77,6 +77,9 @@ class Command(BaseCommand):
                 rate, source = resolve_market_rate(
                     quote.origin, quote.destination, quote.vehicle_type or None,
                     company=quote.company, exclude_quote_id=quote.id,
+                    # The same market reference live scoring and outcome
+                    # capture use: one-way, never-sent quotes left out.
+                    one_way_only=True, sent_only=True,
                 )
             except Exception as exc:
                 self.stderr.write(f'  row {o.id}: market rate failed: {exc}')

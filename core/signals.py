@@ -29,6 +29,14 @@ def quote_pre_save(sender, instance, **kwargs):
             instance._old_status = None
     else:
         instance._old_status = None
+    # QUOTE-RULES §11: the ONE send guard. Every path that moves a saved
+    # quote to SENT passes here before the row is written (and before the
+    # post_save email), so a blocked quote is never sent. Raises
+    # QuoteSendBlocked (a DRF 400 with structured warnings).
+    if instance.pk and instance.status == 'SENT' and instance._old_status not in (None, 'SENT') \
+            and not getattr(instance, '_skip_send_guard', False):
+        from core.services.quote_snapshot import enforce_send_guard
+        instance._send_check = enforce_send_guard(instance)
 
 
 @receiver(pre_save, sender='core.Invoice')
@@ -334,6 +342,25 @@ def invoice_saved(sender, instance, created, **kwargs):
 
 
 @receiver(post_save, sender='core.Quote')
+def quote_pricing_decision_superseded(sender, instance, created, update_fields=None, **kwargs):
+    """Pricing analysis: a quote whose price changed without a new analysis
+    (an older client, the API, the admin) no longer matches its stored
+    pricing decision. Mark that decision superseded so no screen restores or
+    shows its price, margin or chance (core.services.pricing_decisions)."""
+    if created or (update_fields is not None and 'total_amount' not in update_fields):
+        return
+    import logging
+    from django.db import transaction
+    try:
+        # Own savepoint: a failure here can't break the caller's transaction.
+        with transaction.atomic():
+            from core.services.pricing_decisions import supersede_if_price_changed
+            supersede_if_price_changed(instance)
+    except Exception:
+        logging.getLogger(__name__).exception('pricing decision supersede check failed for quote %s', instance.pk)
+
+
+@receiver(post_save, sender='core.Quote')
 def quote_saved(sender, instance, created, **kwargs):
     """Fire webhook when quote is accepted."""
     from core.services.webhook_dispatcher import dispatch_webhook
@@ -400,19 +427,71 @@ def quote_saved(sender, instance, created, **kwargs):
         except Exception:
             pass
 
+    # Pricing analysis (additive): remember whether the quote was ever sent.
+    # SENT (or leaving SENT) -> True; DRAFT straight to a decided status with
+    # nothing known -> False (a never-sent quote is not market evidence).
+    # A queryset update: no signals re-fired, no other field touched.
+    if created and instance.status == 'SENT' and getattr(instance, 'was_sent', None) is not True:
+        # Created straight as SENT: it was sent.
+        if sender.objects.filter(pk=instance.pk).update(was_sent=True):
+            instance.was_sent = True
+    if not created:
+        try:
+            old = getattr(instance, '_old_status', None)
+            flag = None
+            if instance.status == 'SENT' or old == 'SENT':
+                flag = True
+            elif old == 'DRAFT' and instance.status in ('ACCEPTED', 'DECLINED', 'IT', 'COMPLETED') \
+                    and getattr(instance, 'was_sent', None) is None:
+                flag = False
+            if flag is not None and getattr(instance, 'was_sent', None) is not flag:
+                rows = sender.objects.filter(pk=instance.pk)
+                if flag is False:
+                    # Never overwrite a recorded send (checked in the DB, not
+                    # on a possibly stale instance).
+                    rows = rows.filter(was_sent__isnull=True)
+                if rows.update(was_sent=flag):
+                    instance.was_sent = flag
+        except Exception:
+            pass
+
     # SENT transition — the actual customer-facing side effect (share
     # token + email), not just the in-app notification above. Fires on
     # ANY path that lands a quote on SENT — the dedicated send_to_customer
     # action, a plain status PATCH from the detail page's dropdown, or a
     # Kanban drag on the quotes board — so they all behave identically and
     # a quote is never "Sent" in the UI without actually having been sent.
-    if not created and instance.status == 'SENT' and getattr(instance, '_old_status', None) != 'SENT':
+    # Created straight as SENT goes the same way (it was sent): the email is
+    # queued on commit, so a create the send guard rolls back never emails.
+    # Created straight as SENT emails only when the send guard passed on it
+    # (QuoteSerializer.create sets _send_guard_passed after enforce_send_guard,
+    # inside the same transaction). An insert anywhere else (the admin "add",
+    # a seed or test-data script, loaddata) never runs the guard, so it never
+    # emails a customer. Fixture loads (raw) never email.
+    if instance.status == 'SENT' and not kwargs.get('raw') \
+            and (created or getattr(instance, '_old_status', None) != 'SENT'):
         try:
+            from django.db import transaction
             from core.services.quote_share import ensure_quote_token, send_quote_to_customer_email
             ensure_quote_token(instance)
-            email_sent, recipient = send_quote_to_customer_email(instance)
-            instance._share_email_sent = email_sent
-            instance._share_recipient = recipient
+
+            def _send_email():
+                # Only once the save is committed: a save that is rolled back
+                # (e.g. QuoteSerializer's transaction when the pricing decision
+                # fails) must not have emailed the customer a quote that is
+                # still a draft, and the database isn't held open during SMTP.
+                # Outside a transaction this runs at once, so send_to_customer
+                # still reads the result straight after quote.save().
+                if created and not getattr(instance, '_send_guard_passed', False):
+                    return
+                try:
+                    email_sent, recipient = send_quote_to_customer_email(instance)
+                    instance._share_email_sent = email_sent
+                    instance._share_recipient = recipient
+                except Exception:
+                    pass
+
+            transaction.on_commit(_send_email)
         except Exception:
             pass
 
@@ -490,6 +569,7 @@ def customer_saved(sender, instance, created, **kwargs):
         detail = instance.name or f'Customer {instance.id}'
         if getattr(instance, 'email', None):
             detail += f' · {instance.email}'
+        from core.services.notify import acting_user_id
         notify_company(
             company_id,
             'INFO',
@@ -497,6 +577,8 @@ def customer_saved(sender, instance, created, **kwargs):
             detail,
             link=f'/customers/{instance.id}',
             event='customer.created',
+            # Never toast the user who added it (API create, copilot, quote builder).
+            exclude_user_id=getattr(instance, '_notify_actor_id', None) or acting_user_id(),
         )
     except Exception:
         pass

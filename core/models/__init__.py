@@ -4,6 +4,7 @@ from .vehicle import Vehicle, VehicleLog, VehicleType
 from .load import Load
 from .quote import Quote
 from .quote_outcome import QuoteOutcome
+from .quote_pricing_decision import QuotePricingDecision
 from .driver import Driver
 from .customer import Customer
 from .invoice import Invoice
@@ -41,8 +42,23 @@ from .location_search_history import LocationSearchHistory
 from .ml_model_version import MLModelVersion, MLUserRetrainQueue
 from .ai_quote_price_analysis import AIQuotePriceAnalysis
 from .verified_rate import VerifiedRate
+from .invoice_line import InvoiceLine
+from .credit_note import CreditNote, CreditNoteLine
+from .document_sequence import DocumentSequence
+from .supplier import Supplier
+from .debtor_identity import DebtorIdentity
+from .capital import (
+    Funder, FunderMembership, CreditPolicy, CapitalLimit, CapitalApplication, CapitalScore,
+    InvoiceAssessment, ExternalCheck, CapitalLedgerEntry, CapitalAlert, BookSnapshot,
+    DataRoomExport, CapitalAIUsage, ImmutableRowError,
+)
+from .accounting import (AccountingConnection, ExternalLink, AccountingSyncEvent, AccountingWebhookEvent,
+                         ReconciliationRun, ReconciliationDifference)
 
 __all__ = [
+    'AccountingConnection', 'ExternalLink', 'AccountingSyncEvent', 'AccountingWebhookEvent',
+    'ReconciliationRun', 'ReconciliationDifference',
+    'InvoiceLine', 'CreditNote', 'CreditNoteLine', 'DocumentSequence', 'Supplier', 'DebtorIdentity',
     'User',
     'UserSession',
     'Vehicle',
@@ -51,6 +67,7 @@ __all__ = [
     'Load',
     'Quote',
     'QuoteOutcome',
+    'QuotePricingDecision',
     'Driver',
     'Customer',
     'Invoice',
@@ -92,4 +109,18 @@ __all__ = [
     'MLUserRetrainQueue',
     'AIQuotePriceAnalysis',
     'VerifiedRate',
+    'Funder',
+    'FunderMembership',
+    'CreditPolicy',
+    'CapitalLimit',
+    'CapitalApplication',
+    'CapitalScore',
+    'InvoiceAssessment',
+    'ExternalCheck',
+    'CapitalLedgerEntry',
+    'CapitalAlert',
+    'BookSnapshot',
+    'DataRoomExport',
+    'CapitalAIUsage',
+    'ImmutableRowError',
 ]

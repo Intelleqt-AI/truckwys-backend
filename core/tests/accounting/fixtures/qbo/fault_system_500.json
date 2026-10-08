@@ -1,0 +1,20 @@
+{
+  "status": 500,
+  "headers": {
+    "Content-Type": "application/json"
+  },
+  "body": {
+    "Fault": {
+      "Error": [
+        {
+          "Message": "An application error has occurred while processing your request",
+          "Detail": "System Failure Error: An unexpected error occurred while accessing or saving your data. Please wait a few minutes and try again.",
+          "code": "10000",
+          "element": ""
+        }
+      ],
+      "type": "SystemFault"
+    },
+    "time": "2026-09-30T08:14:31.112-07:00"
+  }
+}

@@ -12,7 +12,7 @@ class FacilitySerializer(serializers.ModelSerializer):
         max_digits=12,
         decimal_places=2,
         read_only=True,
-        help_text='Available facility amount (limit - outstanding)'
+        help_text='Available facility amount (limit - outstanding - reserved)'
     )
     utilization_percent = serializers.DecimalField(
         max_digits=5,
@@ -30,13 +30,15 @@ class FacilitySerializer(serializers.ModelSerializer):
             'company_name',
             'limit',
             'outstanding',
+            'reserved',
             'available',
             'utilization_percent',
             'status',
             'created_at',
             'updated_at',
         ]
-        read_only_fields = ['id', 'outstanding', 'created_at', 'updated_at']
+        # Ledger figures are written only by core.services.facility_ledger.
+        read_only_fields = ['id', 'outstanding', 'reserved', 'created_at', 'updated_at']
 
 
 class RiskScoreSerializer(serializers.ModelSerializer):
@@ -145,6 +147,9 @@ class AdvanceRequestSerializer(serializers.ModelSerializer):
             'settled_at',
             'denial_reason',
             'notes',
+            'settlement_reference',
+            'settlement_payment',
+            'settled_by',
             'is_active',
             'is_settled',
             'days_to_settlement',
@@ -157,6 +162,9 @@ class AdvanceRequestSerializer(serializers.ModelSerializer):
             'approved_at',
             'disbursed_at',
             'settled_at',
+            'settlement_reference',
+            'settlement_payment',
+            'settled_by',
             'created_at',
             'updated_at',
         ]
@@ -366,7 +374,18 @@ class DisburseAdvanceSerializer(serializers.Serializer):
 
 
 class SettleAdvanceSerializer(serializers.Serializer):
-    """Serializer for settling advance request."""
+    """Settlement needs evidence of the debtor payment, not just a click."""
+
+    payment_reference = serializers.CharField(
+        required=True,
+        allow_blank=False,
+        max_length=200,
+        help_text='Bank/payment reference of the debtor payment that repaid the advance'
+    )
+    payment_id = serializers.IntegerField(
+        required=False,
+        help_text='Optional recorded Payment on the advanced invoice'
+    )
 
     notes = serializers.CharField(
         required=False,

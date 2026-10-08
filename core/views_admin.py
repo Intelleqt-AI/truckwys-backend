@@ -153,6 +153,8 @@ class AdminCompaniesView(APIView):
             'subscription_status': c.subscription_status,
             'is_demo': c.is_demo,
             'is_deleted': c.is_deleted,
+            'vat_registered': c.vat_registered,
+            'has_vat_number': bool((c.vat_number or '').strip()),
             'created_at': c.created_at,
             'next_billing_date': c.next_billing_date,
             'grace_period_expires_at': c.grace_period_expires_at,
@@ -256,8 +258,10 @@ class AdminDemoStatusView(APIView):
 
 
 class AdminCompanyActionView(APIView):
-    """POST {action: 'suspend'|'reactivate'|'delete'} — company lifecycle
-    controls. 'reactivate' is the "unlock a company" action: unlike the
+    """POST {action: 'suspend'|'reactivate'|'delete'|'vat_on'|'vat_off'} —
+    company lifecycle controls, plus whether the company is a VAT vendor
+    (vat_off: new invoices carry no VAT and are titled INVOICE; past
+    invoices never change). 'reactivate' is the "unlock a company" action: unlike the
     automated record_charge_success (core/services/subscription_billing.py),
     which deliberately only un-graces an active/grace_period company, this
     reaches suspended/cancelled too — that's the whole point of a manual
@@ -282,11 +286,15 @@ class AdminCompanyActionView(APIView):
             company.is_deleted = True
             company.deleted_at = timezone.now()
             company.save(update_fields=['is_deleted', 'deleted_at', 'updated_at'])
+        elif action in ('vat_on', 'vat_off'):
+            company.vat_registered = action == 'vat_on'
+            company.save(update_fields=['vat_registered', 'updated_at'])
         else:
             return Response({'error': f'Unknown action "{action}"'}, status=status.HTTP_400_BAD_REQUEST)
 
         _log(request, 'UPDATE', 'Company', company.pk, admin_action=action)
-        return Response({'id': company.id, 'subscription_status': company.subscription_status, 'is_deleted': company.is_deleted})
+        return Response({'id': company.id, 'subscription_status': company.subscription_status, 'is_deleted': company.is_deleted,
+                         'vat_registered': company.vat_registered})
 
 
 class AdminCompanyBillingView(APIView):
@@ -958,18 +966,27 @@ class AdminJobHealthView(APIView):
 
 
 class AdminIntegrationsHealthView(APIView):
-    """Which companies have Xero/CtrlFleet actually connected — reuses the
-    connection-timestamp fields already on Company (core/models/company.py),
-    no new tracking needed."""
+    """Which companies have Xero / QuickBooks (AccountingConnection) and
+    CtrlFleet (Company.ctrlfleet_connected_at) actually connected."""
     permission_classes = [IsSuperUser]
 
     def get(self, request):
+        from core.models import AccountingConnection
         base = Company.objects.filter(is_demo=False, is_deleted=False)
-        xero = base.filter(xero_connected_at__isnull=False)
+        live = AccountingConnection.objects.filter(company__in=base, status__in=('ACTIVE', 'NEEDS_REAUTH'))
+        xero = live.filter(provider='XERO')
+        qbo = live.filter(provider='QBO')
         ctrlfleet = base.filter(ctrlfleet_connected_at__isnull=False)
+
+        def rows(qs):
+            return [{'id': c.company_id, 'company_name': c.company.company_name, 'status': c.status,
+                     'tenant_name': c.tenant_name, 'xero_connected_at': c.connected_at,
+                     'connected_at': c.connected_at} for c in qs.select_related('company')]
         return Response({
             'xero_connected_count': xero.count(),
-            'xero_connected_companies': list(xero.values('id', 'company_name', 'xero_connected_at')),
+            'xero_connected_companies': rows(xero),
+            'qbo_connected_count': qbo.count(),
+            'qbo_connected_companies': rows(qbo),
             'ctrlfleet_connected_count': ctrlfleet.count(),
             'ctrlfleet_connected_companies': list(ctrlfleet.values('id', 'company_name', 'ctrlfleet_connected_at')),
         })
@@ -989,11 +1006,12 @@ class AdminModelHealthView(APIView):
     permission_classes = [IsSuperUser]
 
     def get(self, request):
-        from django.conf import settings
-        from core.models import MLModelVersion, QuoteOutcome
+        from core.models import MLModelVersion
         from core.services import quote_features
 
-        trainable = QuoteOutcome.objects.filter(outcome__in=['accepted', 'rejected'])
+        # What training actually uses (never-sent quotes excluded).
+        from core.services.quote_training import _min_class_counts, closed_outcomes
+        trainable = closed_outcomes()
         by_label = {
             row['outcome']: row['n']
             for row in trainable.values('outcome').annotate(n=Count('id'))
@@ -1001,13 +1019,15 @@ class AdminModelHealthView(APIView):
         accepted = by_label.get('accepted', 0)
         rejected = by_label.get('rejected', 0)
         total = accepted + rejected
-        global_floor = int(getattr(settings, 'WIN_MODEL_GLOBAL_MIN_SAMPLES', 40))
+        min_accepted, min_rejected = _min_class_counts('global')
 
+        # Checked independently, not as a combined total: a lopsided class
+        # split can clear the old-style total floor and still not qualify.
         blockers = []
-        if total < global_floor:
-            blockers.append(f'only {total} of {global_floor} outcomes needed')
-        if accepted == 0 or rejected == 0:
-            blockers.append('only one outcome class present — a classifier cannot train')
+        if accepted < min_accepted:
+            blockers.append(f'only {accepted} of {min_accepted} accepted outcomes needed')
+        if rejected < min_rejected:
+            blockers.append(f'only {rejected} of {min_rejected} rejected outcomes needed')
 
         # How much of the most predictive CORE feature is a real measurement
         # rather than the 1.0 filler. A model trained where this is near zero
@@ -1038,8 +1058,8 @@ class AdminModelHealthView(APIView):
                 'accepted': accepted,
                 'rejected': rejected,
                 'total': total,
-                'global_min_samples': global_floor,
-                'user_min_samples': int(getattr(settings, 'WIN_MODEL_USER_MIN_SAMPLES', 40)),
+                'min_accepted': min_accepted,
+                'min_rejected': min_rejected,
                 'class_balance': round(min(accepted, rejected) / total, 4) if total else 0,
             },
             'feature_coverage': {

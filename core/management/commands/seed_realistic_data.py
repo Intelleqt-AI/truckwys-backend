@@ -10,21 +10,21 @@ from django.utils import timezone
 
 
 SA_CUSTOMERS = [
-    ('Bidvest Freight Solutions', 'bidvest.co.za', '+27115550001', 'Johannesburg'),
-    ('Woolworths Supply Chain', 'woolworths.co.za', '+27215550002', 'Cape Town'),
-    ('Pick n Pay Distribution', 'pnp.co.za', '+27315550003', 'Durban'),
-    ('Sasol Logistics', 'sasol.com', '+27165550004', 'Secunda'),
-    ('Imperial Logistics', 'imperiallogistics.com', '+27115550005', 'Johannesburg'),
-    ('Tiger Brands Distribution', 'tigerbrands.com', '+27115550006', 'Johannesburg'),
-    ('Shoprite Holdings Freight', 'shoprite.co.za', '+27215550007', 'Cape Town'),
-    ('Massmart Supply Chain', 'massmart.co.za', '+27115550008', 'Johannesburg'),
-    ('Murray & Roberts Transport', 'murrob.com', '+27115550009', 'Johannesburg'),
-    ('Barloworld Logistics', 'barloworld.com', '+27115550010', 'Johannesburg'),
-    ('Unitrans Freight', 'unitrans.co.za', '+27315550011', 'Durban'),
-    ('Value Logistics SA', 'valuelogistics.co.za', '+27215550012', 'Cape Town'),
-    ('Rhenus Logistics SA', 'rhenus.co.za', '+27115550013', 'Johannesburg'),
-    ('Cargo Carriers Ltd', 'cargocarriers.co.za', '+27115550014', 'Johannesburg'),
-    ('RTT Group', 'rttgroup.co.za', '+27215550015', 'Cape Town'),
+    ('Kudu Freight Solutions', 'kudugroup.example', '+27115550001', 'Johannesburg'),
+    ('Fynbos Home & Food Supply', 'fynbos.example', '+27215550002', 'Cape Town'),
+    ('Kestrel Grocers Distribution', 'kestrelgrocers.example', '+27315550003', 'Durban'),
+    ('Highveld Chemworks Logistics', 'highveldchem.example', '+27165550004', 'Secunda'),
+    ('Impala Freight Partners', 'impalafreight.example', '+27115550005', 'Johannesburg'),
+    ('Marula Pantry Distribution', 'marulapantry.example', '+27115550006', 'Johannesburg'),
+    ('Karoo Fresh Markets Freight', 'karoofresh.example', '+27215550007', 'Cape Town'),
+    ('Sable Wholesale Supply', 'sablewholesale.example', '+27115550008', 'Johannesburg'),
+    ('Quagga Construction Transport', 'quagga.example', '+27115550009', 'Johannesburg'),
+    ('Weaver Logistics', 'weaverlogistics.example', '+27115550010', 'Johannesburg'),
+    ('Hornbill Freight', 'hornbill.example', '+27315550011', 'Durban'),
+    ('Value Haul SA', 'valuehaul.example', '+27215550012', 'Cape Town'),
+    ('Cape Rhino Logistics', 'caperhino.example', '+27115550013', 'Johannesburg'),
+    ('Cargo Carriers Ltd', 'cargocarriers.example', '+27115550014', 'Johannesburg'),
+    ('Duiker Express Group', 'duiker.example', '+27215550015', 'Cape Town'),
 ]
 
 SA_ROUTES = [
@@ -50,21 +50,21 @@ VEHICLE_TYPES = ['Semi-Trailer Truck', 'Flatbed Truck', 'Rigid Truck', 'Refriger
 
 PAYMENT_PROFILES = {
     # customer_name: (on_time_ratio, avg_delay_days)
-    'Bidvest Freight Solutions': (0.95, 5),
-    'Woolworths Supply Chain': (0.90, 8),
-    'Pick n Pay Distribution': (0.85, 12),
-    'Sasol Logistics': (0.70, 25),
-    'Imperial Logistics': (0.95, 3),
-    'Tiger Brands Distribution': (0.80, 18),
-    'Shoprite Holdings Freight': (0.92, 6),
-    'Massmart Supply Chain': (0.75, 22),
-    'Murray & Roberts Transport': (0.60, 35),
-    'Barloworld Logistics': (0.88, 10),
-    'Unitrans Freight': (0.82, 15),
-    'Value Logistics SA': (0.78, 20),
-    'Rhenus Logistics SA': (0.91, 7),
+    'Kudu Freight Solutions': (0.95, 5),
+    'Fynbos Home & Food Supply': (0.90, 8),
+    'Kestrel Grocers Distribution': (0.85, 12),
+    'Highveld Chemworks Logistics': (0.70, 25),
+    'Impala Freight Partners': (0.95, 3),
+    'Marula Pantry Distribution': (0.80, 18),
+    'Karoo Fresh Markets Freight': (0.92, 6),
+    'Sable Wholesale Supply': (0.75, 22),
+    'Quagga Construction Transport': (0.60, 35),
+    'Weaver Logistics': (0.88, 10),
+    'Hornbill Freight': (0.82, 15),
+    'Value Haul SA': (0.78, 20),
+    'Cape Rhino Logistics': (0.91, 7),
     'Cargo Carriers Ltd': (0.65, 30),
-    'RTT Group': (0.87, 11),
+    'Duiker Express Group': (0.87, 11),
 }
 
 

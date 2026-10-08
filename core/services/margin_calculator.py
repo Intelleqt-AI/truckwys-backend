@@ -11,7 +11,7 @@ Default cost parameters (articulated truck, inland ZAR):
   - Tyre wear        : R0.45/km
   - Maintenance      : R0.65/km
   - Deadhead factor  : 1.3  (30% empty return leg)
-  - Diesel price     : sourced from FuelPrice model (inland)
+  - Diesel price     : the official inland price in force (unknown => ValueError)
 """
 
 import logging
@@ -44,9 +44,6 @@ _FUEL_BY_TYPE: dict[str, Decimal] = {
     'rigid':       Decimal('4.5'),
 }
 
-# Hardcoded fallback diesel price (ZAR/litre) used only when no FuelPrice
-# records exist in the database.
-_FALLBACK_DIESEL_PRICE = Decimal('21.18')
 
 
 # ---------------------------------------------------------------------------
@@ -160,18 +157,12 @@ def calculate_true_margin(
 # ---------------------------------------------------------------------------
 
 def _get_current_diesel_price() -> Decimal:
-    """Return the most recent inland diesel price from FuelPrice records.
-
-    Falls back to a hardcoded conservative value if no records exist.
-    """
-    from core.models.fuel_price import FuelPrice
-
-    latest = FuelPrice.objects.order_by('-date').first()
-    if latest:
-        return latest.diesel_inland
-
-    logger.warning(
-        'No FuelPrice records found — using hardcoded fallback diesel price R%s',
-        _FALLBACK_DIESEL_PRICE,
-    )
-    return _FALLBACK_DIESEL_PRICE
+    """The official inland diesel price in force (FIASA 50ppm / MANUAL only,
+    never a fallback-table row). Raises ValueError when none is on record:
+    no hard-coded figure is ever used (QUOTE-RULES §1); callers treat the
+    modelled cost as unknown."""
+    from core.services.fuel_price import price_in_force
+    rec = price_in_force('INLAND')
+    if rec:
+        return Decimal(str(rec['price'])).quantize(Decimal('0.0001'))
+    raise ValueError('no official diesel price on record')

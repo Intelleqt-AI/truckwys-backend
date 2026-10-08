@@ -1,12 +1,17 @@
 """Seed 3 demo companies/users for end-to-end manual testing of the two-tier
 (per-user + global) AI win-probability pricing system.
 
-demotruckwys0 — 40 decided quote outcomes (20 accepted / 20 rejected):
-    enough on its own to qualify for a PERSONAL (scope='user') model.
+demotruckwys0 — 400 decided quote outcomes (200 accepted / 200 rejected):
+    enough on its own to qualify for a PERSONAL (scope='user') model — the
+    win model needs 200 accepted AND 200 rejected, independently, not 400
+    combined (WIN_MODEL_MIN_ACCEPTED / WIN_MODEL_MIN_REJECTED).
 demotruckwys1 — 20 decided quote outcomes (10 accepted / 10 rejected):
-    NOT enough on its own (< WIN_MODEL_USER_MIN_SAMPLES) — should fall back
-    to the GLOBAL model once demotruckwys0 + demotruckwys1's pooled 60
-    outcomes clear the global threshold.
+    NOT enough on its own (well under 200/200) — demonstrates the "falls
+    back" path. Pooled with demotruckwys0 it would clear the global
+    threshold too (210 accepted / 210 rejected), but the global tier also
+    requires Company.pool_pricing_data=True, which this seeder does not set
+    (that flag defaults off for every company — a separate, deliberate
+    product decision, not something a demo script should silently bypass).
 demotruckwys2 — zero data: a genuinely fresh account, to exercise the
     cold-start / "no history, still gets a platform-wide AI price" path.
 
@@ -89,9 +94,9 @@ CARGO = ['General Freight - Palletized', 'Refrigerated Goods', 'Construction Mat
 # order (2 shared names, then the 3 per-account unique names) -- so
 # historical_acceptance_rate/client_tier carry a REAL, correctly-signed
 # signal for the model to learn, instead of being independent-of-outcome
-# noise (which a small n=40 logistic regression can and will fit a spurious,
+# noise (which a small logistic regression can and will fit a spurious,
 # backwards coefficient to). Fractions chosen to divide evenly into both
-# account0's 8-per-customer and account1's 4-per-customer allocation.
+# account0's 80-per-customer and account1's 4-per-customer allocation.
 CUSTOMER_ACCEPT_BIAS = [0.875, 0.125, 0.75, 0.5, 0.25]
 # index: 0 Global Freight Partners (shared, favourite client)
 #        1 National Retail Group (shared, chronic rejecter)
@@ -100,7 +105,7 @@ CUSTOMER_ACCEPT_BIAS = [0.875, 0.125, 0.75, 0.5, 0.25]
 #        4 unique Express Logistics (unfavourable)
 
 ACCOUNTS = [
-    {'idx': 0, 'total': 40, 'same_route': 10},
+    {'idx': 0, 'total': 400, 'same_route': 10},
     {'idx': 1, 'total': 20, 'same_route': 10},
     {'idx': 2, 'total': 0, 'same_route': 0},
 ]

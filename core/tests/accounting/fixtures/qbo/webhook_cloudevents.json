@@ -1,0 +1,24 @@
+[
+  {
+    "specversion": "1.0",
+    "id": "88cd52aa-6b8e-4f1b-9d3f-6a9b2a0d3e01",
+    "source": "intuit.dsnBgbseACLLRZNxo2dfc4evmEJdxde58xeeYcZliOU=",
+    "type": "qbo.payment.created.v1",
+    "datacontenttype": "application/json",
+    "time": "2026-09-12T15:00:01.000Z",
+    "intuitentityid": "201",
+    "intuitaccountid": "9341455130166501",
+    "data": {}
+  },
+  {
+    "specversion": "1.0",
+    "id": "88cd52aa-6b8e-4f1b-9d3f-6a9b2a0d3e02",
+    "source": "intuit.dsnBgbseACLLRZNxo2dfc4evmEJdxde58xeeYcZliOU=",
+    "type": "qbo.creditmemo.deleted.v1",
+    "datacontenttype": "application/json",
+    "time": "2026-09-12T15:02:00.000Z",
+    "intuitentityid": "77",
+    "intuitaccountid": "9341455130166501",
+    "data": {}
+  }
+]

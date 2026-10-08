@@ -7,6 +7,25 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      # The app refuses to start without an encryption key outside DEBUG
+      # (core/utils/crypto.py, fail closed). CI-only throwaway key: it
+      # protects nothing and must never be used anywhere else.
+      FIELD_ENCRYPTION_KEY: Nsgc3x4jayZhAYiajbv6PDAuaOrLRyNPAKvqf4SOleM=
+      # The accounting rate limiter (core.accounting.ratelimit) is shared
+      # Redis state; tests use db 15 of the service below.
+      REDIS_URL: redis://localhost:6379/15
+
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
 
     strategy:
       matrix:
@@ -27,7 +46,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt', 'requirements-ml.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-
 
@@ -35,6 +54,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install -r requirements-ml.txt
 
       - name: Check Django configuration
         run: |

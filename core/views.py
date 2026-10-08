@@ -16,6 +16,7 @@
 import logging as _logging
 from rest_framework import viewsets, status, filters, mixins
 from rest_framework.decorators import action
+from rest_framework.exceptions import APIException
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.throttling import ScopedRateThrottle
@@ -24,11 +25,31 @@ from rest_framework.views import exception_handler as _drf_exception_handler
 
 _exc_logger = _logging.getLogger(__name__)
 
+def _protected_delete_response(exc, context):
+    """A delete blocked by PROTECT/RESTRICT foreign keys (e.g. a customer with
+    quotes or invoices) is expected, not a server error: say what's linked."""
+    from collections import Counter
+    counts = Counter(type(obj) for obj in getattr(exc, 'protected_objects', None) or getattr(exc, 'restricted_objects', None) or [])
+    parts = [f"{n} {(m._meta.verbose_name if n == 1 else m._meta.verbose_name_plural)}".lower() for m, n in counts.most_common()]
+    linked = parts[0] if len(parts) == 1 else ', '.join(parts[:-1]) + f' and {parts[-1]}' if parts else 'other records'
+    view = context.get('view')
+    model = getattr(getattr(view, 'queryset', None), 'model', None)
+    noun = model._meta.verbose_name.lower() if model is not None else 'record'
+    return Response(
+        {'error': f"This {noun} can't be deleted: {linked} {'is' if sum(counts.values()) == 1 else 'are'} linked to it.",
+         'linked': {m._meta.verbose_name_plural.lower(): n for m, n in counts.items()}},
+        status=status.HTTP_409_CONFLICT,
+    )
+
+
 def custom_exception_handler(exc, context):
     """Return JSON for every error — never let Django's HTML debug page leak to the API."""
     response = _drf_exception_handler(exc, context)
     if response is not None:
         return response
+    from django.db.models import ProtectedError, RestrictedError
+    if isinstance(exc, (ProtectedError, RestrictedError)):
+        return _protected_delete_response(exc, context)
     # Unhandled exception (e.g. OperationalError, AttributeError) — log and return 500 JSON.
     _exc_logger.exception('Unhandled exception in %s', context.get('view', ''))
     return Response(
@@ -68,10 +89,13 @@ class CompanyFilterMixin:
         return qs
     
     def perform_create(self, serializer):
-        if hasattr(serializer.Meta.model, 'company_id'):
-            serializer.save(company=self.request.user.company)
-        else:
-            serializer.save()
+        # The creator is the actor: signals' company notifications skip them.
+        from core.services.notify import acting_as
+        with acting_as(self.request.user):
+            if hasattr(serializer.Meta.model, 'company_id'):
+                serializer.save(company=self.request.user.company)
+            else:
+                serializer.save()
 
 
 class BillingGateMixin:
@@ -1155,6 +1179,9 @@ class SecuritySettingsView(APIView):
         return Response(settings)
 
 
+from core.permissions import IsIntegrationAdmin  # noqa: E402
+
+
 class IsAdmin(IsAuthenticated):
     def has_permission(self, request, view):
         return super().has_permission(request, view) and hasattr(request.user, 'role') and request.user.role == 'ADMIN'
@@ -1328,12 +1355,13 @@ class FleetOverviewView(APIView):
             if avg_margin_per_vehicle is not None and last_month_avg else None
         )
         
-        # Fleet Cost per KM
+        # Fleet Cost per KM: vehicle expenses EXCLUDING VAT (rejected never
+        # count) - the accounting_reports expense definition.
         total_expenses = Expense.objects.filter(
             created_at__gte=current_month_start,
             vehicle__isnull=False,
             company=request.user.company
-        ).aggregate(total=Sum('amount'))['total']
+        ).exclude(status='REJECTED').aggregate(total=Sum(F('amount') - F('vat_amount')))['total']
         
         total_expenses = float(total_expenses) if total_expenses else 0.0
         
@@ -1945,7 +1973,7 @@ class QuotesPipelineOverviewView(APIView):
             'filters': {
                 'customer': {
                     'current': customer_filter,
-                    'options': ['all', 'Makana Foods', 'Tiger Brands', 'Pick n Pay']
+                    'options': ['all', 'Makana Foods', 'Marula Pantry Foods', 'Kestrel Grocers']
                 },
                 'lane': {
                     'current': lane_filter,
@@ -2144,8 +2172,26 @@ class CustomerViewSet(DemoFixedDataMixin, CompanyFilterMixin, viewsets.ModelView
     permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['status', 'city', 'state']
-    search_fields = ['name', 'company_name', 'email', 'phone']
+    search_fields = ['name', 'company_name', 'email', 'phone', 'city']
     ordering_fields = ['created_at', 'name']
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        if self.action != 'list':
+            return qs
+        # The list carries what each customer owes and sorts on the server
+        # (?sort= the page's menu), so the page needn't load the invoice ledger.
+        from core.services.customer_list import SORTS, with_balances
+        sort = self.request.query_params.get('sort') or 'name_asc'
+        return with_balances(qs).order_by(*SORTS.get(sort, SORTS['name_asc']))
+
+    def list(self, request, *args, **kwargs):
+        response = super().list(request, *args, **kwargs)
+        if isinstance(response.data, dict):
+            from core.services.customer_list import page_flags
+            company_customers = CompanyFilterMixin.get_queryset(self)
+            response.data['flags'] = page_flags(company_customers, self.filter_queryset(company_customers))
+        return response
 
     @action(detail=True, methods=['get'])
     def loads(self, request, pk=None):
@@ -2177,6 +2223,25 @@ class DriverViewSet(DemoFixedDataMixin, CompanyFilterMixin, viewsets.ModelViewSe
     search_fields = ['user__username', 'license_number', 'user__first_name', 'user__last_name']
     ordering_fields = ['created_at', 'hire_date']
 
+    def list(self, request, *args, **kwargs):
+        """?view=fleet (the Drivers page): rows carry the open order they're
+        on, and `summary` carries the tiles over the searched drivers
+        (core.services.driver_list). Without it, the plain list."""
+        response = super().list(request, *args, **kwargs)
+        if request.query_params.get('view') != 'fleet' or not isinstance(response.data, dict):
+            return response
+        from core.services import driver_list as dl
+        user = request.user
+        loads = (Load.objects.all() if user.is_superuser and getattr(user, 'company_id', None) is None
+                 else Load.objects.filter(company=user.company))
+        open_numbers = dl.open_load_numbers(loads)
+        for row in response.data.get('results', []):
+            row['open_load_number'] = open_numbers.get(row.get('id'))
+        # The tiles and chips count every searched driver, whatever chip is on.
+        searched = filters.SearchFilter().filter_queryset(request, self.get_queryset(), self)
+        response.data['summary'] = dl.summary(searched, loads)
+        return response
+
     @action(detail=True, methods=['get'])
     def loads(self, request, pk=None):
         """Get all loads assigned to a driver"""
@@ -2205,8 +2270,43 @@ class VehicleViewSet(DemoFixedDataMixin, CompanyFilterMixin, viewsets.ModelViewS
         'fuel_type': ['exact'],
         'vehicle_type__name': ['exact', 'icontains'],
     }
-    search_fields = ['vin', 'plate', 'make', 'model']
+    search_fields = ['vin', 'plate', 'make', 'model', 'vehicle_type__name']
     ordering_fields = ['created_at', 'make', 'model', 'year']
+
+    def _company_loads(self):
+        user = self.request.user
+        if user.is_superuser and getattr(user, 'company_id', None) is None:
+            return Load.objects.all()
+        return Load.objects.filter(company=user.company)
+
+    def list(self, request, *args, **kwargs):
+        """The Vehicles page (?view=fleet), server-side: ?tile=job|free|shop|mismatch,
+        ?sort=revenue (delivered revenue, the page's order), search and page.
+        Each row carries its open order and delivered work; `summary` carries
+        the tiles over the searched trucks (core.services.vehicle_list).
+        Only with ?view=fleet; without it, the plain list (pickers, settings)."""
+        if request.query_params.get('view') != 'fleet':
+            return super().list(request, *args, **kwargs)
+        from core.services import vehicle_list as vl
+        loads = self._company_loads()
+        state = vl.fleet_state(loads)
+        searched = self.filter_queryset(self.get_queryset())
+        qs = vl.filter_tile(searched, request.query_params.get('tile'), state)
+        qs = vl.with_delivered(qs)
+        if request.query_params.get('sort') == 'revenue':
+            qs = qs.order_by('-delivered_revenue', 'plate', 'id')
+        page = self.paginate_queryset(qs)
+        rows = page if page is not None else list(qs)
+        data = self.get_serializer(rows, many=True).data
+        for row, vehicle in zip(data, rows):
+            row['delivered_revenue'] = float(vehicle.delivered_revenue)
+            row['delivered_loads'] = vehicle.delivered_loads
+            row['active_load'] = vl.active_load_for_api(state, vehicle.id)
+            row['holding_open'] = bool(state.get(vehicle.id, {}).get('any_open') and not state.get(vehicle.id, {}).get('any_current'))
+        response = self.get_paginated_response(data) if page is not None else Response(data)
+        if isinstance(response.data, dict):
+            response.data['summary'] = vl.summary(searched, loads, state)
+        return response
 
     def create(self, request, *args, **kwargs):
         from django.db import IntegrityError
@@ -2355,7 +2455,7 @@ class VehicleLogViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
 class LoadViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
     # Actual fuel: approved FUEL expenses on the load's trips (one subquery,
     # not a query per row). Read by LoadSerializer.fuel_cost_actual.
-    queryset = Load.objects.all().annotate(
+    queryset = Load.objects.all().select_related('company').annotate(
         fuel_actual_total=Subquery(
             Expense.objects.filter(trip__load=OuterRef('pk'), category='FUEL', status='APPROVED')
             .values('trip__load').annotate(t=Sum('amount')).values('t')[:1]
@@ -2368,6 +2468,30 @@ class LoadViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
     search_fields = ['load_number', 'pickup_city', 'delivery_city', 'cargo_description']
     ordering_fields = ['created_at', 'pickup_date', 'delivery_date']
     billing_blocked_message = 'Update your payment method to continue managing orders.'
+
+    def list(self, request, *args, **kwargs):
+        """?tab=orders|history (the Orders and History pages): only that tab's
+        statuses, ?q= searches customer, load, route, driver and truck,
+        History comes newest first, and `summary` carries the tab's tiles
+        (core.services.load_list). Without tab, the plain list."""
+        tab = request.query_params.get('tab')
+        if tab not in ('orders', 'history'):
+            return super().list(request, *args, **kwargs)
+        from core.services import load_list as ll
+        company_loads = self.get_queryset()
+        qs = self.filter_queryset(company_loads).filter(status__in=ll.TABS[tab])
+        qs = ll.search(qs, request.query_params.get('q'))
+        if tab == 'history':
+            qs = ll.newest_first(qs)
+        qs = qs.select_related('customer', 'driver__user', 'vehicle')
+        page = self.paginate_queryset(qs)
+        rows = page if page is not None else list(qs)
+        data = self.get_serializer(rows, many=True).data
+        response = self.get_paginated_response(data) if page is not None else Response(data)
+        if isinstance(response.data, dict):
+            plain = Load.objects.filter(pk__in=company_loads.values('pk'))
+            response.data['summary'] = ll.orders_summary(plain) if tab == 'orders' else ll.history_summary(plain)
+        return response
 
     def create(self, request, *args, **kwargs):
         # The demo's only legitimate way to get a Load is converting its one
@@ -2547,7 +2671,19 @@ class LoadViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'], parser_classes=[MultiPartParser, FormParser])
     def upload_pod(self, request, pk=None):
-        """Upload Proof of Delivery."""
+        """Upload Proof of Delivery.
+
+        This is the only writer of the POD fields (LoadSerializer makes them
+        read-only). It used to store a made-up "signature" built from the file
+        name, which made every upload look like a signed POD to the risk
+        engine; now pod_signature is only set from a signature the client
+        actually captured, and the file's SHA-256 is computed here so the
+        evidence a funder relies on can be proven unchanged later.
+        """
+        import hashlib
+        from decimal import Decimal, InvalidOperation
+        from django.utils.dateparse import parse_datetime
+
         load = self.get_object()
         file = request.FILES.get('pod_document') or request.FILES.get('file')
         if not file:
@@ -2555,9 +2691,59 @@ class LoadViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         ALLOWED_POD_TYPES = {'application/pdf', 'image/jpeg', 'image/png', 'image/webp'}
         if file.content_type not in ALLOWED_POD_TYPES:
             return Response({'error': 'Only PDF and image files are accepted'}, status=status.HTTP_400_BAD_REQUEST)
+
+        errors = {}
+        captured_at = None
+        raw_captured = (request.data.get('captured_at') or '').strip()
+        if raw_captured:
+            captured_at = parse_datetime(raw_captured)
+            if captured_at is None:
+                errors['captured_at'] = 'Must be an ISO-8601 datetime'
+            elif timezone.is_naive(captured_at):
+                captured_at = timezone.make_aware(captured_at)
+
+        def _coord(name, bound):
+            raw = request.data.get(name)
+            if raw in (None, ''):
+                return None
+            try:
+                val = Decimal(str(raw)).quantize(Decimal('0.000001'))
+            except (InvalidOperation, ValueError):
+                errors[name] = 'Must be a number'
+                return None
+            if abs(val) > bound:
+                errors[name] = f'Must be between -{bound} and {bound}'
+                return None
+            return val
+
+        lat = _coord('lat', 90) if 'lat' in request.data else _coord('latitude', 90)
+        lng = _coord('lng', 180) if 'lng' in request.data else _coord('longitude', 180)
+        source = (request.data.get('source') or '').strip().upper()
+        valid_sources = {c for c, _ in Load.POD_SOURCE_CHOICES}
+        if source and source not in valid_sources:
+            errors['source'] = f'Must be one of {sorted(valid_sources)}'
+        if errors:
+            return Response({'error': 'Invalid POD metadata', 'fields': errors},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        digest = hashlib.sha256()
+        for chunk in file.chunks():
+            digest.update(chunk)
+        file.seek(0)
+
         load.pod_document = file
-        load.pod_received_by = request.data.get('received_by', file.name)
-        load.pod_signature = f'POD: {file.name} ({file.size} bytes)'
+        load.pod_file_sha256 = digest.hexdigest()
+        load.pod_received_by = (request.data.get('received_by') or '').strip()[:200]
+        # Only a signature the client really captured (e.g. a drawn-signature
+        # data URL) is stored; otherwise leave whatever real one is on file.
+        signature = (request.data.get('signature') or '').strip()
+        if signature:
+            load.pod_signature = signature
+        load.pod_captured_at = captured_at
+        load.pod_latitude = lat
+        load.pod_longitude = lng
+        load.pod_device = (request.data.get('device') or '').strip()[:200]
+        load.pod_source = source or 'UNKNOWN'
         # A POD in hand means the order reached the customer — treat it as
         # proof of delivery from either point still short of Delivered, not
         # just the strict IN_TRANSIT step (e.g. a driver skipped logging
@@ -2569,6 +2755,7 @@ class LoadViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
             'message': 'POD uploaded successfully',
             'filename': file.name,
             'load_id': load.id,
+            'pod_file_sha256': load.pod_file_sha256,
             'pod_url': request.build_absolute_uri(load.pod_document.url) if load.pod_document else None
         })
 
@@ -2608,7 +2795,7 @@ class QuoteFilterSet(django_filters.FilterSet):
 
 
 class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
-    queryset = Quote.objects.all().prefetch_related('loads')
+    queryset = Quote.objects.all().select_related('company', 'pricing_decision').prefetch_related('loads')
     serializer_class = QuoteSerializer
     permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
@@ -2626,20 +2813,32 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         queryset = self.filter_queryset(self.get_queryset())
         page = self.paginate_queryset(queryset)
         total_amount = queryset.aggregate(total=Sum('total_amount'))['total'] or 0
+        # The same total incl. VAT the cards show (15%, 0% international).
+        from core.services.quote_vat import sum_incl_vat
+        total_incl_vat = sum_incl_vat(queryset)
         if page is not None:
             serializer = self.get_serializer(page, many=True)
             response = self.get_paginated_response(serializer.data)
             response.data['total_amount'] = total_amount
+            response.data['total_incl_vat'] = total_incl_vat
             return response
         serializer = self.get_serializer(queryset, many=True)
-        return Response({'results': serializer.data, 'total_amount': total_amount})
+        return Response({'results': serializer.data, 'total_amount': total_amount, 'total_incl_vat': total_incl_vat})
 
     def update(self, request, *args, **kwargs):
         # Unlike Loads (status-change only), every PATCH/PUT to a quote is
         # blocked for a suspended/cancelled company — TruckWys_Fee_Billing_Spec.pdf §5.
         if self._billing_blocked(request):
             return self._billing_blocked_response()
-        return super().update(request, *args, **kwargs)
+        from django.db import DatabaseError
+        try:
+            return super().update(request, *args, **kwargs)
+        except DatabaseError:
+            # The quote and its pricing decision save in one transaction
+            # (QuoteSerializer.update), so nothing was written: say so plainly.
+            _exc_logger.exception('quote update failed')
+            return Response({'error': 'The quote could not be saved just now. Nothing was changed; please try again.'},
+                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
     def perform_update(self, serializer):
         # IT/COMPLETED describe an Order's delivery progress, not the quote
@@ -2654,13 +2853,30 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
                 'status': 'Quotes no longer track In-Transit/Completed directly — '
                           'use "Convert to booking" to create the Order, which tracks delivery status.'
             })
-        serializer.save()
+        previous_status = serializer.instance.status if serializer.instance is not None else None
+        # A change to SENT is guarded in ONE place: the Quote pre_save signal
+        # (core.services.quote_snapshot.enforce_send_guard), inside
+        # QuoteSerializer.update's transaction — all or nothing.
+        quote = serializer.save()
+        # A status change to Accepted / Declined through the plain PATCH (the
+        # status menu and board drags use it) is a decision too: record it as
+        # the ML outcome label exactly like update_status does. Previously
+        # only update_status did, so those quotes stayed outcome='pending'.
+        new_status = quote.status
+        if new_status != previous_status and new_status in ('ACCEPTED', 'DECLINED'):
+            from core.services.quote_outcome_capture import record_quote_outcome
+            data = self.request.data
+            record_quote_outcome(
+                quote, 'accepted' if new_status == 'ACCEPTED' else 'rejected',
+                rejection_reason=(quote.rejection_reason or '') if new_status == 'DECLINED' else '',
+                loss_reason=data.get('loss_reason') or '', loss_reason_note=data.get('loss_reason_note') or '',
+            )
 
     def create(self, request, *args, **kwargs):
         if self._billing_blocked(request):
             return self._billing_blocked_response()
         company = getattr(request.user, 'company', None)
-        from django.db import IntegrityError, transaction
+        from django.db import DatabaseError, IntegrityError, transaction
         from rest_framework.exceptions import ValidationError as DRFValidationError
         try:
             if company and company.is_demo:
@@ -2699,6 +2915,8 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
                         Company.objects.filter(pk=company.pk).update(demo_quota_used=F('demo_quota_used') + 1)
                     return response
             return super().create(request, *args, **kwargs)
+        except APIException:
+            raise      # incl. QuoteSendBlocked (structured 400)
         except IntegrityError as exc:
             msg = str(exc)
             if 'quote_number' in msg.lower():
@@ -2710,6 +2928,10 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
             return Response({'error': detail}, status=status.HTTP_400_BAD_REQUEST)
         except DRFValidationError:
             raise
+        except DatabaseError:
+            _exc_logger.exception('quote create failed')
+            return Response({'error': 'The quote could not be saved just now. Nothing was saved; please try again.'},
+                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
         except Exception as exc:
             return Response(
                 {'error': f'Could not create quote: {exc}'},
@@ -2735,17 +2957,10 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         if company:
             save_kwargs['company'] = company
 
-        # Snapshot the diesel price at quote creation so the fuel-surcharge /
-        # fuel-alert loop can later measure real margin erosion since the quote.
-        try:
-            from core.services.fuel_price import fetch_fuel_prices
-            fp = fetch_fuel_prices()
-            diesel = getattr(fp, 'diesel_inland', None)
-            if diesel is not None:
-                save_kwargs['fuel_price_at_creation'] = diesel
-        except Exception:
-            pass
-
+        # The pricing snapshot (QUOTE-RULES.md §9) is written by
+        # QuoteSerializer.create (core.services.quote_snapshot), including
+        # fuel_price_at_creation — never a fallback or inland-only figure.
+        # Created as SENT: guarded in QuoteSerializer.create.
         serializer.save(**save_kwargs)
 
     @action(detail=True, methods=['patch'])
@@ -2771,7 +2986,7 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        quote.status = new_status
+        quote.status = new_status      # to SENT: guarded by the Quote pre_save signal
         # Read by the Quote post_save signal: an authenticated user made this
         # change, so exclude them from their own "quote accepted/declined/…"
         # notification — everyone else in the company still gets it. And for
@@ -2796,6 +3011,8 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
                 quote,
                 'accepted' if new_status in ('ACCEPTED', 'IT') else 'rejected',
                 rejection_reason=quote.rejection_reason if new_status == 'DECLINED' else '',
+                loss_reason=request.data.get('loss_reason') or '',
+                loss_reason_note=request.data.get('loss_reason_note') or '',
             )
 
         if new_status in ('ACCEPTED', 'IT'):
@@ -2873,6 +3090,30 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
                 return None
             return timezone.make_aware(datetime.combine(d, datetime.min.time()))
 
+        from core.services.lane_benchmark import lane_place
+        pickup_city, pickup_state = lane_place(quote.origin, quote.pickup_location)
+        delivery_city, delivery_state = lane_place(quote.destination, quote.delivery_location)
+
+        # Optional dates from the booking dialog (YYYY-MM-DD). Absent -> the
+        # quote's own dates, else the old +2/+4 day placeholders (unchanged).
+        def _req_date(key):
+            raw = request.data.get(key)
+            if raw in (None, ''):
+                return None, None
+            try:
+                return datetime.strptime(str(raw)[:10], '%Y-%m-%d').date(), None
+            except ValueError:
+                return None, f'{key} must be a date (YYYY-MM-DD)'
+        req_pickup, err1 = _req_date('pickup_date')
+        req_delivery, err2 = _req_date('delivery_date')
+        if err1 or err2:
+            return Response({'error': err1 or err2}, status=status.HTTP_400_BAD_REQUEST)
+        eff_pickup = req_pickup or quote.pickup_date
+        eff_delivery = req_delivery or quote.delivery_date
+        if (req_pickup or req_delivery) and eff_pickup and eff_delivery and eff_delivery < eff_pickup:
+            return Response({'error': 'The delivery date cannot be before the collection date.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
         # Create load from quote (stamp the company so it's tenant-scoped/visible)
         load = Load.objects.create(
             load_number=load_number,
@@ -2883,21 +3124,23 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
             vehicle=vehicle,
             pickup_location=quote.pickup_location,
             delivery_location=quote.delivery_location,
-            pickup_city=quote.origin or 'TBD',
-            pickup_state='GP',
-            pickup_zip='0000',
+            # City/province from the lane code (blank when unknown) instead of
+            # the old hardcoded 'GP' / '0000', which put Cape Town in Gauteng.
+            pickup_city=pickup_city or 'TBD',
+            pickup_state=pickup_state,
+            pickup_zip='',
             pickup_lat=quote.pickup_lat,
             pickup_lng=quote.pickup_lng,
             # Use the quote's own dates when it has them (now reliably
             # captured via the AI/voice quote flow) instead of always
             # discarding them for a generic +2/+4 day placeholder.
-            pickup_date=_date_to_aware_datetime(quote.pickup_date) or (timezone.now() + timedelta(days=2)),
-            delivery_city=quote.destination or 'TBD',
-            delivery_state='GP',
-            delivery_zip='0000',
+            pickup_date=_date_to_aware_datetime(eff_pickup) or (timezone.now() + timedelta(days=2)),
+            delivery_city=delivery_city or 'TBD',
+            delivery_state=delivery_state,
+            delivery_zip='',
             delivery_lat=quote.delivery_lat,
             delivery_lng=quote.delivery_lng,
-            delivery_date=_date_to_aware_datetime(quote.delivery_date) or (timezone.now() + timedelta(days=4)),
+            delivery_date=_date_to_aware_datetime(eff_delivery) or (timezone.now() + timedelta(days=4)),
             # Same list, verbatim — the order's route must show identically
             # to what the customer actually quoted/accepted.
             stops=quote.stops,
@@ -2907,6 +3150,9 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
             distance=quote.distance,
             rate=quote.base_rate,
             fuel_surcharge=quote.fuel_surcharge,
+            toll_charges=quote.toll_charges or 0,
+            driver_allowance=quote.driver_allowance or 0,
+            is_international=quote.is_international,
             additional_charges=quote.additional_charges,
             total_amount=quote.total_amount,
             status='ASSIGNED' if vehicle else 'PENDING',
@@ -2933,6 +3179,15 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         from core.services.quote_pdf import generate_quote_pdf_bytes
 
         quote = self.get_object()
+        # A DRAFT's PDF is how a quote gets sent by hand: same guard as
+        # sending. Any other status (already sent, accepted...) downloads.
+        if quote.status == 'DRAFT':
+            from core.services.quote_snapshot import QuoteSendBlocked, send_check
+            check = send_check(quote)
+            if not check['can_send']:
+                body = QuoteSendBlocked(check).detail
+                body['title'] = 'This quote can\'t be downloaded to send yet'
+                return Response(body, status=status.HTTP_400_BAD_REQUEST)
         pdf_bytes = generate_quote_pdf_bytes(quote)
 
         response = HttpResponse(pdf_bytes, content_type='application/pdf')
@@ -2952,14 +3207,19 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         transition and so wouldn't re-fire the signal on its own.
         """
         from core.services.quote_share import ensure_quote_token, quote_share_url, send_quote_to_customer_email
+        from core.services.quote_snapshot import enforce_send_guard
         quote = self.get_object()
 
+        # QUOTE-RULES.md §11: blocking warnings stop the send (QuoteSendBlocked
+        # -> structured 400); warn-level ones come back in `warnings`.
         if quote.status != 'SENT':
             quote.status = 'SENT'
-            quote.save()  # fires quote_saved -> send_quote_to_customer_email once
+            quote.save()  # pre_save guard, then quote_saved -> email once (on commit)
+            check = getattr(quote, '_send_check', None) or {'warnings': []}
             email_sent = getattr(quote, '_share_email_sent', False)
             recipient = getattr(quote, '_share_recipient', None)
         else:
+            check = enforce_send_guard(quote)     # a resend is a send too
             ensure_quote_token(quote)
             email_sent, recipient = send_quote_to_customer_email(quote)
 
@@ -2982,7 +3242,13 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
             'email_sent': email_sent,
             'customer_email': recipient,
             'email_skipped_reason': skipped_reason,
+            'warnings': check['warnings'],
         })
+
+
+def public_quote_vat_fields(quote):
+    from core.services.quote_vat import public_fields, quote_vat
+    return public_fields(quote_vat(quote))
 
 
 class PublicQuoteView(APIView):
@@ -3034,8 +3300,15 @@ class PublicQuoteView(APIView):
                 'pickup_date': str(quote.pickup_date) if quote.pickup_date else None,
                 'delivery_date': str(quote.delivery_date) if quote.delivery_date else None,
                 'total_amount': str(quote.total_amount),
+                # Price excl. VAT, VAT and total incl. VAT, the same figures
+                # as the PDF and the emails (core.services.quote_vat).
+                **public_quote_vat_fields(quote),
                 'valid_until': str(quote.valid_until),
                 'status': quote.status,
+                # Additive: whether Accept / Decline should be offered (never
+                # on a draft that was not sent, nor once decided or expired).
+                'can_respond': quote.status in ('SENT',) and not (
+                    quote.valid_until and quote.valid_until < timezone.now().date()),
                 'sla_hours': quote.sla_hours,
                 'trip_type': quote.trip_type,
                 'return_location': quote.return_location,
@@ -3099,6 +3372,19 @@ class PublicQuoteRespondView(APIView):
                     status=status.HTTP_410_GONE
                 )
 
+            # A draft was never sent: its link exists (the token is issued on
+            # save) but the customer has nothing to accept or decline yet.
+            if quote.status == 'DRAFT':
+                return Response(
+                    {
+                        'error': "This quote hasn't been sent yet, so it can't be accepted or declined. "
+                                 'Please contact your transporter.',
+                        'status': quote.status,
+                        'not_sent': True,
+                    },
+                    status=status.HTTP_409_CONFLICT
+                )
+
             action = request.data.get('action')
             if action not in ['accept', 'decline']:
                 return Response(
@@ -3146,6 +3432,10 @@ class PublicQuoteRespondView(APIView):
                 record_quote_outcome(
                     quote, 'rejected',
                     rejection_reason=quote.rejection_reason,
+                    # Optional: the customer's structured reason, when the
+                    # decline form offers one (price|timing|capacity|relationship|other).
+                    loss_reason=request.data.get('loss_reason') or '',
+                    loss_reason_note=request.data.get('loss_reason_note') or '',
                 )
                 return Response({
                     'message': 'Quote declined',
@@ -3199,9 +3489,16 @@ class PublicInvoiceView(APIView):
             'discount': str(invoice.discount),
             'total_amount': str(invoice.total_amount),
             'paid_amount': str(invoice.paid_amount),
+            'credited_amount': str(invoice.credited_amount),
             'balance': str(invoice.balance),
             'notes': invoice.notes,
             'line_items': invoice.line_items or [],
+            'lines': [{
+                'description': l.description, 'quantity': str(l.quantity), 'unit_price': str(l.unit_price),
+                'discount_amount': str(l.discount_amount), 'tax_code': l.tax_code, 'tax_rate': str(l.tax_rate),
+                'net_amount': str(l.net_amount), 'vat_amount': str(l.vat_amount), 'total_amount': str(l.total_amount),
+            } for l in invoice.lines.all()],
+            'is_tax_invoice': bool(getattr(company, 'vat_registered', True)) if company else True,
             'description': getattr(invoice, 'description', '') or '',
             'company_name': company.company_name if company else 'TruckWys',
             'company_logo_url': company_logo_url,
@@ -3378,23 +3675,34 @@ import math
 import requests as http_requests
 
 
+def _legacy_route_shape(data, extra_costs):
+    """Old clients (no X-TW-Quote-Rules: 1 header) get the numeric shape
+    they were built for: unknown toll / fuel figures as 0 and a numeric
+    total, as before QUOTE-RULES. The flags (tolls_unknown,
+    distance_estimated, fuel_unknown_reason) stay, additively. Clients that
+    send the header get nulls for unknowns (QUOTE-RULES §6)."""
+    def fix(d, extras):
+        for k in ('toll_cost_zar', 'fuel_cost_zar', 'fuel_usage_litres'):
+            if d.get(k) is None:
+                d[k] = 0.0
+        if 'fuel_rate_l_per_100km' in d and d['fuel_rate_l_per_100km'] is None:
+            d['fuel_rate_l_per_100km'] = 0.0
+        if d.get('total_cost_zar') is None:
+            d['total_cost_zar'] = round(d['fuel_cost_zar'] + d['toll_cost_zar'] + extras, 2)
+    fix(data, sum((data.get('additional_costs') or {}).values()))
+    for rt in data.get('routes') or []:
+        fix(rt, extra_costs)
+
+
 class RouteCalculatorView(APIView):
     """POST /api/v1/route/calculate/ — TomTom routing with fuel/toll calc + cross-border costs"""
     permission_classes = [IsAuthenticated]
 
     TOMTOM_API_KEY = config('TOMTOM_API_KEY', default='')
-    FUEL_RATE_FALLBACK = 0.35   # litres/km — used only when vehicle_type is unrecognised
-    TOLL_ZAR_KM_FALLBACK = 0.95 # ZAR/km — used only when no SANRAL route is matched
-
-    # Per-vehicle-type diesel consumption (litres/km). Mirrors frontend FUEL_CONSUMPTION.
-    FUEL_CONSUMPTION_BY_TYPE: dict = {
-        'Flatbed':      0.32,
-        'Tautliner':    0.35,
-        'Refrigerated': 0.38,
-        'Box Truck':    0.30,
-        'Tanker':       0.40,
-        'Danger Load':  0.36,
-    }
+    # Fuel on the route options is priced by the quote rules (QUOTE-RULES.md
+    # §1/§4: the company's own vehicle type, burn by load ratio, the company's
+    # diesel price). No name-keyed consumption table, no 0.35 L/km, no 21.7:
+    # unknown => null with fuel_unknown_reason.
 
     # Maps frontend vehicle_type → SANRAL truck class used by toll_calculator.
     # Single source of truth lives in toll_calculator (imported below) so the class
@@ -3404,7 +3712,6 @@ class RouteCalculatorView(APIView):
     def post(self, request):
         from core.services.cross_border import (detect_countries, calculate_cross_border_costs,
                                                 get_cross_border_warnings, country_distances_km)
-        from core.services.fuel_price import fetch_fuel_prices
         from decimal import Decimal
         from core.services.toll_calculator import (VAT_RATE, calculate_tolls, calculate_tolls_by_geometry,
                                                    resolve_toll_class)
@@ -3416,7 +3723,14 @@ class RouteCalculatorView(APIView):
         origin_lon = data.get('origin_lon')
         dest_lat = data.get('dest_lat')
         dest_lon = data.get('dest_lon')
-        weight_kg = int(data.get('weight_kg') or data.get('weight') or 20000)
+        raw_weight = data.get('weight_kg') or data.get('weight')
+        try:
+            load_kg = float(raw_weight) if raw_weight not in (None, '') else None
+        except (TypeError, ValueError):
+            load_kg = None
+        # Cross-border fee bands still need a weight; fuel uses the real load
+        # (unknown => full-load burn, per the quote rules).
+        weight_kg = int(load_kg or 20000)
         vehicle_type = data.get('vehicle_type', 'Flatbed')
 
         # Ordered intermediate stops between origin and destination — only
@@ -3479,28 +3793,41 @@ class RouteCalculatorView(APIView):
                              {'lat': d['lat'], 'lon': d['lon']}],
             }]
 
-        # Get live fuel price
-        try:
-            fuel_price_obj = fetch_fuel_prices()
-            diesel_price = float(fuel_price_obj.diesel_inland)
-        except Exception:
-            # Fall back to company's configured fuel price, then static default
-            try:
-                company = getattr(request.user, 'company', None)
-                diesel_price = float(company.fuel_price_per_litre) if company and company.fuel_price_per_litre else 21.7
-            except Exception:
-                diesel_price = 21.7
+        # Fuel (QUOTE-RULES.md §1/§4): the company's vehicle type (never
+        # another tenant's, never a name-keyed guess) and its diesel price.
+        from core.services import quote_costing as qc
+        from core.services.fuel_price import resolve_company_diesel
+        company = getattr(request.user, 'company', None)
+        vt_obj, _how = qc.resolve_vehicle(company, vehicle_type_id=data.get('vehicle_type_id'),
+                                          name=vehicle_type, suggest=False)
+        diesel = resolve_company_diesel(company) if company is not None else None
+        diesel_price = (diesel or {}).get('price')
+        burn = None
+        fuel_unknown_reason = None
+        if vt_obj is None:
+            fuel_unknown_reason = 'no_vehicle'
+        else:
+            veh = qc.vehicle_input(vt_obj)
+            rated = qc._pos(veh['rated_burn_l_per_100km'])
+            cap_t = qc.capacity_tonnes(veh['capacity'])
+            ratio = min((load_kg / 1000) / cap_t, 1) if (cap_t and load_kg is not None) else 1
+            if rated is None:
+                fuel_unknown_reason = 'truck_burn_missing'
+            else:
+                burn = rated * (qc.LOADED_BASE + qc.LOADED_SLOPE * ratio)
+        if diesel_price is None and fuel_unknown_reason is None:
+            fuel_unknown_reason = 'diesel_missing'
 
-        # Fuel cost — vehicle-specific consumption rate (DB first, dict fallback)
-        try:
-            from core.models import VehicleType as VehicleTypeModel
-            vt_obj = VehicleTypeModel.objects.filter(name=vehicle_type).first()
-            fuel_rate = float(vt_obj.fuel_consumption_l_per_100km) / 100 if vt_obj and vt_obj.fuel_consumption_l_per_100km else None
-        except Exception:
-            fuel_rate = None
-        fuel_rate = fuel_rate or self.FUEL_CONSUMPTION_BY_TYPE.get(vehicle_type, self.FUEL_RATE_FALLBACK)
-        fuel_litres = round(distance_km * fuel_rate, 2)
-        fuel_zar = round(fuel_litres * diesel_price, 2)
+        def _fuel_for(km):
+            """(litres unrounded, fuel R to the cent) or (None, None)."""
+            if burn is None or diesel_price is None:
+                return None, None
+            litres = km * burn / 100
+            return litres, qc.cents(litres * diesel_price)
+
+        fuel_litres_raw, fuel_zar = _fuel_for(distance_km)
+        fuel_litres = round(fuel_litres_raw, 2) if fuel_litres_raw is not None else None
+        fuel_rate = burn / 100 if burn is not None else None
 
         # Use resolved labels + TomTom country codes for country detection
         origin_label = o.get('label', origin)
@@ -3553,7 +3880,10 @@ class RouteCalculatorView(APIView):
         # Toll cost — matched PER ROUTE via point-to-polyline plaza matching.
         # SANRAL class: the VehicleType's explicit sanral_toll_class when set,
         # else a guess from the name (resolve_toll_class reports which).
-        toll_class = resolve_toll_class(vehicle_type, getattr(request.user, 'company', None))
+        # The selected truck (vehicle_type_id) decides the toll class when
+        # given; the name is only a fallback for old clients.
+        toll_class = resolve_toll_class(vt_obj.name if vt_obj is not None else vehicle_type,
+                                        getattr(request.user, 'company', None))
         toll_truck_type = toll_class.truck_type
 
         _TOLL_UNAVAILABLE_MESSAGES = {
@@ -3616,7 +3946,11 @@ class RouteCalculatorView(APIView):
 
         geometry = routes_raw[0].get('geometry', []) if routes_raw else []
         toll_result = _toll_for_route(geometry)
-        toll_zar = float(toll_result['excl'])
+        # A failed or unmatched toll lookup is UNKNOWN, never R 0 (QUOTE-RULES
+        # §6): toll_cost_zar null + tolls_unknown. A real route that passes no
+        # plaza (no unavailable_reason) is a known R 0.
+        tolls_unknown = toll_result['unavailable_reason'] is not None
+        toll_zar = None if tolls_unknown else float(toll_result['excl'])
         toll_breakdown = toll_result['breakdown']
         toll_routes_used = toll_result['routes']
         toll_unavailable_reason = toll_result['unavailable_reason']
@@ -3667,12 +4001,20 @@ class RouteCalculatorView(APIView):
             'source': source,
             'distance_km': round(distance_km, 1),
             'duration_minutes': int(duration_min),
+            # Straight-line fallback (TomTom unavailable): flagged so the
+            # quote can't go out on it unconfirmed (QUOTE-RULES §6).
+            'distance_estimated': source != 'tomtom',
             'fuel_usage_litres': fuel_litres,
             'fuel_cost_zar': fuel_zar,
-            'fuel_rate_l_per_100km': round(fuel_rate * 100, 1),
+            'fuel_rate_l_per_100km': round(fuel_rate * 100, 1) if fuel_rate is not None else None,
+            'fuel_unknown_reason': fuel_unknown_reason,
+            'fuel_vehicle_type_id': vt_obj.id if vt_obj is not None else None,
+            'fuel_price_per_litre': diesel_price,
+            'fuel_price_source': (diesel or {}).get('source'),
             # VAT-EXCLUSIVE since 2026-09 (docs/backend-changes/2026-09-toll-class-vat.md):
             # this is the carrier's toll cost for a quote priced excl. VAT.
-            'toll_cost_zar': round(toll_zar, 2),
+            'toll_cost_zar': round(toll_zar, 2) if toll_zar is not None else None,
+            'tolls_unknown': tolls_unknown,
             'toll_cost_includes_vat': False,
             'toll_cost_incl_vat_zar': float(toll_result['incl']),
             'toll_vat_zar': float(toll_result['incl'] - toll_result['excl']),
@@ -3687,7 +4029,8 @@ class RouteCalculatorView(APIView):
             'toll_warning': _TOLL_UNAVAILABLE_MESSAGES.get(toll_unavailable_reason) if toll_unavailable_reason else None,
             'toll_routes': toll_routes_used,
             'toll_breakdown': toll_breakdown,
-            'total_cost_zar': round(fuel_zar + toll_zar + sum(additional_costs.values()), 2),
+            'total_cost_zar': (round(fuel_zar + toll_zar + sum(additional_costs.values()), 2)
+                               if fuel_zar is not None and toll_zar is not None else None),
             'origin_coords': o,
             'dest_coords': d,
             'origin_resolved': o.get('label', origin),
@@ -3716,12 +4059,14 @@ class RouteCalculatorView(APIView):
         extra_costs = sum(additional_costs.values()) if additional_costs else 0
         routes_out = []
         for i, rt in enumerate(routes_raw):
-            r_litres = round(rt['distance_km'] * fuel_rate, 2)
-            r_fuel = round(r_litres * diesel_price, 2)
+            r_litres_raw, r_fuel = _fuel_for(rt['distance_km'])
+            r_litres = round(r_litres_raw, 2) if r_litres_raw is not None else None
             analysis = self._analyze_route(rt)
             terrain = self._infer_terrain(rt['geometry'], origin, destination)
             rt_toll = toll_result if i == 0 else _toll_for_route(rt.get('geometry', []))
-            rt_toll_zar, rt_breakdown = round(float(rt_toll['excl']), 2), rt_toll['breakdown']
+            rt_tolls_unknown = rt_toll['unavailable_reason'] is not None
+            rt_toll_zar = None if rt_tolls_unknown else round(float(rt_toll['excl']), 2)
+            rt_breakdown = rt_toll['breakdown']
             routes_out.append({
                 'index': i,
                 'is_best': i == 0,
@@ -3741,7 +4086,9 @@ class RouteCalculatorView(APIView):
                 'tolls_unavailable': rt_toll['unavailable_reason'] is not None,
                 'tolls_unavailable_reason': rt_toll['unavailable_reason'],
                 'toll_breakdown': rt_breakdown,
-                'total_cost_zar': round(r_fuel + rt_toll_zar + extra_costs, 2),
+                'tolls_unknown': rt_tolls_unknown,
+                'total_cost_zar': (round(r_fuel + rt_toll_zar + extra_costs, 2)
+                                   if r_fuel is not None and rt_toll_zar is not None else None),
                 # Rich route metadata from section analysis
                 'toll_count': analysis['toll_count'],
                 'has_tunnel': analysis['has_tunnel'],
@@ -3758,7 +4105,8 @@ class RouteCalculatorView(APIView):
             })
         response_data['routes'] = routes_out
         response_data['best_index'] = 0
-
+        if request.headers.get('X-TW-Quote-Rules') != '1':
+            _legacy_route_shape(response_data, extra_costs)
         return Response(response_data)
 
     def _geocode(self, query):
@@ -4123,19 +4471,25 @@ class DashboardOverviewView(APIView):
         now = timezone.now()
         start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         
-        # Revenue MTD from PAID invoices
-        revenue_mtd = Invoice.objects.filter(
-            created_at__gte=start_of_month,
-            status='PAID',
-            company=request.user.company
-        ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0')
+        # Revenue MTD: the one definition (accounting_reports) - accrual,
+        # EXCLUDING VAT: issued invoices this month less credit notes issued
+        # this month; drafts and void never count. (Was: PAID invoices incl.
+        # VAT by created_at.) See docs/foundation/REPORTS.md.
+        from core.services import accounting_reports as ar
+        from core.services.aging_service import OUTSTANDING_STATUSES
+        company = request.user.company
+        revenue_mtd = (ar.sales(company, start_of_month.date(), None)['revenue_excl_vat']
+                       if company else Decimal('0'))
 
-        # Outstanding invoices (SENT + OVERDUE)
+        # Outstanding invoices: what is still owed (balance, incl. VAT) on
+        # issued invoices - the aging report's rule. (Was: full totals of
+        # SENT + OVERDUE only, ignoring part-payments and credit notes.)
         outstanding = Invoice.objects.filter(
-            status__in=['SENT', 'OVERDUE'],
+            status__in=OUTSTANDING_STATUSES,
+            balance__gt=0,
             company=request.user.company
         )
-        outstanding_total = outstanding.aggregate(total=Sum('total_amount'))['total'] or Decimal('0')
+        outstanding_total = outstanding.aggregate(total=Sum('balance'))['total'] or Decimal('0')
         outstanding_count = outstanding.count()
 
         # Active loads (IN_TRANSIT + LOADING)
@@ -4158,6 +4512,9 @@ class DashboardOverviewView(APIView):
         
         return Response({
             'revenue_mtd': float(revenue_mtd),
+            'revenue_excl_vat_mtd': float(revenue_mtd),
+            'revenue_basis': 'accrual',
+            'vat_treatment': 'excl_vat',
             'outstanding_invoices_total': float(outstanding_total),
             'outstanding_invoices_count': outstanding_count,
             'active_loads': active_loads,
@@ -4612,7 +4969,9 @@ class WebhookViewSet(viewsets.ModelViewSet):
     destroy: Delete webhook
     test: POST /api/v1/webhooks/{id}/test/ - Send test ping
     """
-    permission_classes = [IsAuthenticated]
+    # Webhooks push company data to an arbitrary URL: company ADMIN or
+    # superuser only (capital-safety 2026-10, see IsIntegrationAdmin).
+    permission_classes = [IsIntegrationAdmin]
     
     def get_queryset(self):
         from core.models import Webhook
@@ -4651,7 +5010,9 @@ class IntegrationAPIKeyViewSet(viewsets.ModelViewSet):
     destroy: Delete/revoke API key
     calls: GET paginated call log for this key
     """
-    permission_classes = [IsAuthenticated]
+    # API keys grant programmatic access to company data: company ADMIN or
+    # superuser only (capital-safety 2026-10, see IsIntegrationAdmin).
+    permission_classes = [IsIntegrationAdmin]
 
     def get_queryset(self):
         from core.models import IntegrationAPIKey

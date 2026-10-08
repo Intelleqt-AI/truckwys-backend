@@ -3,7 +3,7 @@ moves into grace_period here; suspending it once the grace clock runs out is
 check_grace_period_expirations' job, not this one.
 
 Usage: python manage.py retry_delivery_fee_charges
-Designed to run daily from cron (alongside run_dunning / fetch_fuel_price_daily).
+Designed to run daily from cron (alongside run_dunning).
 """
 from django.core.management.base import BaseCommand
 

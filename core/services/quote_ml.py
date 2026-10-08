@@ -393,6 +393,18 @@ def predict_optimal_margin(
 _MODEL_CACHE: Dict[Tuple[str, Optional[int]], Tuple[Any, float]] = {}
 
 
+def _live_class_counts(scope: str, key_id: Optional[int]) -> Tuple[int, int]:
+    """Live (accepted, rejected) — not cached, not frozen-at-training-time —
+    for a resolve() scope/key_id pair. Lazy import: quote_training doesn't
+    import this module, so this is only to keep the dependency one-directional."""
+    from core.services.quote_training import live_class_counts
+    if scope == 'company':
+        return live_class_counts('company', company_id=key_id)
+    if scope == 'user':
+        return live_class_counts('user', user_id=key_id)
+    return live_class_counts('global')
+
+
 class WinProbabilityModel:
     """
     Classifier that predicts P(quote accepted | features) — see
@@ -408,15 +420,23 @@ class WinProbabilityModel:
     serves whatever artifact training produced.
     """
 
-    def __init__(self, scope: str = 'global', user_id: Optional[int] = None):
+    def __init__(self, scope: str = 'global', user_id: Optional[int] = None, company_id: Optional[int] = None):
         # Only needs sklearn + joblib (not the LightGBM margin stack).
         if not WIN_ML_AVAILABLE:
             raise ImportError("Win-probability ML libraries (sklearn/joblib) not available")
 
         self.scope = scope
         self.user_id = user_id if scope == 'user' else None
+        # scope='company': trained only on one company's own decided quotes
+        # (core.services.quote_training, scope='company').
+        self.company_id = company_id if scope == 'company' else None
         base = Path(settings.MEDIA_ROOT) / 'ml_models'
-        self.MODEL_DIR = (base / 'users' / str(self.user_id)) if scope == 'user' else (base / 'global')
+        if scope == 'user':
+            self.MODEL_DIR = base / 'users' / str(self.user_id)
+        elif scope == 'company':
+            self.MODEL_DIR = base / 'companies' / str(self.company_id)
+        else:
+            self.MODEL_DIR = base / 'global'
         self.MODEL_PATH = self.MODEL_DIR / 'win_probability_model.pkl'
         self.METADATA_PATH = self.MODEL_DIR / 'win_probability_metadata.json'
 
@@ -553,38 +573,69 @@ class WinProbabilityModel:
         then the global model, then (None, None, 0) — the caller degrades to
         "AI unavailable", never to the heuristic silently labeled as AI.
         scope is 'user' | 'global' | None. Cached per-process (see
-        _MODEL_CACHE) for WIN_MODEL_CACHE_TTL_SECONDS."""
+        _MODEL_CACHE) for WIN_MODEL_CACHE_TTL_SECONDS.
+
+        Kept for callers with no company context; company-aware callers use
+        resolve() (company -> user -> global only when the company opted in)."""
+        return WinProbabilityModel.resolve(company_id=None, user_id=user_id, allow_global=True)
+
+    @staticmethod
+    def resolve(company_id: Optional[int] = None, user_id: Optional[int] = None, allow_global: bool = True
+                ) -> Tuple[Optional['WinProbabilityModel'], Optional[str], int]:
+        """(model, scope, sample_count): the company's own model first
+        (scope='company'), then the user's, then — only when allow_global —
+        the pooled global model, else (None, None, 0). Cached per-process."""
         if not WIN_ML_AVAILABLE:
             return None, None, 0
         import time as _time
+        from core.services.quote_training import _min_class_counts
         ttl = float(getattr(settings, 'WIN_MODEL_CACHE_TTL_SECONDS', 60))
 
-        def _cached(cache_key, min_samples):
+        def _cached(cache_key, min_accepted, min_rejected):
             hit = _MODEL_CACHE.get(cache_key)
             if hit is not None and (_time.monotonic() - hit[1]) < ttl:
                 model = hit[0]
             else:
-                scope, uid = cache_key
+                scope, key_id = cache_key
                 try:
-                    model = WinProbabilityModel(scope=scope, user_id=uid)
+                    if scope == 'company':
+                        model = WinProbabilityModel(scope='company', company_id=key_id)
+                    else:
+                        model = WinProbabilityModel(scope=scope, user_id=key_id)
                 except Exception as exc:
-                    logger.warning('resolve_for_user: failed to construct %s model: %s', scope, exc)
+                    logger.warning('resolve: failed to construct %s model: %s', scope, exc)
                     model = None
                 _MODEL_CACHE[cache_key] = (model, _time.monotonic())
             if model is None or not model.is_trained():
                 return None, 0
-            n = int(model.metadata.get('training_sample_count') or 0)
-            if n < min_samples:
+            # Gate on the LIVE accepted/rejected counts, not the frozen
+            # training_sample_count in the artifact's own metadata: a
+            # company/user that has since fallen below the bar (deleted
+            # quotes, a shrinking rolling window, class imbalance creeping
+            # in) stops being served a stale model rather than it running
+            # indefinitely. Checked independently — 500 accepted but only 5
+            # rejected does not qualify just because the total is large.
+            scope_, key_id = cache_key
+            accepted, rejected = _live_class_counts(scope_, key_id)
+            n = accepted + rejected
+            if accepted < min_accepted or rejected < min_rejected:
                 return None, n
             return model, n
 
+        min_accepted, min_rejected = _min_class_counts('company')  # same bar for every scope today
+        if company_id:
+            model, n = _cached(('company', company_id), min_accepted, min_rejected)
+            if model is not None:
+                return model, 'company', n
+
         if user_id:
-            model, n = _cached(('user', user_id), int(getattr(settings, 'WIN_MODEL_USER_MIN_SAMPLES', 40)))
+            model, n = _cached(('user', user_id), min_accepted, min_rejected)
             if model is not None:
                 return model, 'user', n
 
-        model, n = _cached(('global', None), int(getattr(settings, 'WIN_MODEL_GLOBAL_MIN_SAMPLES', 40)))
-        if model is not None:
-            return model, 'global', n
+        if allow_global:
+            model, n = _cached(('global', None), min_accepted, min_rejected)
+            if model is not None:
+                return model, 'global', n
 
         return None, None, 0

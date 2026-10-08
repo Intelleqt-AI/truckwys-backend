@@ -22,27 +22,75 @@ from core.tests.test_price_analysis import IsolatedModelStorageMixin, make_quote
 
 User = get_user_model()
 
+# The win model needs this many accepted outcomes AND this many rejected
+# outcomes, independently (WIN_MODEL_MIN_ACCEPTED / WIN_MODEL_MIN_REJECTED,
+# both default 200) -- not a 200+ combined total. Tests below build exactly
+# to this bar so they stay correct if the setting's default ever changes.
+MIN_ACCEPTED, MIN_REJECTED = quote_training._min_class_counts('user')
 
-def make_outcomes(company, customer, user, n, *, accepted_ratio=0.5, prefix='Q'):
-    """Directly creates n Quote+QuoteOutcome pairs (bypassing
-    record_quote_outcome's Celery scheduling, which isn't the point of these
-    tests) with alternating accepted/rejected labels.
+
+def ensure_lane_market(origin='JHB', destination='CPT'):
+    """Real won quotes on the lane from two other (fictional) operators, so
+    the win model's market reference is market data. The hard-coded SA lane
+    estimate (38 900 on JHB->CPT) used to stand in for it; it is no longer
+    market evidence (QUOTE-RULES / no invented stats), so the fixture now
+    carries a real k-anonymous platform sample in the lane's price band."""
+    from core.models import Company, Customer
+    if Quote.objects.filter(quote_number__startswith=f'MKT-{origin}{destination}-').exists():
+        return
+    # Platform privacy rule: >= 10 quotes from >= 3 operators other than the
+    # caller, median to the nearest R500 -> 39 000 (the old estimate's level).
+    totals = (37000, 37500, 38000, 38500, 38800, 39000, 39000, 39500, 40000, 40500, 41000, 41500)
+    for c_i in range(3):
+        donor = Company.objects.create(company_name=f'Market Donor {origin}{destination} {c_i}')
+        cust = Customer.objects.create(company=donor, name=f'Donor Customer {c_i}', email=f'd{c_i}@x.test',
+                                       phone='', address='', city='', state='', zip_code='')
+        for i, total in enumerate(totals[c_i * 4:(c_i + 1) * 4]):
+            make_quote(donor, cust, number=f'MKT-{origin}{destination}-{c_i}-{i}', total=total,
+                       origin=origin, destination=destination, status='ACCEPTED', outcome='accepted',
+                       was_sent=True)
+
+
+def make_outcomes(company, customer, user, n_accepted, n_rejected=None, *, prefix='Q'):
+    """Directly creates n_accepted + n_rejected Quote+QuoteOutcome pairs
+    (bypassing record_quote_outcome's Celery scheduling, which isn't the
+    point of these tests), with the first n_accepted labelled accepted and
+    the rest rejected.
 
     Prices vary with the label — won quotes cheaper, lost quotes dearer, with
     deliberate overlap between the two bands so the classes aren't perfectly
     separable. Every quote used to be priced at a flat 20000, which made
-    price_ratio a single constant across the whole training set (verified:
-    0.5141 on all 40 rows). Anything asserting "this tier trains" was
-    therefore asserting it on data with no price signal at all — and once
-    quote_training gained its price-sensitivity gate, such a model is
-    correctly refused. Real outcomes carry price variation; these now do too.
+    price_ratio a single constant across the whole training set. Anything
+    asserting "this tier trains" was therefore asserting it on data with no
+    price signal at all — and once quote_training gained its price-sensitivity
+    gate, such a model is correctly refused. Real outcomes carry price
+    variation; these now do too.
     """
-    n_accepted = round(n * accepted_ratio)
+    ensure_lane_market()
+    if n_rejected is None:
+        total = n_accepted
+        n_accepted = total // 2
+        n_rejected = total - n_accepted
+    n = n_accepted + n_rejected
     for i in range(n):
         accepted = i < n_accepted
         outcome = 'accepted' if accepted else 'rejected'
-        # 16k-22k won, 23k-29k lost, walked deterministically for repeatability.
-        total = (16000 + (i % 7) * 1000) if accepted else (23000 + (i % 7) * 1000)
+        # 16k-25k won, 20k-29k lost: a deliberate overlap band (20k-25k) where
+        # both labels occur, not two cleanly separated price bands. Fully
+        # separable price data (no overlap) is linearly separable by
+        # construction, and at a few hundred rows logistic regression pushes
+        # its coefficients toward infinity to fit that perfectly — the
+        # decision boundary saturates so hard that a 0.9x-1.2x local sweep
+        # around any row away from the boundary barely moves its probability,
+        # collapsing the measured price_sensitivity even though the model
+        # has, if anything, learned the relationship MORE confidently. Real
+        # outcome data always has some overlap; so should this.
+        if accepted:
+            frac = i / max(1, n_accepted - 1)
+            total = round(16000 + frac * 9000)
+        else:
+            frac = (i - n_accepted) / max(1, n_rejected - 1)
+            total = round(20000 + frac * 9000)
         q = make_quote(company, customer, number=f'{prefix}-{i}', created_by=user, total=total)
         QuoteOutcome.objects.create(
             quote=q, company=company, created_by=user, outcome=outcome,
@@ -71,39 +119,43 @@ class TrainingThresholdGateTests(_RequiresSklearnMixin, IsolatedModelStorageMixi
         )
         self.user = User.objects.create_user(username='gate-user', password='x', company=self.company)
 
-    def test_39_outcomes_below_threshold_refuses(self):
-        make_outcomes(self.company, self.customer, self.user, 39)
+    def test_one_short_of_either_class_refuses(self):
+        # 200 accepted clears MIN_ACCEPTED on its own, but rejected is one
+        # short of MIN_REJECTED — the combined total (399) is well past the
+        # OLD 40-sample bar, which is exactly the regression this gate closes.
+        make_outcomes(self.company, self.customer, self.user, MIN_ACCEPTED, MIN_REJECTED - 1)
         result = quote_training.retrain_win_model_for_scope('user', user_id=self.user.id)
         self.assertFalse(result['trained'])
         self.assertIn('insufficient data', result['reason'])
-        self.assertEqual(result['samples'], 39)
+        self.assertEqual(result['accepted'], MIN_ACCEPTED)
+        self.assertEqual(result['rejected'], MIN_REJECTED - 1)
 
-    def test_40_mixed_outcomes_trains_and_activates(self):
-        make_outcomes(self.company, self.customer, self.user, 40)
+    def test_mixed_outcomes_at_exactly_the_bar_trains_and_activates(self):
+        make_outcomes(self.company, self.customer, self.user, MIN_ACCEPTED, MIN_REJECTED)
         result = quote_training.retrain_win_model_for_scope('user', user_id=self.user.id)
         self.assertTrue(result['trained'], result)
-        self.assertEqual(result['samples'], 40)
+        self.assertEqual(result['samples'], MIN_ACCEPTED + MIN_REJECTED)
 
         version = MLModelVersion.objects.filter(scope='user', user=self.user, status='active').first()
         self.assertIsNotNone(version)
-        self.assertEqual(version.training_sample_count, 40)
-        self.assertEqual(version.accepted_count, 20)
-        self.assertEqual(version.rejected_count, 20)
+        self.assertEqual(version.training_sample_count, MIN_ACCEPTED + MIN_REJECTED)
+        self.assertEqual(version.accepted_count, MIN_ACCEPTED)
+        self.assertEqual(version.rejected_count, MIN_REJECTED)
 
         model = WinProbabilityModel(scope='user', user_id=self.user.id)
         self.assertTrue(model.is_trained())
 
     def test_only_accepted_outcomes_refuses_even_above_threshold(self):
-        make_outcomes(self.company, self.customer, self.user, 45, accepted_ratio=1.0)
+        make_outcomes(self.company, self.customer, self.user, MIN_ACCEPTED + 50, 0)
         result = quote_training.retrain_win_model_for_scope('user', user_id=self.user.id)
         self.assertFalse(result['trained'])
-        self.assertEqual(result['reason'], 'only one outcome class present')
+        self.assertIn('insufficient data', result['reason'])
 
     def test_only_rejected_outcomes_refuses_even_above_threshold(self):
-        make_outcomes(self.company, self.customer, self.user, 45, accepted_ratio=0.0)
+        make_outcomes(self.company, self.customer, self.user, 0, MIN_REJECTED + 50)
         result = quote_training.retrain_win_model_for_scope('user', user_id=self.user.id)
         self.assertFalse(result['trained'])
-        self.assertEqual(result['reason'], 'only one outcome class present')
+        self.assertIn('insufficient data', result['reason'])
 
 
 class UserIsolationAndFallbackTests(_RequiresSklearnMixin, IsolatedModelStorageMixin, TestCase):
@@ -118,47 +170,51 @@ class UserIsolationAndFallbackTests(_RequiresSklearnMixin, IsolatedModelStorageM
         self.user_b = User.objects.create_user(username='iso-user-b', password='x', company=self.company)
 
     def test_user_a_model_never_trained_on_user_b_rows(self):
-        make_outcomes(self.company, self.customer, self.user_a, 40, prefix='A')
+        make_outcomes(self.company, self.customer, self.user_a, MIN_ACCEPTED, MIN_REJECTED, prefix='A')
         # user_b never reaches the threshold on their own.
-        make_outcomes(self.company, self.customer, self.user_b, 10, prefix='B')
+        make_outcomes(self.company, self.customer, self.user_b, 5, 5, prefix='B')
 
         result_a = quote_training.retrain_win_model_for_scope('user', user_id=self.user_a.id)
         self.assertTrue(result_a['trained'])
-        self.assertEqual(result_a['samples'], 40)  # not 50 -- user_b's 10 rows never counted
+        # Not MIN_ACCEPTED+MIN_REJECTED+10 -- user_b's 10 rows never counted.
+        self.assertEqual(result_a['samples'], MIN_ACCEPTED + MIN_REJECTED)
 
         result_b = quote_training.retrain_win_model_for_scope('user', user_id=self.user_b.id)
         self.assertFalse(result_b['trained'])
         self.assertEqual(result_b['samples'], 10)
 
     def test_resolve_prefers_user_model_when_it_qualifies(self):
-        make_outcomes(self.company, self.customer, self.user_a, 40, prefix='A')
+        make_outcomes(self.company, self.customer, self.user_a, MIN_ACCEPTED, MIN_REJECTED, prefix='A')
         quote_training.retrain_win_model_for_scope('user', user_id=self.user_a.id)
         # A qualifying global model too, from a different (unrelated) user.
-        other_company = Company.objects.create(company_name='Global Donor Co')
+        other_company = Company.objects.create(company_name='Global Donor Co', pool_pricing_data=True)
         other_customer = Customer.objects.create(
             company=other_company, name='Donor Ltd', email='donor@x.test',
             phone='', address='', city='', state='', zip_code='',
         )
         donor_user = User.objects.create_user(username='donor-user', password='x', company=other_company)
-        make_outcomes(other_company, other_customer, donor_user, 40, prefix='D')
+        make_outcomes(other_company, other_customer, donor_user, MIN_ACCEPTED, MIN_REJECTED, prefix='D')
         quote_training.retrain_win_model_for_scope('global')
 
         ctx = resolve_prediction_context(self.user_a, self.company)
         self.assertTrue(ctx.available)
         self.assertEqual(ctx.scope, 'user')
-        self.assertEqual(ctx.sample_count, 40)
+        self.assertEqual(ctx.sample_count, MIN_ACCEPTED + MIN_REJECTED)
 
     def test_resolve_falls_back_to_global_when_user_tier_insufficient(self):
         # user_b never qualifies on their own; global does (donor company).
-        other_company = Company.objects.create(company_name='Global Donor Co 2')
+        other_company = Company.objects.create(company_name='Global Donor Co 2', pool_pricing_data=True)
         other_customer = Customer.objects.create(
             company=other_company, name='Donor Ltd 2', email='donor2@x.test',
             phone='', address='', city='', state='', zip_code='',
         )
         donor_user = User.objects.create_user(username='donor-user-2', password='x', company=other_company)
-        make_outcomes(other_company, other_customer, donor_user, 40, prefix='D2')
+        make_outcomes(other_company, other_customer, donor_user, MIN_ACCEPTED, MIN_REJECTED, prefix='D2')
         quote_training.retrain_win_model_for_scope('global')
 
+        # The global tier only serves companies that opted into pooling.
+        self.company.pool_pricing_data = True
+        self.company.save(update_fields=['pool_pricing_data'])
         ctx = resolve_prediction_context(self.user_b, self.company)
         self.assertTrue(ctx.available)
         self.assertEqual(ctx.scope, 'global')
@@ -187,7 +243,7 @@ class ModelVersionFieldWidthTests(_RequiresSklearnMixin, IsolatedModelStorageMix
 
     def setUp(self):
         super().setUp()
-        self.company = Company.objects.create(company_name='Width Co')
+        self.company = Company.objects.create(company_name='Width Co', pool_pricing_data=True)
         self.customer = Customer.objects.create(
             company=self.company, name='Width Ltd', email='width@x.test',
             phone='', address='', city='', state='', zip_code='',
@@ -196,7 +252,7 @@ class ModelVersionFieldWidthTests(_RequiresSklearnMixin, IsolatedModelStorageMix
             username='width-user', password='x', company=self.company)
 
     def test_activated_global_version_validates_against_its_own_columns(self):
-        make_outcomes(self.company, self.customer, self.user, 40, prefix='W')
+        make_outcomes(self.company, self.customer, self.user, MIN_ACCEPTED, MIN_REJECTED, prefix='W')
         result = quote_training.retrain_win_model_for_scope('global')
         self.assertTrue(result.get('trained'), result)
 
@@ -210,7 +266,7 @@ class ModelVersionFieldWidthTests(_RequiresSklearnMixin, IsolatedModelStorageMix
     def test_activated_user_version_validates_too(self):
         # The user scope interpolates a real id where global has a dash, so it
         # is the longer of the two and must be checked separately.
-        make_outcomes(self.company, self.customer, self.user, 40, prefix='WU')
+        make_outcomes(self.company, self.customer, self.user, MIN_ACCEPTED, MIN_REJECTED, prefix='WU')
         result = quote_training.retrain_win_model_for_scope('user', user_id=self.user.id)
         self.assertTrue(result.get('trained'), result)
 
@@ -232,7 +288,8 @@ def make_price_blind_outcomes(company, customer, user, n, *, prefix='PB'):
     the label off i % 2 instead does NOT produce price-blind data: 8 is even,
     so parity aligns with the price cycle and every even-indexed price lands
     in one class — the model then learns a real (if accidental) price signal
-    and the gate correctly lets it through.
+    and the gate correctly lets it through. n should be a multiple of 16 so
+    the accepted/rejected split comes out even.
     """
     for i in range(n):
         total = 16000 + (i % 8) * 1500
@@ -267,7 +324,7 @@ class PriceSensitivityGateTests(_RequiresSklearnMixin, IsolatedModelStorageMixin
             username='gate-user', password='x', company=self.company)
 
     def test_price_blind_data_is_refused_and_leaves_no_artifact(self):
-        make_price_blind_outcomes(self.company, self.customer, self.user, 40)
+        make_price_blind_outcomes(self.company, self.customer, self.user, MIN_ACCEPTED + MIN_REJECTED)
         result = quote_training.retrain_win_model_for_scope('user', user_id=self.user.id)
 
         self.assertFalse(result['trained'])
@@ -279,7 +336,7 @@ class PriceSensitivityGateTests(_RequiresSklearnMixin, IsolatedModelStorageMixin
         self.assertFalse(ctx.available)
 
     def test_refusal_is_recorded_with_the_measured_sensitivity(self):
-        make_price_blind_outcomes(self.company, self.customer, self.user, 40)
+        make_price_blind_outcomes(self.company, self.customer, self.user, MIN_ACCEPTED + MIN_REJECTED)
         quote_training.retrain_win_model_for_scope('user', user_id=self.user.id)
 
         row = MLModelVersion.objects.get(scope='user', user_id=self.user.id)
@@ -289,7 +346,7 @@ class PriceSensitivityGateTests(_RequiresSklearnMixin, IsolatedModelStorageMixin
 
     def test_a_previously_active_model_survives_a_refused_retrain(self):
         # Learnable data first, so there is something live to protect.
-        make_outcomes(self.company, self.customer, self.user, 40, prefix='GOOD')
+        make_outcomes(self.company, self.customer, self.user, MIN_ACCEPTED, MIN_REJECTED, prefix='GOOD')
         self.assertTrue(
             quote_training.retrain_win_model_for_scope('user', user_id=self.user.id)['trained'])
 
@@ -308,7 +365,7 @@ class PriceSensitivityGateTests(_RequiresSklearnMixin, IsolatedModelStorageMixin
         # The gate must not be satisfiable by a model that merely ranks well:
         # assert the live artifact's behaviour directly, the way the quote
         # builder exercises it when an operator moves the price.
-        make_outcomes(self.company, self.customer, self.user, 40, prefix='MONO')
+        make_outcomes(self.company, self.customer, self.user, MIN_ACCEPTED, MIN_REJECTED, prefix='MONO')
         self.assertTrue(
             quote_training.retrain_win_model_for_scope('user', user_id=self.user.id)['trained'])
 
@@ -320,10 +377,16 @@ class PriceSensitivityGateTests(_RequiresSklearnMixin, IsolatedModelStorageMixin
         for ratio in (0.45, 0.55, 0.65, 0.75):
             probs.append(model.predict_proba({**base, 'price_ratio': ratio}))
         self.assertEqual(probs, sorted(probs, reverse=True), f'win probability rose with price: {probs}')
-        self.assertGreater(probs[0] - probs[-1], 0.05)
+        # Threshold lowered from the old n=40 value: at n=400 with a
+        # deliberate price-overlap band (needed so the price-sensitivity
+        # TRAINING gate doesn't see fully-separable data and saturate — see
+        # make_outcomes), the fitted boundary is softer, so the same
+        # 0.45x->0.75x sweep moves probability less. The monotonic-decrease
+        # assertion above is the one that actually matters here.
+        self.assertGreater(probs[0] - probs[-1], 0.03)
 
     def test_the_gate_threshold_is_configurable(self):
-        make_outcomes(self.company, self.customer, self.user, 40, prefix='CFG')
+        make_outcomes(self.company, self.customer, self.user, MIN_ACCEPTED, MIN_REJECTED, prefix='CFG')
         with override_settings(WIN_MODEL_MIN_PRICE_SENSITIVITY=0.99):
             result = quote_training.retrain_win_model_for_scope('user', user_id=self.user.id)
         self.assertFalse(result['trained'])

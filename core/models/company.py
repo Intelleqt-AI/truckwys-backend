@@ -4,6 +4,10 @@ class Company(models.Model):
     company_name = models.CharField(max_length=200)
     registration_number = models.CharField(max_length=100, blank=True)
     vat_number = models.CharField(max_length=100, blank=True)
+    # Whether this company charges VAT. Defaults True because every invoice
+    # before the foundation release was charged 15%; a non-vendor turns it
+    # off and its lines default to NO_VAT (STANDARD is then refused).
+    vat_registered = models.BooleanField(default=True)
     industry = models.CharField(max_length=100, default='logistics')
     website = models.URLField(blank=True)
     description = models.TextField(blank=True)
@@ -70,13 +74,45 @@ class Company(models.Model):
                   'Cape Town, Durban, Gqeberha and East London; INLAND for Gauteng '
                   'and the interior.'
     )
+    # DEPRECATED (read-only mirror for old clients, QUOTE-RULES.md §1):
+    # OWN -> fuel_price_own, LIVE -> the official zone price in force. Nothing
+    # new reads it; the serializer writes the mirror. Pricing uses
+    # fuel_price_mode / fuel_price_own via core.services.fuel_price.
     fuel_price_per_litre = models.DecimalField(
         max_digits=8, decimal_places=4, default=23.50,
-        help_text='Default Diesel price per litre in ZAR (default: R23.50)'
+        help_text='Deprecated mirror of the diesel price in use (own price, or the official zone price).'
+    )
+    FUEL_PRICE_MODE_CHOICES = [('LIVE', 'Official price (live)'), ('OWN', 'Own price')]
+    fuel_price_mode = models.CharField(
+        max_length=4, choices=FUEL_PRICE_MODE_CHOICES, default='LIVE',
+        help_text='LIVE = quote on the official FIASA price for the fuel zone; OWN = quote on fuel_price_own.'
+    )
+    fuel_price_own = models.DecimalField(
+        max_digits=8, decimal_places=4, null=True, blank=True,
+        help_text="The fleet's own diesel price per litre excl. VAT (fuel card etc.). Empty = LIVE."
+    )
+    fuel_price_own_set_at = models.DateTimeField(
+        null=True, blank=True, help_text='When fuel_price_own was last set by a person.'
     )
     fuel_price_petrol = models.DecimalField(
         max_digits=8, decimal_places=4, null=True, blank=True,
-        help_text='Default Petrol price per litre in ZAR'
+        help_text="The fleet's own petrol price per litre (used when fuel_price_petrol_mode is OWN). "
+                  'Petrol and hybrid trucks.'
+    )
+    # Petrol works like diesel (QUOTE-RULES §1): LIVE = the official FIASA
+    # petrol price for the fuel zone and grade, OWN = fuel_price_petrol.
+    fuel_price_petrol_mode = models.CharField(
+        max_length=4, choices=FUEL_PRICE_MODE_CHOICES, default='LIVE',
+        help_text='LIVE = quote petrol/hybrid trucks on the official price for the fuel zone; '
+                  'OWN = quote on fuel_price_petrol.'
+    )
+    fuel_price_petrol_set_at = models.DateTimeField(
+        null=True, blank=True, help_text='When fuel_price_petrol was last set by a person.'
+    )
+    PETROL_GRADE_CHOICES = [('95', 'ULP 95'), ('93', 'ULP 93 (inland only)')]
+    fuel_price_petrol_grade = models.CharField(
+        max_length=2, choices=PETROL_GRADE_CHOICES, default='95',
+        help_text='Official petrol grade for LIVE pricing. 93 applies inland only; coastal is always 95.'
     )
     fuel_price_electric = models.DecimalField(
         max_digits=8, decimal_places=4, null=True, blank=True,
@@ -88,9 +124,12 @@ class Company(models.Model):
     )
 
     # Quote defaults — configurable per company
+    # The company's default price per km (QUOTE-RULES round 3: default price =
+    # max(this x billable km, target price)). Null / <= 0 = none. Existing
+    # values are left as they are (an untouched 10.00 can't be told apart).
     default_base_rate_per_km = models.DecimalField(
-        max_digits=8, decimal_places=2, default=10.00,
-        help_text='Default base rate per km used when creating a new quote (ZAR)'
+        max_digits=8, decimal_places=2, null=True, blank=True, default=None,
+        help_text='Default price per km for new quotes (ZAR, excl. VAT). Empty = none.'
     )
     default_sla_hours = models.IntegerField(
         default=48,
@@ -441,6 +480,52 @@ class Company(models.Model):
         null=True,
         blank=True,
         help_text='Outcomes recorded before this timestamp are excluded from win-model training/progress for this company',
+    )
+
+    # Pricing analysis (core.services.pricing_analysis). Off by default: a
+    # one-way quote has never priced the empty run home into its cost (the
+    # price check shows it for reference only), so the floor matches that
+    # unless a fleet opts in — or the operator flips it per quote.
+    pricing_include_empty_return = models.BooleanField(
+        default=False,
+        help_text='Include the empty run home in the cost floor of one-way quotes by default',
+    )
+    # QUOTE-RULES.md §5/§6. include_empty_return_default replaces
+    # pricing_include_empty_return (kept as a mirror for old clients).
+    include_empty_return_default = models.BooleanField(
+        default=True,
+        help_text='Price the empty run home into one-way quotes of at least empty_return_min_km by default',
+    )
+    empty_return_min_km = models.DecimalField(
+        max_digits=7, decimal_places=1, default=300,
+        help_text='One-way distance (km) from which the empty return is included by default',
+    )
+    minimum_charge = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True,
+        help_text='Lowest price (excl. VAT) a quote may go out at. Empty = no minimum.',
+    )
+    # The operator's own all-in operating cost per km (excl. fuel and tolls).
+    # When set, it wins over the figure from expenses and the class estimate.
+    operating_cost_per_km = models.DecimalField(
+        max_digits=8, decimal_places=2, null=True, blank=True,
+        help_text='Your operating cost per km excl. fuel and tolls (driver wages, finance, insurance, '
+                  'licences, tyres, maintenance, overheads). Blank = worked out from your expenses.',
+    )
+    # Driver night-out allowance per night away the operator pays, used by
+    # the pricing analysis only when no approved allowance (VerifiedRate) is
+    # on record. Blank = none set.
+    driver_allowance_per_night = models.DecimalField(
+        max_digits=8, decimal_places=2, null=True, blank=True,
+        help_text='Driver allowance you pay per night away (used when no approved allowance is on record).',
+    )
+    # Opt-in to the pooled (global) win model: this company's decided quotes
+    # train it, and this company may be served it when it has no model of its
+    # own. Off by default — one tenant's outcomes never shape another's
+    # likelihoods without consent.
+    pool_pricing_data = models.BooleanField(
+        default=False,
+        help_text="Share this company's quote outcomes with the pooled win model, and use it when "
+                  "there is no company or personal model yet",
     )
 
     # API usage tracking for plan limits (T1.3)
