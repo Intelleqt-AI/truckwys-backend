@@ -143,9 +143,14 @@ def _paired_ids(loads):
 # --- actual vs estimate, per cost group (verification B4) -------------------
 # One expense never makes the whole job "actual": each cost group uses its
 # recorded expenses when there are any, else its estimate.
-CATEGORY_GROUP = {'FUEL': 'fuel', 'TOLLS': 'tolls', 'DRIVER_COST': 'driver', 'MAINTENANCE': 'operating',
-                  'INSURANCE': 'operating', 'OVERHEAD': 'operating', 'OTHER': 'other',
+# MAINTENANCE / INSURANCE / OVERHEAD slips are shown as recorded but never
+# replace the operating estimate (the running cost per km already covers
+# finance, wages, insurance, tyres, maintenance and overheads: no double
+# count); they count only once the job's costs are closed.
+CATEGORY_GROUP = {'FUEL': 'fuel', 'TOLLS': 'tolls', 'DRIVER_COST': 'driver', 'MAINTENANCE': 'operating_recorded',
+                  'INSURANCE': 'operating_recorded', 'OVERHEAD': 'operating_recorded', 'OTHER': 'other',
                   'SUBCONTRACTOR': 'subcontractor'}
+INFO_ONLY_GROUPS = ('operating_recorded',)
 LINE_GROUP = {'fuel': 'fuel', 'fuel_return': 'fuel', 'operating': 'operating', 'operating_return': 'operating',
               'tolls': 'tolls', 'tolls_return': 'tolls', 'driver': 'driver', 'driver_return': 'driver',
               'border': 'border', 'border_return': 'border'}
@@ -199,6 +204,10 @@ def merge_costs(load, est, actual_groups):
         for g in names:
             a = actual_groups.get(g)
             e = est_groups.get(g)
+            if g in INFO_ONLY_GROUPS and not used_actual_only:
+                rows.append({'group': g, 'estimated': None, 'actual': _f(a), 'used': 0.0,
+                             'basis': 'recorded_in_operating_estimate'})
+                continue
             used = a if (a is not None or used_actual_only) else e
             rows.append({'group': g, 'estimated': _f(e), 'actual': _f(a),
                          'used': _f(used if used is not None else (ZERO if used_actual_only else None)),
@@ -215,11 +224,12 @@ def merge_costs(load, est, actual_groups):
         return {'cost': _q(actual_total), 'cost_basis': 'actual', 'cost_complete': delivered,
                 'groups': _rows(used_actual_only=True)}
     if est_groups:
-        cost, all_actual = ZERO, True
+        cost, all_actual, replaced = ZERO, True, False
         for g, e in est_groups.items():
             a = actual_groups.get(g)
             if a is not None:
                 cost += a
+                replaced = True
             elif e is None:
                 cost = None
                 break
@@ -227,10 +237,12 @@ def merge_costs(load, est, actual_groups):
                 cost += e
                 all_actual = False
         if cost is not None:
-            cost += sum((v for g, v in actual_groups.items() if g not in est_groups), ZERO)
+            extra = [v for g, v in actual_groups.items() if g not in est_groups and g not in INFO_ONLY_GROUPS]
+            cost += sum(extra, ZERO)
+            replaced = replaced or bool(extra)
         key_needed = [g for g in KEY_GROUPS if (est_groups.get(g) or ZERO) > 0 or g in unknown_groups]
         complete = delivered and all(g in actual_groups for g in key_needed)
-        basis = None if cost is None else ('actual' if all_actual else 'part_actual')
+        basis = None if cost is None else ('actual' if all_actual else 'part_actual' if replaced else 'estimate')
         return {'cost': _q(cost) if cost is not None else None, 'cost_basis': basis,
                 'cost_complete': complete and cost is not None, 'groups': _rows()}
     # No cost lines (legacy standard estimate / unknown): no group to merge.

@@ -191,8 +191,17 @@ class Load(models.Model):
     # an instance read earlier must never put back a stale value (e.g. a
     # webhook's load.save() unlinking a return load linked meanwhile).
     SERVER_ONLY_FIELDS = frozenset({
-        'return_of', 'return_link_source', 'return_linked_at', 'return_linked_by',
+        # return-load link
+        'return_of', 'return_link_source', 'return_linked_at', 'return_linked_by', 'expecting_return',
+        # cached estimate
         'estimated_cost', 'estimate_basis', 'economics_updated_at',
+        # costing assumptions (trip_costing / tms_routing / close-costs)
+        'costing_source', 'costing_inputs', 'costing_snapshot', 'cost_floor', 'empty_return_assumed',
+        'fuel_price_used', 'fuel_price_source', 'fuel_zone', 'fuel_effective_from', 'fuel_litres',
+        'priced_vehicle_type', 'costed_at', 'quoted_price', 'quoted_cost_floor', 'quoted_margin_pct',
+        'costs_closed',
+        # TMS identity / flags
+        'external_id', 'external_source', 'return_of_external_ref', 'invoice_mismatch',
     })
 
     def save(self, *args, **kwargs):

@@ -677,3 +677,35 @@ class ReceivablesShareAndStressTests(TestCase):
         self.assertEqual(tscore.stressed_pd(D('0.5')), D('1'))
         out = dscore.ScoreOutput(kind='DEBTOR', grade='C', points=55, pd_12m=D('0.04'))
         self.assertEqual(tscore.stressed_pd(out), D('0.12'))
+
+
+class TripEconomicsMarginBasisTests(TestCase):
+    """Capital margin uses the economics endpoint's merged cost: loads with
+    only a toll slip are part actual (modelled), never 'actual'; complete
+    loads (fuel + tolls recorded, legacy) are actual."""
+
+    def _setup(self, categories):
+        from core.models import Expense, Invoice
+        co = make_company(months_old=30, subscription_status='active')
+        cust = make_customer(co)
+        loads = [make_load(co, cust, delivered=timezone.now() - timedelta(days=10), distance=D('500'))
+                 for _ in range(3)]
+        for i, l in enumerate(loads):
+            Invoice.objects.create(company=co, customer=cust, load=l, invoice_number=f'INV-TE-{co.pk}-{i}',
+                                   issue_date=TODAY, due_date=TODAY, subtotal=D('20000'), status='SENT')
+            for j, cat in enumerate(categories):
+                Expense.objects.create(company=co, expense_number=f'EX-TE-{co.pk}-{i}-{j}', category=cat,
+                                       description=cat, amount=D('5000'), vat_amount=D('0'), load=l,
+                                       expense_date=TODAY, status='APPROVED')
+        return co
+
+    def test_part_actual_loads_are_modelled_not_actual(self):
+        co = self._setup(['TOLLS'])
+        with mock.patch('core.services.trip_economics._legacy_estimate', return_value=D('8000')):
+            pts, reasons, info = tscore._margin(co, TODAY)
+        self.assertEqual(info['basis'], 'modelled')
+
+    def test_complete_loads_are_actual(self):
+        co = self._setup(['FUEL', 'TOLLS'])
+        pts, reasons, info = tscore._margin(co, TODAY)
+        self.assertEqual((info['basis'], info['cost_excl_vat']), ('actual', D('30000')))

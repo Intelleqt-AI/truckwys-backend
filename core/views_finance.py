@@ -1033,7 +1033,18 @@ class TripCostView(APIView):
                 except Exception:
                     modelled_cost = None
 
-        if expense_count:
+        leg = None
+        if economics:
+            leg = next((l for l in economics['legs'] if l['load_id'] == trip.load_id), None)
+        cost_complete = False
+        if leg is not None:
+            # The economics endpoint's merged cost: actual per cost group where
+            # recorded, estimate for the rest (part_actual); actual only when
+            # every group is (cost_complete says whether it counts as final).
+            cost_used = Decimal(str(leg['cost'])) if leg['cost'] is not None else Decimal('0.00')
+            cost_basis = leg['cost_basis'] or 'none'
+            cost_complete = bool(leg.get('cost_complete'))
+        elif expense_count:
             cost_basis, cost_used = 'actual', actual_cost
         elif modelled_cost is not None:
             cost_basis, cost_used = 'estimate', modelled_cost
@@ -1075,6 +1086,7 @@ class TripCostView(APIView):
             # The load's (or its return pair's) full P&L view.
             'economics': economics,
             'cost': float(cost_used),
+            'cost_complete': cost_complete,
             'cost_basis': cost_basis,
             'revenue': float(revenue),
             'revenue_excl_vat': float(revenue),

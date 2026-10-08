@@ -263,3 +263,65 @@ class IntelligenceRouteTests(_Pair):
         self.assertEqual(len(alerts), 1)
         self.assertEqual(alerts[0]['trip_count'], 3)
         self.assertEqual(alerts[0]['cost_basis'], 'estimate')
+
+
+class RoundTwoTests(_Pair):
+    def _exp(self, load, cat, amount, n):
+        return Expense.objects.create(company=self.co, expense_number=f'EX-R2-{n}', category=cat, description=cat,
+                                      amount=Decimal(amount), vat_amount=Decimal('0'), load=load,
+                                      expense_date=date.today(), status='APPROVED')
+
+    def test_maintenance_slip_shown_but_never_replaces_operating(self):
+        before = te.economics_for_load_id(self.out.id)['legs'][0]
+        self._exp(self.out, 'MAINTENANCE', '5000', 1)
+        leg = te.economics_for_load_id(self.out.id)['legs'][0]
+        self.assertEqual(leg['cost'], before['cost'])                 # no double count
+        self.assertEqual(leg['cost_basis'], 'estimate')
+        rec = next(g for g in leg['cost_groups'] if g['group'] == 'operating_recorded')
+        self.assertEqual((rec['actual'], rec['used'], rec['basis']), (5000.0, 0.0, 'recorded_in_operating_estimate'))
+        op = next(g for g in leg['cost_groups'] if g['group'] == 'operating')
+        self.assertEqual(op['basis'], 'estimate')
+        # Closed: recorded expenses are the whole cost, maintenance included.
+        self._exp(self.out, 'FUEL', '8000', 2)
+        Load.objects.filter(pk=self.out.pk).update(costs_closed=True)
+        leg = te.economics_for_load_id(self.out.id)['legs'][0]
+        self.assertEqual((leg['cost'], leg['cost_basis']), (13000.0, 'actual'))
+
+    def test_trip_cost_view_uses_the_merged_cost(self):
+        from datetime import timedelta
+        from django.contrib.auth import get_user_model
+        from core.models import Driver
+        from core.tests.quote_rules_fixtures import add_vehicle
+        du = get_user_model().objects.create_user(username='r2_drv', email='d@r2.test', password='x')
+        driver = Driver.objects.create(company=self.co, user=du, license_number='R2-1',
+                                       license_expiry=date.today() + timedelta(days=300), license_state='GP',
+                                       hire_date=date.today())
+        trip = Trip.objects.create(load=self.out, vehicle=add_vehicle(self.co, self.vt), driver=driver,
+                                   origin='Johannesburg', destination='Durban', distance_km=Decimal('600'),
+                                   estimated_distance_km=Decimal('600'), estimated_duration_hours=Decimal('7'))
+        self._exp(self.out, 'FUEL', '7000', 3)
+        body = self.api.get(f'/api/v1/trips/{trip.id}/costs/').json()
+        leg = te.economics_for_load_id(self.out.id)['legs'][0]
+        self.assertEqual((body['cost_basis'], body['cost'], body['cost_complete']),
+                         ('part_actual', leg['cost'], False))
+
+    def test_stale_full_save_keeps_server_costing_fields(self):
+        stale = Load.objects.get(pk=self.out.pk)
+        self.api.post(f'/api/v1/loads/{self.out.id}/close-costs/', {'closed': True}, format='json')
+        Load.objects.filter(pk=self.out.pk).update(external_id='EXT-9', costing_source='computed')
+        stale.notes = 'x'
+        stale.save()
+        self.out.refresh_from_db()
+        self.assertEqual((self.out.costs_closed, self.out.external_id, self.out.costing_source, self.out.notes),
+                         (True, 'EXT-9', 'computed', 'x'))
+
+    def test_deleting_a_stale_instance_refreshes_the_partner(self):
+        stale_ret = Load.objects.get(pk=self.ret.pk)          # read before the link
+        with self.captureOnCommitCallbacks(execute=True):
+            link_return(self.out, self.ret)
+        self.out.refresh_from_db()
+        self.assertEqual(self.out.estimate_basis, 'snapshot_return_linked')
+        with self.captureOnCommitCallbacks(execute=True):
+            stale_ret.delete()
+        self.out.refresh_from_db()
+        self.assertEqual(self.out.estimate_basis, 'snapshot')

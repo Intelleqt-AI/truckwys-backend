@@ -963,6 +963,9 @@ def trip_economics_load_changed(sender, instance, **kwargs):
 def trip_economics_load_deleted(sender, instance, **kwargs):
     # The partner leaves the pair (return_of SET NULL): refresh it after.
     from core.models import Load
-    partners = [instance.return_of_id] + list(Load.objects.filter(return_of_id=instance.pk)
-                                              .values_list('pk', flat=True))
+    # Read the link from the database: the instance may be stale (linked or
+    # unlinked since it was loaded).
+    own = Load.objects.filter(pk=instance.pk).values_list('return_of_id', flat=True).first()
+    partners = [own, instance.return_of_id] + list(Load.objects.filter(return_of_id=instance.pk)
+                                                   .values_list('pk', flat=True))
     _recompute_after_commit(partners)

@@ -306,3 +306,16 @@ per-company daily cap `TMS_ROUTING_DAILY_CAP` (default 200, the rest wait until 
   each signature once (30-day replay cache); bad ids / dates / numbers answer 400.
 - `assign_driver` re-costs a job not costed from a quote. The booking preview's invoice line reads
   "Transport (load number on booking) (A → B)".
+
+### Round-2 verification (8 Oct)
+- Capital scoring margin and `GET /trips/{id}/costs/` use the economics endpoint's merged cost: a load counts as
+  `actual` only when its costs are complete (`cost_complete`), part-actual loads are modelled / `part_actual`.
+  TripCostView adds `cost_complete`.
+- Operating group (running cost per km) stays an ESTIMATE unless the job's costs are closed: MAINTENANCE /
+  INSURANCE / OVERHEAD slips appear as `operating_recorded` (basis `recorded_in_operating_estimate`, used 0) and
+  never replace or add to it (no double count).
+- Full `Load.save()` never writes any server-only costing / link / TMS field (`Load.SERVER_ONLY_FIELDS`).
+- Deleting a load refreshes its partner's cached estimate from the database link, even from a stale instance.
+- **Merge note:** `WebhookSubscription.company` is added ONLY in 0166 (nothing else in that migration). If
+  truckwys/webhook-tenant-scope (its 0158 adds the same field + the same admin class) merges first, delete 0166,
+  point 0167's dependency at the latest migration, keep their admin class and add `allow_legacy_signature` to it.
