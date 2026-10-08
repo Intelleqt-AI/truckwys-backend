@@ -343,6 +343,10 @@ class TonnageFuelClauseTests(_Base):
         q = self.send(self.tonnage(total_tonnes='70'))
         self.assertTrue(QuoteFuelClause.objects.filter(quote=q).exists())
         self.at(sast(2026, 10, 9, 9, 0))
+        # The contract's own row: one planned load (30 t) of fuel, not all 70 t.
+        qb = self.api.get(f'/api/v1/quotes/{q.id}/fuel-adjustment/').json()
+        self.assertIsNone(qb['load_id'])
+        self.assertAlmostEqual(qb['amount_zar'], self.share(q, 30), places=2)
         pv = self.api.get(f'/api/v1/quotes/{q.id}/booking-preview/?tonnes=30').json()
         self.assertTrue(pv['can_book'])
         load = self.book(q, tonnes=30)

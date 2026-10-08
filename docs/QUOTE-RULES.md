@@ -584,7 +584,8 @@ API JSON: `FOLLOWUPS-CLIENT-SPEC.md` (tw-wt root). Endpoints in `core/views_quot
   `invoicing.invoice_lines_for_load` (so the booking preview, manual convert, delivery auto-invoice and a
   weighbridge re-price of a DRAFT invoice all agree). Per-tonne loads: litres = clause litres / the quote's
   billed tonnes (`costing_snapshot.tonnage.billable_tonnes`) × the load's billed tonnes (each call-off adjusts
-  only its share); a down adjustment discounts the whole per-tonne line (quantity × rate), never below zero. Up → line "Fuel price adjustment
+  only its share; the quote endpoint of a volume contract shows one planned load's share, `load_id` null); a down
+  adjustment discounts the whole per-tonne line (quantity × rate), never below zero. Up → line "Fuel price adjustment
   (diesel R 32,80 → R 34,10/L)", revenue type FUEL_SURCHARGE, freight tax code. Down → discount on the freight
   line (invoice lines can't be negative), description gains "less fuel price adjustment (…)". The trip-generator
   invoice path (`InvoiceGenerator`) is not hooked (no quote link there).

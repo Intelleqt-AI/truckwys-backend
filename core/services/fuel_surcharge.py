@@ -161,14 +161,26 @@ def litres_for(quote, terms, load=None):
     tonne (snapshot) times the tonnes this load is billed on, so a volume
     contract call-off of 30 t adjusts only its own share of the fuel."""
     litres = terms['litres']
-    if load is None or getattr(quote, 'pricing_basis', 'per_load') != 'per_tonne':
+    if getattr(quote, 'pricing_basis', 'per_load') != 'per_tonne':
         return litres
-    from core.services.tonnage_jobs import load_billing
-    billing = load_billing(load)
+    from core.services.tonnage_jobs import load_billing, quote_load_size, quote_min_tonnes
     quoted = ((quote.costing_snapshot or {}).get('tonnage') or {}).get('billable_tonnes')
-    if billing is None or not quoted or float(quoted) <= 0:
+    if not quoted or float(quoted) <= 0:
         return litres
-    return round(litres / float(quoted) * float(billing['billable_tonnes']), 3)
+    if load is not None:
+        billing = load_billing(load)
+        if billing is None:
+            return litres
+        tonnes = float(billing['billable_tonnes'])
+    elif quote.total_tonnes is not None:
+        # A volume contract with no load yet: one planned load's share.
+        size, minimum = quote_load_size(quote), quote_min_tonnes(quote)
+        if size is None:
+            return litres
+        tonnes = float(max(size, minimum or 0))
+    else:
+        return litres
+    return round(litres / float(quoted) * tonnes, 3)
 
 
 def adjustment(quote, load=None, now=None):

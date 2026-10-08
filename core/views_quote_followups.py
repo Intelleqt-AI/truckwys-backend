@@ -106,7 +106,10 @@ class QuoteFuelAdjustmentView(APIView):
         quote = Quote.objects.filter(id=quote_id, company=_company(request)).select_related('company').first()
         if quote is None:
             return _err('not_found', 'Quote not found.', status.HTTP_404_NOT_FOUND)
-        load = quote.loads.order_by('-created_at').first()
+        # A volume contract has many call-offs: the quote shows one planned
+        # load's adjustment; each call-off's own is on its load.
+        is_contract = getattr(quote, 'pricing_basis', 'per_load') == 'per_tonne' and quote.total_tonnes is not None
+        load = None if is_contract else quote.loads.order_by('-created_at').first()
         return Response({'success': True, 'quote_id': quote.id, 'load_id': getattr(load, 'id', None),
                          **_adjustment_response(adjustment(quote, load=load))})
 
