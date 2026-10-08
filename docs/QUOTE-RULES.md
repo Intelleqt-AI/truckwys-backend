@@ -408,8 +408,9 @@ truck is always priced. Per truck:
   `blocking`, `can_send`; plus `pricing_basis: "per_tonne"` and `tonnage {…}` (contract in the API notes below).
 
 **Warnings.** Lane/truck warnings from the basis truck's compute() (diesel, tolls, distance, driver, border, suspect
-truck). Added: `tonnage_missing` (block), `no_eligible_trucks` (block), `rate_below_cost` (block — rate < cost per
-tonne on the basis truck; impact = margin), `below_minimum_charge` (block, per load), `tonnes_exceed_payload`
+truck). Added: `tonnage_missing` (block), `no_eligible_trucks` (block), `below_minimum_charge` (block, per load); `rate_below_cost`
+(**warn**, like `below_floor` — rate < cost per tonne on the basis truck; detail names the loss, impact = margin,
+`target_rate_per_tonne`, action `use_target_rate` labelled "Price at target · R x/t"), `tonnes_exceed_payload`
 (warn), `partial_last_load` (warn), `below_minimum_tonnes` (warn), `minimum_above_payload` (warn),
 `chosen_truck_unavailable` (warn).
 

@@ -94,8 +94,14 @@ class TonnageEngineTests(SimpleTestCase):
 
     def test_rate_below_cost_blocks_and_diesel_missing_blocks(self):
         out = qc.compute_tonnage(tonnage(tonnes_per_load=30.0, rate_per_tonne=800.0))
-        self.assertIn(('rate_below_cost', 'block'), _codes(out))
-        self.assertFalse(out['can_send'])
+        self.assertIn(('rate_below_cost', 'warn'), _codes(out))
+        self.assertTrue(out['can_send'])
+        w = next(w for w in out['warnings'] if w['code'] == 'rate_below_cost')
+        self.assertEqual(w['impact_zar'], out['margin'])
+        self.assertLess(w['impact_zar'], 0)
+        self.assertIn('loses R 9 530', w['detail'])
+        self.assertEqual(w['actions'], [{'id': 'use_target_rate', 'label': 'Price at target · R 1 242/t'}])
+        self.assertEqual(w['target_rate_per_tonne'], 1242.0)
         out = qc.compute_tonnage(tonnage(lane=lane(diesel=official(price=None)), tonnes_per_load=30.0))
         self.assertIn(('diesel_missing', 'block'), _codes(out))
         self.assertIsNone(out['tonnage']['default_rate_per_tonne'])
@@ -171,11 +177,12 @@ class TonnageApiTests(_Base):
         q.refresh_from_db()
         self.assertEqual((q.toll_charges, q.driver_allowance, q.total_amount), before)
 
-    def test_send_guard_blocks_rate_below_cost(self):
+    def test_rate_below_cost_warns_but_sends(self):
         q = self.create(**self.tonnage_payload(rate_per_tonne='500'))
         r = self.api.patch(f'/api/v1/quotes/{q.id}/', {'status': 'SENT'}, format='json')
-        self.assertEqual(r.status_code, 400)
-        self.assertIn('rate_below_cost', r.json()['blocking'])
+        self.assertEqual(r.status_code, 200, r.content)
+        body = self.api.post('/api/v1/quotes/cost-breakdown/', {'quote_id': q.id}, format='json').json()
+        self.assertIn('rate_below_cost', [w['code'] for w in body['send_check']['warnings']])
 
     def test_validation(self):
         r = self.api.post('/api/v1/quotes/', self.tonnage_payload(tonnes_per_load=None), format='json')

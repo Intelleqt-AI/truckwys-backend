@@ -11028,7 +11028,7 @@
     },
     {
       "name": "rate_below_cost",
-      "description": "R 800/t is under the cost per tonne on the basis truck: rate_below_cost blocks.",
+      "description": "R 800/t is under the cost per tonne on the basis truck: rate_below_cost warns with the loss.",
       "inputs": {
         "lane": {
           "trip_type": "ONE_WAY",
@@ -11504,22 +11504,21 @@
         "warnings": [
           {
             "code": "rate_below_cost",
-            "severity": "block",
+            "severity": "warn",
             "title": "Rate is below your cost per tonne",
-            "detail": "R 800/t is under the R 1 118/t cost on the Superlink 34 t.",
+            "detail": "R 800/t is under the R 1 118/t cost on the Superlink 34 t; this loses R 9 530.",
             "impact_zar": -9529.56,
             "actions": [
               {
-                "id": "reprice",
-                "label": "Re-price"
+                "id": "use_target_rate",
+                "label": "Price at target · R 1 242/t"
               }
-            ]
+            ],
+            "target_rate_per_tonne": 1242.0
           }
         ],
-        "blocking": [
-          "rate_below_cost"
-        ],
-        "can_send": false
+        "blocking": [],
+        "can_send": true
       }
     },
     {

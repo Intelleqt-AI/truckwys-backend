@@ -205,6 +205,7 @@ ACTION_LABELS = {
     'keep_price': 'Keep price',
     'enter_weight': 'Enter weight',
     'enter_border_costs': 'Enter border costs',
+    'use_target_rate': 'Price at target rate',   # label carries the rate: "Price at target · R 1 242/t"
 }
 
 
@@ -887,9 +888,16 @@ def compute_tonnage(inputs):
     basis_at = _at_rate(basis, rate_used, min_t) if basis else None
     user_at = _at_rate(basis, rate, min_t) if basis and rate is not None else None
     if user_at is not None and cpt is not None and rate < cpt:
-        warnings.append(warning('rate_below_cost', 'block', 'Rate is below your cost per tonne',
-                                f'{fmt_rand(rate)}/t is under the {fmt_rand(cpt)}/t cost on the {_truck_label(basis)}.',
-                                impact_zar=user_at['margin'], actions=('reprice',)))
+        # A warning, like below_floor: users may knowingly quote under cost,
+        # but never without seeing the shortfall in rand.
+        w = warning('rate_below_cost', 'warn', 'Rate is below your cost per tonne',
+                    f'{fmt_rand(rate)}/t is under the {fmt_rand(cpt)}/t cost on the {_truck_label(basis)}; '
+                    f'this loses {fmt_rand(-user_at["margin"])}.',
+                    impact_zar=user_at['margin'], actions=('use_target_rate',) if target_rate else (),
+                    target_rate_per_tonne=target_rate)
+        for a in w['actions']:
+            a['label'] = f'Price at target · {fmt_rand(target_rate)}/t'
+        warnings.append(w)
     if rate is not None and minimum_charge and min_t and rate * min_t < minimum_charge - 0.005:
         short = minimum_charge - cents(rate * min_t)
         warnings.append(warning('below_minimum_charge', 'block', 'Price is below your minimum charge',

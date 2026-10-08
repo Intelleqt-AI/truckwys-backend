@@ -301,7 +301,7 @@ TONNAGE_CASES = [
      'No diesel price: every cost is unknown, diesel_missing blocks, no rate.',
      tonnage(lane=lane(diesel=official(price=None, official_effective_from=None)), tonnes_per_load=30.0)),
     ('rate_below_cost',
-     'R 800/t is under the cost per tonne on the basis truck: rate_below_cost blocks.',
+     'R 800/t is under the cost per tonne on the basis truck: rate_below_cost warns with the loss.',
      tonnage(tonnes_per_load=30.0, rate_per_tonne=800.0)),
     ('tonnes_exceed_payload',
      '40 t consignment, no truck carries it: split into loads on the safest truck.',
