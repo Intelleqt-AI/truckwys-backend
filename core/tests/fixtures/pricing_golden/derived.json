@@ -50,8 +50,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -106,8 +122,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 15000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 15 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3",
+        "field": "axle_configuration",
+        "message": "Assumed a 3 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 15000,
       "gross_source": "load_weight"
      },
@@ -162,8 +194,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -218,8 +266,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 15000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 15 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3",
+        "field": "axle_configuration",
+        "message": "Assumed a 3 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 15000,
       "gross_source": "load_weight"
      },
@@ -274,8 +338,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -330,8 +410,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 15000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 15 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3",
+        "field": "axle_configuration",
+        "message": "Assumed a 3 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 15000,
       "gross_source": "load_weight"
      },
@@ -386,8 +482,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -442,8 +554,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 15000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 15 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3",
+        "field": "axle_configuration",
+        "message": "Assumed a 3 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 15000,
       "gross_source": "load_weight"
      },
@@ -498,8 +626,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -554,8 +698,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 20000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 20 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 20000,
       "gross_source": "load_weight"
      },
@@ -610,8 +770,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -666,8 +842,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 20000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 20 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 20000,
       "gross_source": "load_weight"
      },
@@ -722,8 +914,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -778,8 +986,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 20000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 20 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 20000,
       "gross_source": "load_weight"
      },
@@ -834,8 +1058,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -890,8 +1130,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 20000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 20 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 20000,
       "gross_source": "load_weight"
      },
@@ -946,8 +1202,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -1002,8 +1274,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 20001,
+        "field": "gross_mass_kg",
+        "message": "Assumed 20.001 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 20001,
       "gross_source": "load_weight"
      },
@@ -1058,8 +1346,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -1114,8 +1418,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 20001,
+        "field": "gross_mass_kg",
+        "message": "Assumed 20.001 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 20001,
       "gross_source": "load_weight"
      },
@@ -1170,8 +1490,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -1226,8 +1562,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 20001,
+        "field": "gross_mass_kg",
+        "message": "Assumed 20.001 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 20001,
       "gross_source": "load_weight"
      },
@@ -1282,8 +1634,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -1338,8 +1706,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 20001,
+        "field": "gross_mass_kg",
+        "message": "Assumed 20.001 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 20001,
       "gross_source": "load_weight"
      },
@@ -1394,8 +1778,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -1450,8 +1850,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -1506,8 +1922,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -1562,8 +1994,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -1618,8 +2066,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -1674,8 +2138,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -1730,8 +2210,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -1786,8 +2282,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -1842,8 +2354,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -1898,8 +2426,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 34000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 34 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 34000,
       "gross_source": "load_weight"
      },
@@ -1954,8 +2498,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -2010,8 +2570,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 34000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 34 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 34000,
       "gross_source": "load_weight"
      },
@@ -2066,8 +2642,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -2122,8 +2714,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 34000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 34 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 34000,
       "gross_source": "load_weight"
      },
@@ -2178,8 +2786,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -2234,8 +2858,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 34000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 34 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 34000,
       "gross_source": "load_weight"
      },
@@ -2290,8 +2930,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -2346,8 +3002,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 8000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 8 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "2",
+        "field": "axle_configuration",
+        "message": "Assumed a 2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 8000,
       "gross_source": "load_weight"
      },
@@ -2402,8 +3074,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -2458,8 +3146,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 8000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 8 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "2",
+        "field": "axle_configuration",
+        "message": "Assumed a 2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 8000,
       "gross_source": "load_weight"
      },
@@ -2514,8 +3218,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -2570,8 +3290,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 8000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 8 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "2",
+        "field": "axle_configuration",
+        "message": "Assumed a 2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 8000,
       "gross_source": "load_weight"
      },
@@ -2626,8 +3362,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -2682,8 +3434,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 8000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 8 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "2",
+        "field": "axle_configuration",
+        "message": "Assumed a 2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 8000,
       "gross_source": "load_weight"
      },
@@ -2738,8 +3506,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -2795,8 +3579,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -2844,8 +3644,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 15000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 15 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3",
+        "field": "axle_configuration",
+        "message": "Assumed a 3 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 15000,
       "gross_source": "load_weight"
      },
@@ -2893,8 +3709,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -2942,8 +3774,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 15000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 15 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3",
+        "field": "axle_configuration",
+        "message": "Assumed a 3 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 15000,
       "gross_source": "load_weight"
      },
@@ -2991,8 +3839,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -3040,8 +3904,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 15000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 15 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3",
+        "field": "axle_configuration",
+        "message": "Assumed a 3 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 15000,
       "gross_source": "load_weight"
      },
@@ -3089,8 +3969,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -3138,8 +4034,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 15000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 15 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3",
+        "field": "axle_configuration",
+        "message": "Assumed a 3 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 15000,
       "gross_source": "load_weight"
      },
@@ -3187,8 +4099,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -3236,8 +4164,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 20000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 20 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 20000,
       "gross_source": "load_weight"
      },
@@ -3285,8 +4229,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -3334,8 +4294,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 20000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 20 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 20000,
       "gross_source": "load_weight"
      },
@@ -3383,8 +4359,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -3432,8 +4424,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 20000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 20 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 20000,
       "gross_source": "load_weight"
      },
@@ -3481,8 +4489,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -3530,8 +4554,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 20000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 20 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 20000,
       "gross_source": "load_weight"
      },
@@ -3579,8 +4619,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -3628,8 +4684,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 20001,
+        "field": "gross_mass_kg",
+        "message": "Assumed 20.001 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 20001,
       "gross_source": "load_weight"
      },
@@ -3677,8 +4749,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -3726,8 +4814,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 20001,
+        "field": "gross_mass_kg",
+        "message": "Assumed 20.001 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 20001,
       "gross_source": "load_weight"
      },
@@ -3775,8 +4879,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -3824,8 +4944,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 20001,
+        "field": "gross_mass_kg",
+        "message": "Assumed 20.001 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 20001,
       "gross_source": "load_weight"
      },
@@ -3873,8 +5009,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -3922,8 +5074,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 20001,
+        "field": "gross_mass_kg",
+        "message": "Assumed 20.001 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 20001,
       "gross_source": "load_weight"
      },
@@ -3971,8 +5139,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -4020,8 +5204,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -4069,8 +5269,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -4118,8 +5334,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -4167,8 +5399,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -4216,8 +5464,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -4265,8 +5529,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -4314,8 +5594,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -4363,8 +5659,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -4412,8 +5724,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 34000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 34 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 34000,
       "gross_source": "load_weight"
      },
@@ -4461,8 +5789,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -4510,8 +5854,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 34000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 34 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 34000,
       "gross_source": "load_weight"
      },
@@ -4559,8 +5919,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -4608,8 +5984,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 34000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 34 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 34000,
       "gross_source": "load_weight"
      },
@@ -4657,8 +6049,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -4706,8 +6114,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 34000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 34 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 34000,
       "gross_source": "load_weight"
      },
@@ -4755,8 +6179,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -4804,8 +6244,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 8000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 8 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "2",
+        "field": "axle_configuration",
+        "message": "Assumed a 2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 8000,
       "gross_source": "load_weight"
      },
@@ -4853,8 +6309,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -4902,8 +6374,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 8000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 8 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "2",
+        "field": "axle_configuration",
+        "message": "Assumed a 2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 8000,
       "gross_source": "load_weight"
      },
@@ -4951,8 +6439,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -5000,8 +6504,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 8000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 8 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "2",
+        "field": "axle_configuration",
+        "message": "Assumed a 2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 8000,
       "gross_source": "load_weight"
      },
@@ -5049,8 +6569,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -5098,8 +6634,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 8000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 8 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "2",
+        "field": "axle_configuration",
+        "message": "Assumed a 2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 8000,
       "gross_source": "load_weight"
      },
@@ -5147,8 +6699,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -5270,8 +6838,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -5385,8 +6969,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 15000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 15 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3",
+        "field": "axle_configuration",
+        "message": "Assumed a 3 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 15000,
       "gross_source": "load_weight"
      },
@@ -5500,8 +7100,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -5615,8 +7231,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 15000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 15 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3",
+        "field": "axle_configuration",
+        "message": "Assumed a 3 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 15000,
       "gross_source": "load_weight"
      },
@@ -5730,8 +7362,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -5845,8 +7493,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 15000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 15 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3",
+        "field": "axle_configuration",
+        "message": "Assumed a 3 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 15000,
       "gross_source": "load_weight"
      },
@@ -5960,8 +7624,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -6075,8 +7755,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 15000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 15 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3",
+        "field": "axle_configuration",
+        "message": "Assumed a 3 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 15000,
       "gross_source": "load_weight"
      },
@@ -6190,8 +7886,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -6305,8 +8017,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 20000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 20 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 20000,
       "gross_source": "load_weight"
      },
@@ -6420,8 +8148,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -6535,8 +8279,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 20000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 20 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 20000,
       "gross_source": "load_weight"
      },
@@ -6650,8 +8410,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -6765,8 +8541,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 20000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 20 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 20000,
       "gross_source": "load_weight"
      },
@@ -6880,8 +8672,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -6995,8 +8803,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 20000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 20 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 20000,
       "gross_source": "load_weight"
      },
@@ -7110,8 +8934,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -7225,8 +9065,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 20001,
+        "field": "gross_mass_kg",
+        "message": "Assumed 20.001 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 20001,
       "gross_source": "load_weight"
      },
@@ -7340,8 +9196,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -7455,8 +9327,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 20001,
+        "field": "gross_mass_kg",
+        "message": "Assumed 20.001 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 20001,
       "gross_source": "load_weight"
      },
@@ -7570,8 +9458,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -7685,8 +9589,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 20001,
+        "field": "gross_mass_kg",
+        "message": "Assumed 20.001 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 20001,
       "gross_source": "load_weight"
      },
@@ -7800,8 +9720,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -7915,8 +9851,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 20001,
+        "field": "gross_mass_kg",
+        "message": "Assumed 20.001 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 20001,
       "gross_source": "load_weight"
      },
@@ -8030,8 +9982,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -8145,8 +10113,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -8260,8 +10244,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -8375,8 +10375,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -8490,8 +10506,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -8605,8 +10637,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -8720,8 +10768,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -8835,8 +10899,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -8950,8 +11030,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -9065,8 +11161,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 34000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 34 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 34000,
       "gross_source": "load_weight"
      },
@@ -9180,8 +11292,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -9295,8 +11423,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 34000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 34 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 34000,
       "gross_source": "load_weight"
      },
@@ -9410,8 +11554,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -9525,8 +11685,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 34000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 34 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 34000,
       "gross_source": "load_weight"
      },
@@ -9640,8 +11816,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -9755,8 +11947,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 34000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 34 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 34000,
       "gross_source": "load_weight"
      },
@@ -9870,8 +12078,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -9985,8 +12209,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 8000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 8 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "2",
+        "field": "axle_configuration",
+        "message": "Assumed a 2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 8000,
       "gross_source": "load_weight"
      },
@@ -10100,8 +12340,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -10215,8 +12471,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 8000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 8 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "2",
+        "field": "axle_configuration",
+        "message": "Assumed a 2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 8000,
       "gross_source": "load_weight"
      },
@@ -10330,8 +12602,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -10445,8 +12733,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 8000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 8 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "2",
+        "field": "axle_configuration",
+        "message": "Assumed a 2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 8000,
       "gross_source": "load_weight"
      },
@@ -10560,8 +12864,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },
@@ -10675,8 +12995,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 8000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 8 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "2",
+        "field": "axle_configuration",
+        "message": "Assumed a 2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 8000,
       "gross_source": "load_weight"
      },
@@ -10790,8 +13126,24 @@
      "unknown_countries": [],
      "unknown_crossings": [],
      "vehicle_profile": {
+      "assumptions": [
+       {
+        "assumed": 28000,
+        "field": "gross_mass_kg",
+        "message": "Assumed 28 t gross — set your truck's gross mass",
+        "source": "load_weight"
+       },
+       {
+        "assumed": "3+2+2",
+        "field": "axle_configuration",
+        "message": "Assumed a 3+2+2 axle layout — set your truck's axle configuration",
+        "source": "load_weight"
+       }
+      ],
       "axle_config": "3+2+2",
+      "axle_config_assumed": true,
       "axle_config_source": "load_weight",
+      "gross_assumed": true,
       "gross_kg": 28000,
       "gross_source": "load_weight"
      },

@@ -224,3 +224,92 @@ class WeighbridgeFeeNotEditableTests(TestCase):
         rid = resp.json()['id']
         client.patch(f'/api/v1/admin/transit-rates/{rid}/', {'weighbridge_fee_zar': 500}, format='json')
         self.assertEqual(CountryTransitRate.objects.get(id=rid).weighbridge_fee_zar, Decimal('0'))
+
+
+class PerOptionBorderTests(_Base):
+    """Each route option carries its own countries and border lines."""
+
+    def _calc_windhoek(self, **extra):
+        opts = [tomtom('JHB-WINDHOEK'), tomtom('JHB-WINDHOEK-ALT1')]
+        return self.calc(opts, dest_country='NA', **extra)
+
+    def test_via_botswana_is_priced_not_blocked(self):
+        data = self._calc_windhoek()
+        best = data['routes'][0]
+        self.assertEqual(best['countries'], ['SA', 'BW', 'NA'])
+        self.assertTrue(best['border_costs_complete'])
+        codes = [b['code'] for b in best['cross_border_breakdown']]
+        self.assertIn('bw_single_trip_permit', codes)
+        self.assertIn('na_cross_border_charge', codes)       # entry from Botswana (Mamuno)
+        self.assertEqual(codes.count('sa_cbrta_permit'), 2)  # Botswana and Namibia
+
+    def test_direct_option_has_no_botswana_charges(self):
+        alt = self._calc_windhoek()['routes'][1]
+        self.assertEqual(alt['countries'], ['SA', 'NA'])
+        codes = [b['code'] for b in alt['cross_border_breakdown']]
+        self.assertNotIn('bw_single_trip_permit', codes)
+        self.assertEqual(codes.count('sa_cbrta_permit'), 1)
+        self.assertAlmostEqual(alt['additional_costs']['border_fees'],
+                               sum(b['amount'] for b in alt['cross_border_breakdown'] if b['type'] != 'non_sa_toll'),
+                               places=2)
+
+    def test_gross_mass_assumption_is_exposed(self):
+        prof = self._calc_windhoek()['routes'][0]['border_vehicle_profile']
+        self.assertTrue(prof['gross_assumed'])
+        self.assertIn('Assumed 56 t gross — set your truck\'s gross mass',
+                      [a['message'] for a in prof['assumptions']])
+
+    def test_every_option_carries_the_return_leg(self):
+        from django.core.cache import cache
+        cache.clear()
+        out, alt, back = tomtom('PTA-LEBOMBO'), tomtom('PTA-MBOMBELA'), tomtom('LEBOMBO-PTA')
+        data = self.calc([out, alt], side_effect=[[out, alt], [back]], include_empty_return=True)
+        self.assertTrue(all(r['return_leg'] == data['return_leg'] for r in data['routes']))
+        self.assertTrue(data['routes'][1]['return_leg']['available'])
+
+    def test_clearing_agent_override_replaces_the_estimate(self):
+        data = self.calc([tomtom('JHB-BEITBRIDGE-POST')], dest={'lat': -22.2235, 'lon': 29.99},
+                         dest_country='ZW', clearing_agent_fee_zar=1500)
+        agent = next(b for b in data['cross_border_breakdown'] if b['code'] == 'zw_clearing_agent')
+        self.assertEqual((agent['amount'], agent['verified'], agent['source']), (1500.0, True, 'Your figure'))
+
+
+class BotswanaNamibiaDirectionTests(TestCase):
+    def test_round_trip_through_botswana_pays_one_return_permit(self):
+        from core.services import cross_border as cb
+        facts = dict(gross_mass_kg=56_000, axle_config='3+2+2')
+        out = cb.calculate_cross_border_costs(['SA', 'BW', 'NA'], 1400, **facts)
+        back = cb.calculate_cross_border_costs(['NA', 'BW', 'SA'], 1400, **facts)
+        bw = [b['amount_foreign'] for r in (out, back) for b in r['breakdown'] if b['code'].startswith('bw_')]
+        self.assertEqual(sum(bw), 1833.0)                    # P975 out + P858 back = the P1,833 return permit
+        self.assertEqual([b['code'] for b in back['breakdown'] if b['code'].startswith('na_c')], [])  # no NA entry going home
+
+
+class NonVendorSummaryTests(_Base):
+    vat_registered = False
+
+    def test_summary_uses_the_options_own_figure_and_basis(self):
+        opts = [tomtom('JHB-DBN-OPTS'), tomtom('JHB-DBN-OPTS-ALT1'), tomtom('JHB-DBN-OPTS-ALT2')]
+        r = self.calc(opts)['routes'][2]
+        self.assertEqual(r['toll_cost_zar'], 57.0)            # Mariannhill incl. VAT: cannot be reclaimed
+        self.assertTrue(r['toll_summary'].endswith('tolls R 57,00 incl. VAT'), r['toll_summary'])
+
+
+class CostingPersistenceTests(TestCase):
+    def test_both_legs_round_trip_through_costing_inputs(self):
+        from core.services.quote_costing import COSTING_INPUT_KEYS
+        for k in ('toll_cost_return', 'border_cost_empty_return', 'border_estimate', 'clearing_agent_fee'):
+            self.assertIn(k, COSTING_INPUT_KEYS)
+
+    def test_saved_round_trip_prices_the_way_back_as_shown(self):
+        from types import SimpleNamespace
+        from core.services.quote_costing import quote_payload
+        q = SimpleNamespace(costing_inputs={'toll_cost_one_way': 1494.78, 'toll_cost_return': 1177.39,
+                                            'border_cost_empty_return': 1200.0, 'border_estimate': 2005.0},
+                            trip_type='ROUND_TRIP', distance=425, estimated_duration_minutes=300,
+                            toll_charges=2672.17, vehicle_type='', weight=30000, cargo_description='',
+                            driver_allowance=0, total_amount=None, is_international=True,
+                            priced_vehicle_type_id=None)
+        p = quote_payload(q)
+        self.assertEqual((p['toll_cost_one_way'], p['toll_cost_return']), (1494.78, 1177.39))
+        self.assertEqual((p['cross_border_cost_empty_return'], p['cross_border_estimate_zar']), (1200.0, 2005.0))

@@ -3701,13 +3701,17 @@ def _legacy_route_shape(data, extra_costs):
         fix(rt, extra_costs)
 
 
-def _toll_summary(index, toll, amount):
-    """'Fastest · via N3 (De Hoek, Mariannhill) · tolls R 1 274' for a route option."""
+def _toll_summary(index, toll, amount, vat_registered=True):
+    """'Fastest · via N3 (De Hoek, Mariannhill) · tolls R 1 274,00 excl. VAT'
+    for a route option. `amount` is the option's own toll_cost_zar (the same
+    figure, VAT basis and rounding the option shows), formatted the one way
+    every toll figure is: format_zar to the cent."""
     from core.formatting import format_zar
     head = 'Fastest' if index == 0 else f'Alternative {index}'
     plazas = [b['plaza'] for b in toll.get('breakdown') or []]
     via = (f"via {'/'.join(toll.get('routes') or [])} ({', '.join(plazas)})" if plazas else 'no toll plazas')
-    money = 'tolls unknown' if amount is None else f'tolls {format_zar(amount, 0)}'
+    basis = 'excl. VAT' if vat_registered else 'incl. VAT'
+    money = 'tolls unknown' if amount is None else f'tolls {format_zar(amount, 2)} {basis}'
     return f'{head} · {via} · {money}'
 
 
@@ -4113,6 +4117,54 @@ class RouteCalculatorView(APIView):
         # Per-route breakdown (best + alternatives). Fuel/total are distance-based.
         # Toll is matched against EACH route's own geometry so alternatives that use
         # different plazas are priced correctly (index 0 reuses the values above).
+        # The way back, priced on its OWN route (TomTom's best route from the
+        # delivery point home can use different roads and plazas — e.g.
+        # Lebombo→Pretoria). Only when asked: it costs a second routing call.
+        need, why = self._return_leg_needed(data, getattr(request.user, 'company', None), distance_km)
+        if need:
+            response_data['return_leg'] = self._return_leg(
+                o, d, weight_kg, source, _toll_for_route, vehicle_facts,
+                getattr(getattr(request.user, 'company', None), 'cross_border_crossings_per_year', None),
+                origin_iso, dest_iso, countries if cross_border else None)
+        elif why:
+            response_data['return_leg'] = None
+        if why:
+            response_data['return_leg_reason'] = why
+
+        # Each option carries its OWN border lines (its own countries — a
+        # direct SA→Namibia option has no Botswana charges), toll plazas and
+        # the way back.
+        from core.services.cross_border import route_countries as _route_countries_for
+        crossings_per_year = getattr(getattr(request.user, 'company', None), 'cross_border_crossings_per_year', None)
+
+        def _border_for_option(i, rt):
+            if i == 0:
+                if not cross_border:
+                    return {'cross_border': False}
+                return {'cross_border': True, 'countries': countries, 'additional_costs': additional_costs,
+                        'cross_border_breakdown': cross_border_breakdown,
+                        'border_costs_complete': response_data.get('border_costs_complete', True),
+                        'border_costs_unknown': response_data.get('border_costs_unknown'),
+                        'border_costs_verified': response_data.get('border_costs_verified', True),
+                        'border_estimate_zar': response_data.get('border_estimate_zar', 0),
+                        'border_vehicle_profile': response_data.get('border_vehicle_profile')}
+            secs = [x for x in rt.get('sections', []) if x.get('type') == 'COUNTRY']
+            opt = (_route_countries_for(rt.get('geometry') or [], secs, origin_iso, dest_iso) if secs
+                   else (countries or []))
+            if len(opt or []) <= 1:
+                return {'cross_border': False}
+            cb = calculate_cross_border_costs(
+                opt, rt['distance_km'], vehicle_type, weight_kg=weight_kg, crossings_per_year=crossings_per_year,
+                country_km=country_distances_km(rt.get('geometry') or [], secs), **vehicle_facts)
+            return {'cross_border': True, 'countries': opt,
+                    'additional_costs': {'border_fees': cb['border_fees'], 'weighbridge_fees': 0,
+                                         'non_sa_tolls': cb['non_sa_tolls']},
+                    'cross_border_breakdown': cb['breakdown'], 'border_costs_complete': cb['complete'],
+                    'border_costs_unknown': {'countries': cb['unknown_countries'],
+                                             'crossings': cb['unknown_crossings']},
+                    'border_costs_verified': cb['verified'], 'border_estimate_zar': cb['estimate_zar'],
+                    'border_vehicle_profile': cb['vehicle_profile']}
+
         extra_costs = sum(additional_costs.values()) if additional_costs else 0
         routes_out = []
         for i, rt in enumerate(routes_raw):
@@ -4124,6 +4176,8 @@ class RouteCalculatorView(APIView):
             rt_tolls_unknown = rt_toll['unavailable_reason'] is not None
             rt_toll_zar = None if rt_tolls_unknown else round(float(rt_toll['excl']), 2)
             rt_breakdown = rt_toll['breakdown']
+            rt_border = _border_for_option(i, rt)
+            rt_extra = sum((rt_border.get('additional_costs') or {}).values())
             routes_out.append({
                 'index': i,
                 'is_best': i == 0,
@@ -4146,10 +4200,13 @@ class RouteCalculatorView(APIView):
                 # For a "Via N3 (De Hoek, Mariannhill) · R 1 274" option label.
                 'toll_routes': rt_toll['routes'],
                 'toll_plazas': [b['plaza'] for b in rt_breakdown],
-                'toll_summary': _toll_summary(i, rt_toll, rt_toll_zar),
+                'toll_summary': _toll_summary(i, rt_toll, rt_toll_zar, vat_registered),
                 'tolls_unknown': rt_tolls_unknown,
-                'total_cost_zar': (round(r_fuel + rt_toll_zar + extra_costs, 2)
+                'total_cost_zar': (round(r_fuel + rt_toll_zar + rt_extra, 2)
                                    if r_fuel is not None and rt_toll_zar is not None else None),
+                **rt_border,
+                'return_leg': response_data.get('return_leg'),
+                'return_leg_reason': response_data.get('return_leg_reason'),
                 # Rich route metadata from section analysis
                 'toll_count': analysis['toll_count'],
                 'has_tunnel': analysis['has_tunnel'],
@@ -4166,19 +4223,6 @@ class RouteCalculatorView(APIView):
             })
         response_data['routes'] = routes_out
 
-        # The way back, priced on its OWN route (TomTom's best route from the
-        # delivery point home can use different roads and plazas — e.g.
-        # Lebombo→Pretoria). Only when asked: it costs a second routing call.
-        need, why = self._return_leg_needed(data, getattr(request.user, 'company', None), distance_km)
-        if need:
-            response_data['return_leg'] = self._return_leg(
-                o, d, weight_kg, source, _toll_for_route, vehicle_facts,
-                getattr(getattr(request.user, 'company', None), 'cross_border_crossings_per_year', None),
-                origin_iso, dest_iso, countries if cross_border else None)
-        elif why:
-            response_data['return_leg'] = None
-        if why:
-            response_data['return_leg_reason'] = why
         response_data['best_index'] = 0
         if request.headers.get('X-TW-Quote-Rules') != '1':
             _legacy_route_shape(response_data, extra_costs)
@@ -4210,8 +4254,10 @@ class RouteCalculatorView(APIView):
             cap = (capacity_tonnes(vt.capacity) or 0) * 1000 if vt is not None else 0
         except Exception:
             cap = 0
+        agent = _num(data.get('clearing_agent_fee_zar') or data.get('clearing_agent_fee'))
         return {'gross_mass_kg': gross, 'axle_config': axles, 'sanral_class': sanral_class,
-                'vehicle_capacity_kg': cap}
+                'vehicle_capacity_kg': cap,
+                'overrides': {'zw_clearing_agent': agent} if agent is not None and agent >= 0 else None}
 
     @staticmethod
     def _return_leg_needed(data, company, distance_km):
@@ -4299,6 +4345,7 @@ class RouteCalculatorView(APIView):
                 'border_costs_unknown': {'countries': cb['unknown_countries'], 'crossings': cb['unknown_crossings']},
                 'border_costs_verified': cb['verified'],
                 'border_estimate_zar': cb['estimate_zar'],
+                'border_vehicle_profile': cb['vehicle_profile'],
             })
         return out
 

@@ -73,7 +73,11 @@ ROUTE_NEW_KEYS = ('distance_estimated', 'fuel_unknown_reason', 'fuel_vehicle_typ
                   # the VAT basis, the tariff-year check and how much of the border is estimated.
                   'toll_trip_date', 'toll_vat_registered', 'toll_schedule_warning',
                   'border_costs_verified', 'border_estimate_zar', 'border_vehicle_profile')
-ROUTE_OPTION_NEW_KEYS = ('toll_routes', 'toll_plazas', 'toll_summary')
+ROUTE_OPTION_NEW_KEYS = ('toll_routes', 'toll_plazas', 'toll_summary', 'return_leg', 'return_leg_reason',
+                         # each option's own border lines (the best option's equal the top level)
+                         'cross_border', 'countries', 'additional_costs', 'cross_border_breakdown',
+                         'border_costs_complete', 'border_costs_unknown', 'border_costs_verified',
+                         'border_estimate_zar', 'border_vehicle_profile')
 
 # Toll/border audit (8 Oct 2026, docs: TOLL-BORDER-AUDIT.md), APPROVED changes:
 #  * each toll_breakdown entry gains plaza_type / operator / country /

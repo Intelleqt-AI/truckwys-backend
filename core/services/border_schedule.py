@@ -80,6 +80,17 @@ class VehicleProfile:
     def config(self) -> str:
         return '+'.join(str(u) for u in self.units)
 
+    def assumptions(self) -> list:
+        """What was assumed about the vehicle, for the UI to ask for."""
+        out = []
+        if not self.gross_known:
+            out.append({'field': 'gross_mass_kg', 'assumed': self.gross_kg, 'source': self.gross_source,
+                        'message': f'Assumed {self.gross_kg / 1000:g} t gross — set your truck\'s gross mass'})
+        if not self.units_known:
+            out.append({'field': 'axle_configuration', 'assumed': self.config, 'source': self.units_source,
+                        'message': f'Assumed a {self.config} axle layout — set your truck\'s axle configuration'})
+        return out
+
     def gross_note(self) -> str:
         if self.gross_known:
             return ''
@@ -268,6 +279,12 @@ def _bw_entry(p: VehicleProfile, frm: str):
 
 
 def _bw_exit(p: VehicleProfile, to: str):
+    if to != 'SA':
+        return []   # leaving for Namibia / Zimbabwe: nothing on the Botswana side
+    return _bw_return_extra(p)
+
+
+def _bw_return_extra(p: VehicleProfile, *_):
     _, one_way, ret = bw_band(p.gross_kg)
     return [Charge('bw_return_permit_supplement', 'border_crossing',
                    f'Botswana permit, return trip (P{ret} return less P{one_way} one way)',
@@ -368,7 +385,7 @@ def _mw_per_km(p: VehicleProfile, km: Decimal):
 
 SCHEDULES = {
     'ZW': {'entry': _zw_entry, 'exit': lambda p, to: [_zw_agent()], 'per_km': _zw_per_km},
-    'BW': {'entry': _bw_entry, 'exit': _bw_exit},
+    'BW': {'entry': _bw_entry, 'exit': _bw_exit, 'return_entry': _bw_return_extra},
     'NA': {'entry': _na_entry, 'per_km': _na_per_km},
     'LS': {'entry': _ls_entry},
     'SZ': {'entry': _sz_entry},

@@ -1079,6 +1079,11 @@ COSTING_INPUT_KEYS = {
     'driver_nights': int, 'duration_minutes': float, 'toll_cost_one_way': float,
     'driver_cost_is_override': bool, 'border_cost': float,
     'border_cost_is_override': bool, 'border_costs_unknown': dict,
+    # Both legs exactly as the builder showed them (toll/border audit):
+    # the way back's own tolls, the empty return's border figure and how
+    # much of the border is estimated, and the user's clearing-agent fee.
+    'toll_cost_return': float, 'border_cost_empty_return': float,
+    'border_estimate': float, 'clearing_agent_fee': float,
 }
 
 
@@ -1133,9 +1138,12 @@ def quote_payload(quote):
     if quote.estimated_duration_minutes:
         ci.pop('duration_minutes', None)
     toll_total = _num(quote.toll_charges)
-    if ci.get('toll_cost_one_way') is not None and toll_total is not None \
-            and abs(float(ci['toll_cost_one_way']) * legs - toll_total) > 0.01:
-        ci.pop('toll_cost_one_way')
+    if ci.get('toll_cost_one_way') is not None and toll_total is not None:
+        back = (float(ci['toll_cost_return']) if legs == 2 and ci.get('toll_cost_return') is not None
+                else float(ci['toll_cost_one_way']) * (legs - 1))
+        if abs(float(ci['toll_cost_one_way']) + back - toll_total) > 0.01:
+            ci.pop('toll_cost_one_way')
+            ci.pop('toll_cost_return', None)
     name = (quote.vehicle_type or '').strip().lower()
     vt_id = ci.get('vehicle_type_id') or getattr(quote, 'priced_vehicle_type_id', None)
     if vt_id and name:
@@ -1156,6 +1164,7 @@ def quote_payload(quote):
         'tolls_unknown': ci.get('tolls_unknown'),
         'tolls_confirmed_none': ci.get('tolls_confirmed_none'),
         'toll_cost_empty_return': ci.get('tolls_empty_return'),
+        'toll_cost_return': ci.get('toll_cost_return'),
         'cargo_description': quote.cargo_description,
         'driver_cost': _num(quote.driver_allowance),
         # A stored driver figure counts as entered ONLY when the client said
@@ -1169,6 +1178,9 @@ def quote_payload(quote):
         'cross_border_cost': ci.get('border_cost') or 0.0,
         'border_costs_unknown': ci.get('border_costs_unknown'),
         'border_cost_is_override': bool(ci.get('border_cost_is_override')),
+        'cross_border_cost_empty_return': ci.get('border_cost_empty_return'),
+        'cross_border_estimate_zar': ci.get('border_estimate'),
+        'clearing_agent_fee': ci.get('clearing_agent_fee'),
         'is_international': bool(getattr(quote, 'is_international', False)),
         'include_empty_return': ci.get('include_empty_return'),
         'distance_estimated': ci.get('distance_estimated'),

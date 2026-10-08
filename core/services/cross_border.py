@@ -88,10 +88,19 @@ def amortised_sa_permit(gross_kg: float, crossings_per_year: int | None = None) 
 #
 # Which crossings a schedule covers: entry into the country FROM these
 # neighbours, and the way back out TO these.
-SCHEDULE_ENTRY_FROM = {'ZW': {'SA'}, 'BW': {'SA'}, 'NA': {'SA'}, 'LS': {'SA'}, 'SZ': {'SA'},
-                       'MZ': {'SA'}, 'ZM': {'ZW'}}
-SCHEDULE_EXIT_TO = {'ZW': {'SA'}, 'BW': {'SA'}, 'NA': {'SA'}, 'LS': {'SA'}, 'SZ': {'SA'},
-                    'MZ': {'SA'}, 'ZM': {'ZW'}}
+#
+# * Namibia's Cross-Border Charge is per entry from ANY country (RFA), so
+#   Botswana→Namibia (Trans-Kalahari / Mamuno) is covered.
+# * Botswana's SACU single-trip permit (SI 48/2017) is for entering Botswana
+#   whichever side the truck comes from (SA, Namibia, Zimbabwe); leaving
+#   Botswana for Namibia costs nothing on the Botswana side.
+# * Zimbabwe's Zimborders access toll is Beitbridge's (from SA) only; entry
+#   from Botswana/Zambia/Mozambique has no source and stays unknown, as does
+#   Mozambique↔Zimbabwe.
+SCHEDULE_ENTRY_FROM = {'ZW': {'SA'}, 'BW': {'SA', 'NA', 'ZW'}, 'NA': {'SA', 'BW'}, 'LS': {'SA'},
+                       'SZ': {'SA'}, 'MZ': {'SA'}, 'ZM': {'ZW'}}
+SCHEDULE_EXIT_TO = {'ZW': {'SA'}, 'BW': {'SA', 'NA', 'ZW'}, 'NA': {'SA', 'BW'}, 'LS': {'SA'},
+                    'SZ': {'SA'}, 'MZ': {'SA'}, 'ZM': {'ZW'}}
 
 # Retired: no per-corridor rand totals and no weighbridge fees remain (no
 # country charges a compliant truck for weighing).
@@ -413,6 +422,7 @@ def calculate_cross_border_costs(
     axle_config: str | None = None,
     sanral_class: int | None = None,
     today: date | None = None,
+    overrides: dict | None = None,
 ) -> dict[str, Any]:
     """Border, permit and in-country charges for ONE leg, in travel order.
 
@@ -425,6 +435,9 @@ def calculate_cross_border_costs(
     schedules are written about); when the vehicle type does not give them
     they are inferred from the SANRAL class, or from the load, and every
     line that depends on them is labelled an estimate.
+
+    `overrides` {component code: rand} replaces an estimate with the user's
+    own figure (e.g. {'zw_clearing_agent': 1800} — their agent's fee).
     """
     from core.services import border_schedule as bs
 
@@ -439,23 +452,42 @@ def calculate_cross_border_costs(
     unknown_crossings = [f'{countries[i]}-{countries[i + 1]}' for i in range(len(countries) - 1)
                          if not corridor_fee_known(countries[i], countries[i + 1])]
     lines: list[dict] = []
+    # A leg that starts outside SA is an SA truck's way back. Where a country
+    # sells a return permit (Botswana), re-entering it on the way back costs
+    # the return permit's extra, not a second one-way permit; and leaving a
+    # country entered on this same leg owes no exit extra.
+    homebound = countries[0] != 'SA'
+    entered: set = set()
 
     # --- crossings ---
     for i in range(len(countries) - 1):
         fc, tc = countries[i], countries[i + 1]
         if f'{fc}-{tc}' in unknown_crossings:
             continue
-        if tc != 'SA' and fc in SCHEDULE_ENTRY_FROM.get(tc, ()):
-            charges = bs.SCHEDULES[tc].get('entry', lambda p, f: [])(profile, fc)
-        elif tc in SCHEDULE_EXIT_TO.get(fc, ()):
-            charges = bs.SCHEDULES[fc].get('exit', lambda p, t: [])(profile, tc)
-        else:
+        sched_entry = tc != 'SA' and fc in SCHEDULE_ENTRY_FROM.get(tc, ())
+        sched_exit = tc in SCHEDULE_EXIT_TO.get(fc, ())
+        charges = []
+        if sched_entry:
+            entered.add(tc)
+            sched = bs.SCHEDULES[tc]
+            if homebound and 'return_entry' in sched:
+                charges += sched['return_entry'](profile, fc)
+            else:
+                charges += sched.get('entry', lambda p, f: [])(profile, fc)
+        if sched_exit and fc not in entered:
+            charges += bs.SCHEDULES[fc].get('exit', lambda p, t: [])(profile, tc)
+        if not (sched_entry or sched_exit):
             fee, exact = _db_fee(fc, tc, profile.gross_kg)
             if fee > 0:
                 lines.append(_db_line('border_crossing', f'{fc} → {tc} border crossing', fee,
                                       '' if exact else 'priced at the heaviest band on file'))
             continue
-        lines += [bs.to_line(ch, profile, today) for ch in charges]
+        for ch in charges:
+            if overrides and overrides.get(ch.code) is not None:
+                ch.amount, ch.currency = Decimal(str(overrides[ch.code])), 'ZAR'
+                ch.tariff_verified, ch.depends_on = True, ()
+                ch.source_name, ch.source_url, ch.as_of, ch.notes = 'Your figure', '', None, []
+            lines.append(bs.to_line(ch, profile, today))
 
     # --- SA C-BRTA permit: one per foreign country served ---
     if 'SA' in countries:
@@ -515,7 +547,10 @@ def calculate_cross_border_costs(
         'estimate_zar': round(estimate, 2),
         'verified': all(ln['verified'] for ln in lines),
         'vehicle_profile': {'gross_kg': profile.gross_kg, 'gross_source': profile.gross_source,
-                            'axle_config': profile.config, 'axle_config_source': profile.units_source},
+                            'gross_assumed': not profile.gross_known,
+                            'axle_config': profile.config, 'axle_config_source': profile.units_source,
+                            'axle_config_assumed': not profile.units_known,
+                            'assumptions': profile.assumptions()},
     }
 
 
