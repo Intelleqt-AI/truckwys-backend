@@ -119,7 +119,15 @@ def won_quote_q():
     customer acceptance: status says won (ACCEPTED / IT / COMPLETED), or the
     outcome was recorded as accepted on a quote that was actually sent (never
     a DRAFT)."""
-    return Q(status__in=WON_STATUSES) | (Q(outcome='accepted') & ~Q(status='DRAFT'))
+    return (Q(status__in=WON_STATUSES) | (Q(outcome='accepted') & ~Q(status='DRAFT'))) & per_load_q()
+
+
+def per_load_q():
+    """Per-load quotes only: a tonnage quote's total is a rate per tonne x
+    tonnes (a volume contract's is many loads), never a lane price per load,
+    so it is never per-load market, customer or win-model evidence (its own
+    per-tonne market: core.services.tonnage_market)."""
+    return Q(pricing_basis='per_load')
 
 
 def never_sent_q():
@@ -133,12 +141,13 @@ def sent_q():
     """Market and customer-history evidence: quotes KNOWN to have been sent
     (Quote.was_sent is True). Unknown (legacy None) and never-sent quotes
     are not evidence (QUOTE-RULES §8)."""
-    return Q(was_sent=True)
+    return Q(was_sent=True) & per_load_q()
 
 
 def lost_quote_q():
     """A decided, lost quote: declined, or recorded rejected, on a sent quote."""
-    return (Q(status='DECLINED') | (Q(outcome='rejected') & ~Q(status='DRAFT'))) & ~won_quote_q()
+    return ((Q(status='DECLINED') | (Q(outcome='rejected') & ~Q(status='DRAFT'))) & ~won_quote_q()
+            & per_load_q())
 
 
 # Display city and province for each canonical code (bookings created from

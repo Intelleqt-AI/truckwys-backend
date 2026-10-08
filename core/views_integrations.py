@@ -1,10 +1,13 @@
 # TENANCY AUDIT: 2026-03-15 — Integration views audited
 # - Xero: replaced by core.accounting (provider-neutral, per-company connection).
 # - FleetImportTripsView, CreditLookupView: Authenticated, operate on specific IDs ✓
-# - FleetTripSyncView, FleetTripBulkSyncView: API key authenticated, operate on specific entities ✓
+# - FleetTripSyncView, FleetTripBulkSyncView, TripSyncView (re-audited 2026-10):
+#   the old "specific entities" tick was wrong (any tenant's load by number,
+#   Customer.objects.first(), and real keys were rejected). Now every lookup,
+#   create and customer is scoped to the API key's company (resolve_fleet_key,
+#   core.services.tms_sync); demo keys only in DEBUG for FLEET_DEMO_COMPANY_ID.
 # - DashboardInsightsView: Uses Company.objects.first() - needs user company ⚠️
 # - CashFlowForecastView: Aggregates all data - needs company filter ⚠️
-# - TripSyncView: API key validated, operates on specific trips ✓
 
 """
 Integration Views
@@ -654,28 +657,111 @@ class FleetAPIKeyAuthentication(BaseAuthentication):
         key = request.META.get('HTTP_X_API_KEY')
         if not key:
             return None  # Not an API key request — try other auth
-
-        key_obj = IntegrationAPIKey.objects.filter(
-            key=key, active=True
-        ).select_related('operator').first()
-        if key_obj:
-            if key_obj.is_over_quota():
-                raise AuthenticationFailed('Monthly API quota exceeded.')
-            key_obj.record_call()
-            operator = key_obj.operator
-            request.integration_key = key_obj
-            return (operator, key_obj)
-
-        # DEBUG-only fallback so local integration tests keep working.
-        if getattr(settings, 'DEBUG', False):
-            fleet_name = FLEET_DEMO_API_KEYS.get(key)
-            if fleet_name:
-                return ({'api_key': key, 'fleet_name': fleet_name}, key)
-
-        raise AuthenticationFailed('Invalid API key.')
+        key_obj = resolve_fleet_key(request, key)
+        return (key_obj.operator, key_obj)
 
     def authenticate_header(self, request):
         return 'X-API-Key'
+
+
+class _DemoFleetOperator:
+    """Pseudo operator for a DEBUG demo key: bound to ONE company
+    (settings.FLEET_DEMO_COMPANY_ID), never to "whatever company sorts first"."""
+    is_authenticated = True
+    is_active = True
+    is_staff = False
+    is_superuser = False
+    pk = id = 'demo-fleet'
+
+    def __init__(self, name, company):
+        self.username = f'demo-fleet:{name}'
+        self.company = company
+        self.company_id = getattr(company, 'id', None)
+
+
+class _DemoFleetKey:
+    key_type = 'FLEET_TMS'
+
+    def __init__(self, key, name, company):
+        self.key = key
+        self.name = name
+        self.operator = _DemoFleetOperator(name, company)
+        self.pk = self.id = None
+
+
+class IntegrationQuotaExceeded(AuthenticationFailed):
+    status_code = 429
+    default_detail = 'Monthly API quota exceeded.'
+
+
+def resolve_fleet_key(request, key):
+    """The IntegrationAPIKey (or, in DEBUG only, a demo key) for a fleet / TMS
+    call. Raises AuthenticationFailed (401) for an unknown, inactive, lender,
+    IP-blocked or company-less key, IntegrationQuotaExceeded (429) over quota.
+
+    Every fleet / TMS endpoint works ONLY on the key's company
+    (key.operator.company): lookups, creates and customers alike."""
+    key_obj = IntegrationAPIKey.objects.filter(
+        key=key, active=True
+    ).select_related('operator', 'operator__company').first()
+    if key_obj is not None:
+        if key_obj.key_type == 'LENDER':
+            # A lender key reads the funding book; it never writes loads.
+            raise AuthenticationFailed('This API key cannot sync trips.')
+        operator = key_obj.operator
+        if operator is None or not getattr(operator, 'is_active', False):
+            raise AuthenticationFailed('Invalid API key.')
+        if getattr(operator, 'company_id', None) is None:
+            raise AuthenticationFailed('This API key is not linked to a company.')
+        ip = request.META.get('REMOTE_ADDR', '')
+        if not key_obj.is_ip_allowed(ip):
+            raise AuthenticationFailed('Calls from this address are not allowed for this API key.')
+        if key_obj.is_over_quota():
+            raise IntegrationQuotaExceeded()
+        key_obj.record_call()
+        request.integration_key = key_obj
+        return key_obj
+
+    # DEBUG-only demo keys, bound to settings.FLEET_DEMO_COMPANY_ID. Never in
+    # production, and never without a company.
+    if getattr(settings, 'DEBUG', False):
+        fleet_name = FLEET_DEMO_API_KEYS.get(key)
+        company_id = getattr(settings, 'FLEET_DEMO_COMPANY_ID', None)
+        if fleet_name and company_id:
+            company = Company.objects.filter(pk=company_id).first()
+            if company is not None:
+                demo = _DemoFleetKey(key, fleet_name, company)
+                request.integration_key = demo
+                return demo
+
+    raise AuthenticationFailed('Invalid API key.')
+
+
+def integration_company(request):
+    """The company an authenticated fleet / TMS request acts for, or None
+    when the request did not come in on an integration key (e.g. a forced /
+    session user): only a key names the company a TMS acts for."""
+    if getattr(request, 'integration_key', None) is None:
+        return None
+    return getattr(request.user, 'company', None)
+
+
+def _no_key_response():
+    return Response({'error': 'API key required. Pass X-API-Key header.'},
+                    status=status.HTTP_401_UNAUTHORIZED)
+
+
+def _sync_detail(load, created):
+    out = {'load_id': load.pk, 'load_number': load.load_number, 'external_id': load.external_id or None,
+           'created': created, 'changed': sorted(getattr(load, '_sync_changes', {}) or {})}
+    link = getattr(load, '_sync_link', None)
+    if link is not None:
+        out['return_link'] = link
+    if load.invoice_mismatch:
+        out['invoice_mismatch'] = load.invoice_mismatch
+    if getattr(load, '_status_refused', None):
+        out['status_refused'] = load._status_refused
+    return out
 
 
 class FleetTripSyncView(APIView):
@@ -700,109 +786,22 @@ class FleetTripSyncView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        # Require API key
-        if not request.auth or not isinstance(request.user, dict):
-            return Response(
-                {'error': 'API key required. Pass X-API-Key header.'},
-                status=status.HTTP_401_UNAUTHORIZED
-            )
-
-        data = request.data
-        action = data.get('action', 'status_update')
-        load_number = data.get('load_number')
-
-        if not load_number:
-            return Response(
-                {'error': 'load_number is required'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        # Try to find existing load
-        try:
-            load = Load.objects.get(load_number=load_number)
-        except Load.DoesNotExist:
-            if action == 'create':
-                # Create new load from external data
-                try:
-                    # Get or create customer (simplified — use first customer for demo)
-                    from core.models import Customer
-                    customer = Customer.objects.first()
-                    if not customer:
-                        return Response(
-                            {'error': 'No customers found. Please create at least one customer first.'},
-                            status=status.HTTP_400_BAD_REQUEST
-                        )
-
-                    load = Load.objects.create(
-                        load_number=load_number or f"EXT-{uuid.uuid4().hex[:8].upper()}",
-                        customer=customer,
-                        pickup_location=data.get('pickup_location', ''),
-                        pickup_city=data.get('pickup_city', data.get('pickup_location', '')[:100]),
-                        pickup_state=data.get('pickup_state', ''),
-                        pickup_zip=data.get('pickup_zip', ''),
-                        pickup_date=datetime.now(),
-                        delivery_location=data.get('delivery_location', ''),
-                        delivery_city=data.get('delivery_city', data.get('delivery_location', '')[:100]),
-                        delivery_state=data.get('delivery_state', ''),
-                        delivery_zip=data.get('delivery_zip', ''),
-                        delivery_date=datetime.now(),
-                        cargo_description=data.get('cargo_description', 'Freight'),
-                        weight=Decimal(data.get('weight', 0)),
-                        distance=Decimal(data.get('distance', 0)),
-                        rate=Decimal(data.get('rate', 0)),
-                        total_amount=Decimal(data.get('total_amount', 0)),
-                        status='PENDING',
-                        notes=data.get('notes', ''),
-                    )
-                except Exception as e:
-                    return Response(
-                        {'error': f'Failed to create load: {str(e)}'},
-                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                    )
-            else:
-                return Response(
-                    {'error': f'Load {load_number} not found'},
-                    status=status.HTTP_404_NOT_FOUND
-                )
-
-        # Update load based on action
-        if action in ['status_update', 'create']:
-            # Update status if provided
-            if data.get('status'):
-                load.status = data.get('status')
-
-            # Update driver if provided
-            if data.get('driver_id'):
-                try:
-                    driver = Driver.objects.get(id=data['driver_id'])
-                    load.driver = driver
-                except Driver.DoesNotExist:
-                    pass
-
-            # Update vehicle if plate provided
-            if data.get('vehicle_plate'):
-                try:
-                    vehicle = Vehicle.objects.get(registration_number=data['vehicle_plate'])
-                    load.vehicle = vehicle
-                except Vehicle.DoesNotExist:
-                    pass
-
-            # Update notes
-            if data.get('notes'):
-                load.notes = data.get('notes', load.notes)
-
-        elif action == 'complete':
-            load.status = 'DELIVERED'
-            if data.get('notes'):
-                load.notes = data.get('notes', load.notes)
-
-        # Save changes
-        load.save()
-
-        # Return updated load (serialize)
+        from django.db import transaction
         from core.serializers import LoadSerializer
-        serializer = LoadSerializer(load)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        from core.services.tms_sync import SyncError, apply_fleet_trip
+        company = integration_company(request)
+        if company is None:
+            return _no_key_response()
+        if not isinstance(request.data, dict):
+            return Response({'error': 'Send one trip object'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            with transaction.atomic():
+                load, created = apply_fleet_trip(company, request.data)
+        except SyncError as e:
+            return Response({'error': e.message}, status=e.http_status)
+        body = LoadSerializer(load).data
+        body['sync'] = _sync_detail(load, created)
+        return Response(body, status=status.HTTP_200_OK)
 
 
 class FleetTripBulkSyncView(APIView):
@@ -840,20 +839,20 @@ class FleetTripBulkSyncView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        # Require API key
-        if not request.auth or not isinstance(request.user, dict):
-            return Response(
-                {'error': 'API key required. Pass X-API-Key header.'},
-                status=status.HTTP_401_UNAUTHORIZED
-            )
-
-        trips = request.data.get('trips', [])
+        from django.db import transaction
+        from core.services.tms_sync import SyncError, apply_fleet_trip
+        company = integration_company(request)
+        if company is None:
+            return _no_key_response()
+        trips = request.data.get('trips', []) if isinstance(request.data, dict) else None
 
         if not trips or not isinstance(trips, list):
             return Response(
                 {'error': 'trips array is required'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+        if len(trips) > 500:
+            return Response({'error': 'Max 500 trips per request'}, status=status.HTTP_400_BAD_REQUEST)
 
         results = {
             'processed': 0,
@@ -862,169 +861,34 @@ class FleetTripBulkSyncView(APIView):
             'errors': [],
         }
 
-        for idx, trip_data in enumerate(trips):
-            results['processed'] += 1
-
-            try:
-                # Use FleetTripSyncView logic
-                load_number = trip_data.get('load_number')
-                action = trip_data.get('action', 'status_update')
-
-                if not load_number:
-                    results['errors'].append({
-                        'index': idx,
-                        'load_number': load_number,
-                        'error': 'load_number is required',
-                    })
-                    continue
-
-                # Try to find existing load
-                try:
-                    load = Load.objects.get(load_number=load_number)
-                    created = False
-                except Load.DoesNotExist:
-                    if action == 'create':
-                        # Create new load
-                        from core.models import Customer
-                        customer = Customer.objects.first()
-                        if not customer:
-                            results['errors'].append({
-                                'index': idx,
-                                'load_number': load_number,
-                                'error': 'No customers found',
-                            })
-                            continue
-
-                        load = Load.objects.create(
-                            load_number=load_number or f"EXT-{uuid.uuid4().hex[:8].upper()}",
-                            customer=customer,
-                            pickup_location=trip_data.get('pickup_location', ''),
-                            pickup_city=trip_data.get('pickup_city', trip_data.get('pickup_location', '')[:100]),
-                            pickup_state=trip_data.get('pickup_state', ''),
-                            pickup_zip=trip_data.get('pickup_zip', ''),
-                            pickup_date=datetime.now(),
-                            delivery_location=trip_data.get('delivery_location', ''),
-                            delivery_city=trip_data.get('delivery_city', trip_data.get('delivery_location', '')[:100]),
-                            delivery_state=trip_data.get('delivery_state', ''),
-                            delivery_zip=trip_data.get('delivery_zip', ''),
-                            delivery_date=datetime.now(),
-                            cargo_description=trip_data.get('cargo_description', 'Freight'),
-                            weight=Decimal(trip_data.get('weight', 0)),
-                            distance=Decimal(trip_data.get('distance', 0)),
-                            rate=Decimal(trip_data.get('rate', 0)),
-                            total_amount=Decimal(trip_data.get('total_amount', 0)),
-                            status='PENDING',
-                            notes=trip_data.get('notes', ''),
-                        )
-                        created = True
-                    else:
-                        results['errors'].append({
-                            'index': idx,
-                            'load_number': load_number,
-                            'error': f'Load {load_number} not found',
-                        })
-                        continue
-
-                # Update load
-                if action in ['status_update', 'create']:
-                    if trip_data.get('status'):
-                        load.status = trip_data.get('status')
-                    if trip_data.get('driver_id'):
-                        try:
-                            driver = Driver.objects.get(id=trip_data['driver_id'])
-                            load.driver = driver
-                        except Driver.DoesNotExist:
-                            pass
-                    if trip_data.get('vehicle_plate'):
-                        try:
-                            vehicle = Vehicle.objects.get(registration_number=trip_data['vehicle_plate'])
-                            load.vehicle = vehicle
-                        except Vehicle.DoesNotExist:
-                            pass
-                    if trip_data.get('notes'):
-                        load.notes = trip_data.get('notes', load.notes)
-                elif action == 'complete':
-                    load.status = 'DELIVERED'
-                    if trip_data.get('notes'):
-                        load.notes = trip_data.get('notes', load.notes)
-
-                load.save()
-
-                if created:
-                    results['created'] += 1
-                else:
-                    results['updated'] += 1
-
-            except Exception as e:
-                results['errors'].append({
-                    'index': idx,
-                    'load_number': trip_data.get('load_number'),
-                    'error': str(e),
-                })
-
+        from core.services.tms_routing import sync_batch
+        with sync_batch():
+            self._sync_all(company, trips, results)
         return Response(results, status=status.HTTP_200_OK)
 
-
-def _parse_dt(value):
-    """Best-effort parse of an ISO datetime/date string; None on failure."""
-    if not value:
-        return None
-    from django.utils.dateparse import parse_datetime, parse_date
-    try:
-        dt = parse_datetime(value)
-        if dt:
-            return dt
-        d = parse_date(value)
-        if d:
-            return datetime(d.year, d.month, d.day)
-    except Exception:
-        return None
-    return None
-
-
-def _tms_import_customer(company, rec):
-    """Resolve (or create) the customer for an inbound TMS booking."""
-    email = (rec.get('customer_email') or '').strip().lower()
-    name = (rec.get('customer_name') or '').strip()
-    base = {'company': company, 'phone': '', 'address': '', 'city': '',
-            'state': '', 'zip_code': ''}
-    if email:
-        cust, _ = Customer.objects.get_or_create(
-            email=email, defaults={'name': name or email, **base})
-        return cust
-    placeholder = f'tms-import+{company.id if company else 0}@truckwys.local'
-    cust, _ = Customer.objects.get_or_create(
-        email=placeholder, defaults={'name': 'External TMS Import', **base})
-    return cust
-
-
-def _create_load_from_tms(company, rec, ext_id):
-    """Create a real Load from an inbound TMS trip record."""
-    import random
-    origin = rec.get('origin') or ''
-    dest = rec.get('destination') or ''
-    rate = Decimal(str(rec.get('rate') or rec.get('amount') or 0))
-
-    num = f'LOAD-{timezone.now().strftime("%Y%m%d")}-{random.randint(1000, 9999)}'
-    while Load.objects.filter(load_number=num).exists():
-        num = f'LOAD-{timezone.now().strftime("%Y%m%d")}-{random.randint(1000, 9999)}'
-
-    return Load.objects.create(
-        company=company,
-        load_number=num,
-        customer=_tms_import_customer(company, rec),
-        pickup_location=origin, pickup_city=origin, pickup_state='', pickup_zip='',
-        pickup_date=_parse_dt(rec.get('pickup_date')) or timezone.now(),
-        delivery_location=dest, delivery_city=dest, delivery_state='', delivery_zip='',
-        delivery_date=_parse_dt(rec.get('delivery_date')) or (timezone.now() + timedelta(days=2)),
-        cargo_description=rec.get('cargo_description', ''),
-        weight=Decimal(str(rec.get('weight') or 0)),
-        distance=Decimal(str(rec.get('distance') or 0)),
-        rate=rate,
-        total_amount=rate,
-        status='PENDING',
-        notes=f'ext_id:{ext_id}' if ext_id else 'imported via API',
-    )
+    def _sync_all(self, company, trips, results):
+        from django.db import transaction
+        from core.services.tms_sync import SyncError, apply_fleet_trip
+        for idx, trip_data in enumerate(trips):
+            results['processed'] += 1
+            if not isinstance(trip_data, dict):
+                results['errors'].append({'index': idx, 'load_number': None, 'error': 'Not an object'})
+                continue
+            try:
+                with transaction.atomic():
+                    load, created = apply_fleet_trip(company, trip_data)
+                results['created' if created else 'updated'] += 1
+                results.setdefault('results', []).append({'index': idx, **_sync_detail(load, created)})
+            except SyncError as e:
+                results['errors'].append({
+                    'index': idx, 'load_number': trip_data.get('load_number'), 'error': e.message,
+                })
+            except Exception:
+                logger.exception('fleet bulk sync item %s failed', idx)
+                results['errors'].append({
+                    'index': idx, 'load_number': trip_data.get('load_number'),
+                    'error': 'Could not process this trip',
+                })
 
 
 class TripSyncView(APIView):
@@ -1048,48 +912,61 @@ class TripSyncView(APIView):
     permission_classes = []
 
     def post(self, request):
-        # Validate + meter the API key against real IntegrationAPIKey records.
+        from django.db import transaction
+        from core.services.tms_sync import SyncError, sync_trip_record
+        # Validate + meter the API key (company-scoped, see resolve_fleet_key).
         api_key = request.headers.get('X-API-Key', '')
-        key_obj = IntegrationAPIKey.objects.filter(
-            key=api_key, active=True
-        ).select_related('operator').first()
-        if not key_obj:
+        if not api_key:
             return Response({'error': 'Invalid or missing API key'}, status=401)
-        if key_obj.is_over_quota():
+        try:
+            key_obj = resolve_fleet_key(request, api_key)
+        except IntegrationQuotaExceeded:
             return Response({'error': 'Monthly API quota exceeded'}, status=429)
-        key_obj.record_call()
-
-        company = getattr(getattr(key_obj, 'operator', None), 'company', None)
+        except AuthenticationFailed as e:
+            return Response({'error': str(e.detail)}, status=401)
+        company = key_obj.operator.company
 
         records = request.data if isinstance(request.data, list) else request.data.get('trips', [])
+        if not isinstance(records, list):
+            return Response({'error': 'trips array is required'}, status=400)
         if len(records) > 500:
             return Response({'error': 'Max 500 records per request'}, status=400)
 
-        created, skipped, errors, created_ids = 0, 0, [], []
-        for i, rec in enumerate(records):
-            try:
-                ext_id = rec.get('external_id')
-                missing = [f for f in ('origin', 'destination') if not rec.get(f)]
-                if missing:
-                    errors.append({'index': i, 'error': f'Missing fields: {missing}'})
-                    continue
-
-                # Idempotency: dedupe on external_id within this company.
-                if ext_id:
-                    dup = Load.objects.filter(notes__icontains=f'ext_id:{ext_id}')
-                    if company is not None:
-                        dup = dup.filter(company=company)
-                    if dup.exists():
-                        skipped += 1
-                        continue
-
-                load = _create_load_from_tms(company, rec, ext_id)
-                created += 1
-                created_ids.append(load.id)
-            except Exception as e:
-                errors.append({'index': i, 'error': str(e)})
+        counts = {'created': 0, 'updated': 0, 'unchanged': 0}
+        errors, created_ids, updated_ids, results = [], [], [], []
+        from core.services.tms_routing import sync_batch
+        with sync_batch():
+            self._sync_records(company, records, counts, errors, created_ids, updated_ids, results)
 
         return Response({
-            'created': created, 'skipped': skipped, 'errors': errors,
-            'total': len(records), 'load_ids': created_ids,
+            'created': counts['created'], 'updated': counts['updated'], 'unchanged': counts['unchanged'],
+            # Old clients read `skipped` (records already known): now the
+            # records that matched an existing load and changed nothing.
+            'skipped': counts['unchanged'],
+            'errors': errors, 'total': len(records), 'load_ids': created_ids, 'updated_ids': updated_ids,
+            'results': results,
         })
+
+    @staticmethod
+    def _sync_records(company, records, counts, errors, created_ids, updated_ids, results):
+        from django.db import transaction
+        from core.services.tms_sync import SyncError, sync_trip_record
+        for i, rec in enumerate(records):
+            if not isinstance(rec, dict):
+                errors.append({'index': i, 'error': 'Not an object'})
+                continue
+            try:
+                with transaction.atomic():
+                    outcome, load, detail = sync_trip_record(company, rec)
+                counts[outcome] += 1
+                if outcome == 'created':
+                    created_ids.append(load.id)
+                elif outcome == 'updated':
+                    updated_ids.append(load.id)
+                results.append({'index': i, **detail})
+            except SyncError as e:
+                errors.append({'index': i, 'error': e.message})
+            except Exception:
+                logger.exception('trip sync record %s failed', i)
+                errors.append({'index': i, 'error': 'Could not process this record'})
+

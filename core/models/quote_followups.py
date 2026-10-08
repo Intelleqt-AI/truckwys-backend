@@ -8,35 +8,40 @@ from decimal import Decimal
 
 from django.db import models
 
+# Server-side defaults (db_default) on every NOT NULL column that has a
+# default: an app image that predates a column can still insert rows.
+JSON_EMPTY_OBJ = models.Value({}, output_field=models.JSONField())
+JSON_EMPTY_LIST = models.Value([], output_field=models.JSONField())
+
 
 class QuoteAutomationSettings(models.Model):
     """Per-company settings for the follow-up features. One row per company,
-    created by migration 0158 for existing companies (fuel clause OFF with a
+    created by migration 0179 for existing companies (fuel clause OFF with a
     one-time prompt) and on company creation for new ones (clause ON)."""
 
     company = models.OneToOneField('Company', on_delete=models.CASCADE, related_name='quote_automation')
 
     # 1. Fuel price clause on quotes (PDF line + invoice adjustment).
-    fuel_surcharge_enabled = models.BooleanField(default=True)
-    fuel_surcharge_threshold_pct = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal('5.00'))
+    fuel_surcharge_enabled = models.BooleanField(default=True, db_default=True)
+    fuel_surcharge_threshold_pct = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal('5.00'), db_default=Decimal('5.00'))
     # Existing companies start OFF and are asked once (clients show the prompt
     # while this is true; any decision through the settings endpoint clears it).
-    fuel_surcharge_prompt_pending = models.BooleanField(default=False)
+    fuel_surcharge_prompt_pending = models.BooleanField(default=False, db_default=False)
     fuel_surcharge_decided_at = models.DateTimeField(null=True, blank=True)
 
     # 2. Fuel change alert (bell/push always per user prefs; email per user prefs).
-    fuel_alerts_enabled = models.BooleanField(default=True)
+    fuel_alerts_enabled = models.BooleanField(default=True, db_default=True)
 
     # 3. Expiry and no-answer nudges.
-    follow_ups_enabled = models.BooleanField(default=True)
-    follow_up_after_days = models.PositiveSmallIntegerField(default=3)
-    expiry_nudge_days = models.PositiveSmallIntegerField(default=2)
+    follow_ups_enabled = models.BooleanField(default=True, db_default=True)
+    follow_up_after_days = models.PositiveSmallIntegerField(default=3, db_default=3)
+    expiry_nudge_days = models.PositiveSmallIntegerField(default=2, db_default=2)
 
     # 4. Weekly margin email to admins (Monday 07:00 SAST).
-    weekly_margin_email_enabled = models.BooleanField(default=True)
+    weekly_margin_email_enabled = models.BooleanField(default=True, db_default=True)
 
     # 5. Pricing setup: {key: {"how": "changed"|"confirmed"|"inferred", "at": iso}}
-    pricing_setup = models.JSONField(default=dict, blank=True)
+    pricing_setup = models.JSONField(default=dict, blank=True, db_default=JSON_EMPTY_OBJ)
     pricing_setup_dismissed_at = models.DateTimeField(null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -58,13 +63,13 @@ class QuoteFollowUp(models.Model):
 
     quote = models.OneToOneField('Quote', on_delete=models.CASCADE, related_name='follow_up')
     sent_at = models.DateTimeField(null=True, blank=True)
-    sent_at_source = models.CharField(max_length=10, default=SENT_AT_RECORDED)
+    sent_at_source = models.CharField(max_length=10, default=SENT_AT_RECORDED, db_default=SENT_AT_RECORDED)
     expiry_nudged_at = models.DateTimeField(null=True, blank=True)
     expiry_nudged_for = models.DateField(null=True, blank=True, help_text='valid_until the expiry nudge was for')
     no_answer_nudged_at = models.DateTimeField(null=True, blank=True)
     reminder_sent_at = models.DateTimeField(null=True, blank=True)
-    reminder_count = models.PositiveSmallIntegerField(default=0)
-    reminder_last_to = models.CharField(max_length=254, blank=True, default='')
+    reminder_count = models.PositiveSmallIntegerField(default=0, db_default=0)
+    reminder_last_to = models.CharField(max_length=254, blank=True, default='', db_default='')
     reminder_last_by = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, blank=True,
                                          related_name='+')
     updated_at = models.DateTimeField(auto_now=True)
@@ -102,13 +107,13 @@ class FuelChangeAlert(models.Model):
     new_price = models.DecimalField(max_digits=8, decimal_places=4)
     effective_from = models.DateTimeField()
     target_margin_pct = models.DecimalField(max_digits=6, decimal_places=2)
-    quotes = models.JSONField(default=list, blank=True)
-    quotes_affected = models.PositiveIntegerField(default=0)
-    quotes_under_target = models.PositiveIntegerField(default=0)
-    title = models.CharField(max_length=200, blank=True, default='')
-    message = models.TextField(blank=True, default='')
+    quotes = models.JSONField(default=list, blank=True, db_default=JSON_EMPTY_LIST)
+    quotes_affected = models.PositiveIntegerField(default=0, db_default=0)
+    quotes_under_target = models.PositiveIntegerField(default=0, db_default=0)
+    title = models.CharField(max_length=200, blank=True, default='', db_default='')
+    message = models.TextField(blank=True, default='', db_default='')
     notified_at = models.DateTimeField(null=True, blank=True)
-    emails_sent = models.PositiveIntegerField(default=0)
+    emails_sent = models.PositiveIntegerField(default=0, db_default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -125,9 +130,9 @@ class WeeklyMarginReport(models.Model):
 
     company = models.ForeignKey('Company', on_delete=models.CASCADE, related_name='weekly_margin_reports')
     week_start = models.DateField()
-    figures = models.JSONField(default=dict, blank=True)
-    recipients = models.PositiveIntegerField(default=0)
-    emails_sent = models.PositiveIntegerField(default=0)
+    figures = models.JSONField(default=dict, blank=True, db_default=JSON_EMPTY_OBJ)
+    recipients = models.PositiveIntegerField(default=0, db_default=0)
+    emails_sent = models.PositiveIntegerField(default=0, db_default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

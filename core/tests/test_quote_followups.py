@@ -130,7 +130,7 @@ class AutomationSettingsTests(_Base):
         self.assertTrue(body['weekly_margin_email_enabled'])
 
     def test_backfill_existing_companies_clause_off_with_prompt(self):
-        mig = importlib.import_module('core.migrations.0159_quote_followups_backfill')
+        mig = importlib.import_module('core.migrations.0179_quote_followups_backfill')
         QuoteAutomationSettings.objects.all().delete()
         Company.objects.filter(pk=self.company.pk).update(fuel_price_mode='OWN')
         q = self.create()
@@ -317,6 +317,101 @@ class PetrolClauseTests(_Base):
 # ---------------------------------------------------------------------------
 # 2. Fuel change alert
 # ---------------------------------------------------------------------------
+
+class TonnageFuelClauseTests(_Base):
+    """Per-tonne quotes (tonnage branch) with the clause: each call-off load
+    adjusts only its share of the quoted litres (litres per billed tonne x the
+    tonnes it is billed on), on the auto-invoice, the booking preview and a
+    weighbridge re-price of the draft invoice."""
+
+    def tonnage(self, **over):
+        return self.create(**{'pricing_basis': 'per_tonne', 'vehicle_type': '', 'tonnes_per_load': '30',
+                              'rate_per_tonne': '1300', 'weight': '30000', 'pickup_date': '2026-10-08', **over})
+
+    def share(self, q, tonnes):
+        per_t = float(q.fuel_litres) / float(q.costing_snapshot['tonnage']['billable_tonnes'])
+        litres = round(per_t * tonnes, 3)
+        return float(Decimal(str(litres * (float(OCT) - float(SEPT)))).quantize(Decimal('0.01')))
+
+    def book(self, q, **body):
+        r = self.api.post(f'/api/v1/quotes/{q.id}/convert_to_load/', {'pickup_date': '2026-10-08', **body},
+                          format='json')
+        self.assertIn(r.status_code, (200, 201), r.content)
+        return Load.objects.get(id=r.json()['id'])
+
+    def test_volume_contract_call_off_invoice_carries_its_share(self):
+        q = self.send(self.tonnage(total_tonnes='70'))
+        self.assertTrue(QuoteFuelClause.objects.filter(quote=q).exists())
+        self.at(sast(2026, 10, 9, 9, 0))
+        pv = self.api.get(f'/api/v1/quotes/{q.id}/booking-preview/?tonnes=30').json()
+        self.assertTrue(pv['can_book'])
+        load = self.book(q, tonnes=30)
+        # Load endpoint: litres scaled to the 30 t this load is billed on.
+        body = self.api.get(f'/api/v1/loads/{load.id}/fuel-adjustment/').json()
+        self.assertTrue(body['applies'])
+        self.assertAlmostEqual(body['amount_zar'], self.share(q, 30), places=2)
+        self.assertLess(body['litres'], float(q.fuel_litres))
+        load.status = 'DELIVERED'
+        load.save()
+        inv = Invoice.objects.get(load=load)
+        lines = list(inv.lines.order_by('position'))
+        self.assertEqual(len(lines), 2)
+        self.assertEqual((lines[0].quantity, lines[0].unit_price), (Decimal('30.000'), Decimal('1300.00')))
+        self.assertEqual(lines[1].revenue_type, 'FUEL_SURCHARGE')
+        self.assertEqual(float(lines[1].net_amount), self.share(q, 30))
+        self.assertEqual(inv.status, 'DRAFT')                       # awaiting the weighbridge
+        # Weighbridge 31,24 t: the draft is re-priced and keeps the adjustment,
+        # now on 31,24 t of fuel.
+        r = self.api.patch(f'/api/v1/loads/{load.id}/', {'actual_tonnes': '31.24'}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        inv.refresh_from_db()
+        lines = list(inv.lines.order_by('position'))
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(lines[0].quantity, Decimal('31.240'))
+        self.assertEqual(float(lines[1].net_amount), self.share(q, 31.24))
+        self.assertEqual(float(inv.subtotal), round(40612.0 + self.share(q, 31.24), 2))
+
+    def test_booking_preview_matches_the_invoice(self):
+        q = self.send(self.tonnage())
+        self.at(sast(2026, 10, 9, 9, 0))
+        load = self.book(q)
+        from core.services.invoicing import invoice_preview
+        pv = invoice_preview(load)
+        self.assertEqual(len(pv['lines']), 2)
+        load.status = 'DELIVERED'
+        load.save()
+        inv = Invoice.objects.get(load=load)
+        self.assertEqual(float(inv.subtotal), pv['subtotal'])
+
+    def test_unsent_per_tonne_quote_booked_directly_has_no_adjustment(self):
+        """One-tap booking from a draft: the customer never saw a clause."""
+        q = self.tonnage()
+        self.at(sast(2026, 10, 9, 9, 0))
+        load = self.book(q)
+        load.status = 'DELIVERED'
+        load.save()
+        self.assertEqual(Invoice.objects.get(load=load).lines.count(), 1)
+
+
+class TonnageFuelClauseDownTests(_Base):
+    NOV = True
+    START = sast(2026, 10, 8, 10, 0)
+
+    def test_down_discount_is_capped_at_the_whole_per_tonne_line(self):
+        q = self.send(self.create(pricing_basis='per_tonne', vehicle_type='', tonnes_per_load='30',
+                                  rate_per_tonne='1300', weight='30000', pickup_date='2026-11-10',
+                                  valid_until='2026-11-30'))
+        self.at(sast(2026, 11, 11, 9, 0))
+        r = self.api.post(f'/api/v1/quotes/{q.id}/convert_to_load/', {'pickup_date': '2026-11-10'}, format='json')
+        load = Load.objects.get(id=r.json()['id'])
+        load.status = 'DELIVERED'
+        load.save()
+        line = Invoice.objects.get(load=load).lines.get()
+        self.assertEqual(line.quantity, Decimal('30.000'))
+        self.assertGreater(line.discount_amount, 0)
+        self.assertIn('less fuel price adjustment (diesel R 32,80 → R 30,00/L)', line.description)
+        self.assertEqual(line.net_amount, Decimal('39000.00') - line.discount_amount)
+
 
 class FuelChangeAlertTests(_Base):
     def setUp(self):

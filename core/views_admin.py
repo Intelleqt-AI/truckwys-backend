@@ -764,10 +764,23 @@ class AdminVehicleTypeDetailView(APIView):
         return Response({'deleted': True})
 
 
+def _scheduled(*countries):
+    from core.services.border_schedule import has_schedule
+    return any(has_schedule(c) for c in countries if c and c != 'SA')
+
+
+def _corridor_scheduled(fc, tc):
+    from core.services.cross_border import SCHEDULE_ENTRY_FROM, SCHEDULE_EXIT_TO
+    return fc in SCHEDULE_ENTRY_FROM.get(tc, ()) or tc in SCHEDULE_EXIT_TO.get(fc, ())
+
+
 def _serialize_border_fee(f):
+    # priced_by_schedule: this corridor is priced from the sourced schedule
+    # (core/services/border_schedule.py), so this row is not used.
     return {
         'id': f.id, 'from_country': f.from_country, 'to_country': f.to_country,
         'fee_zar': f.fee_zar, 'notes': f.notes, 'is_active': f.is_active, 'updated_at': f.updated_at,
+        'priced_by_schedule': _corridor_scheduled(f.from_country, f.to_country),
     }
 
 
@@ -843,7 +856,8 @@ class AdminBorderFeeDetailView(APIView):
 def _serialize_transit_rate(r):
     return {
         'id': r.id, 'country_code': r.country_code, 'country_name': r.country_name,
-        'weighbridge_fee_zar': r.weighbridge_fee_zar, 'toll_rate_per_km': r.toll_rate_per_km,
+        'toll_rate_per_km': r.toll_rate_per_km,
+        'priced_by_schedule': _scheduled(r.country_code),
         'sa_border_distance_km': r.sa_border_distance_km, 'is_active': r.is_active, 'updated_at': r.updated_at,
     }
 
@@ -870,7 +884,7 @@ class AdminCountryTransitRatesView(APIView):
 
         r = CountryTransitRate.objects.create(
             country_code=country_code, country_name=country_name,
-            weighbridge_fee_zar=request.data.get('weighbridge_fee_zar') or 0,
+            weighbridge_fee_zar=0,   # no weighbridge fees exist (0165); not editable
             toll_rate_per_km=request.data.get('toll_rate_per_km') or 0,
             sa_border_distance_km=request.data.get('sa_border_distance_km') or 0,
             is_active=request.data.get('is_active', True),
@@ -881,7 +895,9 @@ class AdminCountryTransitRatesView(APIView):
 
 class AdminCountryTransitRateDetailView(APIView):
     permission_classes = [IsSuperUser]
-    EDITABLE_FIELDS = ['country_name', 'weighbridge_fee_zar', 'toll_rate_per_km', 'sa_border_distance_km', 'is_active']
+    # weighbridge_fee_zar is not editable: no country charges a compliant
+    # truck for weighing (0165 forced every row to R0).
+    EDITABLE_FIELDS = ['country_name', 'toll_rate_per_km', 'sa_border_distance_km', 'is_active']
 
     def patch(self, request, rate_id):
         from core.models import CountryTransitRate

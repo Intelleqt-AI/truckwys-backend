@@ -259,6 +259,14 @@ def generate_quote_pdf_bytes(quote) -> bytes:
     else:
         style += [('FONTSIZE', (0,1), (0,1), 8), ('TOPPADDING', (0,1), (-1,1), 0)]
     total_table.setStyle(TableStyle(style))
+    # Tonnage quote: the rate per tonne is the price; the total is an estimate.
+    terms = tonnage_terms_line(quote)
+    if terms:
+        story.append(Paragraph(terms, ParagraphStyle('tonnage', fontSize=11, leading=15, textColor=dark,
+                                                     fontName='Helvetica-Bold', spaceAfter=3)))
+        story.append(Paragraph('Estimated total below; invoiced per load on the weighbridge tonnes delivered, '
+                               'never below the minimum per load.',
+                               ParagraphStyle('tonnage_note', fontSize=8, textColor=mid, spaceAfter=4)))
     story.append(total_table)
     story.append(Spacer(1, 6*mm))
 
@@ -337,3 +345,26 @@ def diesel_reference_line(quote):
     when = sa_date(getattr(quote, 'fuel_effective_from', None) if source == 'official' else None) \
         or sa_date(getattr(quote, 'priced_at', None))
     return f'Priced on {name} at {fmt_rand(float(price), 2)}/{unit} ({what}' + (f', {when}' if when else '') + ').'
+
+
+def tonnage_terms_line(quote):
+    """'R 412 per tonne · minimum 30 t per load · est. 20 loads for 600 t' for a
+    per-tonne quote (None otherwise). Figures from the quote and its pricing
+    snapshot (the minimum defaults to the basis truck's planned load)."""
+    if getattr(quote, 'pricing_basis', 'per_load') != 'per_tonne' or quote.rate_per_tonne is None:
+        return None
+    from core.services.quote_costing import fmt_num, fmt_rand
+    from core.services.tonnage_jobs import quote_min_tonnes
+    t = lambda v: f'{fmt_num(float(v), 0 if float(v).is_integer() else 1)} t'
+    rate = float(quote.rate_per_tonne)
+    parts = [f'{fmt_rand(rate, 0 if rate.is_integer() else 2)} per tonne']
+    minimum = quote_min_tonnes(quote)
+    if minimum:
+        parts.append(f'minimum {t(minimum)} per load')
+    total = quote.total_tonnes if quote.total_tonnes is not None else quote.tonnes_per_load
+    loads = quote.loads_planned
+    if total is not None and loads:
+        parts.append(f'est. {loads} load{"s" if loads != 1 else ""} for {t(total)}')
+    elif total is not None:
+        parts.append(f'{t(total)}')
+    return ' · '.join(parts)

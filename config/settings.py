@@ -367,7 +367,14 @@ else:
 #           Resend quota (100 emails a day on the free plan).
 import sys as _sys
 _RUNNING_TESTS = len(_sys.argv) > 1 and _sys.argv[1] == 'test'
-EMAIL_DELIVERY = 'off' if _RUNNING_TESTS else config('EMAIL_DELIVERY', default='resend').strip().lower()
+# Exchange rates for border charges (core/services/fx.py): live fetch, never in tests.
+FX_LIVE_FETCH = (not _RUNNING_TESTS) and config('FX_LIVE_FETCH', default=True, cast=bool)
+# A DEBUG (local/dev) server never emails real customers unless it is told to
+# explicitly: unset EMAIL_DELIVERY means 'console' under DEBUG, 'resend' in
+# production (DEBUG off). Quote follow-up reminders, fuel alerts and the
+# weekly margin email all go through this switch.
+EMAIL_DELIVERY = 'off' if _RUNNING_TESTS else config(
+    'EMAIL_DELIVERY', default='console' if DEBUG else 'resend').strip().lower()
 if EMAIL_DELIVERY not in ('resend', 'console', 'off'):
     EMAIL_DELIVERY = 'resend'
 if EMAIL_DELIVERY == 'console':
@@ -495,6 +502,14 @@ SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 # is set here (sk_test_... vs sk_live_...), no separate host/flag needed.
 PAYSTACK_SECRET_KEY = config('PAYSTACK_SECRET_KEY', default='')
 
+# DEBUG-only fleet demo keys (core.views_integrations.FLEET_DEMO_API_KEYS) act
+# for this ONE company; unset = demo keys are refused. Never used when DEBUG
+# is off.
+FLEET_DEMO_COMPANY_ID = config('FLEET_DEMO_COMPANY_ID', default=None)
+# TomTom routing of TMS jobs with no route / tolls (core.services.tms_routing):
+# at most this many jobs routed per company per day; the rest wait a day.
+TMS_ROUTING_DAILY_CAP = config('TMS_ROUTING_DAILY_CAP', default=200, cast=int)
+
 # CtrlFleet Integration Configuration
 CTRLFLEET_WEBHOOK_KEY = config('CTRLFLEET_WEBHOOK_KEY', default='')
 CTRLFLEET_API_KEY = config('CTRLFLEET_API_KEY', default='')
@@ -615,6 +630,11 @@ from datetime import timedelta  # noqa: E402
 # actually gets picked up promptly instead of waiting for tomorrow's cron.
 _BILLING_SWEEP_SCHEDULE = crontab(minute='*') if SUBSCRIPTION_TEST_MODE else None
 CELERY_BEAT_SCHEDULE = {
+    # Expired fleet-webhook replay-protection rows (core.models.UsedWebhookSignature).
+    'purge-used-webhook-signatures': {
+        'task': 'core.tasks.purge_used_webhook_signatures',
+        'schedule': timedelta(hours=1),
+    },
     # Checks every 15 min whether the shared public demo company has gone
     # idle (no quote/order activity for an hour) and only then wipes and
     # reseeds its fleet/quote/order data — see

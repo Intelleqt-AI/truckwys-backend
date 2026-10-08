@@ -155,6 +155,22 @@ def trip_date_for(quote, load=None):
     return timezone.now().astimezone(SAST).date(), 'today'
 
 
+def litres_for(quote, terms, load=None):
+    """The litres the adjustment applies to. Per load: the clause's litres
+    (all legs of the quoted trip). Per tonne: the quote's litres per billed
+    tonne (snapshot) times the tonnes this load is billed on, so a volume
+    contract call-off of 30 t adjusts only its own share of the fuel."""
+    litres = terms['litres']
+    if load is None or getattr(quote, 'pricing_basis', 'per_load') != 'per_tonne':
+        return litres
+    from core.services.tonnage_jobs import load_billing
+    billing = load_billing(load)
+    quoted = ((quote.costing_snapshot or {}).get('tonnage') or {}).get('billable_tonnes')
+    if billing is None or not quoted or float(quoted) <= 0:
+        return litres
+    return round(litres / float(quoted) * float(billing['billable_tonnes']), 3)
+
+
 def adjustment(quote, load=None, now=None):
     """The fuel price adjustment for a quote (or the load it became).
 
@@ -178,7 +194,7 @@ def adjustment(quote, load=None, now=None):
     rec = price_in_force(terms['zone'], at, product=terms['product'])
     out.update({
         'clause': terms.get('text'), 'stamped': terms['stamped'],
-        'product': terms['product'], 'zone': terms['zone'], 'litres': terms['litres'],
+        'product': terms['product'], 'zone': terms['zone'], 'litres': litres_for(quote, terms, load),
         'price_at_pricing': terms['basis_price'], 'threshold_pct': terms['threshold_pct'],
         'trip_date': trip.isoformat(), 'trip_date_source': trip_source, 'provisional': trip > today,
         'price_on_trip': rec['price'] if rec else None, 'change_pct': None,
@@ -192,7 +208,7 @@ def adjustment(quote, load=None, now=None):
     if abs(change_pct) <= terms['threshold_pct'] + 1e-9:
         out['reason'] = 'within_threshold'
         return out
-    amount = cents(terms['litres'] * (on_trip - basis))
+    amount = cents(out['litres'] * (on_trip - basis))
     if amount == 0:
         out['reason'] = 'within_threshold'
         return out
@@ -252,7 +268,10 @@ def _apply(load, lines, now):
             'load': freight.get('load'),
         })
     else:
-        credit = min(-adj['amount'], Decimal(str(freight['unit_price'])))
+        # discount_amount is on the whole line (quantity x unit price: a
+        # per-tonne line has quantity = billed tonnes).
+        gross = Decimal(str(freight['unit_price'])) * Decimal(str(freight.get('quantity') or 1))
+        credit = min(-adj['amount'], gross.quantize(Decimal('0.01')))
         freight['discount_amount'] = credit
         freight['description'] = f"{freight['description']} less {adj['description'][0].lower()}{adj['description'][1:]}"
     return adj

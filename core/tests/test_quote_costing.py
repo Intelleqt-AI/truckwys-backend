@@ -7,7 +7,8 @@ from pathlib import Path
 from django.test import SimpleTestCase
 
 from core.services import quote_costing as qc
-from core.tests.quote_golden_cases import CASES, REOPEN_CASES, EFFECTIVE, INLAND, base, long_trip, official
+from core.tests.quote_golden_cases import (CASES, REOPEN_CASES, TONNAGE_CASES, EFFECTIVE, INLAND, base, long_trip,
+                                          official)
 
 GOLDEN_PATH = Path(__file__).parent / 'fixtures' / 'quote_golden.json'
 
@@ -26,13 +27,19 @@ RULES = {
     'fuel': 'cents(litres_loaded * price); fuel_return = cents(litres_empty * price)',
     'operating': 'cents(km_loaded * operating_cost_per_km); operating_return = cents(km_empty * operating_cost_per_km)',
     'tolls': 'cents(tolls.one_way * legs_loaded); tolls_return = cents(tolls.empty_return ?? tolls.one_way); '
-             'unknown (null / lookup_failed) -> null + tolls_unknown unless confirmed_none (then 0)',
+             'unknown (null / lookup_failed) -> null + tolls_unknown unless confirmed_none (then 0); '
+             'one_way 0 from a working lookup = R 0 known, basis "No toll plazas on this route", no warning',
     'nights': 'nights(h) = max(ceil(h / hours_per_day) - 1, 0), h = duration_minutes / 60; '
               'loaded = nights(h) one-way, nights(2h) round trip; return extra = nights(2h) - nights(h)',
     'driver': 'driver.amount if given, else cents(nights * allowance_per_night) (0 when nights = 0)',
+    'border': 'border_costs_unknown {countries, crossings, known} non-empty and not border_cost_is_override -> '
+              'border (and border_return) null + block border_costs_missing, title "Border costs for <countries> '
+              'not known", detail "Known: <label> R x + ...; missing: <crossings>"; else cents(border_cost)',
     'floor': 'cents(sum of line amounts); null when any line is unknown',
     'target_price': 'max(cents(floor / (1 - target_margin_pct / 100)), minimum_charge)',
     'margin': 'cents(price - floor); margin_pct = (price - floor) / price * 100 (unrounded)',
+    'default_price': 'round_up(max(rate_price ?? 0, target_price)), round_up(p) = ceil(p / u) * u with u = 50 '
+                     'below 20 000 else 100 (the choices\' rounding); null without a floor',
     'diesel': 'override_price -> override; OWN (own_price set, not use_official) -> own; '
               'else official_price -> official; else missing',
     'diesel_own_off': '|own - official| / official > 0.03; impact_zar = cents((own - official) * litres_total)',
@@ -43,6 +50,33 @@ RULES = {
     'compare': 'lines[].amount, floor, floor_known, target_price, margin: exact to the cent. '
                'warnings: code, severity, impact_zar exact; title/detail are server copy. '
                'litres / burn: within 1e-9.',
+}
+
+
+TONNAGE_RULES = {
+    'spec': 'QUOTE-RULES.md "Tonnage quotes" (8 Oct 2026)',
+    'engine': 'every cost is compute() of {**lane, **truck overrides, vehicle, operating_cost_per_km, '
+              'load_kg, price: null} for one load; nothing else is priced',
+    'eligible': 'trucks with capacity and rated burn; with tonnes_per_load (one consignment or a contract\'s '
+                'planned load) only trucks with payload >= it, else all of them (one consignment: split into loads, '
+                'tonnes_exceed_payload); the chosen truck (vehicle_type_id) always',
+    'load_t': 'min(tonnes_per_load, payload_t), payload_t when tonnes_per_load is null',
+    'loads_needed': 'ceil(total / load_t - 1e-9), total = total_tonnes ?? tonnes_per_load; '
+                    'last_load_t = total - (n - 1) * load_t; tonnes round(x, 6)',
+    'cost_per_load': 'compute(load_kg = load_t * 1000).floor; cost_last_load = the same at last_load_t',
+    'total_cost': 'cents((n - 1) * cost_per_load + cost_last_load)',
+    'billable_tonnes': '(n - 1) * max(load_t, min) + max(last_load_t, min); min = min_tonnes_per_load, else '
+                       'each truck\'s own load_t for its cost_per_tonne, the basis truck\'s load_t for the quote',
+    'cost_per_tonne': 'cents(total_cost / billable_tonnes)',
+    'basis': 'chosen truck, else the highest cost_per_tonne (tie: smaller payload, then higher id ranks first); '
+             'all costs unknown: smallest payload',
+    'target_rate_per_tonne': 'ceil(cost_per_tonne / (1 - target_margin_pct / 100) - 1e-9)',
+    'default_rate_per_tonne': 'max(target_rate, ceil(minimum_charge / min_t - 1e-9))',
+    'rate_used': 'rate_per_tonne ?? default_rate_per_tonne; every truck\'s at_rate uses it with the quote min',
+    'at_rate': 'revenue = cents(rate * billable at the quote min); margin = cents(revenue - total_cost); '
+               'margin_pct = (revenue - total_cost) / revenue * 100',
+    'lines': 'basis truck lines over the plan: cents((n - 1) * full + last) per line; floor = total_cost',
+    'compare': 'every amount to the cent; tonnes within 1e-9; warnings by code / severity / impact_zar.',
 }
 
 
@@ -59,6 +93,12 @@ def build_golden():
         'reopen_rules': qc.changes_since_priced.__doc__.strip(),
         'reopen_cases': [{'name': name, 'inputs': inputs, 'expected': qc.changes_since_priced(**inputs)}
                          for name, inputs in REOPEN_CASES],
+        # Tonnage quotes (rate per tonne): quote_costing.compute_tonnage(inputs).
+        # Added after everything above (unchanged), so existing clients don't break.
+        'tonnage_rules': TONNAGE_RULES,
+        'tonnage_cases': [{'name': name, 'description': desc, 'inputs': inputs,
+                           'expected': qc.compute_tonnage(inputs)}
+                          for name, desc, inputs in TONNAGE_CASES],
     }
 
 

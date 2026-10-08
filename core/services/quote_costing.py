@@ -171,6 +171,18 @@ def fmt_num(v, dp=0):
     return ('−' if float(v) < 0 and txt.strip('0, ') else '') + txt
 
 
+def iso_date(d):
+    return d.isoformat() if hasattr(d, 'isoformat') else (str(d) if d else None)
+
+
+def round_price_up(price):
+    """Offered prices in whole amounts: UP to the next R 50 below R 20 000,
+    else the next R 100 (never below the price it was built from)."""
+    p = float(price or 0)
+    unit = 50 if p < 20000 else 100
+    return int(math.ceil(p / unit - 1e-9) * unit)
+
+
 def fmt_rand(v, dp=0):
     """'R 32,80' / 'R 1 050' (whole rand half-up when dp=0)."""
     v = float(v)
@@ -205,6 +217,7 @@ ACTION_LABELS = {
     'keep_price': 'Keep price',
     'enter_weight': 'Enter weight',
     'enter_border_costs': 'Enter border costs',
+    'use_target_rate': 'Price at target rate',   # label carries the rate: "Price at target · R 1 242/t"
 }
 
 
@@ -331,11 +344,28 @@ def compute(inputs):
       vehicle              {id, name, capacity, rated_burn_l_per_100km} | null
       diesel               see resolve_diesel()
       operating_cost_per_km, operating_cost_source
-      tolls                {one_way, empty_return, lookup_failed, confirmed_none}
+      tolls                {one_way, empty_return, return_leg, lookup_failed, confirmed_none}
+                           return_leg: a round trip's way back priced on its own route;
+                           the loaded toll line is then one_way + return_leg (else one_way x 2)
       driver               {allowance_per_night, nights, amount}
       hours_per_day        driving hours per day (9)
-      border_cost
+      border_cost          border, permit and non-SA road costs for ALL loaded legs
+                           (a round trip: the way out + the way back, each priced by
+                           the route calculation on its own route)
+      border_estimate      the part of border_cost that is an estimate (unverified
+                           tariff, assumed vehicle fact, agent estimate) — likewise
+                           out + back on a round trip; 0 when the user's own figures
+                           replaced every estimate (e.g. their clearing-agent fee)
+      border_cost_empty_return / border_estimate_empty_return
+                           the same two figures for the empty run home (exit-only
+                           charges on the way back); without them the loaded
+                           figure stands in
       international        cross-border trip: no border cost -> incomplete floor (block)
+      border_costs_unknown {countries: [names], crossings: ['Namibia→Angola'], known: [{label, amount}]}:
+                           parts of the route whose border costs are not on file; unless
+                           border_cost_is_override (the user entered the border costs), the border
+                           lines are null -> block border_costs_missing
+      border_cost_is_override  the border figure is the user's own (covers every crossing)
       include_empty_return null = company default rule; false = return load booked
       settings             {include_empty_return_default (true), empty_return_min_km (300)}
       minimum_charge
@@ -459,17 +489,23 @@ def compute(inputs):
         warnings.append(warning('tolls_unknown', 'block', 'Tolls could not be worked out',
                                 'Enter the tolls, or confirm there are none on this route.',
                                 actions=('enter_tolls', 'confirm_no_tolls')))
-    if toll_one_way == 0 and not tolls.get('confirmed_none'):
-        # R 0 from the route means no plazas were FOUND, not that the road has
-        # none: say so and ask to check (a warning: tolls are small).
-        warnings.append(warning('tolls_none_found', 'warn', 'No tolls found on this route',
-                                'Check it if the trip uses toll roads.',
-                                actions=('enter_tolls', 'confirm_no_tolls')))
-    toll_amt = cents(toll_one_way * legs_loaded) if toll_one_way is not None else None
+    # R 0 from a toll lookup that worked is a known R 0: the route has no
+    # plazas (owner rule: we know every toll; no "check / add your own").
+    # A round trip's way back is priced on its own route's plazas when the
+    # route calculation gave them (tolls.return_leg); otherwise the same
+    # plazas again.
+    toll_back = _num(tolls.get('return_leg')) if round_trip else None
+    if toll_one_way is None:
+        toll_amt = None
+    elif round_trip and toll_back is not None:
+        toll_amt = cents(toll_one_way + toll_back)
+    else:
+        toll_amt = cents(toll_one_way * legs_loaded)
     add('tolls', 'loaded', toll_amt,
-        'Unknown' if toll_amt is None else (f'{fmt_rand(toll_one_way, 2)} × 2 legs' if round_trip
-                                             else f'{fmt_rand(toll_one_way, 2)} one way'),
-        one_way=toll_one_way, legs=legs_loaded)
+        'Unknown' if toll_amt is None else 'No toll plazas on this route' if toll_one_way == 0 and not toll_back
+        else (f'{fmt_rand(toll_one_way, 2)} out + {fmt_rand(toll_back, 2)} back' if toll_back is not None
+              else f'{fmt_rand(toll_one_way, 2)} × 2 legs' if round_trip else f'{fmt_rand(toll_one_way, 2)} one way'),
+        one_way=toll_one_way, legs=legs_loaded, **({'return_leg': toll_back} if toll_back is not None else {}))
 
     # --- driver nights (§6) ---
     driver = inputs.get('driver') or {}
@@ -512,8 +548,29 @@ def compute(inputs):
 
     # --- border ---
     border = _num(inputs.get('border_cost'))
-    if border is not None and border > 0:
-        add('border', 'loaded', cents(border), 'Border, permit and non-SA toll costs')
+    bu = inputs.get('border_costs_unknown') or {}
+    unknown_names = [str(c) for c in (bu.get('countries') or []) if c]
+    unknown_crossings = [str(c) for c in (bu.get('crossings') or []) if c]
+    border_unknown = bool(unknown_names or unknown_crossings) and not inputs.get('border_cost_is_override')
+    if border_unknown:
+        # Part of the route has no border figures on file (e.g. Namibia ->
+        # Angola): the route's border total leaves it out, so the floor is
+        # incomplete until the user enters the border costs.
+        names = unknown_names or [c.split('→')[-1] for c in unknown_crossings]
+        known = [k for k in (bu.get('known') or []) if isinstance(k, dict) and _num(k.get('amount')) is not None]
+        missing = ', '.join(unknown_crossings or names)
+        detail = ((f'Known: ' + ' + '.join(f'{k.get("label")} {fmt_rand(k["amount"], 2)}' for k in known)
+                   + f'; missing: {missing}') if known else f'Missing: {missing}')
+        add('border', 'loaded', None, f'Not known for {" and ".join(names)}', status='needs_input')
+        warnings.append(warning('border_costs_missing', 'block',
+                                f'Border costs for {" and ".join(names)} not known', detail,
+                                actions=('enter_border_costs',)))
+    elif border is not None and border > 0:
+        est = _num(inputs.get('border_estimate'))
+        add('border', 'loaded', cents(border),
+            'Border, permit and non-SA toll costs'
+            + (f' (includes {fmt_rand(est, 2)} estimated)' if est else ''),
+            **({'estimate': est} if est else {}))
     elif inputs.get('international'):
         # An international trip always has border costs (often R 5 000+):
         # without them the floor is badly low, so it is incomplete.
@@ -557,10 +614,18 @@ def compute(inputs):
             warnings.append(warning('driver_nights_unknown', 'block', 'Driving time is unknown',
                                     'Enter the driver cost, or recalculate the route.',
                                     actions=('enter_driver_cost', 'recalculate_route')))
-        if inputs.get('international') and border is not None and border > 0:
-            # The empty truck crosses the border(s) back: the same border,
-            # permit and non-SA toll costs per crossing as the loaded leg.
-            add('border_return', 'empty_return', cents(border), 'Border costs crossing back, empty')
+        if inputs.get('international') and border_unknown:
+            add('border_return', 'empty_return', None, 'Not known crossing back', status='needs_input')
+        elif inputs.get('international') and border is not None and border > 0:
+            # The empty truck crosses back. The route calculation prices that
+            # leg itself (return_leg: exit-only charges, the way back's own
+            # km); without it, the loaded leg's figure is the stand-in.
+            back = _num(inputs.get('border_cost_empty_return'))
+            est_back = _num(inputs.get('border_estimate_empty_return')) if back is not None else None
+            add('border_return', 'empty_return', cents(back if back is not None else border),
+                'Border costs crossing back, empty'
+                + (f' (includes {fmt_rand(est_back, 2)} estimated)' if est_back else ''),
+                **({'estimate': est_back} if est_back else {}))
 
     if op is None and distance is not None:
         complete = False
@@ -599,7 +664,10 @@ def compute(inputs):
     rate_price = cents(rate_per_km * km_loaded) if rate_per_km is not None and km_loaded is not None else None
     default_price = None
     if target_price is not None:
-        default_price = float(math.ceil(max(rate_price or 0.0, target_price) - 1e-9))
+        # The same rounding as the pricing analysis' choices (round UP to the
+        # next R 50 below R 20 000, else R 100): with no market the suggested
+        # price IS the Safe choice.
+        default_price = float(round_price_up(max(rate_price or 0.0, target_price)))
 
     # The same quote with a return load booked (one-way, empty return included).
     alternative = None
@@ -637,6 +705,323 @@ def compute(inputs):
         'price': price,
         'margin': margin,
         'margin_pct': margin_pct,
+        'warnings': warnings,
+        'blocking': blocking,
+        'can_send': not blocking,
+    }
+
+
+# ===========================================================================
+# Tonnage quotes (QUOTE-RULES "Tonnage quotes"): rate per tonne. PURE.
+# One costing engine: every figure below comes from compute() per truck.
+# ===========================================================================
+
+TONNAGE_VERSION = 'qt-1'
+_T_EPS = 1e-9
+
+
+def _t(x):
+    """Tonnes without float noise (600 − 17 × 34 = 22, not 21.999…)."""
+    return None if x is None else round(x, 6)
+
+
+def _ceil_rand(x):
+    """Rounded UP to the whole rand (the same rule as default_price)."""
+    return None if x is None else float(math.ceil(x - _T_EPS))
+
+
+def _tonnes_txt(t):
+    return f'{fmt_num(t, 0 if abs(t - round(t)) < 1e-9 else 1)} t'
+
+
+def _truck_label(truck):
+    return f'{truck["name"] or "Truck"} {_tonnes_txt(truck["payload_t"])}'
+
+
+def _truck_plan(lane, entry, total_t, per_load_t, min_t):
+    """One truck's plan for the tonnage: loads, cost per load (compute()
+    floor at that load, empty-return rules included), total cost and cost
+    per billed tonne at minimum `min_t` per load."""
+    vehicle = entry['vehicle']
+    payload = capacity_tonnes(vehicle.get('capacity'))
+    load_t = _t(min(per_load_t, payload) if per_load_t else payload)
+    n = int(math.ceil(total_t / load_t - _T_EPS))
+    last_t = _t(total_t - (n - 1) * load_t)
+    base_inputs = {**lane, **{k: v for k, v in entry.items() if k != 'vehicle'},
+                   'vehicle': vehicle, 'price': None}
+    full = compute({**base_inputs, 'load_kg': load_t * 1000})
+    last = full if abs(last_t - load_t) < _T_EPS else compute({**base_inputs, 'load_kg': last_t * 1000})
+    f_full, f_last = full['floor'], last['floor']
+    total_cost = cents((n - 1) * f_full + f_last) if f_full is not None and f_last is not None else None
+    billable = _t((n - 1) * max(load_t, min_t) + max(last_t, min_t))
+    return {
+        'vehicle_type_id': vehicle.get('id'), 'name': vehicle.get('name'), 'payload_t': payload,
+        'tonnes_per_load': load_t, 'loads_needed': n, 'last_load_t': last_t,
+        'partial_last_load': last_t < load_t - _T_EPS,
+        'cost_per_load': f_full, 'cost_last_load': f_last, 'total_cost': total_cost,
+        'min_tonnes_per_load': min_t, 'billable_tonnes': billable,
+        'cost_per_tonne': cents(total_cost / billable) if total_cost is not None else None,
+        '_full': full, '_last': last,
+    }
+
+
+def _at_rate(plan, rate, min_t):
+    """Revenue and margin of a truck's plan at `rate` per tonne, invoicing
+    max(tonnes, min_t) per load."""
+    if rate is None:
+        return None
+    billable = _t((plan['loads_needed'] - 1) * max(plan['tonnes_per_load'], min_t)
+                  + max(plan['last_load_t'], min_t))
+    revenue = cents(rate * billable)
+    cost = plan['total_cost']
+    return {'rate_per_tonne': rate, 'billable_tonnes': billable, 'revenue': revenue,
+            'margin': cents(revenue - cost) if cost is not None else None,
+            'margin_pct': (revenue - cost) / revenue * 100 if cost is not None and revenue > 0 else None}
+
+
+def _aggregate_lines(plan):
+    """The basis truck's cost lines over the whole plan: (n − 1) full loads
+    + the last load, each line to the cent; litres summed."""
+    n, full, last = plan['loads_needed'], plan['_full'], plan['_last']
+    out = []
+    for lf, ll in zip(full['lines'], last['lines']):
+        line = dict(lf)
+        a_full, a_last = lf['amount'], ll['amount']
+        line['per_load_amount'] = a_full
+        line['amount'] = cents((n - 1) * a_full + a_last) if a_full is not None and a_last is not None else None
+        if lf.get('litres') is not None and ll.get('litres') is not None:
+            line['litres'] = (n - 1) * lf['litres'] + ll['litres']
+        if n > 1:
+            line['basis'] = f'{lf["basis"]} · {n} loads'
+        line['loads'] = n
+        out.append(line)
+    return out
+
+
+def compute_tonnage(inputs):
+    """A quote priced per tonne (rate per tonne × tonnes, never below a minimum
+    per load). PURE; every cost comes from compute() per truck.
+
+    inputs:
+      lane                 compute() inputs shared by every truck (trip, route,
+                           diesel, tolls, driver, settings, include_empty_return,
+                           target_margin_pct, minimum_charge, ...)
+      trucks               [{vehicle: {id, name, capacity, rated_burn_l_per_100km},
+                            operating_cost_per_km, operating_cost_source,
+                            (optional per-truck overrides: diesel, tolls)}]
+                           — the company's eligible trucks (fleet + body rule)
+      tonnes_per_load      tonnes on one load (single consignment, or the planned
+                           load size of a volume contract); null = full payload
+      total_tonnes         volume contract total (null = one consignment of
+                           tonnes_per_load)
+      min_tonnes_per_load  minimum invoiced per load; null = the planned load of
+                           the basis truck
+      vehicle_type_id      the truck chosen by the user; null = truck unknown
+                           (price on the SAFEST = highest cost per tonne)
+      rate_per_tonne       the user's rate excl. VAT, or null
+
+    Rules (see QUOTE-RULES "Tonnage quotes"):
+      load_t        = min(tonnes_per_load, payload) (payload when not given)
+      loads_needed  = ceil(total / load_t); last_load_t = total − (n − 1) × load_t
+      cost_per_load = compute(load_kg = load_t × 1000).floor; last load priced
+                      at its own tonnes
+      total_cost    = cents((n − 1) × cost_per_load + cost_last_load)
+      billable      = Σ max(tonnes on load, min_t)
+      cost_per_tonne= cents(total_cost / billable)
+      target_rate   = ceil(cost_per_tonne_basis / (1 − target%))   whole rand
+      default_rate  = max(target_rate, ceil(minimum_charge / min_t))
+      revenue       = cents(rate × billable); margin = cents(revenue − total_cost)
+    """
+    inputs = inputs or {}
+    lane = dict(inputs.get('lane') or {})
+    for k in ('vehicle', 'load_kg', 'price', 'operating_cost_per_km', 'operating_cost_source'):
+        lane.pop(k, None)
+    warnings = []
+    per_load_t = _pos(inputs.get('tonnes_per_load'))
+    total_in = _pos(inputs.get('total_tonnes'))
+    mode = 'volume' if total_in is not None else 'single'
+    total_t = total_in if total_in is not None else per_load_t
+    min_typed = _pos(inputs.get('min_tonnes_per_load'))
+    chosen_id = _num(inputs.get('vehicle_type_id'))
+    chosen_id = int(chosen_id) if chosen_id else None
+    rate = _pos(inputs.get('rate_per_tonne'))
+    target = _num(lane.get('target_margin_pct'))
+    minimum_charge = _pos(lane.get('minimum_charge'))
+
+    # --- which trucks ---
+    usable, excluded = [], []
+    for entry in inputs.get('trucks') or []:
+        v = (entry or {}).get('vehicle') or {}
+        row = {'vehicle_type_id': v.get('id'), 'name': v.get('name')}
+        if capacity_tonnes(v.get('capacity')) is None:
+            excluded.append({**row, 'reason': 'capacity_missing'})
+        elif _pos(v.get('rated_burn_l_per_100km')) is None:
+            excluded.append({**row, 'reason': 'burn_missing'})
+        else:
+            usable.append(entry)
+    chosen = next((e for e in usable if e['vehicle'].get('id') == chosen_id), None) if chosen_id else None
+    if chosen_id and chosen is None:
+        warnings.append(warning('chosen_truck_unavailable', 'warn', 'That truck can\'t price this quote',
+                                'Priced on the safest truck in your fleet instead.',
+                                actions=('choose_vehicle',)))
+    split = False
+    eligible = list(usable)
+    if per_load_t is not None:
+        # A truck that can't carry the planned load (one consignment, or a
+        # contract's tonnes per load) is not one that "can carry it".
+        fits = [e for e in usable if capacity_tonnes(e['vehicle']['capacity']) >= per_load_t - _T_EPS]
+        if fits:
+            eligible = fits + ([chosen] if chosen is not None and chosen not in fits else [])
+            excluded += [{'vehicle_type_id': e['vehicle'].get('id'), 'name': e['vehicle'].get('name'),
+                          'reason': 'too_small'} for e in usable if e not in eligible]
+        else:
+            split = mode == 'single'
+
+    plans = []
+    if total_t is not None:
+        for e in eligible:
+            payload = capacity_tonnes(e['vehicle']['capacity'])
+            own_load = min(per_load_t, payload) if per_load_t else payload
+            plans.append((e, _truck_plan(lane, e, total_t, per_load_t, min_typed or _t(own_load))))
+
+    # --- basis truck: chosen, else the highest cost per tonne (safest) ---
+    basis_entry = basis = None
+    basis_reason = None
+    if plans:
+        if chosen is not None:
+            basis_entry, basis = next((e, p) for e, p in plans if e is chosen)
+            basis_reason = 'chosen'
+        else:
+            known = [(e, p) for e, p in plans if p['cost_per_tonne'] is not None]
+            if known:
+                basis_entry, basis = max(known, key=lambda ep: (ep[1]['cost_per_tonne'], -ep[1]['payload_t'],
+                                                                -(ep[1]['vehicle_type_id'] or 0)))
+                basis_reason = 'safest'
+            else:
+                basis_entry, basis = min(plans, key=lambda ep: (ep[1]['payload_t'], ep[1]['vehicle_type_id'] or 0))
+                basis_reason = 'costs_unknown'
+
+    min_t = min_typed or (basis['tonnes_per_load'] if basis else None)
+    # Each truck's own cost per tonne uses its own planned load as the minimum
+    # (unless one was typed); margins at the rate use the QUOTE's minimum.
+    min_source = 'quote' if min_typed else ('basis_load' if basis else None)
+
+    # --- warnings (lane warnings from the basis truck's own compute()) ---
+    if total_t is None:
+        warnings.append(warning('tonnage_missing', 'block', 'Enter the tonnes to move',
+                                'Tonnes per load, or the total for a contract.', actions=('enter_weight',)))
+    if total_t is not None and basis is None:
+        lane_out = compute({**lane, 'vehicle': None, 'price': None})
+        warnings.extend(w for w in lane_out['warnings'] if w['code'] != 'no_vehicle')
+        warnings.append(warning('no_eligible_trucks', 'block', 'No truck in your fleet can carry this',
+                                'Add a truck with its payload and fuel use.',
+                                actions=('add_vehicle', 'choose_vehicle')))
+    elif basis is not None:
+        warnings.extend(w for w in basis['_full']['warnings'] if w['code'] != 'load_missing')
+        label = _truck_label(basis)
+        if split or (mode == 'single' and basis['loads_needed'] > 1):
+            warnings.append(warning('tonnes_exceed_payload', 'warn', 'Too heavy for one truck',
+                                    f'{_tonnes_txt(total_t)} is split into {basis["loads_needed"]} loads on the '
+                                    f'{label}.'))
+        if basis['partial_last_load']:
+            warnings.append(warning('partial_last_load', 'warn', 'Last load is part-full',
+                                    f'Load {basis["loads_needed"]} carries {_tonnes_txt(basis["last_load_t"])} of '
+                                    f'{_tonnes_txt(basis["tonnes_per_load"])}; '
+                                    f'charged for {_tonnes_txt(max(basis["last_load_t"], min_t))}.'))
+        if min_t is not None and min(basis['tonnes_per_load'], basis['last_load_t']) < min_t - _T_EPS \
+                and not basis['partial_last_load']:
+            warnings.append(warning('below_minimum_tonnes', 'warn', 'Load is under the minimum tonnes',
+                                    f'{_tonnes_txt(basis["tonnes_per_load"])} carried, charged for '
+                                    f'{_tonnes_txt(min_t)} per load.'))
+        if min_t is not None and min_t > basis['payload_t'] + _T_EPS:
+            warnings.append(warning('minimum_above_payload', 'warn', 'Minimum is more than the truck carries',
+                                    f'{_tonnes_txt(min_t)} minimum on a {_tonnes_txt(basis["payload_t"])} truck.'))
+
+    # --- rates ---
+    cpt = basis['cost_per_tonne'] if basis else None
+    target_rate = (_ceil_rand(cpt / (1 - target / 100))
+                   if cpt is not None and target is not None and target < 100 else None)
+    min_charge_rate = _ceil_rand(minimum_charge / min_t) if minimum_charge and min_t else None
+    default_rate = max(target_rate, min_charge_rate or 0.0) if target_rate is not None else None
+    rate_used = rate if rate is not None else default_rate
+    rate_source = 'user' if rate is not None else ('default' if default_rate is not None else None)
+
+    trucks_out = []
+    for e, p in sorted(plans, key=lambda ep: (ep[1]['cost_per_tonne'] is None, -(ep[1]['cost_per_tonne'] or 0),
+                                              ep[1]['payload_t'], ep[1]['vehicle_type_id'] or 0)):
+        row = {k: v for k, v in p.items() if not k.startswith('_')}
+        row['is_basis'] = p is basis
+        row['at_rate'] = _at_rate(p, rate_used, min_t)
+        trucks_out.append(row)
+
+    basis_at = _at_rate(basis, rate_used, min_t) if basis else None
+    user_at = _at_rate(basis, rate, min_t) if basis and rate is not None else None
+    if user_at is not None and cpt is not None and rate < cpt:
+        # A warning, like below_floor: users may knowingly quote under cost,
+        # but never without seeing the shortfall in rand.
+        w = warning('rate_below_cost', 'warn', 'Rate is below your cost per tonne',
+                    f'{fmt_rand(rate)}/t is under the {fmt_rand(cpt)}/t cost on the {_truck_label(basis)}; '
+                    f'this loses {fmt_rand(-user_at["margin"])}.',
+                    impact_zar=user_at['margin'], actions=('use_target_rate',) if target_rate else (),
+                    target_rate_per_tonne=target_rate)
+        for a in w['actions']:
+            a['label'] = f'Price at target · {fmt_rand(target_rate)}/t'
+        warnings.append(w)
+    if rate is not None and minimum_charge and min_t and rate * min_t < minimum_charge - 0.005:
+        short = minimum_charge - cents(rate * min_t)
+        warnings.append(warning('below_minimum_charge', 'block', 'Price is below your minimum charge',
+                                f'{fmt_rand(short)} a load below your {fmt_rand(minimum_charge)} minimum.',
+                                impact_zar=cents(short), actions=('use_minimum',)))
+
+    blocking = [w['code'] for w in warnings if w['severity'] == 'block']
+    summary = ' · '.join(f'{_truck_label(t)} {fmt_rand(t["cost_per_tonne"])}/t'
+                         for t in trucks_out if t['cost_per_tonne'] is not None) or None
+
+    full = basis['_full'] if basis else None
+    lines = _aggregate_lines(basis) if basis else []
+    total_cost = basis['total_cost'] if basis else None
+    billable = basis_at['billable_tonnes'] if basis_at else (basis['billable_tonnes'] if basis else None)
+    litres_parts = [ln.get('litres') for ln in lines if ln['key'] in ('fuel', 'fuel_return')]
+    litres_total = sum(litres_parts) if litres_parts and None not in litres_parts else None
+    known = [ln['amount'] for ln in lines if ln['amount'] is not None]
+
+    tonnage = {
+        'version': TONNAGE_VERSION, 'mode': mode, 'total_tonnes': total_t, 'tonnes_per_load': per_load_t,
+        'min_tonnes_per_load': min_t, 'min_tonnes_source': min_source,
+        'vehicle_type_id': chosen_id, 'basis_vehicle_type_id': basis['vehicle_type_id'] if basis else None,
+        'basis_reason': basis_reason, 'trucks': trucks_out, 'excluded': excluded, 'summary': summary,
+        'loads_planned': basis['loads_needed'] if basis else None,
+        'billable_tonnes': billable, 'total_cost': total_cost, 'cost_per_tonne': cpt,
+        'target_margin_pct': target, 'target_rate_per_tonne': target_rate,
+        'minimum_charge_rate_per_tonne': min_charge_rate, 'default_rate_per_tonne': default_rate,
+        'rate_per_tonne': rate, 'rate_used': rate_used, 'rate_source': rate_source,
+        'minimum_charge_per_load': cents(rate_used * min_t) if rate_used is not None and min_t else None,
+        'estimated_revenue': basis_at['revenue'] if basis_at else None,
+        'margin': basis_at['margin'] if basis_at else None,
+        'margin_pct': basis_at['margin_pct'] if basis_at else None,
+        'basis_load_costing': full,
+    }
+    return {
+        'version': VERSION,
+        'pricing_basis': 'per_tonne',
+        'tonnage': tonnage,
+        # compute()-compatible keys over the WHOLE plan on the basis truck, so
+        # the snapshot, send guard, reopen notice and fuel alert work unchanged.
+        'trip': full['trip'] if full else None,
+        'vehicle': full['vehicle'] if full else None,
+        'diesel': full['diesel'] if full else resolve_diesel(lane.get('diesel')),
+        'litres': {'loaded': None, 'empty_return': None, 'total': litres_total},
+        'lines': lines,
+        'floor': total_cost,
+        'floor_known': cents(sum(known)) if known else 0.0,
+        'floor_complete': total_cost is not None,
+        'target_margin_pct': target,
+        'target_price': cents(target_rate * billable) if target_rate is not None and billable else None,
+        'minimum_charge': minimum_charge,
+        'default_price': cents(default_rate * billable) if default_rate is not None and billable else None,
+        'price': user_at['revenue'] if user_at else None,
+        'margin': user_at['margin'] if user_at else None,
+        'margin_pct': user_at['margin_pct'] if user_at else None,
         'warnings': warnings,
         'blocking': blocking,
         'can_send': not blocking,
@@ -804,18 +1189,38 @@ def operating_cost_for(company, vt):
     return out
 
 
-def driver_rate(company, today):
+def driver_rate(company, today, international=False, *, with_info=False):
     """(rate per night | None, source): company setting first (what the fleet
-    pays), else the approved allowance in force."""
+    pays), else the approved allowance in force on `today` — the NBCRFLI
+    night-out minimum (clause 36A), or for an INTERNATIONAL trip the
+    cross-border minimum (clause 36B). Nights cannot be split by country from
+    the route, so every night of an international trip uses the cross-border
+    rate (said so in the line detail). with_info adds the allowance record."""
     from core.services.quote_ai_pricing import DRIVER_RATE_MAX_PER_DAY, stored_allowance
     own = _pos(getattr(company, 'driver_allowance_per_night', None))
     if own is not None and own <= DRIVER_RATE_MAX_PER_DAY:
-        return own, 'company_setting'
-    allowance = stored_allowance(today)
+        return (own, 'company_setting', None) if with_info else (own, 'company_setting')
+    allowance = stored_allowance(today, cross_border=international)
     rate = _pos((allowance or {}).get('rate_per_night'))
     if rate is not None and rate <= DRIVER_RATE_MAX_PER_DAY:
-        return rate, 'approved_allowance'
-    return None, None
+        return (rate, 'approved_allowance', allowance) if with_info else (rate, 'approved_allowance')
+    return (None, None, None) if with_info else (None, None)
+
+
+def allowance_detail(allowance, international=False):
+    """'NBCRFLI minimum R 243,63/night (from 1 Mar 2026)' for an approved
+    allowance record, or None."""
+    if not allowance:
+        return None
+    eff = allowance.get('effective_from')
+    when = f' (from {eff.day} {eff:%b} {eff.year})' if eff else ''
+    kind = allowance.get('allowance_type')
+    name = {'nbcrfli': 'NBCRFLI minimum', 'nbcrfli_cross_border': 'NBCRFLI cross-border minimum',
+            'sars_subsistence': 'SARS subsistence allowance'}.get(kind, allowance.get('label') or 'Approved allowance')
+    text = f'{name} {fmt_rand(allowance["rate_per_night"], 2)}/night{when}'
+    if international and kind == 'nbcrfli_cross_border':
+        text += '; every night of an international trip at the cross-border rate'
+    return text
 
 
 def target_margin(company):
@@ -873,7 +1278,9 @@ def build_inputs(payload, company, now=None, *, diesel_override=None):
                                       use_official=bool(_truthy(payload.get('use_official_fuel'))),
                                       override_price=_pos(payload.get('fuel_price_override')))
     op = operating_cost_for(company, vt) if vt is not None else None
-    rate, rate_source = driver_rate(company, today)
+    international = bool(_truthy(payload.get('is_international'))
+                         or (isinstance(payload.get('route'), dict) and payload['route'].get('cross_border')))
+    rate, rate_source, allowance = driver_rate(company, today, international, with_info=True)
 
     toll_one_way = _num(payload.get('toll_cost_one_way'))
     if toll_one_way is None:
@@ -912,14 +1319,22 @@ def build_inputs(payload, company, now=None, *, diesel_override=None):
         'operating_cost_per_km': op['value'] if op else None,
         'operating_cost_source': op['source'] if op else None,
         'tolls': {'one_way': toll_one_way, 'empty_return': _num(payload.get('toll_cost_empty_return')),
+                  'return_leg': _num(payload.get('toll_cost_return')),
                   'lookup_failed': tolls_unknown,
                   'confirmed_none': bool(_truthy(payload.get('tolls_confirmed_none')))},
         'driver': {'allowance_per_night': rate, 'nights': _num(payload.get('driver_nights')),
                    'amount': driver_amount},
         'hours_per_day': float(getattr(dj_settings, 'DRIVER_DRIVING_HOURS_PER_DAY', DEFAULT_HOURS_PER_DAY)),
         'border_cost': _num(payload.get('cross_border_cost')) or 0.0,
-        'international': bool(_truthy(payload.get('is_international'))
-                              or (isinstance(payload.get('route'), dict) and payload['route'].get('cross_border'))),
+        'border_cost_empty_return': _num(payload.get('cross_border_cost_empty_return')),
+        'border_estimate': _num(payload.get('cross_border_estimate_zar')),
+        'border_estimate_empty_return': _num(payload.get('cross_border_estimate_empty_return_zar')),
+        # Not a cost input itself: the route calculation prices the border
+        # with it; carried so the inputs (and a saved quote) record it.
+        'abnormal_load': bool(_truthy(payload.get('abnormal_load'))),
+        'border_costs_unknown': border_costs_unknown_input(payload),
+        'border_cost_is_override': bool(_truthy(payload.get('border_cost_is_override'))),
+        'international': international,
         'include_empty_return': include,
         'settings': {
             'include_empty_return_default': bool(getattr(company, 'include_empty_return_default', True)),
@@ -938,7 +1353,13 @@ def build_inputs(payload, company, now=None, *, diesel_override=None):
     context = {'vehicle_type': vt, 'vehicle_how': how, 'suggested': suggested, 'operating_cost': op,
                'inputs': {'load_kg': load_kg},
                'diesel': diesel,
-               'driver_rate_source': rate_source, 'now': now}
+               'driver_rate_source': rate_source, 'now': now,
+               'driver_rate_detail': allowance_detail(allowance, international),
+               'driver_rate': {'per_night': rate, 'source': rate_source,
+                               'kind': ('company_setting' if rate_source == 'company_setting'
+                                        else (allowance or {}).get('allowance_type')),
+                               'international': international,
+                               'effective_from': iso_date((allowance or {}).get('effective_from'))}}
     return inputs, context
 
 
@@ -955,15 +1376,116 @@ def _context_out(context):
                                   else 'load_missing' if not (_num((context.get('inputs') or {}).get('load_kg')) or 0) > 0
                                   else 'no_truck_carries_the_load'),
             'operating_cost': context['operating_cost'],
+            'driver_rate_detail': context.get('driver_rate_detail'),
+            'driver_rate': context.get('driver_rate'),
             'driver_rate_source': context['driver_rate_source'], 'diesel_resolution': d}
 
 
+def is_per_tonne(payload):
+    return str((payload or {}).get('pricing_basis') or '').strip().lower() == 'per_tonne'
+
+
+def tonnage_trucks(company, cargo=None, chosen_id=None):
+    """The trucks a tonnage quote is compared on: the company's own visible
+    vehicle types with an AVAILABLE fleet vehicle (the builders' list),
+    general freight, or a specialised body only when the cargo calls for it
+    (the §3 suggestion rule). The chosen type is always included when the
+    company can see it."""
+    from core.services.vehicle_types import available_vehicle_types, visible_vehicle_types_queryset
+    qs = visible_vehicle_types_queryset(company)
+    own_ids = {r['id'] for r in available_vehicle_types(company)} if company is not None else set()
+    out = [vt for vt in qs.filter(id__in=own_ids).order_by('id') if cargo_fits_body(body_type(vt.name), cargo)]
+    cid = _num(chosen_id)
+    if cid and not any(vt.id == int(cid) for vt in out):
+        extra = qs.filter(id=int(cid)).first()
+        if extra is not None:
+            out.append(extra)
+    return out
+
+
+TONNAGE_PAYLOAD_KEYS = ('tonnes_per_load', 'total_tonnes', 'min_tonnes_per_load', 'rate_per_tonne')
+
+
+def build_tonnage_inputs(payload, company, now=None, *, diesel_override=None):
+    """compute_tonnage() inputs from a pricing payload with pricing_basis
+    'per_tonne' (+ tonnes_per_load / total_tonnes / min_tonnes_per_load /
+    rate_per_tonne / vehicle_type_id = the chosen truck, null = unknown).
+    Every truck's inputs are resolved by build_inputs() exactly as a per-load
+    quote on that truck (fuel by its fuel type, operating cost by its class).
+    Optional `tolls_by_vehicle_type` {id: {one_way, empty_return}} gives each
+    truck's own toll class; otherwise the route's tolls apply to every truck."""
+    import copy
+    payload = dict(payload or {})
+    chosen = payload.get('vehicle_type_id')
+    cargo = payload.get('cargo_description') or payload.get('cargo')
+    trucks = tonnage_trucks(company, cargo, chosen)
+    per_truck_tolls = payload.get('tolls_by_vehicle_type') if isinstance(payload.get('tolls_by_vehicle_type'),
+                                                                           dict) else {}
+    base = {k: v for k, v in payload.items() if k not in ('vehicle_type', 'price', 'your_price')}
+    lane, context, entries = None, None, []
+    for vt in trucks:
+        inp, ctx = build_inputs({**base, 'vehicle_type_id': vt.id}, company, now,
+                                diesel_override=copy.deepcopy(diesel_override))
+        if lane is None:
+            lane, context = inp, ctx
+        entry = {'vehicle': inp['vehicle'], 'operating_cost_per_km': inp['operating_cost_per_km'],
+                 'operating_cost_source': inp['operating_cost_source']}
+        if inp['diesel'] != lane['diesel']:
+            entry['diesel'] = inp['diesel']
+        t = per_truck_tolls.get(str(vt.id)) or per_truck_tolls.get(vt.id)
+        if isinstance(t, dict) and _num(t.get('one_way')) is not None:
+            entry['tolls'] = {**lane['tolls'], 'one_way': _num(t.get('one_way')),
+                              'empty_return': _num(t.get('empty_return')), 'lookup_failed': False}
+        entries.append(entry)
+    if lane is None:
+        lane, context = build_inputs({**base, 'vehicle_type_id': None, 'weight': None, 'load_kg': None},
+                                     company, now, diesel_override=copy.deepcopy(diesel_override))
+    lane = {k: v for k, v in lane.items()
+            if k not in ('vehicle', 'load_kg', 'price', 'operating_cost_per_km', 'operating_cost_source')}
+    inputs = {'lane': lane, 'trucks': entries, 'vehicle_type_id': _num(chosen) and int(_num(chosen)),
+              **{k: _pos(payload.get(k)) for k in TONNAGE_PAYLOAD_KEYS}}
+    return inputs, context
+
+
+def tonnage_costing_for_payload(payload, company, now=None, *, diesel_override=None):
+    inputs, context = build_tonnage_inputs(payload, company, now, diesel_override=diesel_override)
+    out = compute_tonnage(inputs)
+    out['inputs'] = inputs
+    d = dict(context['diesel'])
+    d.pop('input', None)
+    d.pop('warnings', None)
+    out['resolution'] = {'vehicle_selection': 'chosen' if inputs['vehicle_type_id'] else 'safest',
+                         'vehicle_type_id': out['tonnage']['basis_vehicle_type_id'],
+                         'eligible_vehicle_type_ids': [t['vehicle']['id'] for t in inputs['trucks']],
+                         'driver_rate_source': context['driver_rate_source'],
+                         'diesel_resolution': d if diesel_override is None else 'snapshot'}
+    return out
+
+
 def costing_for_payload(payload, company, now=None):
-    """compute() for a builder payload, plus how each input was resolved."""
+    """compute() for a builder payload, plus how each input was resolved.
+    pricing_basis 'per_tonne' -> compute_tonnage()."""
+    if is_per_tonne(payload):
+        return tonnage_costing_for_payload(payload, company, now)
     inputs, context = build_inputs(payload, company, now)
     out = compute(inputs)
+    # The company figures the server priced with, so clients mirror them
+    # exactly (e.g. the NBCRFLI cross-border rate on an international trip).
+    out['company_figures'] = {'driver_rate': context.get('driver_rate'),
+                              'operating_cost': context.get('operating_cost'),
+                              'target_margin_pct': inputs.get('target_margin_pct'),
+                              'minimum_charge': inputs.get('minimum_charge')}
     out['inputs'] = inputs
     out['resolution'] = _context_out(context)
+    # Trip date (pickup_date): warn when it falls after the newest published
+    # toll schedule, so the toll figure is known to be on old tariffs.
+    raw = (payload or {}).get('pickup_date') or (payload or {}).get('trip_date')
+    if raw:
+        from core.services.toll_calculator import parse_trip_date, tariff_schedule_warning
+        tw = tariff_schedule_warning(parse_trip_date(raw))
+        if tw:
+            out.setdefault('warnings', []).append(warning(
+                tw['code'], 'warn', f"Toll tariffs for this date are not published yet", tw['message']))
     return out
 
 
@@ -977,7 +1499,59 @@ COSTING_INPUT_KEYS = {
     'tolls_empty_return': float, 'fuel_price_override': float, 'vehicle_type_id': int,
     'driver_nights': int, 'duration_minutes': float, 'toll_cost_one_way': float,
     'driver_cost_is_override': bool, 'border_cost': float,
+    'border_cost_is_override': bool, 'border_costs_unknown': dict,
+    # Both legs exactly as the builder showed them (toll/border audit):
+    # the way back's own tolls, the empty return's border figure and how
+    # much of the border is estimated, and the user's clearing-agent fee.
+    'toll_cost_return': float, 'border_cost_empty_return': float,
+    'border_estimate': float, 'border_estimate_empty_return': float, 'clearing_agent_fee': float,
+    # The load is abnormal (Zimbabwe's Abnormal access-toll class): kept so a
+    # reopened / re-sent quote prices its border the same way.
+    'abnormal_load': bool,
+    # Tonnage quotes: each truck's own one-way / empty-return tolls
+    # {"<vehicle_type_id>": {"one_way": R, "empty_return": R}}.
+    'tolls_by_vehicle_type': dict,
 }
+
+
+def _crossing_name(code):
+    from core.services.cross_border import COUNTRY_NAMES
+    parts = str(code).split('-')
+    if len(parts) == 2:
+        return '→'.join(COUNTRY_NAMES.get(p, p) for p in parts)
+    return str(code)
+
+
+def _known_label(item):
+    kind, desc = item.get('type'), str(item.get('description') or '')
+    if kind == 'border_crossing':
+        return desc.replace(' border crossing', '').replace(' → ', '→').split(' (')[0]
+    if kind == 'sa_permit':
+        return 'permit'
+    return desc.split(' (')[0]
+
+
+def border_costs_unknown_input(payload):
+    """compute()'s border_costs_unknown from the builder payload: its own
+    `border_costs_unknown`, else the route data it passes through
+    (route.border_costs_unknown + route.cross_border_breakdown). Country codes
+    are turned into names; None when everything is known."""
+    from core.services.cross_border import COUNTRY_NAMES
+    route = payload.get('route') if isinstance(payload.get('route'), dict) else {}
+    raw = payload.get('border_costs_unknown') or route.get('border_costs_unknown') or {}
+    if not isinstance(raw, dict):
+        return None
+    countries = [COUNTRY_NAMES.get(str(c).upper(), str(c)) for c in (raw.get('countries') or []) if c][:10]
+    crossings = [c if '→' in str(c) else _crossing_name(c) for c in (raw.get('crossings') or []) if c][:10]
+    if not countries and not crossings:
+        return None
+    known = raw.get('known')
+    if not isinstance(known, list):
+        known = [{'label': _known_label(b), 'amount': _num(b.get('amount'))}
+                 for b in (route.get('cross_border_breakdown') or []) if isinstance(b, dict)]
+    known = [{'label': str(k.get('label') or '')[:60], 'amount': _num(k.get('amount'))}
+             for k in known[:12] if isinstance(k, dict) and _num(k.get('amount')) is not None]
+    return {'countries': countries, 'crossings': crossings, 'known': known}
 
 
 def quote_payload(quote):
@@ -991,9 +1565,12 @@ def quote_payload(quote):
     if quote.estimated_duration_minutes:
         ci.pop('duration_minutes', None)
     toll_total = _num(quote.toll_charges)
-    if ci.get('toll_cost_one_way') is not None and toll_total is not None \
-            and abs(float(ci['toll_cost_one_way']) * legs - toll_total) > 0.01:
-        ci.pop('toll_cost_one_way')
+    if ci.get('toll_cost_one_way') is not None and toll_total is not None:
+        back = (float(ci['toll_cost_return']) if legs == 2 and ci.get('toll_cost_return') is not None
+                else float(ci['toll_cost_one_way']) * (legs - 1))
+        if abs(float(ci['toll_cost_one_way']) + back - toll_total) > 0.01:
+            ci.pop('toll_cost_one_way')
+            ci.pop('toll_cost_return', None)
     name = (quote.vehicle_type or '').strip().lower()
     vt_id = ci.get('vehicle_type_id') or getattr(quote, 'priced_vehicle_type_id', None)
     if vt_id and name:
@@ -1014,6 +1591,7 @@ def quote_payload(quote):
         'tolls_unknown': ci.get('tolls_unknown'),
         'tolls_confirmed_none': ci.get('tolls_confirmed_none'),
         'toll_cost_empty_return': ci.get('tolls_empty_return'),
+        'toll_cost_return': ci.get('toll_cost_return'),
         'cargo_description': quote.cargo_description,
         'driver_cost': _num(quote.driver_allowance),
         # A stored driver figure counts as entered ONLY when the client said
@@ -1025,6 +1603,13 @@ def quote_payload(quote):
         # additional_charges also carries empty return / top-ups, so it can't
         # be read back as the border line).
         'cross_border_cost': ci.get('border_cost') or 0.0,
+        'border_costs_unknown': ci.get('border_costs_unknown'),
+        'border_cost_is_override': bool(ci.get('border_cost_is_override')),
+        'cross_border_cost_empty_return': ci.get('border_cost_empty_return'),
+        'cross_border_estimate_zar': ci.get('border_estimate'),
+        'cross_border_estimate_empty_return_zar': ci.get('border_estimate_empty_return'),
+        'clearing_agent_fee': ci.get('clearing_agent_fee'),
+        'abnormal_load': bool(ci.get('abnormal_load')),
         'is_international': bool(getattr(quote, 'is_international', False)),
         'include_empty_return': ci.get('include_empty_return'),
         'distance_estimated': ci.get('distance_estimated'),
@@ -1037,6 +1622,16 @@ def quote_payload(quote):
     # toll_charges is the total for the legs.
     payload['one_way_distance_km'] = distance
     payload['legs'] = legs
+    if getattr(quote, 'pricing_basis', 'per_load') == 'per_tonne':
+        # Tonnage quote: the chosen truck (null = truck unknown -> safest) and
+        # the tonnage terms come from the quote's own fields.
+        payload.update({
+            'pricing_basis': 'per_tonne',
+            'vehicle_type_id': getattr(quote, 'basis_vehicle_type_id', None),
+            'tonnes_per_load': _num(quote.tonnes_per_load), 'total_tonnes': _num(quote.total_tonnes),
+            'min_tonnes_per_load': _num(quote.min_tonnes_per_load), 'rate_per_tonne': _num(quote.rate_per_tonne),
+            'tolls_by_vehicle_type': ci.get('tolls_by_vehicle_type'),
+        })
     return payload
 
 
@@ -1052,7 +1647,13 @@ def costing_for_quote(quote, now=None, *, use_snapshot_diesel=False):
             'official_price': float(quote.fuel_price_used), 'official_effective_from': iso(quote.fuel_effective_from),
             'official_stale': False, 'use_official': False, 'override_price': None},
             'source': quote.fuel_price_source}
-    inputs, context = build_inputs(quote_payload(quote), company, now, diesel_override=override)
+    payload = quote_payload(quote)
+    if is_per_tonne(payload):
+        out = tonnage_costing_for_payload(payload, company, now, diesel_override=override)
+        if override is not None:
+            out['diesel']['source'] = quote.fuel_price_source
+        return out
+    inputs, context = build_inputs(payload, company, now, diesel_override=override)
     out = compute(inputs)
     if override is not None:
         out['diesel']['source'] = quote.fuel_price_source
