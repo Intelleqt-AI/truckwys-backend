@@ -10,6 +10,8 @@ from core.services.quote_preparse import preparse
 def _match(key, want, got):
     """Exact, except: a list (other than stops) lists acceptable values; place
     and text values compare case-insensitively; numbers to 0.01."""
+    if key == "stops" and isinstance(want, list) and want and all(isinstance(w, list) for w in want):
+        return any(_match(key, w, got) for w in want)
     if isinstance(want, list) and key != "stops":
         return any(_match(key, w, got) for w in want)
     if isinstance(want, bool) or want is None:

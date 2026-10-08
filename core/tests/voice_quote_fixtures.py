@@ -82,7 +82,7 @@ CASES = [
     {"id": "en_border_flatbed", "lang": "en",
      "text": "From Joburg to Gaborone through Kopfontein, 18 tons chrome, flatbed",
      "expect": {"pickup_location": "Johannesburg", "delivery_location": "Gaborone", "border_post": "Kopfontein / Tlokweng",
-                "international": True, "weight": 18000, "cargo_description": "chrome ore", "vehicle_hint": "flatbed"}},
+                "international": True, "weight": 18000, "cargo_description": "chrome", "vehicle_hint": "flatbed"}},
     {"id": "typo_place_names", "lang": "en",
      "text": "Johannesberg to Bloemfontain 20 ton steel",
      "expect": {"pickup_location": "Johannesburg", "delivery_location": "Bloemfontein", "weight": 20000,
@@ -194,7 +194,7 @@ CASES = [
     {"id": "mixed_tomorrow_af_superlink_backload", "lang": "mixed",
      "text": "Môre a superlink van Richards Bay na Joburg, 34 ton chrome, ons het 'n backload",
      "expect": {"pickup_date": "2026-10-09", "vehicle_hint": "interlink", "pickup_location": "Richards Bay",
-                "delivery_location": "Johannesburg", "weight": 34000, "cargo_description": "chrome ore",
+                "delivery_location": "Johannesburg", "weight": 34000, "cargo_description": "chrome",
                 "return_load_booked": True, "trip_type": "ONE_WAY"}},
 ]
 
@@ -271,7 +271,7 @@ HELDOUT = [
      "expect": {"vehicle_hint": "tautliner", "pickup_location": "Bloemfontein", "delivery_location": "Durban",
                 "weight": 22000, "cargo_description": "flour", "pickup_date": "2026-10-15"}},
     {"id": "h12", "lang": "en", "text": "Need a side tipper 32 ton gravel Brits to Rustenburg today",
-     "expect": {"vehicle_hint": "tipper", "weight": 32000, "cargo_description": "aggregate",
+     "expect": {"vehicle_hint": "tipper", "weight": 32000, "cargo_description": "gravel",
                 "pickup_location": "Brits", "delivery_location": "Rustenburg", "pickup_date": "2026-10-08"}},
     {"id": "h13", "lang": "mixed", "text": "Die client is Bokomo, 15 ton flour Paarl to Bellville",
      "customers": CUSTOMERS,
@@ -295,10 +295,13 @@ HELDOUT = [
     {"id": "h19", "lang": "en", "text": "how much for a load to Durban",
      "expect": {"delivery_location": "Durban"}, "absent": ["pickup_location", "weight"]},
     {"id": "h20", "lang": "en", "text": "34 ton chrome Steelpoort to Maputo port via Lebombo",
-     "expect": {"weight": 34000, "cargo_description": "chrome ore", "delivery_location": "Maputo",
+     "expect": {"weight": 34000, "cargo_description": "chrome", "delivery_location": "Maputo",
                 "border_post": "Lebombo / Ressano Garcia", "international": True}},
 ]
 
+
+# English cargo words are kept as said (coordinator, 8 Oct: "chrome" stays
+# "chrome", "gravel" stays "gravel"); four expectations above follow that.
 
 # Round 2 inputs (toll/border branch): abnormal loads, trip_date, more border posts.
 CASES += [
@@ -475,13 +478,13 @@ _VERIFIER_P = [
 ]
 
 
-def _verifier_case(i, lang, text, exp):
+def _verifier_case(i, lang, text, exp, round1=True):
     exp = dict(exp)
     case = {"id": f"verifier_{i:02d}", "lang": lang, "text": text, "customers": VERIFIER_CUSTOMERS,
             "fleet": VERIFIER_FLEET, "absent": exp.pop("_absent", []), "not_understood": exp.pop("_note", False)}
     if "_hint" in exp:
         exp["vehicle_hint"] = exp.pop("_hint")
-    if i == 26:
+    if round1 and i == 26:
         # "Client is Shoprite": the verifier expected no match, but Shoprite
         # Holdings Ltd IS one of this company's customers (id 1) — matching it
         # is the intended behaviour, so the expectation is corrected here.
@@ -495,3 +498,121 @@ def _verifier_case(i, lang, text, exp):
 
 VERIFIER = [_verifier_case(i, *p) for i, p in enumerate(_VERIFIER_P, 1)]
 HELDOUT += VERIFIER
+
+
+# ── Verifier round 2 (43 new phrases, 8 Oct 2026), held out the same way.
+# "_weight_ok" lists acceptable weights (or None for "don't fill").
+LDV = ["Light Delivery Vehicle (LDV)"]
+_VERIFIER2_P = [
+ ("af", "twee-en-twintig ton suiker van Malelane na Durban oormôre",
+  dict(weight=22000, cargo_description="sugar", pickup_location="Malelane", delivery_location="Durban", pickup_date="2026-10-10")),
+ ("af", "Ek soek 'n prys: 15 000 kg kunsmis, Potchefstroom na Klerksdorp, Dinsdag",
+  dict(weight=15000, cargo_description=["fertiliser", "fertilizer"], pickup_location="Potchefstroom", delivery_location="Klerksdorp", pickup_date="2026-10-13")),
+ ("af", "Tshwane na eMalahleni, dertig ton steenkool, die 15de",
+  dict(pickup_location="Pretoria", delivery_location=["eMalahleni", "Emalahleni", "Witbank"], weight=30000, cargo_description="coal", pickup_date="2026-10-15")),
+ ("en", "Load 26 tonnes of sunflower seed in Bethal, drop off at Randfontein on Saturday",
+  dict(pickup_location="Bethal", delivery_location="Randfontein", weight=26000, cargo_description=["sunflower seed", "sunflower seeds"], delivery_date="2026-10-10")),
+ ("en", "Ladysmith to Harrismith 8 ton of cooldrinks, collect Monday 12 October, deliver Tuesday",
+  dict(pickup_location="Ladysmith", delivery_location="Harrismith", weight=8000, cargo_description=["cooldrinks", "cool drinks", "soft drinks"],
+       pickup_date="2026-10-12", delivery_date="2026-10-13")),
+ ("stt", "Gqeberha naar Kariega 4 ton motor onderdele",
+  dict(pickup_location="Gqeberha", delivery_location=["Kariega", "Uitenhage"], weight=4000)),
+ ("en", "Polokwane to Musina via Louis Trichardt 28 ton cement",
+  dict(pickup_location="Polokwane", delivery_location="Musina", stops=[["Louis Trichardt"], ["Makhado"]], weight=28000, cargo_description="cement")),
+ ("en", "eThekwini to KwaDukuza, 12 ton sugar cane",
+  dict(pickup_location="Durban", delivery_location="KwaDukuza", weight=12000, cargo_description="sugar cane")),
+ ("en", "Mahikeng to Lobatse via Ramatlabama, 20 ton mealie meal",
+  dict(pickup_location=["Mahikeng", "Mafikeng"], delivery_location="Lobatse", border_post="Ramatlabama", international=True, weight=20000,
+       cargo_description=["mealie meal", "maize meal"])),
+ ("stt", "Johannesburg to Bulawayo, 30 ton steel beams, via Beit Bridge, back empty",
+  dict(pickup_location="Johannesburg", delivery_location="Bulawayo", border_post="Beitbridge", international=True, weight=30000,
+       cargo_description="steel beams", return_load_booked=False, trip_type="ONE_WAY")),
+ ("en", "Durban to Manzini through Golela, 25 ton containers",
+  dict(pickup_location="Durban", delivery_location="Manzini", border_post="Golela / Lavumisa", international=True, weight=25000, cargo_description="containers")),
+ ("en", "Komatipoort to Maputo 34 ton chrome",
+  dict(pickup_location="Komatipoort", delivery_location="Maputo", international=True, weight=34000, cargo_description="chrome")),
+ ("en", "Bloemfontein to Maseru, 10 ton flour, Ficksburg bridge",
+  dict(pickup_location="Bloemfontein", delivery_location="Maseru", border_post="Ficksburg Bridge / Maputsoe", international=True, weight=10000, cargo_description="flour")),
+ ("en", "Springbok to Windhoek via Vioolsdrif, 18 ton grapes, 3 nights",
+  dict(pickup_location="Springbok", delivery_location="Windhoek", border_post="Vioolsdrif / Noordoewer", international=True, weight=18000,
+       cargo_description="grapes", driver_nights=3)),
+ ("en", "Cape Town to Lusaka via Kazungula 30 ton wine",
+  dict(pickup_location="Cape Town", delivery_location="Lusaka", international=True, weight=30000, cargo_description="wine", _absent=["border_post"])),
+ ("en", "Abnormal: 52 ton crusher on a lowbed from Kimberley to Postmasburg",
+  dict(abnormal_load=True, weight=52000, cargo_description="crusher", pickup_location="Kimberley", delivery_location="Postmasburg", _hint="lowbed")),
+ ("af", "oorgrootte vrag, 'n transformator van 40 ton van Pretoria na Lephalale",
+  dict(abnormal_load=True, weight=40000, cargo_description=["transformer", "transformator"], pickup_location="Pretoria", delivery_location="Lephalale")),
+ ("en", "Joburg to PE 14,5t tyres, diesel R22.95",
+  dict(pickup_location="Johannesburg", delivery_location=["Gqeberha", "Port Elizabeth"], weight=14500, cargo_description=["tyres", "tires"], fuel_price_override=22.95)),
+ ("af", "Brandstof is R25,40 die liter. Worcester na Kaapstad, 9 ton appels",
+  dict(fuel_price_override=25.40, pickup_location="Worcester", delivery_location="Cape Town", weight=9000, cargo_description="apples")),
+ ("en", "Durban to Joburg 34 pallets",
+  dict(pickup_location="Durban", delivery_location="Johannesburg", _absent=["weight"])),
+ ("en", "Joburg to Cape Town, about 2 tons, bakkie",
+  dict(pickup_location="Johannesburg", delivery_location="Cape Town", weight=2000, vehicle_type=LDV)),
+ ("en", "Cape Town to Joburg 30 ton fridge goods, reefer, round trip loaded both ways",
+  dict(pickup_location="Cape Town", delivery_location="Johannesburg", weight=30000, trip_type="ROUND_TRIP",
+       vehicle_type="Refrigerated Truck (Reefer)")),
+ ("en", "Mthatha to East London 6 ton building sand, client Bidvest",
+  dict(pickup_location="Mthatha", delivery_location="East London", weight=6000, cargo_description="building sand", customer_name="Bidvest Group Ltd")),
+ ("en", "Woolworths, 16 ton chilled food, Midrand to Bloemfontein, tomorrow morning",
+  dict(customer_name="Woolworths Holdings Ltd", weight=16000, cargo_description="chilled food", pickup_location="Midrand",
+       delivery_location="Bloemfontein", pickup_date="2026-10-09")),
+ ("en", "Pick up 20 ton glass at Springs, deliver to Pietermaritzburg on 20 October",
+  dict(pickup_location="Springs", delivery_location="Pietermaritzburg", weight=20000, cargo_description="glass", delivery_date="2026-10-20",
+       _absent=["pickup_date"])),
+ ("en", "Rustenburg to Brits 12 ton chrome, pickup 1 October",
+  dict(pickup_location="Rustenburg", delivery_location="Brits", weight=12000, _absent=["pickup_date"], _note=True)),
+ ("en", "Durban to Upington 30 ton salt pickup 5 Jan",
+  dict(pickup_location="Durban", delivery_location="Upington", weight=30000, cargo_description="salt", pickup_date="2027-01-05")),
+ ("stt", "uh Johannesburg to uh Kroonstad, nineteen tons uh of um mealies",
+  dict(pickup_location="Johannesburg", delivery_location="Kroonstad", weight=19000, cargo_description=["maize", "mealies"])),
+ ("stt", "Cape Town to Saldanha 28 tons iron or",
+  dict(pickup_location="Cape Town", delivery_location=["Saldanha", "Saldanha Bay"], weight=28000)),
+ ("en", "Pretoria to Mokopane, 30 ton platinum concentrate, flat deck",
+  dict(pickup_location="Pretoria", delivery_location="Mokopane", weight=30000, cargo_description="platinum concentrate", vehicle_type="Flatbed Truck")),
+ ("en", "Uitenhage to Joburg 22 ton car parts, superlink",
+  dict(pickup_location=["Kariega", "Uitenhage"], delivery_location="Johannesburg", weight=22000, cargo_description="car parts",
+       vehicle_type="Interlink (34 tonnes)")),
+ ("af", "Nelspruit na Hazyview, 5 ton piesangs, Vrydag oplaai, Saterdag aflewer",
+  dict(pickup_location="Mbombela", delivery_location="Hazyview", weight=5000, cargo_description="bananas", pickup_date="2026-10-09", delivery_date="2026-10-10")),
+ ("af", "Kimberley na Upington, 20 ton, volgende Maandag",
+  dict(pickup_location="Kimberley", delivery_location="Upington", weight=20000, pickup_date=["2026-10-12", "2026-10-19"])),
+ ("en", "Sasolburg to Durban 25 ton plastic pellets, the client is Sasol",
+  dict(pickup_location="Sasolburg", delivery_location="Durban", weight=25000, cargo_description="plastic pellets", customer_name="Sasol Ltd")),
+ ("zu", "Ulundi to Nongoma 3 ton maize meal",
+  dict(pickup_location="Ulundi", delivery_location="Nongoma", weight=3000, cargo_description="maize meal")),
+ ("st", "Phuthaditjhaba to Bethlehem 7 ton timber",
+  dict(pickup_location="Phuthaditjhaba", delivery_location="Bethlehem", weight=7000, cargo_description="timber")),
+ ("en", "Mbombela to Bushbuckridge 10 ton citrus",
+  dict(pickup_location="Mbombela", delivery_location="Bushbuckridge", weight=10000, cargo_description="citrus")),
+ ("st", "Thaba Nchu to Botshabelo 4 ton bricks",
+  dict(pickup_location="Thaba Nchu", delivery_location="Botshabelo", weight=4000, cargo_description="bricks")),
+ ("en", "Joburg to Durban 28 000 steel coils",
+  dict(pickup_location="Johannesburg", delivery_location="Durban", cargo_description="steel coils", _weight_ok=[None, 28000])),
+ ("en", "Rustenburg to Durban 30 ton chrome, 31 ton max",
+  dict(pickup_location="Rustenburg", delivery_location="Durban", _absent=["weight"], _note=True)),
+ ("af", "Kaapstad na Johannesburg, 25 ton wyn, aflewer teen 16 Oktober",
+  dict(pickup_location="Cape Town", delivery_location="Johannesburg", weight=25000, cargo_description="wine", delivery_date="2026-10-16",
+       _absent=["pickup_date"])),
+ ("af", "Harrismith na Durban, 30 ton mielies, leeg terug, 1 nag",
+  dict(pickup_location="Harrismith", delivery_location="Durban", weight=30000, cargo_description="maize", return_load_booked=False,
+       trip_type="ONE_WAY", driver_nights=1)),
+ ("mixed", "Ja, ons moet 'n superlink load doen, 34 ton koring from Bethlehem to Durban next Friday, retoervrag is booked",
+  dict(weight=34000, cargo_description="wheat", pickup_location="Bethlehem", delivery_location="Durban", pickup_date=["2026-10-09", "2026-10-16"],
+       return_load_booked=True, trip_type="ONE_WAY", vehicle_type="Interlink (34 tonnes)")),
+]
+
+
+def _verifier2_case(i, lang, text, exp):
+    exp = dict(exp)
+    ok_weights = exp.pop("_weight_ok", None)
+    case = _verifier_case(i, lang, text, exp, round1=False)
+    case["id"] = f"verifier2_{i:02d}"
+    if ok_weights is not None:
+        case["expect"]["weight"] = list(ok_weights)  # None in the list = "not filled" is fine too
+    return case
+
+
+VERIFIER2 = [_verifier2_case(i, *p) for i, p in enumerate(_VERIFIER2_P, 1)]
+HELDOUT += VERIFIER2

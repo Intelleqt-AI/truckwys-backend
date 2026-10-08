@@ -601,15 +601,17 @@ class VerifierFindingsTests(SimpleTestCase):
         customers = [{"id": 12, "name": "Clover Industries Ltd"}, {"id": 15, "name": "Astral Foods Ltd"}]
         history = [{"role": "user", "content": "for Astral 18 ton milk Bethlehem to Joburg"},
                    {"role": "assistant", "content": "Filled: 18 t milk; client Clover Industries Ltd. Ready to price."},
-                   {"role": "user", "text": "Clover wants it Monday"}]
+                   {"role": "user", "text": "Clover Industries wants it Monday"}]
         with mock.patch("core.services.llm_quote.is_enabled", return_value=True), \
                 mock.patch("core.services.llm_quote.extract", return_value=({}, "", NO_UNMATCHED)) as ex:
             quote_nl.understand("change it to Lichtenburg please, usual Astral pallets", history=history,
                                 current_fields={"client": "Clover Industries Ltd", "customer": 12,
-                                                "cargo_description": "Clover milk"},
+                                                "cargo_description": "milk for Clover Industries"},
                                 customers=customers, today=TODAY)
         sent = json.dumps([ex.call_args.args, ex.call_args.kwargs.get("detected_language")]).lower()
-        for word in ("clover", "astral"):
+        # Full names / distinctive words go; a bare common word like "Clover"
+        # is only redacted inside the client's name (see VerifierRound2Tests).
+        for word in ("clover industries", "astral"):
             self.assertNotIn(word, sent)
         self.assertNotIn('"customer"', sent)
         self.assertIn("lichtenburg", sent)
@@ -733,3 +735,89 @@ class VerifierVoiceTests(TestCase):
         r = self._post()
         self.assertEqual(r.status_code, 502)
         self.assertNotIn("req_abc123", r.data["error"])
+
+
+class VerifierRound2Tests(SimpleTestCase):
+    def test_decimal_comma_weights(self):
+        for text, kg in [("14,5t tyres", 14500), ("12,5ton sugar", 12500), ("7,25t steel", 7250),
+                         ("30 000kg coal", 30000), ("14,5 t tyres", 14500), ("28,5 ton maize", 28500),
+                         ("1,500 kg rice", 1500)]:
+            with self.subTest(text=text):
+                self.assertEqual(qp.preparse("Joburg to Durban " + text, today=TODAY).fields.get("weight"), kg)
+
+    @override_settings(QUOTE_NL_SKIP_LLM_WHEN_RULES_SUFFICE=False)
+    def test_client_names_without_suffix_are_redacted(self):
+        from core.tests.voice_quote_fixtures import VERIFIER_CUSTOMERS
+        with mock.patch("core.services.llm_quote.is_enabled", return_value=True), \
+                mock.patch("core.services.llm_quote.extract", return_value=({}, "", NO_UNMATCHED)) as ex:
+            quote_nl.understand(
+                "the Tiger Brands people, Super Group, Famous Brands, Imperial Logistics, Pioneer Foods, Consol "
+                "Glass, Coca-Cola Beverages, SA Steel Mills and Pick 'n Pay all want 20 ton, Durban to the depot",
+                customers=VERIFIER_CUSTOMERS, today=TODAY)
+        sent = ex.call_args.args[0].lower()
+        for name in ("tiger brands", "super group", "famous brands", "imperial logistics", "pioneer foods",
+                     "consol glass", "coca-cola", "steel mills", "pick 'n pay"):
+            self.assertNotIn(name, sent)
+
+    @override_settings(QUOTE_NL_SKIP_LLM_WHEN_RULES_SUFFICE=False)
+    def test_common_words_and_places_survive_redaction(self):
+        from core.tests.voice_quote_fixtures import VERIFIER_CUSTOMERS
+        with mock.patch("core.services.llm_quote.is_enabled", return_value=True), \
+                mock.patch("core.services.llm_quote.extract", return_value=({}, "", NO_UNMATCHED)) as ex:
+            quote_nl.understand("Sasolburg to some yard past Clover Hill, 20 ton resin, pick up at 6, super quick, "
+                                "famous route", customers=VERIFIER_CUSTOMERS, today=TODAY)
+        sent = ex.call_args.args[0]
+        for kept in ("Sasolburg", "Clover Hill", "pick up at 6", "super quick", "famous route"):
+            self.assertIn(kept, sent)
+
+    @override_settings(QUOTE_NL_SKIP_LLM_WHEN_RULES_SUFFICE=False)
+    def test_model_offered_client_not_named_by_user_is_dropped(self):
+        customers = [{"id": 1, "name": "Shoprite Holdings Ltd"}]
+        with mock.patch("core.services.llm_quote.is_enabled", return_value=True), \
+                mock.patch("core.services.llm_quote.extract",
+                           return_value=({"customer_id": 1, "customer_name": "Shoprite Holdings Ltd",
+                                          "delivery_location": "Durban"}, "", NO_UNMATCHED)):
+            res = quote_nl.understand("Joburg to the coast, 20 ton, for the usual", customers=customers, today=TODAY)
+            self.assertNotIn("customer_id", res.extracted)
+            res = quote_nl.understand("Joburg to the coast, 20 ton, the Shoprite load", customers=customers,
+                                      today=TODAY)
+            self.assertEqual(res.extracted.get("customer_id"), 1)
+
+    def test_language_detection_only_en_or_af(self):
+        from core.services.language_detect import detect_text_language
+        with mock.patch("core.services.language_detect.detect_langs",
+                        return_value=[mock.Mock(lang="it", prob=0.9999)]):
+            self.assertEqual(detect_text_language("Polokwane to Tzaneen 5 ton avocados today"), "en")
+            self.assertEqual(detect_text_language("van Polokwane na Tzaneen, vyf ton avokados vandag"), "af")
+
+    def test_towns_recognised_with_casing_and_pickup_cues(self):
+        for town in ("Randfontein", "Louis Trichardt", "KwaDukuza", "Lobatse", "Postmasburg", "Hazyview", "Malelane",
+                     "Ulundi", "Nongoma", "Phuthaditjhaba", "Bushbuckridge", "Thaba Nchu", "Botshabelo"):
+            with self.subTest(town=town):
+                p = qp.preparse(f"Durban to {town}, 10 ton cement", today=TODAY)
+                self.assertEqual(p.fields["delivery_location"], town)
+                self.assertFalse(p.not_understood)
+        p = qp.preparse("Load 26 tonnes of sunflower seed in Bethal, drop off at Randfontein on Saturday", today=TODAY)
+        self.assertEqual((p.fields["pickup_location"], p.fields["delivery_location"]), ("Bethal", "Randfontein"))
+        p = qp.preparse("Pick up 20 ton glass at Springs, deliver to Pietermaritzburg", today=TODAY)
+        self.assertEqual(p.fields["pickup_location"], "Springs")
+        self.assertEqual(qp.preparse("Durban to Mtubatuba 10 ton sugar", today=TODAY).fields["delivery_location"],
+                         "Mtubatuba")
+
+    def test_cargo_words(self):
+        for text, cargo in [("34 ton chrome", "chrome"), ("8 ton of cooldrinks", "cooldrinks"),
+                            ("16 ton chilled food", "chilled food"), ("5 ton piesangs", "bananas"),
+                            ("6 ton motor onderdele", "motor parts"), ("30 ton iron or", "iron ore"),
+                            ("22 ton car parts", "car parts"), ("40 ton transformator", "transformer"),
+                            ("28 ton staalrolle", "steel coils")]:
+            with self.subTest(text=text):
+                self.assertEqual(qp.preparse("Joburg to Durban " + text, today=TODAY).fields["cargo_description"],
+                                 cargo)
+
+    @override_settings(QUOTE_NL_SKIP_LLM_WHEN_RULES_SUFFICE=False)
+    def test_other_vehicle_hint_always_has_a_label(self):
+        with mock.patch("core.services.llm_quote.is_enabled", return_value=True), \
+                mock.patch("core.services.llm_quote.extract",
+                           return_value=({}, "", {"customer_name": None, "vehicle_type": "Cargo Truck"})):
+            res = quote_nl.understand("a cargo truck from Joburg to somewhere", vehicle_types=[], today=TODAY)
+        self.assertEqual((res.vehicle_hint, res.vehicle_hint_label), ("other", "Cargo Truck"))

@@ -155,21 +155,68 @@ def merge(rules: qp.PreParse, llm_fields: Dict[str, Any], llm_conf: Dict[str, fl
     return out, conf, conflicts
 
 
-# ── privacy: redact the matched client name before anything goes to the LLM ─
-def _redact(text: str, names: List[str]) -> str:
-    for n in sorted({n for n in names if n and len(n) >= 2}, key=len, reverse=True):
-        text = re.sub(rf"(?i)\b{re.escape(n)}\b", "the client", text)
-    return text
+# ── privacy: client names never reach the model ──────────────────────────────
+_LEGAL_SUFFIXES = {"ltd", "limited", "pty", "proprietary", "edms", "bpk", "inc", "plc", "llc", "cc"}
+_SOFT_SUFFIXES = {"holdings", "group", "sa", "stores", "co", "company"}
+_COMMON_WORDS = qp.COMMON_NAME_WORDS
+
+
+def _phrase_rx(phrase: str) -> Optional[str]:
+    toks = re.findall(r"[A-Za-z0-9&]+", phrase)
+    if not toks:
+        return None
+    parts = []
+    for t in toks:
+        if t.lower() == "n":
+            parts.append(r"(?:n|'n|and|&)")
+        elif t == "&":
+            parts.append(r"(?:&|and|en)")
+        else:
+            parts.append(re.escape(t))
+    return r"(?i)(?<![A-Za-z0-9])" + r"[\s\W_]*".join(parts) + r"(?![A-Za-z0-9])"
+
+
+def _client_phrases(name: str) -> List[str]:
+    """Phrases that identify one client: the full name, the name without its
+    legal suffixes ("Tiger Brands", "Super Group", "SA Steel Mills"), and the
+    core without Holdings/Group/SA/Stores ("Pick n Pay", "Steel Mills") —
+    each only when it is 2+ words, or a single distinctive word (5+ letters,
+    not a common word or a place), or an acronym ("AVI", "RCL")."""
+    words = re.findall(r"[A-Za-z0-9&]+", re.sub(r"\((?:pty|edms)\)", " ", name or "", flags=re.I))
+    if not words:
+        return []
+    no_legal = [w for w in words if w.lower() not in _LEGAL_SUFFIXES]
+    core = [w for w in no_legal if w.lower() not in _SOFT_SUFFIXES]
+    out = []
+    for ws in (words, no_legal, core):
+        if not ws:
+            continue
+        phrase = " ".join(ws)
+        if len(ws) >= 2:
+            out.append(phrase)
+        else:
+            w = ws[0]
+            if (len(w) >= 5 and w.lower() not in _COMMON_WORDS and not qp.canonical_place(w)
+                    and w.lower() not in qp._KNOWN_VOCAB) or (w.isupper() and len(w) >= 3):
+                out.append(w)
+    return list(dict.fromkeys(out))
 
 
 def _redaction_names(rules: qp.PreParse, customers: Optional[List[Dict[str, Any]]],
-                     current_fields: Optional[Dict[str, Any]]) -> List[str]:
-    """Every client name the model must never see: this company's customer
-    names in full and their distinguishing words ("Astral", "Clover"), the
-    client the form has selected, and whatever the user called the client."""
+                     current_fields: Optional[Dict[str, Any]],
+                     history: Optional[List[Dict[str, Any]]] = None) -> List[str]:
+    """Every client mention the model must never see: each customer's
+    identifying phrases (see _client_phrases), the client the form has
+    selected, and whatever the user called the client in this message or in
+    an earlier turn ("for X", "client is X")."""
     names: List[str] = []
     if rules.customer_span_text:
         names.append(rules.customer_span_text)
+    for turn in history or []:
+        if isinstance(turn, dict) and turn.get("role") == "user":
+            said = qp.explicit_customer_mention(turn.get("content") or turn.get("text") or "", customers)
+            if said:
+                names.append(said)
     full = [c.get("name") or "" for c in (customers or [])]
     for k, v in (current_fields or {}).items():
         if isinstance(v, str) and re.search(r"client|customer|klient", k, re.I):
@@ -177,21 +224,16 @@ def _redaction_names(rules: qp.PreParse, customers: Optional[List[Dict[str, Any]
     if rules.fields.get("customer_name"):
         full.append(rules.fields["customer_name"])
     for n in full:
-        if not n:
-            continue
-        names.append(n)
-        names.append(re.sub(r"\s*\((?:pty|edms)\)\s*", " ", n, flags=re.I).strip())
-        names.extend(w for w in re.findall(r"[A-Za-z][A-Za-z&'-]+", n)
-                     if len(w) >= 4 and w.lower() not in _NON_IDENTIFYING and not qp.canonical_place(w))
-    return names
+        names.extend(_client_phrases(n))
+    return [n for n in dict.fromkeys(names) if n]
 
 
-# Words in company names that identify nobody (and are needed to read freight text).
-_NON_IDENTIFYING = {
-    "ltd", "limited", "pty", "group", "holdings", "stores", "industries", "foods", "food", "brands", "logistics",
-    "beverages", "company", "transport", "freight", "trading", "services", "steel", "mills", "glass", "super",
-    "famous", "imperial", "pioneer", "tiger", "consol", "coca", "cola", "edms", "bpk", "and", "the",
-}
+def _redact(text: str, names: List[str]) -> str:
+    for n in sorted(set(names), key=len, reverse=True):
+        rx = _phrase_rx(n)
+        if rx:
+            text = re.sub(rx, "the client", text)
+    return text
 
 
 def _redact_value(v: Any, names: List[str]) -> Any:
@@ -440,7 +482,7 @@ def understand(message: str, *, history: Optional[List[Dict[str, Any]]] = None,
             # history turns (the user's and this backend's own replies, e.g.
             # "client Clover Industries Ltd") and from the form fields, before
             # anything is sent. The customer list itself never is.
-            names = _redaction_names(rules, customers, current_fields)
+            names = _redaction_names(rules, customers, current_fields, history)
             msg = _redact(message, names)
             hist = [{**t, **{k: _redact(t[k], names) for k in ("content", "text") if isinstance(t.get(k), str)}}
                     for t in (history or []) if isinstance(t, dict)]
@@ -463,6 +505,15 @@ def understand(message: str, *, history: Optional[List[Dict[str, Any]]] = None,
             logger.warning("quote_nl: LLM extraction failed, using rules only: %s", exc)
             res.llm_error = type(exc).__name__
 
+    # A client the model offered that the user never named (it only saw "the
+    # client" or nothing at all) is not filled.
+    if llm_fields.get("customer_id") and not rules.fields.get("customer_id"):
+        named = llm_fields.get("customer_name") or ""
+        user_text = " ".join([message or ""] + [str(t.get("content") or t.get("text") or "")
+                                                for t in (history or []) if isinstance(t, dict)
+                                                and t.get("role") == "user"])
+        if not any(re.search(_phrase_rx(p) or "$^", user_text) for p in _client_phrases(named)):
+            llm_fields = {k: v for k, v in llm_fields.items() if k not in ("customer_id", "customer_name")}
     extracted, conf, conflicts = merge(rules, llm_fields, llm_conf)
     res.conflicts = conflicts
 

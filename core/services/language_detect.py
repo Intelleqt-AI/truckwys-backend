@@ -88,7 +88,8 @@ def normalize_whisper_language(name: Optional[str]) -> Optional[str]:
 
 
 def detect_text_language(text: str, threshold: Optional[float] = None) -> Optional[str]:
-    """Best-effort language code for typed text with no transcription step.
+    """Best-effort language for typed text with no transcription step: "en",
+    "af" or None (uncertain) — never any other language.
     None (uncertain) when: langdetect isn't installed, the text is too short
     to trust langdetect's own confidence number, detection raises, or the
     top guess's probability is below `threshold` (default from
@@ -105,14 +106,14 @@ def detect_text_language(text: str, threshold: Optional[float] = None) -> Option
     top = candidates[0]
     if top.prob < (threshold if threshold is not None else _confidence_threshold()):
         return None
-    if top.lang in ("af", "nl"):
-        # langdetect calls short English load descriptions Afrikaans because SA
-        # place names ("Joburg", "Durban", "Kaapstad") dominate the character
-        # n-grams. Afrikaans has to show in its own function words/morphology;
-        # otherwise it's English (the safe default for SA freight text).
-        af, en = afrikaans_evidence(text)
-        return "af" if af >= 2 and af > en else "en"
-    return top.lang
+    if top.lang == "en":
+        return "en"
+    # The quote assistant speaks English and Afrikaans only. langdetect calls
+    # short English load descriptions Afrikaans, Dutch, Italian… because SA
+    # place names dominate the character n-grams; Afrikaans has to show in its
+    # own words, otherwise it's English (the safe default for SA freight text).
+    af, en = afrikaans_evidence(text)
+    return "af" if af >= 2 and af > en else "en"
 
 
 # Afrikaans words that don't occur in English text (function words, common

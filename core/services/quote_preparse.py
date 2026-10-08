@@ -116,6 +116,65 @@ _PLACES: List[Tuple[str, str, Sequence[str]]] = [
     ("Springs", "ZA", ["springs"]),
     ("Krugersdorp", "ZA", ["krugersdorp", "mogale city"]),
     ("Hermanus", "ZA", ["hermanus"]),
+    ("Randfontein", "ZA", ["randfontein"]),
+    ("Louis Trichardt", "ZA", ["louis trichardt", "makhado"]),
+    ("KwaDukuza", "ZA", ["kwadukuza", "kwa dukuza", "stanger"]),
+    ("Postmasburg", "ZA", ["postmasburg"]),
+    ("Hazyview", "ZA", ["hazyview"]),
+    ("Malelane", "ZA", ["malelane"]),
+    ("Ulundi", "ZA", ["ulundi"]),
+    ("Nongoma", "ZA", ["nongoma"]),
+    ("Phuthaditjhaba", "ZA", ["phuthaditjhaba", "qwaqwa", "qwa qwa"]),
+    ("Bushbuckridge", "ZA", ["bushbuckridge"]),
+    ("Thaba Nchu", "ZA", ["thaba nchu", "thaba 'nchu"]),
+    ("Botshabelo", "ZA", ["botshabelo"]),
+    ("Bethal", "ZA", ["bethal"]),
+    ("Bothaville", "ZA", ["bothaville"]),
+    ("Lichtenburg", "ZA", ["lichtenburg"]),
+    ("Kathu", "ZA", ["kathu"]),
+    ("De Aar", "ZA", ["de aar"]),
+    ("Swellendam", "ZA", ["swellendam"]),
+    ("Thohoyandou", "ZA", ["thohoyandou"]),
+    ("Giyani", "ZA", ["giyani"]),
+    ("KwaMashu", "ZA", ["kwamashu", "kwa mashu"]),
+    ("uMhlanga", "ZA", ["umhlanga"]),
+    ("Pinetown", "ZA", ["pinetown"]),
+    ("Umlazi", "ZA", ["umlazi"]),
+    ("Soweto", "ZA", ["soweto"]),
+    ("Tembisa", "ZA", ["tembisa"]),
+    ("Mamelodi", "ZA", ["mamelodi"]),
+    ("Khayelitsha", "ZA", ["khayelitsha"]),
+    ("Mitchells Plain", "ZA", ["mitchells plain", "mitchell's plain"]),
+    ("Grabouw", "ZA", ["grabouw"]),
+    ("Ceres", "ZA", ["ceres"]),
+    ("Clanwilliam", "ZA", ["clanwilliam"]),
+    ("Vredendal", "ZA", ["vredendal"]),
+    ("Calvinia", "ZA", ["calvinia"]),
+    ("Colesberg", "ZA", ["colesberg"]),
+    ("Aliwal North", "ZA", ["aliwal north", "aliwal noord"]),
+    ("Butterworth", "ZA", ["butterworth", "gcuwa"]),
+    ("Port St Johns", "ZA", ["port st johns"]),
+    ("Kokstad", "ZA", ["kokstad"]),
+    ("Estcourt", "ZA", ["estcourt"]),
+    ("Dundee", "ZA", ["dundee"]),
+    ("Piet Retief", "ZA", ["piet retief", "emkhondo"]),
+    ("Barberton", "ZA", ["barberton"]),
+    ("White River", "ZA", ["white river", "witrivier"]),
+    ("Lydenburg", "ZA", ["lydenburg", "mashishing"]),
+    ("Steelpoort", "ZA", ["steelpoort"]),
+    ("Burgersfort", "ZA", ["burgersfort"]),
+    ("Modimolle", "ZA", ["modimolle", "nylstroom"]),
+    ("Thabazimbi", "ZA", ["thabazimbi"]),
+    ("Zeerust", "ZA", ["zeerust"]),
+    ("Vryburg", "ZA", ["vryburg"]),
+    ("Parys", "ZA", ["parys"]),
+    ("Heilbron", "ZA", ["heilbron"]),
+    ("Frankfort", "ZA", ["frankfort"]),
+    ("Virginia", "ZA", ["virginia"]),
+    ("Odendaalsrus", "ZA", ["odendaalsrus"]),
+    ("Lobatse", "BW", ["lobatse"]),
+    ("Mafeteng", "LS", ["mafeteng"]),
+    ("Oshakati", "NA", ["oshakati"]),
     ("Walvis Bay", "NA", ["walvis bay", "walvisbaai", "walvis baai"]),
     ("Windhoek", "NA", ["windhoek", "windhuk"]),
     ("Keetmanshoop", "NA", ["keetmanshoop"]),
@@ -192,7 +251,8 @@ def _border_posts() -> List[Tuple[str, Sequence[str]]]:
 # marker sits right before them ("to George", "na die Kaap").
 _AMBIGUOUS_ALIASES = {"george", "el", "pe", "p e", "the cape", "die kaap", "vaal", "the bay", "springs",
                       "welkom", "brits", "moz", "zim", "gabs", "potch", "bloem", "atlantis", "theku",
-                      "durbs", "joeys", "springbok", "bethlehem", "worcester", "newcastle", "middelburg"}
+                      "durbs", "joeys", "springbok", "bethlehem", "worcester", "newcastle", "middelburg", "virginia",
+                      "ceres", "dundee", "frankfort", "parys"}
 
 # ── Cargo lexicon (Afrikaans/English/STT spellings → canonical English) ──────
 _CARGO: List[Tuple[str, Sequence[str]]] = [
@@ -203,7 +263,8 @@ _CARGO: List[Tuple[str, Sequence[str]]] = [
     ("steel", ["staal", "steel", "rebar", "wapeningstaal"]),
     ("frozen chicken", ["bevrore hoender", "frozen chicken"]),
     ("frozen goods", ["bevrore goedere", "frozen goods", "frozen food", "bevrore kos", "frozen"]),
-    ("chilled goods", ["verkoelde goedere", "chilled goods", "chilled"]),
+    ("building sand", ["bousand", "building sand", "plaster sand", "pleistersand"]),
+    ("chilled goods", ["verkoelde goedere", "chilled goods", "chilled food", "chilled"]),
     ("cement", ["sement", "cement"]),
     ("maize meal", ["mielie meel", "mieliemeel", "mealie meal", "maize meal", "mielie pap", "mieliepap"]),
     ("maize", ["mielies", "mielie", "mealies", "maize"]),
@@ -223,6 +284,8 @@ _CARGO: List[Tuple[str, Sequence[str]]] = [
     ("citrus", ["sitrus", "citrus", "lemoene", "oranges", "naartjies"]),
     ("apples", ["appels", "apples"]),
     ("grapes", ["druiwe", "grapes"]),
+    ("bananas", ["piesangs", "piesang", "bananas", "banana"]),
+    ("avocados", ["avokado", "avokados", "avocados", "avos"]),
     ("fruit", ["vrugte", "fruit"]),
     ("potatoes", ["aartappels", "potatoes", "spuds"]),
     ("onions", ["uie", "onions"]),
@@ -243,6 +306,9 @@ _CARGO: List[Tuple[str, Sequence[str]]] = [
     ("lubricants", ["olie", "oil", "lubricants", "smeermiddels"]),
     ("chemicals", ["chemikaliee", "chemikalie", "chemicals", "chemical"]),
     ("LPG", ["lpg", "gas bottles", "gasbottels"]),
+    ("transformer", ["transformator", "transformators", "transformer", "transformers"]),
+    ("motor parts", ["motor onderdele", "motoronderdele", "onderdele", "spares", "motor parts", "car parts",
+                     "auto parts", "spare parts"]),
     ("machinery", ["masjinerie", "masjiene", "machinery", "machines", "plant equipment"]),
     ("equipment", ["toerusting", "equipment"]),
     ("vehicles", ["motors", "karre", "cars", "voertuie", "vehicles"]),
@@ -258,7 +324,7 @@ _CARGO: List[Tuple[str, Sequence[str]]] = [
     ("glass", ["glas", "glass"]),
     ("chrome ore", ["chroom", "chrome ore", "chrome"]),
     ("manganese ore", ["mangaan", "manganese ore", "manganese"]),
-    ("iron ore", ["ystererts", "iron ore"]),
+    ("iron ore", ["ystererts", "iron ore", "iron or", "iron oar"]),
     ("copper cathodes", ["koperkatodes", "copper cathodes", "copper cathode"]),
     ("copper", ["koper", "copper"]),
     ("ore", ["erts", "ore"]),
@@ -277,6 +343,20 @@ _CARGO: List[Tuple[str, Sequence[str]]] = [
     ("general cargo", ["algemene vrag", "general cargo", "general freight", "general goods", "algemene goedere"]),
     ("pallets", ["palette", "pallets", "pallet", "palet"]),
 ]
+
+# English aliases kept exactly as the user said them (they name the goods
+# precisely; "chrome" is not necessarily "chrome ore"). Afrikaans and
+# misspelt/variant aliases are mapped to the canonical English name.
+_CARGO_AS_SAID = {
+    "chrome", "cooldrinks", "cool drinks", "soft drinks", "cold drinks", "drinks", "chilled food", "frozen food",
+    "beef", "poultry", "oranges", "naartjies", "wood", "lumber", "gravel", "crushed stone", "sunflowers", "clothes",
+    "textiles", "machines", "cars", "boxes", "cable drums", "medicine", "gum poles", "i beams", "rebar",
+    "gas bottles", "scrap", "cattle", "sheep", "lucerne", "hay", "food", "general freight", "general goods",
+    "veggies", "car parts", "auto parts", "spare parts", "spares", "manganese", "copper", "plant equipment",
+    "feed", "poultry feed", "paper reels", "avos", "banana", "transformers", "plaster sand", "soybeans",
+    "steel pipe", "steel beams", "mealie meal",
+}
+
 
 # ── Vehicle hints → (canonical label, alias phrases to match a fleet name) ──
 _VEHICLES: List[Tuple[str, str, Sequence[str], Sequence[str]]] = [
@@ -396,6 +476,9 @@ _DELIVERY_MARKERS = (r"to|2|na|naar|tot|into|till|toward|towards|destination|bes
                      r"afla(?:ai|ai\s+(?:in|by|op))|aflewer(?:ing)?(?:\s+(?:in|by|na|op))?|"
                      r"afgelewer(?:\s+(?:in|by|word))?|going\s+to|gaan\s+na")
 _PICKUP_MARKERS = (r"from|frm|fr|van|vanaf|uit|ex|origin|"
+                   # "Load 26 tonnes of seed in Bethal", "Pick up 20 ton glass at Springs"
+                   r"(?:load(?:ed|ing)?|pick(?:ed|ing)?\s*up|collect(?:ed|ion)?|laai|oplaai)\b"
+                   r"(?:(?!\b(?:drop|deliver|delivery|to|na|aflaai|aflewer|and|en)\b)[^,]){0,45}?\s(?:in|at|by|op)|"
                    r"pick(?:ed|ing)?\s*up(?:\s+(?:in|at|from))?|pickup(?:\s+(?:in|at|from))?|"
                    r"collect(?:ion|ed)?(?:\s+(?:in|at|from))?|load(?:ed|ing)?\s+(?:in|at)|"
                    r"oplaai(?:\s+(?:in|by|op))?|laai\s+(?:in|by|op)|optel(?:\s+(?:in|by))?|"
@@ -560,13 +643,14 @@ def normalise(text: str) -> str:
     s = re.sub(r"\b(\d{1,2})[-.](\d{1,2})[-.](\d{2,4})\b", r"\1/\2/\3", s)
     # Money: "r23,50" / "r 23.50"
     s = re.sub(r"\br\s?(\d)", r"r \1", s)
+    # "28t", "14,5t", "30 000kg" → "28 t" first, so the number rules below see
+    # a clean number ("14,5t" must not lose its "5t" to the unit).
+    s = re.sub(r"(\d)(t|ton|tons|tonne|tonnes|kg|kgs|kilo|kilos|km|l)\b", r"\1 \2", s)
     # Decimal comma (SA) vs thousands comma: "28,5" → 28.5; "1,500" → 1500.
-    s = re.sub(r"(\d),(\d{3})\b", r"\1\2", s)
-    s = re.sub(r"(\d),(\d{1,2})\b", r"\1.\2", s)
+    s = re.sub(r"(\d),(\d{3})(?![\d,])", r"\1\2", s)
+    s = re.sub(r"(\d),(\d{1,2})(?!\d)", r"\1.\2", s)
     # Space thousands: "28 000" → 28000.
-    s = re.sub(r"\b(\d{1,3}) (\d{3})\b(?!\s*/)", r"\1\2", s)
-    # "28t", "28kg", "28ton" → "28 t"
-    s = re.sub(r"(\d)(t|ton|tons|tonne|tonnes|kg|kgs|kilo|kilos|km)\b", r"\1 \2", s)
+    s = re.sub(r"\b(\d{1,3}) (\d{3})(?!\d)(?!\s*/)", r"\1\2", s)
     s = re.sub(r"(\d)\s*k\b(?!g)", lambda m: m.group(1) + "000", s)  # "28k kg" rare; "28k" → 28000
     s = s.replace("'", " ")
     s = re.sub(r"[-_]", " ", s)
@@ -624,6 +708,9 @@ _VEHICLE_LOOKUP = {r[0]: (r[1], r[2]) for r in _VEHICLE_ROWS}
 
 # Every word the rules know about — an unknown-place capture must not swallow these.
 _CARGO_WORDS = {w for r in _CARGO_ROWS for w in r[0].split()}
+# English words of canonical names and as-said aliases (never "translated")
+_EN_CARGO_WORDS = {w for c, _ in _CARGO for w in norm_phrase(c).split()} | \
+    {w for a in _CARGO_AS_SAID for w in a.split()}
 _KNOWN_VOCAB = set(_FILLER) | set(_UNITS) | set(_TENS) | set(_SCALES) | set(_MONTHS) | set(_WEEKDAYS)
 for _rows in (_CARGO_ROWS, _VEHICLE_ROWS, _BORDER_ROWS):
     for _r in _rows:
@@ -1189,7 +1276,8 @@ def _customers(ctx: _Ctx, out: PreParse, customers) -> None:
         counts = Counter(w for c in customers for w in set(_significant(c["name"])))
         for c in customers:
             for w in _significant(c["name"]):
-                if counts[w] == 1 and w not in _KNOWN_VOCAB and w not in _PLACE_LOOKUP and len(w) >= 4:
+                if counts[w] == 1 and w not in _KNOWN_VOCAB and w not in _PLACE_LOOKUP and len(w) >= 4 \
+                        and w not in COMMON_NAME_WORDS:
                     mm = re.search(rf"\b{re.escape(w)}\b", t)
                     if mm:
                         ctx.consume(mm.start(), mm.end())
@@ -1204,10 +1292,40 @@ _NOT_PLACE_WORDS = {"close", "near", "next", "up", "down", "back", "way", "right
                     "is", "how", "where", "here", "there", "quick", "drive", "trip", "load", "loads", "goods"}
 
 
-def _title_place(phrase: str) -> str:
-    """Title-case an unrecognised place, keeping SA prefixes lower ("kwamashu"
-    stays "Kwamashu"; "de aar" -> "De Aar")."""
+def _title_place(phrase: str, raw: str = "") -> str:
+    """An unrecognised place as the user wrote it when they used capitals
+    ("KwaDukuza", "uMhlanga"), else title-cased ("de aar" -> "De Aar")."""
+    said = said_text(raw, phrase) if raw else None
+    if said and any(c.isupper() for c in said):
+        return said
     return " ".join(w[:1].upper() + w[1:] for w in phrase.split())
+
+
+# Single words that are ordinary English/Afrikaans and are never treated as a
+# client's name on their own (only inside a full multi-word name): matching
+# or redacting them would hit "pick up", "Clover Hill", "super quick".
+COMMON_NAME_WORDS = {
+    "pick", "pay", "clover", "super", "famous", "brands", "tiger", "pioneer", "imperial", "consol", "glass",
+    "steel", "mills", "foods", "food", "group", "stores", "coca", "cola", "beverages", "logistics", "holdings",
+    "industries", "limited", "transport", "freight", "trading", "services", "farms", "farm", "mining", "mines",
+    "energy", "fresh", "quality", "premier", "national", "global", "united", "royal", "golden", "crown", "star",
+    "eagle", "lion", "rock", "river", "valley", "mountain", "ocean", "sun", "sunshine", "first", "best", "express",
+    "cargo", "trucks", "trucking", "haulage", "distribution", "solutions", "products", "packaging", "plastics",
+    "chemicals", "construction", "engineering", "motors", "auto", "agri", "boerdery", "vervoer", "handel",
+}
+
+
+def explicit_customer_mention(text: str, customers: Optional[List[Dict[str, Any]]]) -> Optional[str]:
+    """The user's own words for a client in `text` ("for Astral", "client is
+    Clover") when they match one of `customers` — used to redact earlier turns."""
+    if not text or not customers:
+        return None
+    out = PreParse()
+    ctx = _Ctx(normalise(text), text)
+    _customers(ctx, out, customers)
+    if out.fields.get("customer_id") and out.confidence.get("customer_id", 0) >= 0.85 and out.customer_span_text:
+        return said_text(text, out.customer_span_text) or out.customer_span_text
+    return None
 
 
 _NOT_PLACE_PRECEDERS = re.compile(r"\b(?:need|needs|want|wants|have|has|going|got|able|like|how|up|close|next|"
@@ -1248,7 +1366,7 @@ def _places(ctx: _Ctx, out: PreParse) -> None:
         if fuzzy:
             mentions.append({"start": a, "end": end, "name": _PLACE_LOOKUP[fuzzy[0]], "alias": fuzzy[0], "conf": 0.8})
         else:
-            mentions.append({"start": a, "end": end, "name": _title_place(phrase), "alias": phrase, "conf": 0.6,
+            mentions.append({"start": a, "end": end, "name": _title_place(phrase, ctx.raw), "alias": phrase, "conf": 0.6,
                              "unknown": True})
     # Unknown origin right before "to/na" ("Thohoyandou to Giyani", "…,
     # Lichtenburg na Polokwane"), when what precedes it is a boundary or
@@ -1282,7 +1400,7 @@ def _places(ctx: _Ctx, out: PreParse) -> None:
         if fuzzy:
             mentions.append({"start": a, "end": b, "name": _PLACE_LOOKUP[fuzzy[0]], "alias": fuzzy[0], "conf": 0.75})
         else:
-            mentions.append({"start": a, "end": b, "name": _title_place(phrase), "alias": phrase, "conf": 0.6,
+            mentions.append({"start": a, "end": b, "name": _title_place(phrase, ctx.raw), "alias": phrase, "conf": 0.6,
                              "unknown": True})
     # STT misspelling anywhere (long single words only, strict cutoff).
     for m in re.finditer(r"\b[a-z]{7,}\b", t):
@@ -1403,6 +1521,10 @@ def _cargo_after_weight(ctx: _Ctx, out: PreParse) -> None:
                 break
             words.append(w)
             pos = wa + len(w)
+        # a known multi-word cargo name starting here wins ("iron or" = iron ore)
+        whole = _CARGO_RX.match(t, a)
+        if whole and whole.end() > pos:
+            words, pos = whole.group(1).split(), whole.end()
         # a final word that starts a route ("… transformer Majuba to Ankerlig") is a place
         if words and re.match(r"\s+(?:to|na|2)\s", t[pos:pos + 5]) and len(words) > 1:
             words.pop()
@@ -1411,12 +1533,17 @@ def _cargo_after_weight(ctx: _Ctx, out: PreParse) -> None:
             continue
         phrase = " ".join(words)
         if phrase in _CARGO_LOOKUP:
-            name, conf = _CARGO_LOOKUP[phrase], 0.9
-        elif all(w in _CARGO_WORDS for w in words):
-            hit = _CARGO_RX.search(phrase)
-            name, conf = (_CARGO_LOOKUP[hit.group(1)] if hit else phrase), 0.85
+            name, conf = (phrase if phrase in _CARGO_AS_SAID else _CARGO_LOOKUP[phrase]), 0.9
         else:
-            name, conf = phrase, 0.75
+            # Longer than any known cargo word: keep the user's phrase, but an
+            # Afrikaans cargo word inside it is English-ified ("bevrore hoender").
+            hits = [h for h in _CARGO_RX.finditer(phrase) if h.group(1) not in _CARGO_AS_SAID
+                    and _CARGO_LOOKUP[h.group(1)] != h.group(1)
+                    and not set(h.group(1).split()) <= _EN_CARGO_WORDS]
+            if hits and all(w in _CARGO_WORDS for w in words):
+                name, conf = _CARGO_LOOKUP[max(hits, key=lambda h: len(h.group(1))).group(1)], 0.85
+            else:
+                name, conf = phrase, 0.75
         if name == "pallets":
             continue  # a pallet count/load, the goods may be named elsewhere
         ctx.consume(a, pos)
@@ -1437,7 +1564,7 @@ def _cargo(ctx: _Ctx, out: PreParse) -> None:
         chosen = goods[0] if goods else hits[0]
         for h in hits:
             ctx.consume(h.start(), h.end())
-        name = _CARGO_LOOKUP[chosen.group(1)]
+        name = chosen.group(1) if chosen.group(1) in _CARGO_AS_SAID else _CARGO_LOOKUP[chosen.group(1)]
         if goods and any(_CARGO_LOOKUP[h.group(1)] == "pallets" for h in hits):
             name = f"{name} on pallets"
         out.set("cargo_description", name, 0.9)
