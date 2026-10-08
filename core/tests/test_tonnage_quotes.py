@@ -218,6 +218,11 @@ class TonnageApiTests(_Base):
 
     def test_volume_contract_call_offs_draw_down(self):
         q = self.create(**self.tonnage_payload(total_tonnes='70', tonnes_per_load='30', rate_per_tonne='1300'))
+        pv = self.api.get(f'/api/v1/quotes/{q.id}/booking-preview/?tonnes=28').json()
+        self.assertTrue(pv['can_book'])
+        self.assertEqual(pv['volume_contract']['remaining_tonnes'], 70.0)
+        # 28 t charged at the 30 t minimum (the planned load): 30 t x R 1 300.
+        self.assertEqual(pv['booking']['invoice_preview']['subtotal'], 39000.0)
         url = f'/api/v1/quotes/{q.id}/convert_to_load/'
         r1 = self.api.post(url, {}, format='json').json()
         self.assertEqual(r1['planned_tonnes'], '30.000')
@@ -231,6 +236,9 @@ class TonnageApiTests(_Base):
         self.assertEqual(self.api.post(url, {}, format='json').status_code, 400)
         detail = self.api.get(f'/api/v1/quotes/{q.id}/').json()
         self.assertEqual(detail['volume_contract']['loads_booked'], 3)
+        pv = self.api.get(f'/api/v1/quotes/{q.id}/booking-preview/').json()
+        self.assertFalse(pv['can_book'])
+        self.assertIsNone(pv['load_id'])
         self.assertEqual([r['planned_tonnes'] for r in detail['volume_contract']['loads']], [30.0, 28.0, 12.0])
         listed = self.api.get('/api/v1/quotes/?contract=true').json()
         ids = [r['id'] for r in (listed['results'] if isinstance(listed, dict) else listed)]

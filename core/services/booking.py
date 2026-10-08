@@ -197,8 +197,21 @@ def preview_load(quote, request):
         stops=quote.stops, cargo_description=quote.cargo_description, weight=quote.weight,
         distance=quote.distance, rate=quote.base_rate, total_amount=quote.total_amount,
         is_international=quote.is_international, status='PENDING')
+    if getattr(quote, 'pricing_basis', 'per_load') == 'per_tonne' and quote.rate_per_tonne is not None:
+        # Per tonne: the call-off this booking would make (?tonnes=, default
+        # the planned load), so the invoice preview is rate x tonnes.
+        from core.services.tonnage_jobs import CallOffError, call_off_tonnes, tonnage_load_fields
+        try:
+            tonnes, _ = call_off_tonnes(quote, request.query_params.get('tonnes')
+                                        if hasattr(request, 'query_params') else None)
+        except CallOffError:
+            tonnes = None
+        if tonnes is not None:
+            for k, v in tonnage_load_fields(quote, tonnes).items():
+                setattr(load, k, v)
     from core.services.trip_costing import copy_quote_costing
-    for k, v in copy_quote_costing(quote).items():
+    # A per-tonne quote's snapshot is the whole plan, not this one load.
+    for k, v in (copy_quote_costing(quote).items() if quote.pricing_basis != 'per_tonne' else ()):
         setattr(load, k, v)
     return load
 
@@ -210,7 +223,9 @@ def booking_preview_response(request, quote):
     from core.services.invoicing import invoice_preview
     from core.services.return_loads import outbound_candidates, return_candidates
     from core.services.trip_costing import costing_summary
-    existing = quote.loads.order_by('pk').first()
+    # A volume contract (per tonne with a total) keeps booking call-offs.
+    is_contract = getattr(quote, 'pricing_basis', 'per_load') == 'per_tonne' and quote.total_tonnes is not None
+    existing = None if is_contract else quote.loads.order_by('pk').first()
     days = request.query_params.get('candidate_days')
     try:
         days = int(days) if days else None
@@ -222,6 +237,19 @@ def booking_preview_response(request, quote):
         body = booking_block(load, created=False, days=days)
         return Response({'preview': False, 'can_book': True, 'load_id': load.pk, 'booking': body})
     refusal = bookable_or_refusal(quote)
+    contract = None
+    if getattr(quote, 'pricing_basis', 'per_load') == 'per_tonne':
+        from core.services.tonnage_jobs import CallOffError, call_off_tonnes, contract_status
+        if quote.rate_per_tonne is None and refusal is None:
+            refusal = Response({'error': 'Set the rate per tonne before booking this quote.'},
+                               status=status.HTTP_400_BAD_REQUEST)
+        elif refusal is None:
+            try:
+                call_off_tonnes(quote, request.query_params.get('tonnes'))
+            except CallOffError as exc:
+                refusal = Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        if is_contract:
+            contract = contract_status(quote)
     load = preview_load(quote, request)
     kw = {'days': days} if days else {}
     one_way = load.trip_type == 'ONE_WAY'
@@ -234,6 +262,9 @@ def booking_preview_response(request, quote):
         'costing': costing_summary(load),
         'link_fields': LINK_FIELDS,
     }
-    return Response({'preview': True, 'can_book': refusal is None,
-                     'blocked': refusal.data if refusal is not None else None,
-                     'load_id': None, 'booking': body})
+    out = {'preview': True, 'can_book': refusal is None,
+           'blocked': refusal.data if refusal is not None else None,
+           'load_id': None, 'booking': body}
+    if contract is not None:
+        out['volume_contract'] = contract
+    return Response(out)
