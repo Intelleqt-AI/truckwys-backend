@@ -35,6 +35,18 @@ class WebhookSubscription(models.Model):
         help_text="Secret key used for HMAC signature verification"
     )
     is_active = models.BooleanField(default=True)
+    # The transporter this subscription acts for on the fleet webhooks
+    # (/fleet/webhooks/*). Null = none: those webhooks refuse it (fail
+    # closed), so a partner key can never touch a company's loads. Bound by
+    # platform staff in Django admin.
+    company = models.ForeignKey(
+        'Company', on_delete=models.CASCADE, null=True, blank=True, related_name='webhook_subscriptions',
+        help_text="Transporter this subscription acts for on fleet webhooks. Empty = none.",
+    )
+    # The trip-update webhook's old body-only signature (no timestamp) can be
+    # replayed; it is accepted only for subscriptions opted in here (Django
+    # admin), and each such signature only once (replay cache).
+    allow_legacy_signature = models.BooleanField(default=False, db_default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     last_delivery_at = models.DateTimeField(
@@ -70,3 +82,20 @@ class WebhookSubscription(models.Model):
             if self.failure_count >= 10:
                 self.is_active = False
         self.save(update_fields=['last_delivery_at', 'failure_count', 'is_active'])
+
+
+class UsedWebhookSignature(models.Model):
+    """A fleet webhook signature already accepted (replay protection).
+
+    A database table rather than the shared cache: the cache is culled (300
+    entries, throttle keys churn it), which let replays through again. Rows
+    expire (expires_at) and are deleted by core.tasks.purge_used_webhook_signatures
+    (hourly) and opportunistically on use."""
+    key = models.CharField(max_length=100, unique=True)
+    expires_at = models.DateTimeField(db_index=True)
+
+    class Meta:
+        db_table = 'used_webhook_signatures'
+
+    def __str__(self):
+        return self.key

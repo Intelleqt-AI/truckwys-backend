@@ -24,14 +24,15 @@ class FloorGapTests(_Base):
         self.assertIn('tolls', r['missing'])
         self.assertEqual(r['choices'], [])
 
-    def test_zero_tolls_are_flagged_to_check_not_stated_as_fact(self):
+    def test_zero_tolls_from_a_working_lookup_are_a_known_zero(self):
+        # Owner rule: we know every toll. A lookup that found no plazas is R 0, no warning, no action.
         r = self.analyze(toll_cost=0, route=NO_PLAZAS)
         tolls = self.line(r, 'tolls')
         self.assertEqual(tolls['amount'], 0)
-        self.assertEqual(tolls['status'], 'check')
-        self.assertNotIn('No toll plazas', tolls['source']['label'])
-        self.assertIn('tolls_none_found', [w['code'] for w in r['warnings']])
-        self.assertEqual(len(r['choices']), 3)          # tolls are small: a warning, prices still shown
+        self.assertNotEqual(tolls.get('status'), 'check')
+        self.assertIn('No toll plazas on this route', tolls['basis'])
+        self.assertNotIn('tolls_none_found', [w['code'] for w in r['warnings']])
+        self.assertEqual(len(r['choices']), 3)
 
     def test_international_without_border_costs_holds_prices(self):
         r = self.analyze(route=INTERNATIONAL, cross_border_cost=0)

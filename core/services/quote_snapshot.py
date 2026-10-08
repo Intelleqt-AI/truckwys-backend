@@ -321,3 +321,24 @@ def fuel_lines_delta(quote, costing_now=None, now=None):
     if not now_lines or any(ln['amount'] is None for ln in now_lines):
         return None
     return cents(sum(ln['amount'] for ln in now_lines) - sum(ln['amount'] for ln in then_lines))
+
+
+def incomplete_quote_q():
+    """Quotes whose price can't be stood behind yet: the pricing snapshot has
+    a blocking warning (tolls unknown, border costs not known, ...) or the
+    builder flagged tolls unknown. Board / list / pipeline totals leave them
+    out (they are shown as "Incomplete", not counted as pipeline value)."""
+    from django.db.models import Q
+    # blocking[0] exists = a non-empty list (portable on SQLite and Postgres;
+    # JSON equality with [] is not).
+    has_blocking = Q(costing_snapshot__blocking__0__isnull=False)
+    return has_blocking | Q(costing_inputs__tolls_unknown=True)
+
+
+def exclude_incomplete(queryset):
+    """`queryset` without incomplete quotes. Done by id (a subquery), because
+    exclude() over JSON key lookups would also drop rows where the lookup is
+    NULL (SQL three-valued logic)."""
+    from core.models import Quote
+    return queryset.exclude(pk__in=Quote.objects.filter(incomplete_quote_q()).values('pk'))
+

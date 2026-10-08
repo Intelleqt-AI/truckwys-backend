@@ -12,6 +12,10 @@ class LocationSearchHistory(models.Model):
     location_text = models.CharField(max_length=500)
     lat = models.DecimalField(max_digits=9, decimal_places=6)
     lon = models.DecimalField(max_digits=9, decimal_places=6)
+    # ISO country code of the pick ('ZA', 'LS', ...), so cross-border
+    # detection survives picking a recent location. Null for older rows
+    # (clients then fall back to the geocoder).
+    country_code = models.CharField(max_length=3, null=True, blank=True)
     use_count = models.PositiveIntegerField(default=1)
     last_used_at = models.DateTimeField(auto_now=True)
     created_at = models.DateTimeField(auto_now_add=True)

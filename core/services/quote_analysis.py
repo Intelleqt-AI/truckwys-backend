@@ -785,6 +785,10 @@ def analyze_quote(payload, company=None, user=None):
 
     choices = analysis.get('choices') or []
     rec = next((c for c in choices if c.get('recommended')), None)
+    if rec is None and (analysis.get('recommendation') or {}).get('code') == 'no_evidence' and choices:
+        # No market, no model: nothing is "recommended", and the suggested
+        # price is the cost floor plus the margin (Safe = the default price).
+        rec = choices[0]
     lk = analysis.get('likelihood') or {}
     model = lk.get('model') if lk.get('level') == 'model' else None
     suggested_price = float(rec['price']) if rec and cost_basis > 0 and not blocking else None
@@ -876,4 +880,7 @@ def analyze_quote(payload, company=None, user=None):
         'suggested_price_rationale': rationale,
         'narrative': narrative,
         'narrative_source': narrative_source,
+        # Same shape as the pricing analysis (trip economics): how often this
+        # company's trips on the lane found a return load. Context only.
+        'return_load_history': analysis.get('return_load_history'),
     }

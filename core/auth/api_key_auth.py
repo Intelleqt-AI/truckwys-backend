@@ -15,6 +15,10 @@ class PartnerUser:
         self.is_staff = False
         self.is_superuser = False
         self.username = f"partner:{subscription.partner_name}"
+        # DRF's user throttle keys on user.pk: without it every partner call
+        # raised AttributeError (500). One throttle bucket per subscription.
+        self.pk = self.id = f'partner-{subscription.pk}'
+        self.company = getattr(subscription, 'company', None)
 
     def __str__(self):
         return self.username

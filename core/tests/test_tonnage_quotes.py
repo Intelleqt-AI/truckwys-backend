@@ -211,8 +211,10 @@ class TonnageApiTests(_Base):
                          ('per_tonne', '1300.00', '30.000', '30.000'))
         self.assertEqual(body['total_amount'], '39000.00')
         self.assertTrue(body['tonnage']['awaiting_weighbridge'])
-        r = self.api.post(f'/api/v1/quotes/{q.id}/convert_to_load/', {}, format='json')
-        self.assertEqual(r.status_code, 400)
+        # One-tap booking is idempotent: a second tap answers with the same job.
+        again = self.api.post(f'/api/v1/quotes/{q.id}/convert_to_load/', {}, format='json')
+        self.assertEqual((again.status_code, again.json()['id']), (200, body['id']))
+        self.assertEqual(q.loads.count(), 1)
 
     def test_volume_contract_call_offs_draw_down(self):
         q = self.create(**self.tonnage_payload(total_tonnes='70', tonnes_per_load='30', rate_per_tonne='1300'))
@@ -289,6 +291,22 @@ class TonnageApiTests(_Base):
         self.assertEqual(line.quantity, Decimal('30.000'))            # max(27,5 t, 30 t minimum)
         self.assertIn('minimum 30 t; 27,5 t delivered', line.description)
         self.assertNotIn('Awaiting', inv.notes)
+
+    def test_tms_weighbridge_tonnes_and_invoice_preview(self):
+        from core.models import Load
+        from core.services.invoicing import invoice_preview
+        from core.services.tms_sync import apply_record
+        q = self.create(**self.tonnage_payload(rate_per_tonne='1300', min_tonnes_per_load='30'))
+        load = Load.objects.get(id=self.api.post(f'/api/v1/quotes/{q.id}/convert_to_load/', {},
+                                                 format='json').json()['id'])
+        changes = apply_record(self.company, load, {'actual_tonnes': '31.5', 'weighbridge_slip': 'TMS-7'},
+                               source='tms')
+        self.assertIn('actual_tonnes', changes)
+        load.refresh_from_db()
+        self.assertEqual((load.actual_tonnes, load.actual_tonnes_source, load.weighbridge_slip),
+                         (Decimal('31.500'), 'tms', 'TMS-7'))
+        self.assertEqual(load.total_amount, Decimal('40950.00'))     # 31,5 t x R 1 300
+        self.assertEqual(invoice_preview(load)['subtotal'], 40950.0)
 
     def test_per_tonne_quotes_are_not_per_load_evidence(self):
         from core.models import Quote

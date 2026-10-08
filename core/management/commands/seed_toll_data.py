@@ -4,8 +4,11 @@ Management command: seed_toll_data
 Seeds SANRAL toll plaza records from the official 2026 tariff poster
 (GG Nos. 54087 and 54088, effective 1 March 2026).
 
-Only mainline plazas are included (ramps omitted — through-traffic does not
-stop at ramps).
+_PLAZA_DATA below is the ORIGINAL 31-plaza mainline list (frozen: migrations
+0070 and 0134 read it). The complete set — ramps, the five missing N4/Magalies
+mainline plazas, real booth positions, tariff history and Mozambique — lives in
+core/services/toll_plaza_data.py and is loaded by migration 0161; --force
+re-applies it.
 
 Gauteng Urban Network (GFIP / e-toll) is EXCLUDED — scrapped April 2024.
 
@@ -505,13 +508,23 @@ class Command(BaseCommand):
             else:
                 skipped_count += 1
 
+        # The full dataset — every mainline and ramp plaza, real booth
+        # positions, 2025/26 + 2026/27 tariff history, Mozambique — is loaded
+        # by migration 0161 from core/services/toll_plaza_data.py. Re-apply it
+        # here so --force on any database ends in the same state.
+        if force:
+            import importlib
+            from django.apps import apps as django_apps
+            importlib.import_module('core.migrations.0161_toll_plazas_2026_full').forward(django_apps, None)
+
         if force:
             # Deactivate legacy plazas not present in the 2026 dataset.
             routes_covered = list(_2026_NAMES_BY_ROUTE.keys())
+            from core.services.toll_plaza_data import MZ_PLAZAS, PLAZAS
             legacy = TollPlaza.objects.filter(
                 route__in=routes_covered, is_active=True
             ).exclude(
-                name__in=[p['name'] for p in _PLAZA_DATA]
+                name__in=[p['name'] for p in _PLAZA_DATA + PLAZAS + MZ_PLAZAS]
             )
             deactivated_count = legacy.update(is_active=False)
             if deactivated_count:

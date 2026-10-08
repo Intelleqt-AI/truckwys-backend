@@ -27,13 +27,19 @@ RULES = {
     'fuel': 'cents(litres_loaded * price); fuel_return = cents(litres_empty * price)',
     'operating': 'cents(km_loaded * operating_cost_per_km); operating_return = cents(km_empty * operating_cost_per_km)',
     'tolls': 'cents(tolls.one_way * legs_loaded); tolls_return = cents(tolls.empty_return ?? tolls.one_way); '
-             'unknown (null / lookup_failed) -> null + tolls_unknown unless confirmed_none (then 0)',
+             'unknown (null / lookup_failed) -> null + tolls_unknown unless confirmed_none (then 0); '
+             'one_way 0 from a working lookup = R 0 known, basis "No toll plazas on this route", no warning',
     'nights': 'nights(h) = max(ceil(h / hours_per_day) - 1, 0), h = duration_minutes / 60; '
               'loaded = nights(h) one-way, nights(2h) round trip; return extra = nights(2h) - nights(h)',
     'driver': 'driver.amount if given, else cents(nights * allowance_per_night) (0 when nights = 0)',
+    'border': 'border_costs_unknown {countries, crossings, known} non-empty and not border_cost_is_override -> '
+              'border (and border_return) null + block border_costs_missing, title "Border costs for <countries> '
+              'not known", detail "Known: <label> R x + ...; missing: <crossings>"; else cents(border_cost)',
     'floor': 'cents(sum of line amounts); null when any line is unknown',
     'target_price': 'max(cents(floor / (1 - target_margin_pct / 100)), minimum_charge)',
     'margin': 'cents(price - floor); margin_pct = (price - floor) / price * 100 (unrounded)',
+    'default_price': 'round_up(max(rate_price ?? 0, target_price)), round_up(p) = ceil(p / u) * u with u = 50 '
+                     'below 20 000 else 100 (the choices\' rounding); null without a floor',
     'diesel': 'override_price -> override; OWN (own_price set, not use_official) -> own; '
               'else official_price -> official; else missing',
     'diesel_own_off': '|own - official| / official > 0.03; impact_zar = cents((own - official) * litres_total)',

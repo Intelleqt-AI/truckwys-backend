@@ -538,6 +538,17 @@ class VehicleLogSerializer(serializers.ModelSerializer):
 
 
 # Load Serializer
+LOAD_ECONOMICS_READ_ONLY = (
+    'costing_source', 'costing_inputs', 'costing_snapshot', 'cost_floor', 'empty_return_assumed',
+    'fuel_price_used', 'fuel_price_source', 'fuel_zone', 'fuel_effective_from', 'fuel_litres',
+    'priced_vehicle_type', 'costed_at', 'quoted_price', 'quoted_cost_floor', 'quoted_margin_pct',
+    # Linked only through POST loads/{id}/link-return/ (validated) or the TMS.
+    'return_of', 'return_link_source', 'return_linked_at', 'return_linked_by',
+    'estimated_cost', 'estimate_basis', 'economics_updated_at',
+    'external_id', 'external_source', 'return_of_external_ref', 'invoice_mismatch', 'costs_closed',
+)
+
+
 class LoadSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
     company_scoped_relations = {
         'customer': 'company_id', 'driver': 'company_id',
@@ -594,6 +605,9 @@ class LoadSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
             'pod_signature', 'pod_received_by', 'pod_document',
             'pod_captured_at', 'pod_latitude', 'pod_longitude', 'pod_device',
             'pod_source', 'pod_file_sha256',
+            # Trip economics: written by the server only (convert_to_load,
+            # trip_costing, return-load linking, TMS sync).
+            *LOAD_ECONOMICS_READ_ONLY,
             # Tonnage terms come from the quote (convert_to_load); only the
             # weighbridge tonnes (actual_tonnes) are edited on the load.
             'pricing_basis', 'rate_per_tonne', 'min_tonnes', 'planned_tonnes',
@@ -778,12 +792,21 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
             if v is None or v == '':
                 continue
             try:
+                if key == 'tolls_by_vehicle_type':
+                    out[key] = self._tolls_by_vehicle_type(v)
+                    continue
+                if kind is dict:
+                    from core.services.quote_costing import border_costs_unknown_input
+                    if not isinstance(v, dict):
+                        raise serializers.ValidationError(f'costing_inputs.{key} must be a JSON object.')
+                    norm = border_costs_unknown_input({'border_costs_unknown': v})
+                    if norm:
+                        out[key] = norm
+                    continue
                 if kind is bool:
                     if not isinstance(v, bool):
                         raise ValueError
                     out[key] = v
-                elif kind is dict:
-                    out[key] = self._tolls_by_vehicle_type(v)
                 else:
                     num = float(v)
                     if num != num or num < 0:
@@ -999,6 +1022,22 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
+        # Pricing completeness from the stored snapshot (no query): tolls that
+        # were unknown when it was priced are shown as unknown (null), never
+        # as R 0, and the quote is marked incomplete.
+        snap = getattr(instance, 'costing_snapshot', None) or {}
+        blocking = list(snap.get('blocking') or [])
+        tolls_unknown = 'tolls_unknown' in blocking or bool((instance.costing_inputs or {}).get('tolls_unknown'))
+        if tolls_unknown and 'tolls_unknown' not in blocking:
+            blocking.append('tolls_unknown')
+        if tolls_unknown:
+            data['toll_charges'] = None
+            if isinstance(data.get('customer_price'), dict):
+                data['customer_price'] = {**data['customer_price'], 'incomplete': True,
+                                          'incomplete_reason': 'Tolls are unknown on this quote.'}
+        data['tolls_unknown'] = tolls_unknown
+        data['pricing_complete'] = not blocking if snap or tolls_unknown else None
+        data['pricing_blocking'] = blocking
         if isinstance(self.parent, serializers.ListSerializer):
             data.pop('route_snapshot', None)
         else:

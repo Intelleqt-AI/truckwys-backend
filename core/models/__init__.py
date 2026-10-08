@@ -25,13 +25,13 @@ from .activity_event import ActivityEvent
 from .user_activity_log import UserActivityLog
 from .copilot_message import CopilotMessage, CopilotConversation, CopilotUserMemory
 from .copilot_proposal import CopilotProposal
-from .webhook_subscription import WebhookSubscription
+from .webhook_subscription import UsedWebhookSignature, WebhookSubscription
 from .billing import BillingTransaction
 from .delivery_fee_charge import DeliveryFeeCharge
 from .invite_token import InviteToken
 from .fuel_price import FuelPrice
 from .task_run import TaskRunLog
-from .toll_plaza import TollPlaza
+from .toll_plaza import TollPlaza, TollTariff
 from .rag_chunk import InvoiceEmbedding
 from .border_crossing_fee import BorderCrossingFee
 from .country_transit_rate import CountryTransitRate
@@ -92,11 +92,13 @@ __all__ = [
     'ActivityEvent',
     'UserActivityLog',
     'WebhookSubscription',
+    'UsedWebhookSignature',
     'BillingTransaction',
     'DeliveryFeeCharge',
     'InviteToken',
     'FuelPrice',
     'TollPlaza',
+    'TollTariff',
     'InvoiceEmbedding',
     'BorderCrossingFee',
     'CountryTransitRate',

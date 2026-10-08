@@ -135,6 +135,7 @@ def _approved_allowance(value='243.63', effective_from=None, key='nbcrfli'):
 @TEST_KEY
 class RefreshJobTests(TestCase):
     def setUp(self):
+        VerifiedRate.objects.filter(proposed_by='migration_0158').delete()   # tests own their allowance rows
         caches['ai_sources'].clear()
         self.addCleanup(caches['ai_sources'].clear)
         self.plazas = _pin_plazas()
@@ -379,6 +380,7 @@ class SeedVerificationMigrationTests(TestCase):
 
 class AdminVerifiedRatesEndpointTests(TestCase):
     def setUp(self):
+        VerifiedRate.objects.filter(proposed_by='migration_0158').delete()   # tests own their allowance rows
         self.plazas = _pin_plazas()
         self.superuser = User.objects.create_user(username='super-vr', password='x', is_superuser=True,
                                                   is_staff=True)
