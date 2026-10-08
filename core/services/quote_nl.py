@@ -156,8 +156,6 @@ def merge(rules: qp.PreParse, llm_fields: Dict[str, Any], llm_conf: Dict[str, fl
 
 
 # ── privacy: client names never reach the model ──────────────────────────────
-_LEGAL_SUFFIXES = {"ltd", "limited", "pty", "proprietary", "edms", "bpk", "inc", "plc", "llc", "cc"}
-_SOFT_SUFFIXES = {"holdings", "group", "sa", "stores", "co", "company"}
 _COMMON_WORDS = qp.COMMON_NAME_WORDS
 
 
@@ -176,30 +174,7 @@ def _phrase_rx(phrase: str) -> Optional[str]:
     return r"(?i)(?<![A-Za-z0-9])" + r"[\s\W_]*".join(parts) + r"(?![A-Za-z0-9])"
 
 
-def _client_phrases(name: str) -> List[str]:
-    """Phrases that identify one client: the full name, the name without its
-    legal suffixes ("Tiger Brands", "Super Group", "SA Steel Mills"), and the
-    core without Holdings/Group/SA/Stores ("Pick n Pay", "Steel Mills") —
-    each only when it is 2+ words, or a single distinctive word (5+ letters,
-    not a common word or a place), or an acronym ("AVI", "RCL")."""
-    words = re.findall(r"[A-Za-z0-9&]+", re.sub(r"\((?:pty|edms)\)", " ", name or "", flags=re.I))
-    if not words:
-        return []
-    no_legal = [w for w in words if w.lower() not in _LEGAL_SUFFIXES]
-    core = [w for w in no_legal if w.lower() not in _SOFT_SUFFIXES]
-    out = []
-    for ws in (words, no_legal, core):
-        if not ws:
-            continue
-        phrase = " ".join(ws)
-        if len(ws) >= 2:
-            out.append(phrase)
-        else:
-            w = ws[0]
-            if (len(w) >= 5 and w.lower() not in _COMMON_WORDS and not qp.canonical_place(w)
-                    and w.lower() not in qp._KNOWN_VOCAB) or (w.isupper() and len(w) >= 3):
-                out.append(w)
-    return list(dict.fromkeys(out))
+_client_phrases = qp.client_name_phrases
 
 
 def _redaction_names(rules: qp.PreParse, customers: Optional[List[Dict[str, Any]]],
@@ -297,7 +272,8 @@ def validate_fields(fields: Dict[str, Any], today: Optional[date] = None) -> Tup
 
 # ── replies ──────────────────────────────────────────────────────────────────
 def _num(v: float) -> str:
-    s = f"{v:,.1f}".rstrip("0").rstrip(".")
+    """SA number as filled — no rounding of what's in the field: "22,75"."""
+    s = f"{v:,.3f}".rstrip("0").rstrip(".")
     return s.replace(",", " ").replace(".", ",")
 
 

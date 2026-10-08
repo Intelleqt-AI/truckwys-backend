@@ -116,6 +116,28 @@ _PLACES: List[Tuple[str, str, Sequence[str]]] = [
     ("Springs", "ZA", ["springs"]),
     ("Krugersdorp", "ZA", ["krugersdorp", "mogale city"]),
     ("Hermanus", "ZA", ["hermanus"]),
+    ("Kya Sand", "ZA", ["kya sand", "kyasand"]),
+    ("Soshanguve", "ZA", ["soshanguve"]),
+    ("Ga-Rankuwa", "ZA", ["ga rankuwa", "garankuwa"]),
+    ("Mabopane", "ZA", ["mabopane"]),
+    ("Hammanskraal", "ZA", ["hammanskraal"]),
+    ("Diepsloot", "ZA", ["diepsloot"]),
+    ("Lanseria", "ZA", ["lanseria"]),
+    ("Chloorkop", "ZA", ["chloorkop"]),
+    ("Olifantsfontein", "ZA", ["olifantsfontein"]),
+    ("Clayville", "ZA", ["clayville"]),
+    ("Spartan", "ZA", ["spartan"]),
+    ("Wadeville", "ZA", ["wadeville"]),
+    ("Elandsfontein", "ZA", ["elandsfontein"]),
+    ("Rosslyn", "ZA", ["rosslyn"]),
+    ("Pomona", "ZA", ["pomona"]),
+    ("Jet Park", "ZA", ["jet park", "jetpark"]),
+    ("Alrode", "ZA", ["alrode"]),
+    ("Meadowdale", "ZA", ["meadowdale"]),
+    ("Epping", "ZA", ["epping"]),
+    ("Montague Gardens", "ZA", ["montague gardens"]),
+    ("Prospecton", "ZA", ["prospecton"]),
+    ("Cato Ridge", "ZA", ["cato ridge"]),
     ("Randfontein", "ZA", ["randfontein"]),
     ("Louis Trichardt", "ZA", ["louis trichardt", "makhado"]),
     ("KwaDukuza", "ZA", ["kwadukuza", "kwa dukuza", "stanger"]),
@@ -1152,6 +1174,18 @@ def _dates(ctx: _Ctx, out: PreParse, today: date) -> None:
             add(m, d, 0.9)
     for m in re.finditer(r"\b(?:on\s+)?(?:the|die|op\s+die)\s+(\d{1,2})(?:st|nd|rd|th|ste|de)\b(?!\s+(?:of\s+)?(?:"
                          + month_rx + r"))", t):
+        # A bare ordinal is a day of the month only after a date cue ("on the
+        # 14th", "deliver by the 20th") or on its own (", die 15de"), and
+        # never when it counts something
+        # ("the 2nd load", "die 3de trok").
+        if re.match(r"\s+(?:load|loads|truck|trucks|trip|trips|drop|drops|stop|stops|run|runs|delivery|pickup|"
+                    r"collection|leg|vrag|vragte|trok|trokke|rit|ritte|keer|time|times|one|ones|pallet|container)\b",
+                    t[m.end():m.end() + 14]):
+            continue
+        if not (m.group(0).startswith(("on ", "op ")) or re.search(
+                rf"(?:^|,|\b(?:on|op|by|teen|voor|before|until|till|tot|from|vanaf)|{_PICKUP_CUE}|{_DELIVERY_CUE})\s*$",
+                t[max(0, m.start() - 30):m.start()])):
+            continue
         dd = int(m.group(1))
         cand = ymd(today.year, today.month, dd) if dd <= 31 else None
         if cand and cand < today:
@@ -1270,6 +1304,25 @@ def _customers(ctx: _Ctx, out: PreParse, customers) -> None:
                 if customers is not None:
                     out.unmatched["customer_name"] = raw
                 return
+    # No marker: a customer's multi-word name without its legal suffixes
+    # ("Tiger Brands wants…", "Pick n Pay se load").
+    if customers:
+        for c in customers:
+            for phrase in client_name_phrases(c["name"]):
+                toks = norm_phrase(phrase).split()
+                if len(toks) < 2:
+                    continue
+                rx = r"\b" + r"\s+".join("(?:n|and|en)" if w == "n" else re.escape(w) for w in toks) + r"\b"
+                mm = re.search(rx, t)
+                if mm and not ctx.consumed(mm.start(), mm.end()):
+                    ctx.consume(mm.start(), mm.end())
+                    after = re.match(r"\s+se\b", t[mm.end():mm.end() + 4])
+                    if after:
+                        ctx.consume(mm.end(), mm.end() + after.end())
+                    out.customer_span_text = said_text(ctx.raw, " ".join(toks)) or phrase
+                    out.set("customer_id", c["id"], 0.85)
+                    out.set("customer_name", c["name"], 0.85)
+                    return
     # No marker: a distinguishing word of exactly one customer appears in the text.
     if customers:
         from collections import Counter
@@ -1313,6 +1366,35 @@ COMMON_NAME_WORDS = {
     "cargo", "trucks", "trucking", "haulage", "distribution", "solutions", "products", "packaging", "plastics",
     "chemicals", "construction", "engineering", "motors", "auto", "agri", "boerdery", "vervoer", "handel",
 }
+
+
+_LEGAL_SUFFIXES = {"ltd", "limited", "pty", "proprietary", "edms", "bpk", "inc", "plc", "llc", "cc"}
+_SOFT_SUFFIXES = {"holdings", "group", "sa", "stores", "co", "company"}
+
+
+def client_name_phrases(name: str) -> List[str]:
+    """Phrases that identify one client: the full name, the name without its
+    legal suffixes ("Tiger Brands", "Super Group", "SA Steel Mills"), and the
+    core without Holdings/Group/SA/Stores ("Pick n Pay", "Steel Mills") —
+    each only when it is 2+ words, or a single distinctive word (5+ letters,
+    not a common word or a place), or an acronym ("AVI", "RCL")."""
+    words = re.findall(r"[A-Za-z0-9&]+", re.sub(r"\((?:pty|edms)\)", " ", name or "", flags=re.I))
+    if not words:
+        return []
+    no_legal = [w for w in words if w.lower() not in _LEGAL_SUFFIXES]
+    core = [w for w in no_legal if w.lower() not in _SOFT_SUFFIXES]
+    out = []
+    for ws in (words, no_legal, core):
+        if not ws:
+            continue
+        if len(ws) >= 2:
+            out.append(" ".join(ws))
+        else:
+            w = ws[0]
+            if (len(w) >= 5 and w.lower() not in COMMON_NAME_WORDS and not canonical_place(w)
+                    and w.lower() not in _KNOWN_VOCAB) or (w.isupper() and len(w) >= 3):
+                out.append(w)
+    return list(dict.fromkeys(out))
 
 
 def explicit_customer_mention(text: str, customers: Optional[List[Dict[str, Any]]]) -> Optional[str]:
@@ -1495,6 +1577,8 @@ def _places(ctx: _Ctx, out: PreParse) -> None:
 # Words that end a cargo noun phrase after a weight ("28 ton steel coils from …").
 _CARGO_STOP = set("""
 from frm van vanaf uit to na naar tot via oor deur through on op in at by for vir with met and en or of en
+moved move moving transported transport delivered shipped collected needed needs required going gaan vervoer
+aangery wants want is are was sent se
 the die a an n tomorrow today tonight vandag overmorrow tomorrowaf more next volgende this hierdie
 please asseblief pls asb round one way heen return retoer empty leeg back terug
 """.split())

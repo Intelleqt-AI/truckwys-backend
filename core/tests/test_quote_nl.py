@@ -821,3 +821,36 @@ class VerifierRound2Tests(SimpleTestCase):
                            return_value=({}, "", {"customer_name": None, "vehicle_type": "Cargo Truck"})):
             res = quote_nl.understand("a cargo truck from Joburg to somewhere", vehicle_types=[], today=TODAY)
         self.assertEqual((res.vehicle_hint, res.vehicle_hint_label), ("other", "Cargo Truck"))
+
+
+class FinalCheckTests(SimpleTestCase):
+    def test_counting_ordinals_are_not_dates(self):
+        p = qp.preparse("the 2nd load is 12 ton steel Joburg to Durban", today=TODAY)
+        self.assertNotIn("pickup_date", p.fields)
+        self.assertEqual(p.fields["weight"], 12000)
+        self.assertNotIn("pickup_date", qp.preparse("die 3de trok, 30 ton van Joburg na Durban", today=TODAY).fields)
+        self.assertEqual(qp.preparse("deliver by the 20th, Joburg to Durban", today=TODAY).fields["delivery_date"],
+                         "2026-10-20")
+        self.assertEqual(qp.preparse("Joburg to Durban on the 14th", today=TODAY).fields["pickup_date"], "2026-10-14")
+
+    @mock.patch("core.services.llm_quote.is_enabled", return_value=False)
+    def test_reply_shows_weight_as_filled(self, _):
+        res = quote_nl.understand("22,75 ton cans moved from Joburg to Durban", today=TODAY)
+        self.assertEqual(res.extracted["weight"], 22750)
+        self.assertIn("22,75 t", res.reply)
+        self.assertEqual(res.extracted["cargo_description"], "cans")
+
+    def test_client_at_sentence_start_and_afrikaans_possessive(self):
+        from core.tests.voice_quote_fixtures import VERIFIER_CUSTOMERS as C
+        p = qp.preparse("Tiger Brands wants 20 ton Joburg to Durban", today=TODAY, customers=C)
+        self.assertEqual(p.fields["customer_name"], "Tiger Brands Ltd")
+        p = qp.preparse("Pick n Pay se load, 20 ton van Joburg na Durban", today=TODAY, customers=C)
+        self.assertEqual(p.fields["customer_name"], "Pick n Pay Stores Ltd")
+        self.assertEqual(p.residue, [])
+        p = qp.preparse("pick up at 6 in Joburg, 20 ton to Durban", today=TODAY, customers=C)
+        self.assertNotIn("customer_id", p.fields)
+
+    def test_kya_sand_to_soshanguve(self):
+        p = qp.preparse("Kya Sand to Soshanguve 10 ton bricks", today=TODAY)
+        self.assertEqual((p.fields["pickup_location"], p.fields["delivery_location"]), ("Kya Sand", "Soshanguve"))
+        self.assertFalse(p.not_understood)
