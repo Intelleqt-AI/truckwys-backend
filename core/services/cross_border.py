@@ -50,21 +50,19 @@ DIRECT_ROUTES = ['ZW', 'MZ', 'BW', 'NA', 'LS', 'SZ']
 # effective 1 Apr 2026 — the same source migrations 0112/0113/0114 priced the
 # corridor fees from.
 #
-# Class 1 is still the SUPERSEDED 2025 schedule (Gazette 52198, eff. 1 Apr
-# 2025: R798 application + R5,969 issue). The 2026 gazette raised Class 2 from
-# R8,761 to R9,041, so Class 1 has almost certainly moved too — it is simply
-# not in any source we hold. It therefore under-charges loads at or below
-# 20 000kg by an unknown margin. Replace the moment the 2026 Class 1 figure is
-# to hand; nothing else needs to change.
-_CBRTA_ANNUAL_CLASS1 = 6_767   # 2025 gazette — SUPERSEDED, see above
-_CBRTA_ANNUAL_CLASS2 = 9_041   # 2026 gazette 54229, effective 1 Apr 2026
+# Class 1, same gazette: R823 application + R6,160 issue = R6,983 (it was
+# still the 2025 R798 + R5,969 = R6,767 until the Oct 2026 audit).
+# Source: https://www.cbrta.co.za/uploads/files/2026-C-BRTA-PERMIT-FEES.pdf
+# (Annexure B, permit fees 1 April 2026, GG 54229).
+_CBRTA_ANNUAL_CLASS1 = 6_983   # 2026 gazette 54229, effective 1 Apr 2026
+_CBRTA_ANNUAL_CLASS2 = 9_041   # 2026 gazette 54229, effective 1 Apr 2026 (R823 + R8,218)
 _CBRTA_CLASS2_WEIGHT_KG = 20_000       # above this the load is Class 2
 _DEFAULT_CROSSINGS_PER_YEAR = 24
 
 # Kept for the 14-day temporary-permit case, which nothing prices off yet.
-_CBRTA_APPLICATION_FEE = 798    # Schedule 1, Part B (2025)
-_CBRTA_PERMIT_14DAY_CLASS1 = 1_050  # Schedule 2, Part B, Class 1, 14 days (2025)
-_CBRTA_SA_BORDER_FEE = _CBRTA_APPLICATION_FEE + _CBRTA_PERMIT_14DAY_CLASS1  # 1 848
+_CBRTA_APPLICATION_FEE = 823    # GG 54229 (2026)
+_CBRTA_PERMIT_14DAY_CLASS1 = 1_084  # GG 54229 (2026), Class 1, 14 days
+_CBRTA_SA_BORDER_FEE = _CBRTA_APPLICATION_FEE + _CBRTA_PERMIT_14DAY_CLASS1  # 1 907
 
 
 def cbrta_annual_permit(weight_kg: float) -> float:
@@ -104,12 +102,13 @@ def amortised_sa_permit(weight_kg: float, crossings_per_year: int | None = None)
 # gazetted fee, the load's weight class and the fleet's own crossing count. It
 # must not reappear here or every crossing is charged for it twice. See
 # migration 0116_split_sa_permit_out_of_border_fees.
-_ZW_CROSSING_FEE = 5550.00    # Beitbridge bridge toll + SA-side clearing agent
-_BW_CROSSING_FEE = 1173.29    # Botswana single-trip permit, 56t band (≈P975)
-_MZ_CROSSING_FEE = 473.29     # Mozambique SORCA insurance amortised + inspection fee
-_LS_CROSSING_FEE = 650.29     # Lesotho toll-gate charge, foreign 4+ axle (M650)
-_NA_CROSSING_FEE = 4463.29    # Namibia RFA Cross-Border Charge, 7-axle interlink (N$4,463)
-_SZ_CROSSING_FEE = 450.29     # Eswatini ERS border toll, foreign 4+ axle (E450)
+# (The 29 cents 0116 left on BW/LS/NA/SZ were removed in 0162.)
+_ZW_CROSSING_FEE = 5550.00    # Zimborders border access toll ($221 goods vehicle) + SA-side clearing agent estimate
+_BW_CROSSING_FEE = 1175.27    # Botswana single-trip permit, 56t band (P975 x 1.2054)
+_MZ_CROSSING_FEE = 473.29     # Mozambique SORCA insurance amortised + inspection fee (NOT verified)
+_LS_CROSSING_FEE = 650.00     # Lesotho toll-gate charge, foreign 4+ axle (M650)
+_NA_CROSSING_FEE = 4463.00    # Namibia RFA Cross-Border Charge, 7-axle interlink (N$4,463)
+_SZ_CROSSING_FEE = 450.00     # Eswatini ERS border toll, foreign 4+ axle (E450)
 _FALLBACK_BORDER_FEES: dict[str, float] = {
     'SA-ZW': _ZW_CROSSING_FEE,  # Beitbridge (Zimbabwe is the most expensive corridor)
     'SA-MZ': _MZ_CROSSING_FEE,  # Lebombo / Ressano Garcia
@@ -131,8 +130,10 @@ _FALLBACK_WEIGHBRIDGE: dict[str, int] = {
     # pages list none; Mozambique's Fundo de Estradas revenue breakdown has
     # no weighing line; Lesotho has never enacted weighbridge/axle
     # legislation; Eswatini's fee schedule has no weighing line either).
-    'ZW': 250, 'BW': 0, 'NA': 0, 'MZ': 0,
-    'ZM': 280, 'MW': 260, 'TZ': 320, 'KE': 300, 'LS': 0, 'SZ': 0,
+    # ZW/ZM/MW/TZ/KE were unsourced estimates (R250-R320); no country here
+    # charges a compliant truck for weighing — set to 0 in 0162 (Oct 2026).
+    'ZW': 0, 'BW': 0, 'NA': 0, 'MZ': 0,
+    'ZM': 0, 'MW': 0, 'TZ': 0, 'KE': 0, 'LS': 0, 'SZ': 0,
 }
 # Foreign in-country toll/transit rate (ZAR/km). Zimbabwe transit ≈ USD1/10km ≈
 # R0.90/km. Botswana, Lesotho and Eswatini corrected to 0 (2026-09) — none of
@@ -146,8 +147,10 @@ _FALLBACK_WEIGHBRIDGE: dict[str, int] = {
 # the one corridor where this field is a REAL per-km charge, not an
 # approximation: R0.733/km is the Road Fund Administration's actual
 # published Mass Distance Charge for a >44,000kg combination.
+# ZW corrected 0.90 -> 3.816 (0162): ZINARA transit fee US$10/100km plus
+# 4 premium toll gates x US$20 over Beitbridge-Harare's 580km, at R16.04/USD.
 _FALLBACK_TOLL_RATE: dict[str, float] = {
-    'ZW': 0.90, 'BW': 0.0, 'NA': 0.733, 'MZ': 0.00,
+    'ZW': 3.816, 'BW': 0.0, 'NA': 0.733, 'MZ': 0.00,
     'ZM': 0.60, 'MW': 0.55, 'TZ': 0.60, 'KE': 0.65, 'LS': 0.0, 'SZ': 0.0,
 }
 # Approximate km from Johannesburg to SA border post for each neighbour —
@@ -161,9 +164,10 @@ _FALLBACK_TOLL_RATE: dict[str, float] = {
 # fee corrections above.
 # Countries whose tolls are gate-based, not per-km — see migration
 # 0118_mozambique_flat_toll. Mirrors CountryTransitRate.toll_flat_zar.
-_FALLBACK_TOLL_FLAT: dict[str, float] = {
-    'MZ': 598.78,   # TRAC Moamba + Maputo/Matola, Class 4, one way
-}
+# Mozambique's TRAC (Moamba, Maputo), REVIMO bridge/ring-road/N200 plazas
+# are TollPlaza rows since 0161 — matched on the route and priced per class —
+# so no flat country toll is left here (it would charge them twice).
+_FALLBACK_TOLL_FLAT: dict[str, float] = {}
 _FALLBACK_SA_BORDER_KM: dict[str, float] = {
     'ZW': 580.0, 'MZ': 450.0, 'BW': 290.0, 'NA': 666.0,
     'LS': 150.0, 'SZ': 335.0, 'ZM': 580.0, 'MW': 580.0,

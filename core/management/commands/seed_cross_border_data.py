@@ -32,12 +32,12 @@ from django.core.management.base import BaseCommand
 # Border crossing fees (ZAR, one-way). Keep in sync with the fallback dicts in
 # core/services/cross_border.py.
 # ---------------------------------------------------------------------------
-_ZW_FEE   = Decimal('5550.00')   # Beitbridge: bridge toll ($221) + SA-side clearing agent
-_BW_FEE   = Decimal('1550.00')   # Skilpadshek/Pioneer Gate: BW single-trip permit (56t band) + amortised C-BRTA permit
-_MZ_FEE   = Decimal('850.00')    # Lebombo/Ressano Garcia: SORCA insurance + inspection fee + amortised C-BRTA permit
-_LS_FEE   = Decimal('1027.00')   # Maseru Bridge/Maputsoe: toll-gate charge (foreign 4+ axle, M650) + amortised C-BRTA permit
-_NA_FEE   = Decimal('4840.00')   # Vioolsdrift/Ariamsvlei: RFA Cross-Border Charge (7-axle interlink, additive) + amortised C-BRTA permit
-_SZ_FEE   = Decimal('827.00')    # Oshoek/Ngwenya: ERS border toll (foreign 4+ axle, E450) + amortised C-BRTA permit
+_ZW_FEE   = Decimal('5550.00')   # Beitbridge: Zimborders border access toll ($221) + SA-side clearing agent estimate
+_BW_FEE   = Decimal('1175.27')   # Skilpadshek/Pioneer Gate: BW single-trip permit, 56t band (P975 x 1.2054)
+_MZ_FEE   = Decimal('473.29')    # Lebombo/Ressano Garcia: SORCA insurance + inspection fee (NOT verified)
+_LS_FEE   = Decimal('650.00')    # Maseru Bridge/Maputsoe: toll-gate charge (foreign 4+ axle, M650)
+_NA_FEE   = Decimal('4463.00')   # Vioolsdrift/Ariamsvlei: RFA Cross-Border Charge (7-axle interlink, additive)
+_SZ_FEE   = Decimal('450.00')    # Oshoek/Ngwenya: ERS border toll (foreign 4+ axle, E450)
 
 _BORDER_FEES = [
     {'from_country': 'SA', 'to_country': 'ZW', 'fee_zar': _ZW_FEE, 'notes': "Beitbridge — Zimborders bridge toll ($221 Goods Vehicle rate) + SA-side customs/clearing agent"},
@@ -67,8 +67,8 @@ _BORDER_FEES = [
 _COUNTRY_RATES = [
     {
         'country_code': 'ZW', 'country_name': 'Zimbabwe',
-        'weighbridge_fee_zar': Decimal('250.00'),
-        'toll_rate_per_km':    Decimal('0.900'),     # ZINARA transit ≈ USD1/10km
+        'weighbridge_fee_zar': Decimal('0.00'),      # no fee for weighing a compliant truck (0162)
+        'toll_rate_per_km':    Decimal('3.816'),     # ZINARA transit US$10/100km + 4 gates x US$20 / 580km @ R16.04 (0162)
         'sa_border_distance_km': Decimal('580.0'),   # Beitbridge via N1
     },
     {
@@ -79,7 +79,8 @@ _COUNTRY_RATES = [
         # core/migrations/0112_fix_bw_mz_border_fees.py.
         'country_code': 'MZ', 'country_name': 'Mozambique',
         'weighbridge_fee_zar': Decimal('0.00'),
-        'toll_rate_per_km':    Decimal('6.300'),
+        'toll_rate_per_km':    Decimal('0.000'),     # MZ tolls are TollPlaza rows since 0161
+        'toll_flat_zar':       Decimal('0.00'),
         'sa_border_distance_km': Decimal('450.0'),   # Komatipoort/Lebombo via N4
     },
     {
@@ -124,25 +125,25 @@ _COUNTRY_RATES = [
     },
     {
         'country_code': 'ZM', 'country_name': 'Zambia',
-        'weighbridge_fee_zar': Decimal('280.00'),
+        'weighbridge_fee_zar': Decimal('0.00'),
         'toll_rate_per_km':    Decimal('0.600'),
         'sa_border_distance_km': Decimal('580.0'),   # same as ZW (enters via ZW)
     },
     {
         'country_code': 'MW', 'country_name': 'Malawi',
-        'weighbridge_fee_zar': Decimal('260.00'),
+        'weighbridge_fee_zar': Decimal('0.00'),
         'toll_rate_per_km':    Decimal('0.550'),
         'sa_border_distance_km': Decimal('580.0'),
     },
     {
         'country_code': 'TZ', 'country_name': 'Tanzania',
-        'weighbridge_fee_zar': Decimal('320.00'),
+        'weighbridge_fee_zar': Decimal('0.00'),
         'toll_rate_per_km':    Decimal('0.600'),
         'sa_border_distance_km': Decimal('580.0'),
     },
     {
         'country_code': 'KE', 'country_name': 'Kenya',
-        'weighbridge_fee_zar': Decimal('300.00'),
+        'weighbridge_fee_zar': Decimal('0.00'),
         'toll_rate_per_km':    Decimal('0.650'),
         'sa_border_distance_km': Decimal('580.0'),
     },
@@ -163,7 +164,10 @@ class Command(BaseCommand):
         fee_created = fee_updated = rate_created = rate_updated = 0
 
         for item in _BORDER_FEES:
-            key = {'from_country': item['from_country'], 'to_country': item['to_country']}
+            # These figures are the heavy (>20,000kg) band — the one every
+            # corridor has since 0120 — so that is the row they key on.
+            key = {'from_country': item['from_country'], 'to_country': item['to_country'],
+                   'min_weight_kg': 20_001}
             if force:
                 _, created = BorderCrossingFee.objects.update_or_create(defaults=item, **key)
             else:
@@ -187,6 +191,6 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(
             f'BorderCrossingFee: {fee_created} created, {fee_updated} skipped.\n'
             f'CountryTransitRate: {rate_created} created, {rate_updated} skipped.\n'
-            f'Corridor fees (all sourced 2026-09): ZW R5550, BW R1550, MZ R850, LS R1027, NA R4840, SZ R827.\n'
+            f'Corridor fees (heavy band): ZW R5550, BW R1175.27, MZ R473.29, LS R650, NA R4463, SZ R450.\n'
             f'Re-run with --force to overwrite existing records.'
         ))

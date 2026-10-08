@@ -68,7 +68,57 @@ ROUTE_FUEL_KEYS = ('fuel_usage_litres', 'fuel_cost_zar', 'fuel_rate_l_per_100km'
 ROUTE_NEW_KEYS = ('distance_estimated', 'fuel_unknown_reason', 'fuel_vehicle_type_id', 'fuel_price_per_litre',
                   'fuel_price_source', 'tolls_unknown',
                   # Additive (8 Oct 2026): which border costs are not on file.
-                  'border_costs_complete', 'border_costs_unknown')
+                  'border_costs_complete', 'border_costs_unknown',
+                  # Additive (toll/border audit, 8 Oct 2026): the day tolls were priced for.
+                  'toll_trip_date')
+
+# Toll/border audit (8 Oct 2026, docs: TOLL-BORDER-AUDIT.md), APPROVED changes:
+#  * each toll_breakdown entry gains plaza_type / operator / country /
+#    tariff_effective_from, and the list is in DRIVING order (it was route
+#    code, then km) — the plazas and amounts themselves are unchanged here,
+#    because these goldens load main's own 31-plaza reference table;
+#  * Zimbabwe: weighbridge R250 -> R0 (no such fee exists) and in-country
+#    charge R0.90/km -> R3.816/km (ZINARA transit US$10/100km + toll gates);
+#  * Mozambique: the flat R598.78 country toll is gone — TRAC/REVIMO plazas
+#    are TollPlaza rows now (not in this reference table, so R0 here);
+#  * C-BRTA Class 1 permit R6,767 -> R6,983/yr (GG 54229).
+# The expected values below were derived from those rules, not copied.
+TOLL_KEYS_PINNED = ('plaza', 'route', 'location_km', 'tariff', 'tariff_excl_vat', 'tariff_incl_vat')
+ZW_KM_S10 = 582.9   # km in Zimbabwe on s10, measured off the captured route (524.61 / 0.90)
+AUDIT_2026_10 = {
+    's05_jhb_maputo_semi': {
+        'additional_costs': {'border_fees': 850.0, 'weighbridge_fees': 0.0, 'non_sa_tolls': 0.0},
+        'line': ('non_sa_toll', 0.0),
+    },
+    's10_jhb_harare_beitbridge_semi': {
+        'additional_costs': {'border_fees': 5926.71, 'weighbridge_fees': 0.0,
+                             'non_sa_tolls': round(ZW_KM_S10 * 3.816, 2)},
+        'line': ('non_sa_toll', round(ZW_KM_S10 * 3.816, 2)),
+        'weighbridge': 0.0,
+    },
+}
+
+
+def _pinned(breakdown):
+    return sorted(({k: b.get(k) for k in TOLL_KEYS_PINNED if k in b} for b in breakdown or []),
+                  key=lambda b: (b.get('route') or '', b.get('plaza') or ''))
+
+
+def apply_audit_2026_10(key, exp):
+    """main's captured response, moved by the approved audit changes only."""
+    a = AUDIT_2026_10.get(key)
+    if not a:
+        return exp
+    exp['additional_costs'] = a['additional_costs']
+    for item in exp.get('cross_border_breakdown') or []:
+        if item['type'] == a['line'][0]:
+            item['amount'] = a['line'][1]
+            if key.startswith('s05'):
+                # Now an ordinary per-km line at R0/km over the measured 95km.
+                item['description'] = 'MZ tolls (95 km)'
+        if item['type'] == 'weighbridge' and 'weighbridge' in a:
+            item['amount'] = a['weighbridge']
+    return exp
 
 with open(os.path.join(FIXTURES, 'reference_data.json')) as _f:
     REF = json.load(_f)
@@ -217,7 +267,7 @@ class RouteCalculateGoldenTests(_GoldenBase):
             src = fx['tomtom_response']['routes'][i]['legs'][0]['points']
             self.assertEqual(geoms[i], [{'lat': p['latitude'], 'lon': p['longitude']} for p in src])
 
-        exp = json.loads(json.dumps(exp))
+        exp = apply_audit_2026_10(key, json.loads(json.dumps(exp)))
         self.check_route_fuel(key, fx, got, exp)
         # The headline numbers first, so a failure names what moved.
         for k in ('source', 'distance_km', 'duration_minutes', 'toll_sanral_class', 'toll_class_source',
@@ -225,8 +275,8 @@ class RouteCalculateGoldenTests(_GoldenBase):
                   'toll_routes', 'cross_border', 'countries', 'additional_costs', 'warnings'):
             self.assertEqual(got.get(k), exp.get(k), f'{key}: {k}')
         self.assertEqual(
-            [(b['plaza'], b['route'], b['tariff_excl_vat'], b['tariff_incl_vat']) for b in got['toll_breakdown']],
-            [(b['plaza'], b['route'], b['tariff_excl_vat'], b['tariff_incl_vat']) for b in exp['toll_breakdown']],
+            sorted((b['plaza'], b['route'], b['tariff_excl_vat'], b['tariff_incl_vat']) for b in got['toll_breakdown']),
+            sorted((b['plaza'], b['route'], b['tariff_excl_vat'], b['tariff_incl_vat']) for b in exp['toll_breakdown']),
             f'{key}: toll plazas')
         self.assertEqual(got.get('cross_border_breakdown'), exp.get('cross_border_breakdown'),
                          f'{key}: cross-border line items')
@@ -235,6 +285,8 @@ class RouteCalculateGoldenTests(_GoldenBase):
                       'motorway_pct', 'road_type', 'terrain', 'country_codes'):
                 if k == 'country_codes':   # built from a set: order is not part of the contract
                     self.assertEqual(sorted(g[k]), sorted(e[k]), f'{key}: routes[{i}].{k}')
+                elif k == 'toll_breakdown':
+                    self.assertEqual(_pinned(g[k]), _pinned(e[k]), f'{key}: routes[{i}].{k}')
                 else:
                     self.assertEqual(g[k], e[k], f'{key}: routes[{i}].{k}')
         # And then everything else, byte for byte.
@@ -246,6 +298,8 @@ class RouteCalculateGoldenTests(_GoldenBase):
                 g.pop(k, None)
                 e.pop(k, None)
             g['country_codes'], e['country_codes'] = sorted(g['country_codes']), sorted(e['country_codes'])
+            g['toll_breakdown'], e['toll_breakdown'] = _pinned(g['toll_breakdown']), _pinned(e['toll_breakdown'])
+        got['toll_breakdown'], exp['toll_breakdown'] = _pinned(got['toll_breakdown']), _pinned(exp['toll_breakdown'])
         self.assertEqual(got, exp, f'{key}: full response')
 
 

@@ -34,7 +34,7 @@
      "weighbridge_fees": 0.0
     },
     "w15000_n100_cap0": {
-     "border_fees": 1240.96,
+     "border_fees": 1243.12,
      "breakdown": [
       {
        "amount": 1173.29,
@@ -42,8 +42,8 @@
        "type": "border_crossing"
       },
       {
-       "amount": 67.67,
-       "description": "SA C-BRTA Class 1 permit (R 6 767/yr over 100 crossings)",
+       "amount": 69.83,
+       "description": "SA C-BRTA Class 1 permit (R 6 983/yr over 100 crossings)",
        "type": "sa_permit"
       },
       {
@@ -59,7 +59,7 @@
      ],
      "complete": true,
      "non_sa_tolls": 0.0,
-     "total": 1240.96,
+     "total": 1243.12,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -96,7 +96,7 @@
      "weighbridge_fees": 0.0
     },
     "w15000_n24_cap0": {
-     "border_fees": 1455.25,
+     "border_fees": 1464.25,
      "breakdown": [
       {
        "amount": 1173.29,
@@ -104,8 +104,8 @@
        "type": "border_crossing"
       },
       {
-       "amount": 281.96,
-       "description": "SA C-BRTA Class 1 permit (R 6 767/yr over 24 crossings)",
+       "amount": 290.96,
+       "description": "SA C-BRTA Class 1 permit (R 6 983/yr over 24 crossings)",
        "type": "sa_permit"
       },
       {
@@ -121,7 +121,7 @@
      ],
      "complete": true,
      "non_sa_tolls": 0.0,
-     "total": 1455.25,
+     "total": 1464.25,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -158,7 +158,7 @@
      "weighbridge_fees": 0.0
     },
     "w15000_n6_cap0": {
-     "border_fees": 2301.12,
+     "border_fees": 2337.12,
      "breakdown": [
       {
        "amount": 1173.29,
@@ -166,8 +166,8 @@
        "type": "border_crossing"
       },
       {
-       "amount": 1127.83,
-       "description": "SA C-BRTA Class 1 permit (R 6 767/yr over 6 crossings)",
+       "amount": 1163.83,
+       "description": "SA C-BRTA Class 1 permit (R 6 983/yr over 6 crossings)",
        "type": "sa_permit"
       },
       {
@@ -183,7 +183,7 @@
      ],
      "complete": true,
      "non_sa_tolls": 0.0,
-     "total": 2301.12,
+     "total": 2337.12,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -220,7 +220,7 @@
      "weighbridge_fees": 0.0
     },
     "w15000_nNone_cap0": {
-     "border_fees": 1455.25,
+     "border_fees": 1464.25,
      "breakdown": [
       {
        "amount": 1173.29,
@@ -228,8 +228,8 @@
        "type": "border_crossing"
       },
       {
-       "amount": 281.96,
-       "description": "SA C-BRTA Class 1 permit (R 6 767/yr over 24 crossings)",
+       "amount": 290.96,
+       "description": "SA C-BRTA Class 1 permit (R 6 983/yr over 24 crossings)",
        "type": "sa_permit"
       },
       {
@@ -245,7 +245,7 @@
      ],
      "complete": true,
      "non_sa_tolls": 0.0,
-     "total": 1455.25,
+     "total": 1464.25,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -282,7 +282,7 @@
      "weighbridge_fees": 0.0
     },
     "w20000_n100_cap0": {
-     "border_fees": 1240.96,
+     "border_fees": 1243.12,
      "breakdown": [
       {
        "amount": 1173.29,
@@ -290,8 +290,8 @@
        "type": "border_crossing"
       },
       {
-       "amount": 67.67,
-       "description": "SA C-BRTA Class 1 permit (R 6 767/yr over 100 crossings)",
+       "amount": 69.83,
+       "description": "SA C-BRTA Class 1 permit (R 6 983/yr over 100 crossings)",
        "type": "sa_permit"
       },
       {
@@ -307,7 +307,7 @@
      ],
      "complete": true,
      "non_sa_tolls": 0.0,
-     "total": 1240.96,
+     "total": 1243.12,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -344,7 +344,7 @@
      "weighbridge_fees": 0.0
     },
     "w20000_n24_cap0": {
-     "border_fees": 1455.25,
+     "border_fees": 1464.25,
      "breakdown": [
       {
        "amount": 1173.29,
@@ -352,8 +352,8 @@
        "type": "border_crossing"
       },
       {
-       "amount": 281.96,
-       "description": "SA C-BRTA Class 1 permit (R 6 767/yr over 24 crossings)",
+       "amount": 290.96,
+       "description": "SA C-BRTA Class 1 permit (R 6 983/yr over 24 crossings)",
        "type": "sa_permit"
       },
       {
@@ -369,7 +369,7 @@
      ],
      "complete": true,
      "non_sa_tolls": 0.0,
-     "total": 1455.25,
+     "total": 1464.25,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -406,7 +406,7 @@
      "weighbridge_fees": 0.0
     },
     "w20000_n6_cap0": {
-     "border_fees": 2301.12,
+     "border_fees": 2337.12,
      "breakdown": [
       {
        "amount": 1173.29,
@@ -414,8 +414,8 @@
        "type": "border_crossing"
       },
       {
-       "amount": 1127.83,
-       "description": "SA C-BRTA Class 1 permit (R 6 767/yr over 6 crossings)",
+       "amount": 1163.83,
+       "description": "SA C-BRTA Class 1 permit (R 6 983/yr over 6 crossings)",
        "type": "sa_permit"
       },
       {
@@ -431,7 +431,7 @@
      ],
      "complete": true,
      "non_sa_tolls": 0.0,
-     "total": 2301.12,
+     "total": 2337.12,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -468,7 +468,7 @@
      "weighbridge_fees": 0.0
     },
     "w20000_nNone_cap0": {
-     "border_fees": 1455.25,
+     "border_fees": 1464.25,
      "breakdown": [
       {
        "amount": 1173.29,
@@ -476,8 +476,8 @@
        "type": "border_crossing"
       },
       {
-       "amount": 281.96,
-       "description": "SA C-BRTA Class 1 permit (R 6 767/yr over 24 crossings)",
+       "amount": 290.96,
+       "description": "SA C-BRTA Class 1 permit (R 6 983/yr over 24 crossings)",
        "type": "sa_permit"
       },
       {
@@ -493,7 +493,7 @@
      ],
      "complete": true,
      "non_sa_tolls": 0.0,
-     "total": 1455.25,
+     "total": 1464.25,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -1274,7 +1274,7 @@
      "weighbridge_fees": 0.0
     },
     "w8000_n100_cap0": {
-     "border_fees": 1240.96,
+     "border_fees": 1243.12,
      "breakdown": [
       {
        "amount": 1173.29,
@@ -1282,8 +1282,8 @@
        "type": "border_crossing"
       },
       {
-       "amount": 67.67,
-       "description": "SA C-BRTA Class 1 permit (R 6 767/yr over 100 crossings)",
+       "amount": 69.83,
+       "description": "SA C-BRTA Class 1 permit (R 6 983/yr over 100 crossings)",
        "type": "sa_permit"
       },
       {
@@ -1299,7 +1299,7 @@
      ],
      "complete": true,
      "non_sa_tolls": 0.0,
-     "total": 1240.96,
+     "total": 1243.12,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -1336,7 +1336,7 @@
      "weighbridge_fees": 0.0
     },
     "w8000_n24_cap0": {
-     "border_fees": 1455.25,
+     "border_fees": 1464.25,
      "breakdown": [
       {
        "amount": 1173.29,
@@ -1344,8 +1344,8 @@
        "type": "border_crossing"
       },
       {
-       "amount": 281.96,
-       "description": "SA C-BRTA Class 1 permit (R 6 767/yr over 24 crossings)",
+       "amount": 290.96,
+       "description": "SA C-BRTA Class 1 permit (R 6 983/yr over 24 crossings)",
        "type": "sa_permit"
       },
       {
@@ -1361,7 +1361,7 @@
      ],
      "complete": true,
      "non_sa_tolls": 0.0,
-     "total": 1455.25,
+     "total": 1464.25,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -1398,7 +1398,7 @@
      "weighbridge_fees": 0.0
     },
     "w8000_n6_cap0": {
-     "border_fees": 2301.12,
+     "border_fees": 2337.12,
      "breakdown": [
       {
        "amount": 1173.29,
@@ -1406,8 +1406,8 @@
        "type": "border_crossing"
       },
       {
-       "amount": 1127.83,
-       "description": "SA C-BRTA Class 1 permit (R 6 767/yr over 6 crossings)",
+       "amount": 1163.83,
+       "description": "SA C-BRTA Class 1 permit (R 6 983/yr over 6 crossings)",
        "type": "sa_permit"
       },
       {
@@ -1423,7 +1423,7 @@
      ],
      "complete": true,
      "non_sa_tolls": 0.0,
-     "total": 2301.12,
+     "total": 2337.12,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -1460,7 +1460,7 @@
      "weighbridge_fees": 0.0
     },
     "w8000_nNone_cap0": {
-     "border_fees": 1455.25,
+     "border_fees": 1464.25,
      "breakdown": [
       {
        "amount": 1173.29,
@@ -1468,8 +1468,8 @@
        "type": "border_crossing"
       },
       {
-       "amount": 281.96,
-       "description": "SA C-BRTA Class 1 permit (R 6 767/yr over 24 crossings)",
+       "amount": 290.96,
+       "description": "SA C-BRTA Class 1 permit (R 6 983/yr over 24 crossings)",
        "type": "sa_permit"
       },
       {
@@ -1485,7 +1485,7 @@
      ],
      "complete": true,
      "non_sa_tolls": 0.0,
-     "total": 1455.25,
+     "total": 1464.25,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -1548,20 +1548,20 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (~96 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1448.78,
+     "non_sa_tolls": 0.0,
+     "total": 850.0,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
     },
     "w15000_n100_cap0": {
-     "border_fees": 540.96,
+     "border_fees": 543.12,
      "breakdown": [
       {
        "amount": 473.29,
@@ -1569,8 +1569,8 @@
        "type": "border_crossing"
       },
       {
-       "amount": 67.67,
-       "description": "SA C-BRTA Class 1 permit (R 6 767/yr over 100 crossings)",
+       "amount": 69.83,
+       "description": "SA C-BRTA Class 1 permit (R 6 983/yr over 100 crossings)",
        "type": "sa_permit"
       },
       {
@@ -1579,14 +1579,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1139.74,
+     "non_sa_tolls": 0.0,
+     "total": 543.12,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -1610,20 +1610,20 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1162.48,
+     "non_sa_tolls": 0.0,
+     "total": 563.7,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
     },
     "w15000_n24_cap0": {
-     "border_fees": 755.25,
+     "border_fees": 764.25,
      "breakdown": [
       {
        "amount": 473.29,
@@ -1631,8 +1631,8 @@
        "type": "border_crossing"
       },
       {
-       "amount": 281.96,
-       "description": "SA C-BRTA Class 1 permit (R 6 767/yr over 24 crossings)",
+       "amount": 290.96,
+       "description": "SA C-BRTA Class 1 permit (R 6 983/yr over 24 crossings)",
        "type": "sa_permit"
       },
       {
@@ -1641,14 +1641,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1354.03,
+     "non_sa_tolls": 0.0,
+     "total": 764.25,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -1672,20 +1672,20 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1448.78,
+     "non_sa_tolls": 0.0,
+     "total": 850.0,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
     },
     "w15000_n6_cap0": {
-     "border_fees": 1601.12,
+     "border_fees": 1637.12,
      "breakdown": [
       {
        "amount": 473.29,
@@ -1693,8 +1693,8 @@
        "type": "border_crossing"
       },
       {
-       "amount": 1127.83,
-       "description": "SA C-BRTA Class 1 permit (R 6 767/yr over 6 crossings)",
+       "amount": 1163.83,
+       "description": "SA C-BRTA Class 1 permit (R 6 983/yr over 6 crossings)",
        "type": "sa_permit"
       },
       {
@@ -1703,14 +1703,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 2199.9,
+     "non_sa_tolls": 0.0,
+     "total": 1637.12,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -1734,20 +1734,20 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 2578.9,
+     "non_sa_tolls": 0.0,
+     "total": 1980.12,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
     },
     "w15000_nNone_cap0": {
-     "border_fees": 755.25,
+     "border_fees": 764.25,
      "breakdown": [
       {
        "amount": 473.29,
@@ -1755,8 +1755,8 @@
        "type": "border_crossing"
       },
       {
-       "amount": 281.96,
-       "description": "SA C-BRTA Class 1 permit (R 6 767/yr over 24 crossings)",
+       "amount": 290.96,
+       "description": "SA C-BRTA Class 1 permit (R 6 983/yr over 24 crossings)",
        "type": "sa_permit"
       },
       {
@@ -1765,14 +1765,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1354.03,
+     "non_sa_tolls": 0.0,
+     "total": 764.25,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -1796,20 +1796,20 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1448.78,
+     "non_sa_tolls": 0.0,
+     "total": 850.0,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
     },
     "w20000_n100_cap0": {
-     "border_fees": 540.96,
+     "border_fees": 543.12,
      "breakdown": [
       {
        "amount": 473.29,
@@ -1817,8 +1817,8 @@
        "type": "border_crossing"
       },
       {
-       "amount": 67.67,
-       "description": "SA C-BRTA Class 1 permit (R 6 767/yr over 100 crossings)",
+       "amount": 69.83,
+       "description": "SA C-BRTA Class 1 permit (R 6 983/yr over 100 crossings)",
        "type": "sa_permit"
       },
       {
@@ -1827,14 +1827,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1139.74,
+     "non_sa_tolls": 0.0,
+     "total": 543.12,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -1858,20 +1858,20 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1162.48,
+     "non_sa_tolls": 0.0,
+     "total": 563.7,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
     },
     "w20000_n24_cap0": {
-     "border_fees": 755.25,
+     "border_fees": 764.25,
      "breakdown": [
       {
        "amount": 473.29,
@@ -1879,8 +1879,8 @@
        "type": "border_crossing"
       },
       {
-       "amount": 281.96,
-       "description": "SA C-BRTA Class 1 permit (R 6 767/yr over 24 crossings)",
+       "amount": 290.96,
+       "description": "SA C-BRTA Class 1 permit (R 6 983/yr over 24 crossings)",
        "type": "sa_permit"
       },
       {
@@ -1889,14 +1889,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1354.03,
+     "non_sa_tolls": 0.0,
+     "total": 764.25,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -1920,20 +1920,20 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1448.78,
+     "non_sa_tolls": 0.0,
+     "total": 850.0,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
     },
     "w20000_n6_cap0": {
-     "border_fees": 1601.12,
+     "border_fees": 1637.12,
      "breakdown": [
       {
        "amount": 473.29,
@@ -1941,8 +1941,8 @@
        "type": "border_crossing"
       },
       {
-       "amount": 1127.83,
-       "description": "SA C-BRTA Class 1 permit (R 6 767/yr over 6 crossings)",
+       "amount": 1163.83,
+       "description": "SA C-BRTA Class 1 permit (R 6 983/yr over 6 crossings)",
        "type": "sa_permit"
       },
       {
@@ -1951,14 +1951,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 2199.9,
+     "non_sa_tolls": 0.0,
+     "total": 1637.12,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -1982,20 +1982,20 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 2578.9,
+     "non_sa_tolls": 0.0,
+     "total": 1980.12,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
     },
     "w20000_nNone_cap0": {
-     "border_fees": 755.25,
+     "border_fees": 764.25,
      "breakdown": [
       {
        "amount": 473.29,
@@ -2003,8 +2003,8 @@
        "type": "border_crossing"
       },
       {
-       "amount": 281.96,
-       "description": "SA C-BRTA Class 1 permit (R 6 767/yr over 24 crossings)",
+       "amount": 290.96,
+       "description": "SA C-BRTA Class 1 permit (R 6 983/yr over 24 crossings)",
        "type": "sa_permit"
       },
       {
@@ -2013,14 +2013,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1354.03,
+     "non_sa_tolls": 0.0,
+     "total": 764.25,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -2044,14 +2044,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1448.78,
+     "non_sa_tolls": 0.0,
+     "total": 850.0,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -2075,14 +2075,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1162.48,
+     "non_sa_tolls": 0.0,
+     "total": 563.7,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -2106,14 +2106,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1162.48,
+     "non_sa_tolls": 0.0,
+     "total": 563.7,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -2137,14 +2137,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1448.78,
+     "non_sa_tolls": 0.0,
+     "total": 850.0,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -2168,14 +2168,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1448.78,
+     "non_sa_tolls": 0.0,
+     "total": 850.0,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -2199,14 +2199,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 2578.9,
+     "non_sa_tolls": 0.0,
+     "total": 1980.12,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -2230,14 +2230,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 2578.9,
+     "non_sa_tolls": 0.0,
+     "total": 1980.12,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -2261,14 +2261,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1448.78,
+     "non_sa_tolls": 0.0,
+     "total": 850.0,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -2292,14 +2292,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1448.78,
+     "non_sa_tolls": 0.0,
+     "total": 850.0,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -2323,14 +2323,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1162.48,
+     "non_sa_tolls": 0.0,
+     "total": 563.7,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -2354,14 +2354,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1162.48,
+     "non_sa_tolls": 0.0,
+     "total": 563.7,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -2385,14 +2385,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1448.78,
+     "non_sa_tolls": 0.0,
+     "total": 850.0,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -2416,14 +2416,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1448.78,
+     "non_sa_tolls": 0.0,
+     "total": 850.0,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -2447,14 +2447,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 2578.9,
+     "non_sa_tolls": 0.0,
+     "total": 1980.12,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -2478,14 +2478,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 2578.9,
+     "non_sa_tolls": 0.0,
+     "total": 1980.12,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -2509,14 +2509,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1448.78,
+     "non_sa_tolls": 0.0,
+     "total": 850.0,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -2540,14 +2540,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1448.78,
+     "non_sa_tolls": 0.0,
+     "total": 850.0,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -2571,14 +2571,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1162.48,
+     "non_sa_tolls": 0.0,
+     "total": 563.7,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -2602,14 +2602,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1162.48,
+     "non_sa_tolls": 0.0,
+     "total": 563.7,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -2633,14 +2633,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1448.78,
+     "non_sa_tolls": 0.0,
+     "total": 850.0,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -2664,14 +2664,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1448.78,
+     "non_sa_tolls": 0.0,
+     "total": 850.0,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -2695,14 +2695,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 2578.9,
+     "non_sa_tolls": 0.0,
+     "total": 1980.12,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -2726,14 +2726,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 2578.9,
+     "non_sa_tolls": 0.0,
+     "total": 1980.12,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -2757,14 +2757,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1448.78,
+     "non_sa_tolls": 0.0,
+     "total": 850.0,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -2788,20 +2788,20 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1448.78,
+     "non_sa_tolls": 0.0,
+     "total": 850.0,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
     },
     "w8000_n100_cap0": {
-     "border_fees": 540.96,
+     "border_fees": 543.12,
      "breakdown": [
       {
        "amount": 473.29,
@@ -2809,8 +2809,8 @@
        "type": "border_crossing"
       },
       {
-       "amount": 67.67,
-       "description": "SA C-BRTA Class 1 permit (R 6 767/yr over 100 crossings)",
+       "amount": 69.83,
+       "description": "SA C-BRTA Class 1 permit (R 6 983/yr over 100 crossings)",
        "type": "sa_permit"
       },
       {
@@ -2819,14 +2819,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1139.74,
+     "non_sa_tolls": 0.0,
+     "total": 543.12,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -2850,20 +2850,20 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1162.48,
+     "non_sa_tolls": 0.0,
+     "total": 563.7,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
     },
     "w8000_n24_cap0": {
-     "border_fees": 755.25,
+     "border_fees": 764.25,
      "breakdown": [
       {
        "amount": 473.29,
@@ -2871,8 +2871,8 @@
        "type": "border_crossing"
       },
       {
-       "amount": 281.96,
-       "description": "SA C-BRTA Class 1 permit (R 6 767/yr over 24 crossings)",
+       "amount": 290.96,
+       "description": "SA C-BRTA Class 1 permit (R 6 983/yr over 24 crossings)",
        "type": "sa_permit"
       },
       {
@@ -2881,14 +2881,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1354.03,
+     "non_sa_tolls": 0.0,
+     "total": 764.25,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -2912,20 +2912,20 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1448.78,
+     "non_sa_tolls": 0.0,
+     "total": 850.0,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
     },
     "w8000_n6_cap0": {
-     "border_fees": 1601.12,
+     "border_fees": 1637.12,
      "breakdown": [
       {
        "amount": 473.29,
@@ -2933,8 +2933,8 @@
        "type": "border_crossing"
       },
       {
-       "amount": 1127.83,
-       "description": "SA C-BRTA Class 1 permit (R 6 767/yr over 6 crossings)",
+       "amount": 1163.83,
+       "description": "SA C-BRTA Class 1 permit (R 6 983/yr over 6 crossings)",
        "type": "sa_permit"
       },
       {
@@ -2943,14 +2943,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 2199.9,
+     "non_sa_tolls": 0.0,
+     "total": 1637.12,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -2974,20 +2974,20 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 2578.9,
+     "non_sa_tolls": 0.0,
+     "total": 1980.12,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
     },
     "w8000_nNone_cap0": {
-     "border_fees": 755.25,
+     "border_fees": 764.25,
      "breakdown": [
       {
        "amount": 473.29,
@@ -2995,8 +2995,8 @@
        "type": "border_crossing"
       },
       {
-       "amount": 281.96,
-       "description": "SA C-BRTA Class 1 permit (R 6 767/yr over 24 crossings)",
+       "amount": 290.96,
+       "description": "SA C-BRTA Class 1 permit (R 6 983/yr over 24 crossings)",
        "type": "sa_permit"
       },
       {
@@ -3005,14 +3005,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1354.03,
+     "non_sa_tolls": 0.0,
+     "total": 764.25,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -3036,14 +3036,14 @@
        "type": "weighbridge"
       },
       {
-       "amount": 598.78,
-       "description": "MZ tolls (fixed gate charge)",
+       "amount": 0.0,
+       "description": "MZ tolls (95 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 598.78,
-     "total": 1448.78,
+     "non_sa_tolls": 0.0,
+     "total": 850.0,
      "unknown_countries": [],
      "unknown_crossings": [],
      "weighbridge_fees": 0.0
@@ -3070,25 +3070,25 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 482.31,
+       "amount": 2044.99,
        "description": "ZW tolls (~535 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 482.31,
-     "total": 6659.02,
+     "non_sa_tolls": 2044.99,
+     "total": 7971.7,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w15000_n100_cap0": {
-     "border_fees": 5617.67,
+     "border_fees": 5619.83,
      "breakdown": [
       {
        "amount": 5550.0,
@@ -3096,27 +3096,27 @@
        "type": "border_crossing"
       },
       {
-       "amount": 67.67,
-       "description": "SA C-BRTA Class 1 permit (R 6 767/yr over 100 crossings)",
+       "amount": 69.83,
+       "description": "SA C-BRTA Class 1 permit (R 6 983/yr over 100 crossings)",
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 6392.28,
+     "non_sa_tolls": 2224.35,
+     "total": 7844.18,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w15000_n100_cap28000": {
      "border_fees": 5640.41,
@@ -3132,25 +3132,25 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 6415.02,
+     "non_sa_tolls": 2224.35,
+     "total": 7864.76,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w15000_n24_cap0": {
-     "border_fees": 5831.96,
+     "border_fees": 5840.96,
      "breakdown": [
       {
        "amount": 5550.0,
@@ -3158,27 +3158,27 @@
        "type": "border_crossing"
       },
       {
-       "amount": 281.96,
-       "description": "SA C-BRTA Class 1 permit (R 6 767/yr over 24 crossings)",
+       "amount": 290.96,
+       "description": "SA C-BRTA Class 1 permit (R 6 983/yr over 24 crossings)",
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 6606.57,
+     "non_sa_tolls": 2224.35,
+     "total": 8065.31,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w15000_n24_cap28000": {
      "border_fees": 5926.71,
@@ -3194,25 +3194,25 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 6701.32,
+     "non_sa_tolls": 2224.35,
+     "total": 8151.06,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w15000_n6_cap0": {
-     "border_fees": 6677.83,
+     "border_fees": 6713.83,
      "breakdown": [
       {
        "amount": 5550.0,
@@ -3220,27 +3220,27 @@
        "type": "border_crossing"
       },
       {
-       "amount": 1127.83,
-       "description": "SA C-BRTA Class 1 permit (R 6 767/yr over 6 crossings)",
+       "amount": 1163.83,
+       "description": "SA C-BRTA Class 1 permit (R 6 983/yr over 6 crossings)",
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 7452.44,
+     "non_sa_tolls": 2224.35,
+     "total": 8938.18,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w15000_n6_cap28000": {
      "border_fees": 7056.83,
@@ -3256,25 +3256,25 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 7831.44,
+     "non_sa_tolls": 2224.35,
+     "total": 9281.18,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w15000_nNone_cap0": {
-     "border_fees": 5831.96,
+     "border_fees": 5840.96,
      "breakdown": [
       {
        "amount": 5550.0,
@@ -3282,27 +3282,27 @@
        "type": "border_crossing"
       },
       {
-       "amount": 281.96,
-       "description": "SA C-BRTA Class 1 permit (R 6 767/yr over 24 crossings)",
+       "amount": 290.96,
+       "description": "SA C-BRTA Class 1 permit (R 6 983/yr over 24 crossings)",
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 6606.57,
+     "non_sa_tolls": 2224.35,
+     "total": 8065.31,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w15000_nNone_cap28000": {
      "border_fees": 5926.71,
@@ -3318,25 +3318,25 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 6701.32,
+     "non_sa_tolls": 2224.35,
+     "total": 8151.06,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w20000_n100_cap0": {
-     "border_fees": 5617.67,
+     "border_fees": 5619.83,
      "breakdown": [
       {
        "amount": 5550.0,
@@ -3344,27 +3344,27 @@
        "type": "border_crossing"
       },
       {
-       "amount": 67.67,
-       "description": "SA C-BRTA Class 1 permit (R 6 767/yr over 100 crossings)",
+       "amount": 69.83,
+       "description": "SA C-BRTA Class 1 permit (R 6 983/yr over 100 crossings)",
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 6392.28,
+     "non_sa_tolls": 2224.35,
+     "total": 7844.18,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w20000_n100_cap28000": {
      "border_fees": 5640.41,
@@ -3380,25 +3380,25 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 6415.02,
+     "non_sa_tolls": 2224.35,
+     "total": 7864.76,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w20000_n24_cap0": {
-     "border_fees": 5831.96,
+     "border_fees": 5840.96,
      "breakdown": [
       {
        "amount": 5550.0,
@@ -3406,27 +3406,27 @@
        "type": "border_crossing"
       },
       {
-       "amount": 281.96,
-       "description": "SA C-BRTA Class 1 permit (R 6 767/yr over 24 crossings)",
+       "amount": 290.96,
+       "description": "SA C-BRTA Class 1 permit (R 6 983/yr over 24 crossings)",
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 6606.57,
+     "non_sa_tolls": 2224.35,
+     "total": 8065.31,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w20000_n24_cap28000": {
      "border_fees": 5926.71,
@@ -3442,25 +3442,25 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 6701.32,
+     "non_sa_tolls": 2224.35,
+     "total": 8151.06,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w20000_n6_cap0": {
-     "border_fees": 6677.83,
+     "border_fees": 6713.83,
      "breakdown": [
       {
        "amount": 5550.0,
@@ -3468,27 +3468,27 @@
        "type": "border_crossing"
       },
       {
-       "amount": 1127.83,
-       "description": "SA C-BRTA Class 1 permit (R 6 767/yr over 6 crossings)",
+       "amount": 1163.83,
+       "description": "SA C-BRTA Class 1 permit (R 6 983/yr over 6 crossings)",
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 7452.44,
+     "non_sa_tolls": 2224.35,
+     "total": 8938.18,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w20000_n6_cap28000": {
      "border_fees": 7056.83,
@@ -3504,25 +3504,25 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 7831.44,
+     "non_sa_tolls": 2224.35,
+     "total": 9281.18,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w20000_nNone_cap0": {
-     "border_fees": 5831.96,
+     "border_fees": 5840.96,
      "breakdown": [
       {
        "amount": 5550.0,
@@ -3530,27 +3530,27 @@
        "type": "border_crossing"
       },
       {
-       "amount": 281.96,
-       "description": "SA C-BRTA Class 1 permit (R 6 767/yr over 24 crossings)",
+       "amount": 290.96,
+       "description": "SA C-BRTA Class 1 permit (R 6 983/yr over 24 crossings)",
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 6606.57,
+     "non_sa_tolls": 2224.35,
+     "total": 8065.31,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w20000_nNone_cap28000": {
      "border_fees": 5926.71,
@@ -3566,22 +3566,22 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 6701.32,
+     "non_sa_tolls": 2224.35,
+     "total": 8151.06,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w20001_n100_cap0": {
      "border_fees": 5640.41,
@@ -3597,22 +3597,22 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 6415.02,
+     "non_sa_tolls": 2224.35,
+     "total": 7864.76,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w20001_n100_cap28000": {
      "border_fees": 5640.41,
@@ -3628,22 +3628,22 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 6415.02,
+     "non_sa_tolls": 2224.35,
+     "total": 7864.76,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w20001_n24_cap0": {
      "border_fees": 5926.71,
@@ -3659,22 +3659,22 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 6701.32,
+     "non_sa_tolls": 2224.35,
+     "total": 8151.06,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w20001_n24_cap28000": {
      "border_fees": 5926.71,
@@ -3690,22 +3690,22 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 6701.32,
+     "non_sa_tolls": 2224.35,
+     "total": 8151.06,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w20001_n6_cap0": {
      "border_fees": 7056.83,
@@ -3721,22 +3721,22 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 7831.44,
+     "non_sa_tolls": 2224.35,
+     "total": 9281.18,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w20001_n6_cap28000": {
      "border_fees": 7056.83,
@@ -3752,22 +3752,22 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 7831.44,
+     "non_sa_tolls": 2224.35,
+     "total": 9281.18,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w20001_nNone_cap0": {
      "border_fees": 5926.71,
@@ -3783,22 +3783,22 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 6701.32,
+     "non_sa_tolls": 2224.35,
+     "total": 8151.06,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w20001_nNone_cap28000": {
      "border_fees": 5926.71,
@@ -3814,22 +3814,22 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 6701.32,
+     "non_sa_tolls": 2224.35,
+     "total": 8151.06,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w28000_n100_cap0": {
      "border_fees": 5640.41,
@@ -3845,22 +3845,22 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 6415.02,
+     "non_sa_tolls": 2224.35,
+     "total": 7864.76,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w28000_n100_cap28000": {
      "border_fees": 5640.41,
@@ -3876,22 +3876,22 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 6415.02,
+     "non_sa_tolls": 2224.35,
+     "total": 7864.76,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w28000_n24_cap0": {
      "border_fees": 5926.71,
@@ -3907,22 +3907,22 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 6701.32,
+     "non_sa_tolls": 2224.35,
+     "total": 8151.06,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w28000_n24_cap28000": {
      "border_fees": 5926.71,
@@ -3938,22 +3938,22 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 6701.32,
+     "non_sa_tolls": 2224.35,
+     "total": 8151.06,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w28000_n6_cap0": {
      "border_fees": 7056.83,
@@ -3969,22 +3969,22 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 7831.44,
+     "non_sa_tolls": 2224.35,
+     "total": 9281.18,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w28000_n6_cap28000": {
      "border_fees": 7056.83,
@@ -4000,22 +4000,22 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 7831.44,
+     "non_sa_tolls": 2224.35,
+     "total": 9281.18,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w28000_nNone_cap0": {
      "border_fees": 5926.71,
@@ -4031,22 +4031,22 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 6701.32,
+     "non_sa_tolls": 2224.35,
+     "total": 8151.06,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w28000_nNone_cap28000": {
      "border_fees": 5926.71,
@@ -4062,22 +4062,22 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 6701.32,
+     "non_sa_tolls": 2224.35,
+     "total": 8151.06,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w34000_n100_cap0": {
      "border_fees": 5640.41,
@@ -4093,22 +4093,22 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 6415.02,
+     "non_sa_tolls": 2224.35,
+     "total": 7864.76,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w34000_n100_cap28000": {
      "border_fees": 5640.41,
@@ -4124,22 +4124,22 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 6415.02,
+     "non_sa_tolls": 2224.35,
+     "total": 7864.76,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w34000_n24_cap0": {
      "border_fees": 5926.71,
@@ -4155,22 +4155,22 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 6701.32,
+     "non_sa_tolls": 2224.35,
+     "total": 8151.06,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w34000_n24_cap28000": {
      "border_fees": 5926.71,
@@ -4186,22 +4186,22 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 6701.32,
+     "non_sa_tolls": 2224.35,
+     "total": 8151.06,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w34000_n6_cap0": {
      "border_fees": 7056.83,
@@ -4217,22 +4217,22 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 7831.44,
+     "non_sa_tolls": 2224.35,
+     "total": 9281.18,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w34000_n6_cap28000": {
      "border_fees": 7056.83,
@@ -4248,22 +4248,22 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 7831.44,
+     "non_sa_tolls": 2224.35,
+     "total": 9281.18,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w34000_nNone_cap0": {
      "border_fees": 5926.71,
@@ -4279,22 +4279,22 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 6701.32,
+     "non_sa_tolls": 2224.35,
+     "total": 8151.06,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w34000_nNone_cap28000": {
      "border_fees": 5926.71,
@@ -4310,25 +4310,25 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 6701.32,
+     "non_sa_tolls": 2224.35,
+     "total": 8151.06,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w8000_n100_cap0": {
-     "border_fees": 5617.67,
+     "border_fees": 5619.83,
      "breakdown": [
       {
        "amount": 5550.0,
@@ -4336,27 +4336,27 @@
        "type": "border_crossing"
       },
       {
-       "amount": 67.67,
-       "description": "SA C-BRTA Class 1 permit (R 6 767/yr over 100 crossings)",
+       "amount": 69.83,
+       "description": "SA C-BRTA Class 1 permit (R 6 983/yr over 100 crossings)",
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 6392.28,
+     "non_sa_tolls": 2224.35,
+     "total": 7844.18,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w8000_n100_cap28000": {
      "border_fees": 5640.41,
@@ -4372,25 +4372,25 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 6415.02,
+     "non_sa_tolls": 2224.35,
+     "total": 7864.76,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w8000_n24_cap0": {
-     "border_fees": 5831.96,
+     "border_fees": 5840.96,
      "breakdown": [
       {
        "amount": 5550.0,
@@ -4398,27 +4398,27 @@
        "type": "border_crossing"
       },
       {
-       "amount": 281.96,
-       "description": "SA C-BRTA Class 1 permit (R 6 767/yr over 24 crossings)",
+       "amount": 290.96,
+       "description": "SA C-BRTA Class 1 permit (R 6 983/yr over 24 crossings)",
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 6606.57,
+     "non_sa_tolls": 2224.35,
+     "total": 8065.31,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w8000_n24_cap28000": {
      "border_fees": 5926.71,
@@ -4434,25 +4434,25 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 6701.32,
+     "non_sa_tolls": 2224.35,
+     "total": 8151.06,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w8000_n6_cap0": {
-     "border_fees": 6677.83,
+     "border_fees": 6713.83,
      "breakdown": [
       {
        "amount": 5550.0,
@@ -4460,27 +4460,27 @@
        "type": "border_crossing"
       },
       {
-       "amount": 1127.83,
-       "description": "SA C-BRTA Class 1 permit (R 6 767/yr over 6 crossings)",
+       "amount": 1163.83,
+       "description": "SA C-BRTA Class 1 permit (R 6 983/yr over 6 crossings)",
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 7452.44,
+     "non_sa_tolls": 2224.35,
+     "total": 8938.18,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w8000_n6_cap28000": {
      "border_fees": 7056.83,
@@ -4496,25 +4496,25 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 7831.44,
+     "non_sa_tolls": 2224.35,
+     "total": 9281.18,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w8000_nNone_cap0": {
-     "border_fees": 5831.96,
+     "border_fees": 5840.96,
      "breakdown": [
       {
        "amount": 5550.0,
@@ -4522,27 +4522,27 @@
        "type": "border_crossing"
       },
       {
-       "amount": 281.96,
-       "description": "SA C-BRTA Class 1 permit (R 6 767/yr over 24 crossings)",
+       "amount": 290.96,
+       "description": "SA C-BRTA Class 1 permit (R 6 983/yr over 24 crossings)",
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 6606.57,
+     "non_sa_tolls": 2224.35,
+     "total": 8065.31,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     },
     "w8000_nNone_cap28000": {
      "border_fees": 5926.71,
@@ -4558,22 +4558,22 @@
        "type": "sa_permit"
       },
       {
-       "amount": 250,
+       "amount": 0,
        "description": "ZW weighbridge",
        "type": "weighbridge"
       },
       {
-       "amount": 524.61,
+       "amount": 2224.35,
        "description": "ZW tolls (582 km)",
        "type": "non_sa_toll"
       }
      ],
      "complete": true,
-     "non_sa_tolls": 524.61,
-     "total": 6701.32,
+     "non_sa_tolls": 2224.35,
+     "total": 8151.06,
      "unknown_countries": [],
      "unknown_crossings": [],
-     "weighbridge_fees": 250.0
+     "weighbridge_fees": 0.0
     }
    },
    "country_km": {
@@ -13331,16 +13331,16 @@
       "287.83"
      ],
      [
-      "Grasmere",
-      "N1",
-      "126.00",
-      "109.57"
-     ],
-     [
       "Vaal",
       "N1",
       "275.00",
       "239.13"
+     ],
+     [
+      "Grasmere",
+      "N1",
+      "126.00",
+      "109.57"
      ]
     ],
     "routes_used": [
@@ -13364,16 +13364,16 @@
       "205.22"
      ],
      [
-      "Grasmere",
-      "N1",
-      "96.00",
-      "83.48"
-     ],
-     [
       "Vaal",
       "N1",
       "207.00",
       "180.00"
+     ],
+     [
+      "Grasmere",
+      "N1",
+      "96.00",
+      "83.48"
      ]
     ],
     "routes_used": [
@@ -13397,16 +13397,16 @@
       "68.26"
      ],
      [
-      "Grasmere",
-      "N1",
-      "27.50",
-      "23.91"
-     ],
-     [
       "Vaal",
       "N1",
       "91.50",
       "79.57"
+     ],
+     [
+      "Grasmere",
+      "N1",
+      "27.50",
+      "23.91"
      ]
     ],
     "routes_used": [
@@ -13430,16 +13430,16 @@
       "136.52"
      ],
      [
-      "Grasmere",
-      "N1",
-      "82.00",
-      "71.30"
-     ],
-     [
       "Vaal",
       "N1",
       "172.00",
       "149.57"
+     ],
+     [
+      "Grasmere",
+      "N1",
+      "82.00",
+      "71.30"
      ]
     ],
     "routes_used": [
@@ -13777,12 +13777,6 @@
    "combination": {
     "plazas": [
      [
-      "Verkeerdevlei",
-      "N1",
-      "331.00",
-      "287.83"
-     ],
-     [
       "Grasmere",
       "N1",
       "126.00",
@@ -13793,6 +13787,12 @@
       "N1",
       "275.00",
       "239.13"
+     ],
+     [
+      "Verkeerdevlei",
+      "N1",
+      "331.00",
+      "287.83"
      ]
     ],
     "routes_used": [
@@ -13804,12 +13804,6 @@
    "heavy": {
     "plazas": [
      [
-      "Verkeerdevlei",
-      "N1",
-      "236.00",
-      "205.22"
-     ],
-     [
       "Grasmere",
       "N1",
       "96.00",
@@ -13820,6 +13814,12 @@
       "N1",
       "207.00",
       "180.00"
+     ],
+     [
+      "Verkeerdevlei",
+      "N1",
+      "236.00",
+      "205.22"
      ]
     ],
     "routes_used": [
@@ -13831,12 +13831,6 @@
    "light": {
     "plazas": [
      [
-      "Verkeerdevlei",
-      "N1",
-      "78.50",
-      "68.26"
-     ],
-     [
       "Grasmere",
       "N1",
       "27.50",
@@ -13847,6 +13841,12 @@
       "N1",
       "91.50",
       "79.57"
+     ],
+     [
+      "Verkeerdevlei",
+      "N1",
+      "78.50",
+      "68.26"
      ]
     ],
     "routes_used": [
@@ -13858,12 +13858,6 @@
    "medium": {
     "plazas": [
      [
-      "Verkeerdevlei",
-      "N1",
-      "157.00",
-      "136.52"
-     ],
-     [
       "Grasmere",
       "N1",
       "82.00",
@@ -13874,6 +13868,12 @@
       "N1",
       "172.00",
       "149.57"
+     ],
+     [
+      "Verkeerdevlei",
+      "N1",
+      "157.00",
+      "136.52"
      ]
     ],
     "routes_used": [

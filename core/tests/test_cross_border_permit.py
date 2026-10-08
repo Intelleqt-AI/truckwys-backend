@@ -15,10 +15,10 @@ from core.services import cross_border as cb
 
 class AmortisedPermitTests(TestCase):
     def test_weight_picks_the_freight_class(self):
-        # Class 1 up to 20 000kg (2025 gazette, superseded); Class 2 above it
-        # (Gazette 54229, effective 1 Apr 2026).
-        self.assertEqual(cb.cbrta_annual_permit(15_000), 6_767)
-        self.assertEqual(cb.cbrta_annual_permit(20_000), 6_767)   # boundary is inclusive
+        # Class 1 up to 20 000kg (R823 + R6,160), Class 2 above it (R823 +
+        # R8,218) — Gazette 54229, effective 1 Apr 2026.
+        self.assertEqual(cb.cbrta_annual_permit(15_000), 6_983)
+        self.assertEqual(cb.cbrta_annual_permit(20_000), 6_983)   # boundary is inclusive
         self.assertEqual(cb.cbrta_annual_permit(20_001), 9_041)
         self.assertEqual(cb.cbrta_annual_permit(34_000), 9_041)
 
@@ -102,24 +102,22 @@ class FallbackDriftTests(TestCase):
 
 
 class FlatCountryTollTests(TestCase):
-    """Mozambique's TRAC plazas charge one fixed amount however far the route
-    runs past them. Charging it per km was right only at the 95km the rate was
-    derived from, and over-charged every longer route."""
+    """Mozambique's tolls (TRAC Moamba + Maputo, REVIMO bridge / ring road /
+    N200) are TollPlaza rows since 0161, matched on the route per class. The
+    old flat R598.78 (Class 4 TRAC, charged on every MZ route, even via Kosi
+    Bay where no TRAC plaza is driven) must not come back on top of them."""
 
     def _mz_toll(self, distance_km):
         r = cb.calculate_cross_border_costs(['SA', 'MZ'], distance_km, weight_kg=30_000)
         return next(b for b in r['breakdown'] if b['type'] == 'non_sa_toll')
 
-    def test_mozambique_toll_does_not_grow_with_distance(self):
-        near, far = self._mz_toll(560), self._mz_toll(900)
-        self.assertEqual(near['amount'], far['amount'])
-        self.assertEqual(near['amount'], 598.78)
-
-    def test_the_label_says_it_is_a_gate_charge(self):
-        self.assertIn('fixed gate charge', self._mz_toll(560)['description'])
+    def test_no_country_level_mozambique_toll_is_left(self):
+        self.assertEqual(self._mz_toll(560)['amount'], 0)
+        self.assertEqual(self._mz_toll(900)['amount'], 0)
+        self.assertEqual(cb._FALLBACK_TOLL_FLAT, {})
 
     def test_the_old_per_km_figure_is_gone(self):
-        # 197km x R6.30 = R1,242.99 was the number this replaces.
+        # 197km x R6.30 = R1,242.99 was the number 0118 replaced.
         self.assertLess(self._mz_toll(650)['amount'], 700)
 
     def test_per_km_countries_still_scale(self):
@@ -144,12 +142,14 @@ class WeightBandedBorderFeeTests(TestCase):
         heavy = self._fee_line('NA', 30_000)['amount']
         self.assertLess(light, mid)
         self.assertLess(mid, heavy)
-        self.assertEqual(heavy, 4463.29)   # the sourced 7-axle figure is unchanged
+        self.assertEqual(heavy, 4463.00)   # N$1,601 + N$1,261 + N$1,601 (7-axle interlink)
 
-    def test_namibia_light_band_follows_the_published_per_axle_rule(self):
-        # N$4,463 over 7 axles, a 2-axle rigid pays 2 of them.
-        self.assertAlmostEqual(self._fee_line('NA', 6_000)['amount'],
-                               round(4463.29 / 7 * 2, 2), delta=0.02)
+    def test_namibia_light_bands_are_the_published_unit_charges(self):
+        # RFA schedule (eff. 1 Aug 2026): 2-axle truck N$1,261, 3-axle N$1,601,
+        # 3-axle tractor + 2-axle trailer N$1,601 + N$1,261.
+        self.assertEqual(self._fee_line('NA', 6_000)['amount'], 1261.00)
+        self.assertEqual(self._fee_line('NA', 15_000)['amount'], 1601.00)
+        self.assertEqual(self._fee_line('NA', 18_000)['amount'], 2862.00)
 
     def test_a_corridor_with_no_light_band_says_so(self):
         # Botswana's schedule has lower bands; we do not hold the figures, so
@@ -167,7 +167,7 @@ class WeightBandedBorderFeeTests(TestCase):
         fee = next(b for b in r['breakdown'] if b['type'] == 'border_crossing')['amount']
         permit = next(b for b in r['breakdown'] if b['type'] == 'sa_permit')
         self.assertIn('Class 1', permit['description'])
-        self.assertLess(fee, 4463.29)   # not the interlink rate
+        self.assertLess(fee, 4463.00)   # not the interlink rate
 
 
 class BandOnTheTruckTests(TestCase):
