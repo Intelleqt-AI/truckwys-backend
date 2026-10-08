@@ -396,3 +396,18 @@ class LabelAndCandidateTests(_Base):
                   status='DELIVERED')
         open_ = make_load(self.co, self.cust, 'LB-OPEN', pickup='Durban', delivery='Johannesburg', pickup_in_days=3)
         self.assertEqual([c['load_id'] for c in return_candidates(out)], [open_.id])
+
+
+class FinalCheckTmsTests(_Base):
+    def test_control_characters_and_long_load_number_are_400(self):
+        for body in ({'action': 'create', 'load_number': 'FC-1', 'return_of_external_id': 'A\u0000B'},
+                     {'action': 'create', 'load_number': 'FC-2', 'return_of_load_number': 'X\u0000'},
+                     {'action': 'create', 'load_number': 'L' * 101},
+                     {'action': 'create', 'load_number': 'FC-3', 'external_id': 'E\u0007'}):
+            r = APIClient().post(SYNC, body, format='json', HTTP_X_API_KEY='TMS-KEY')
+            self.assertEqual(r.status_code, 400, (body, r.content))
+        self.assertFalse(Load.objects.filter(load_number__startswith='FC-').exists())
+
+    def test_non_string_vehicle_type_is_a_record_error(self):
+        out = self.trips([self.rec(external_id='FC-V', vehicle_type={'name': 'x'})])
+        self.assertEqual(out['errors'][0]['error'], 'vehicle_type must be a string (the vehicle type name)')

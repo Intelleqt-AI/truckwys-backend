@@ -134,7 +134,10 @@ def costing_inputs_from(company, rec):
     from core.services.trip_costing import clean_costing_inputs
     ci = clean_costing_inputs(rec)
     vt_id = ci.pop('vehicle_type_id', None)
-    name = (rec.get('vehicle_type') or '').strip()
+    raw_name = rec.get('vehicle_type')
+    if raw_name is not None and not isinstance(raw_name, str):
+        raise SyncError('vehicle_type must be a string (the vehicle type name)')
+    name = (raw_name or '').strip()
     if vt_id or name:
         from core.services.quote_costing import resolve_vehicle
         vt, how = resolve_vehicle(company, vehicle_type_id=vt_id, name=name, suggest=False)
@@ -157,9 +160,11 @@ def clean_external_id(value, field='external_id'):
         return ''
     if isinstance(value, bool) or not isinstance(value, (str, int, float)):
         raise SyncError(f'{field} must be a string')
+    import unicodedata
     ext = str(value).strip()
-    if any(c in ext for c in '\t\r\n'):
-        raise SyncError(f'{field} must not contain tabs or line breaks')
+    if any(unicodedata.category(c) == 'Cc' for c in ext):
+        # Tabs, line breaks, NUL (PostgreSQL refuses it) and other controls.
+        raise SyncError(f'{field} must not contain control characters (tabs, line breaks, NUL)')
     if len(ext) > MAX_EXTERNAL_ID:
         raise SyncError(f'{field} is longer than {MAX_EXTERNAL_ID} characters')
     return ext
@@ -537,7 +542,7 @@ def apply_fleet_trip(company, data, *, user=None):
     action = data.get('action', 'status_update')
     if action not in ('status_update', 'create', 'complete', 'update'):
         raise SyncError(f'Unknown action {action}')
-    load_number = data.get('load_number')
+    load_number = clean_external_id(data.get('load_number'), 'load_number') or None
     ext = clean_external_id(data.get('external_id'))
     if not load_number and not ext:
         raise SyncError('load_number or external_id is required')

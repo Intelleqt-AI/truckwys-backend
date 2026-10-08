@@ -38,7 +38,7 @@ def _subscription_company(request):
     return getattr(sub, 'company', None)
 
 
-def bad_webhook_input(data, *, ints=(), dates=(), numbers=()):
+def bad_webhook_input(data, *, ints=(), dates=(), numbers=(), ranges=None):
     """An error message when an id / count isn't a whole number >= 0, a date
     isn't YYYY-MM-DD or a number isn't a number (-> 400, never a 500), else
     None. Dates are replaced by date objects in `data` (a dict copy)."""
@@ -63,12 +63,19 @@ def bad_webhook_input(data, *, ints=(), dates=(), numbers=()):
         if v in (None, ''):
             continue
         try:
-            if not _D(str(v)).is_finite():
+            d = _D(str(v))
+            if not d.is_finite():
                 raise InvalidOperation
         except (InvalidOperation, ValueError):
             return f'{k} must be a number'
+        lo, hi = (ranges or {}).get(k, (None, None))
+        if (lo is not None and d < lo) or (hi is not None and d >= hi):
+            return f'{k} must be from {lo} to under {hi:,}'.replace(',', ' ')
     return None
 
+
+# Odometer km: Vehicle.mileage is NUMERIC(10, 2) (1e8 would overflow on PostgreSQL).
+MILEAGE_RANGE = {'mileage': (0, 100_000_000)}
 
 SIGNATURE_WINDOW_SECONDS = 300
 LEGACY_REPLAY_TTL_SECONDS = 30 * 86400
@@ -626,7 +633,7 @@ class FleetWebhookVehicleEventView(APIView):
             return _no_company_response()
         data = dict(request.data) if isinstance(request.data, dict) else {}
         err = bad_webhook_input(data, ints=('vehicle_id',), dates=('maintenance_due', 'last_inspection'),
-                                numbers=('mileage',))
+                                numbers=('mileage',), ranges=MILEAGE_RANGE)
         if err:
             return Response({'error': err}, status=status.HTTP_400_BAD_REQUEST)
         vehicle_id = data.get('vehicle_id')

@@ -287,7 +287,7 @@ class CtrlFleetAdapter:
             Dict with status and message
         """
         from core.views_fleet import bad_webhook_input
-        err = bad_webhook_input(dict(data), ints=('vehicle_id',), numbers=('mileage',))
+        err = bad_webhook_input(dict(data), ints=('vehicle_id',), numbers=('mileage',), ranges={'mileage': (0, 100_000_000)})
         err = err or bad_webhook_input(dict(data), dates=('maintenance_due',))
         if err:
             return {'status': 'error', 'message': err}

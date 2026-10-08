@@ -427,3 +427,21 @@ class RoundThreeWebhookTests(_Tenants):
         self.assertEqual(r.status_code, 200, r.content)
         self.load_a.refresh_from_db()
         self.assertEqual(self.load_a.status, 'CANCELLED')
+
+
+@override_settings(CTRLFLEET_WEBHOOK_KEY='')
+class FinalCheckWebhookTests(_Tenants):
+    def test_mileage_bounded(self):
+        sub = WebhookSubscription.objects.create(partner_name='Fleet A', webhook_url='https://a.example',
+                                                 company=self.co_a)
+        url = '/api/v1/fleet/webhooks/vehicle-event/'
+        for bad in ('1e12', -5, 100_000_000):
+            self.assertEqual(signed_post(url, {'vehicle_id': self.vehicle_a.id, 'mileage': bad}, sub).status_code,
+                             400, bad)
+        ok = signed_post(url, {'vehicle_id': self.vehicle_a.id, 'mileage': 125000}, sub)
+        self.assertEqual(ok.status_code, 200, ok.content)
+        self.vehicle_a.refresh_from_db()
+        self.assertEqual(self.vehicle_a.mileage, Decimal('125000'))
+        r = APIClient().post('/api/v1/fleet/webhooks/ctrlfleet/', {'event_category': 'vehicle',
+                             'vehicle_id': self.vehicle_a.id, 'mileage': '1e12'}, format='json', HTTP_X_API_KEY='KEY-A')
+        self.assertEqual(r.status_code, 400)
