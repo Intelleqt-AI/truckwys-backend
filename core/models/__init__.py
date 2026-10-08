@@ -31,6 +31,7 @@ from .delivery_fee_charge import DeliveryFeeCharge
 from .invite_token import InviteToken
 from .fuel_price import FuelPrice
 from .task_run import TaskRunLog
+from .fleet_fuel import FleetFuelMeasurement, FleetFuelSyncRun
 from .toll_plaza import TollPlaza
 from .rag_chunk import InvoiceEmbedding
 from .border_crossing_fee import BorderCrossingFee
@@ -105,6 +106,8 @@ __all__ = [
     'LocationSearchHistory',
     'PendingSignup',
     'TaskRunLog',
+    'FleetFuelMeasurement',
+    'FleetFuelSyncRun',
     'MLModelVersion',
     'MLUserRetrainQueue',
     'AIQuotePriceAnalysis',

@@ -59,6 +59,7 @@ from .views_capital import (
 from .views_partner import (
     PartnerAdvanceViewSet, PartnerOperatorViewSet, PartnerRiskScoreViewSet
 )
+from . import views_fleet_fuel
 from .views_integrations import (
     FleetImportTripsView,
     CreditLookupView, DashboardInsightsView, CashFlowForecastView,
@@ -209,6 +210,12 @@ urlpatterns = [
     path('fleet/insights/', VehicleInsightsView.as_view(), name='vehicle-insights'),
     path('fleet/intelligence/', VehicleIntelligenceFeedView.as_view(), name='vehicle-intelligence'),
     path('fleet/action/', VehicleActionView.as_view(), name='vehicle-action'),
+    # Measured fuel use from the fleet tracker vs configured burn (core/views_fleet_fuel.py)
+    path('fleet/fuel-actuals/', views_fleet_fuel.FleetFuelActualsView.as_view(), name='fleet-fuel-actuals'),
+    path('fleet/fuel-actuals/refresh/', views_fleet_fuel.FleetFuelRefreshView.as_view(),
+         name='fleet-fuel-actuals-refresh'),
+    path('fleet/fuel-actuals/vehicle-types/<int:pk>/burn-mode/', views_fleet_fuel.FleetFuelBurnModeView.as_view(),
+         name='fleet-fuel-burn-mode'),
     
     # Driver Intelligence endpoints
     path('drivers/overview/', DriverOverviewView.as_view(), name='driver-overview'),

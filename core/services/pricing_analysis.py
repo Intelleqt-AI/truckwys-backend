@@ -584,6 +584,7 @@ def _panel_lines(costing, fixed):
     out = []
     d = costing['diesel']
     fuel = by.get('fuel')
+    burn = (costing.get('resolution') or {}).get('rated_burn')
     if fuel is not None and fuel['amount'] is not None:
         details = []
         if d.get('official_price'):
@@ -593,12 +594,15 @@ def _panel_lines(costing, fixed):
                                if d.get('official_effective_from') else '') + ')'})
         if fuel.get('burn_l_per_100km'):
             details.append({'label': 'Consumption', 'value': f'{_num(fuel["burn_l_per_100km"], 1)} L/100km for this load'})
+        if burn and burn.get('label'):
+            details.append({'label': 'Truck fuel use', 'value': burn['label'], 'source': burn['source']})
         out.append(_line('fuel', 'Fuel', 0, _fuel_source(costing, None),
                          _approx(fuel['litres'], 0, fuel['price_per_litre'], fuel['amount'])
                          + f'{_num(fuel["litres"])} L × {_fmt2(fuel["price_per_litre"])}/L '
                          f'({_num(fuel["km"], _km_dp(fuel["km"]))} km at {_num(fuel["burn_l_per_100km"], 1)} L/100km)',
                          details,
-                         litres=fuel['litres'], price_per_litre=fuel['price_per_litre'])
+                         litres=fuel['litres'], price_per_litre=fuel['price_per_litre'],
+                         burn_source=(burn or {}).get('source'), burn_label=(burn or {}).get('label'))
                    | {'amount': fuel['amount']})
     tolls = by.get('tolls')
     if tolls is not None and tolls['amount'] is not None:
@@ -693,7 +697,7 @@ def build_cost_floor(payload, *, company, today=None, include_return=None, warni
     p['include_empty_return'] = include_return
     p.pop('include_return', None)
     inputs, context = qc.build_inputs(p, company, now)
-    costing = qc.compute(inputs)
+    costing = qc.burn_warnings(qc.compute(inputs), context.get('rated_burn'))
     costing['inputs'] = inputs
     costing['resolution'] = qc._context_out(context)
     fixed = fixed_cost_per_km(company, context['vehicle_type']) if context['vehicle_type'] is not None else None

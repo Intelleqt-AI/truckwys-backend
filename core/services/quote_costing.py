@@ -205,6 +205,7 @@ ACTION_LABELS = {
     'keep_price': 'Keep price',
     'enter_weight': 'Enter weight',
     'enter_border_costs': 'Enter border costs',
+    'use_measured_burn': 'Use measured figure',   # DB-side only (fleet tracker), not in golden
 }
 
 
@@ -655,11 +656,81 @@ def _truthy(v):
     return str(v).strip().lower() in ('1', 'true', 'yes', 'on')
 
 
-def vehicle_input(vt):
+def vehicle_input(vt, burn=None):
+    """compute()'s vehicle. `burn` (resolve_rated_burn) supplies the rated
+    burn in use (measured or configured); without it, the configured figure."""
     if vt is None:
         return None
+    rated = burn['value'] if burn is not None else _num(vt.fuel_consumption_l_per_100km)
     return {'id': vt.id, 'name': vt.name, 'capacity': _num(vt.capacity),
-            'rated_burn_l_per_100km': _num(vt.fuel_consumption_l_per_100km)}
+            'rated_burn_l_per_100km': rated}
+
+
+# Measured fuel use (core.services.fleet_fuel_actuals) differs from the
+# configured figure by more than this -> warn when the configured one prices.
+BURN_DIFFERS_PCT = 15.0
+
+
+def resolve_rated_burn(company, vt, *, use_configured=False, now=None):
+    """The rated (full-load) burn a quote on this vehicle type uses, and why.
+
+    Order: the company's measured figure for the type (fleet tracker, enough
+    data, plausible, fresh, tracker still connected) unless the admin pinned
+    their own figure (burn_mode CONFIGURED) or this quote asks for it
+    (use_configured); else the configured figure: the company's own type
+    ("Your figure") or a shared default type ("Standard estimate").
+    Reads stored rows only, never the tracker.
+    Returns {value, source: measured|configured|standard|missing, label,
+    configured, measured (fleet_fuel_actuals.measurement_out) | None, mode}."""
+    from core.services import fleet_fuel_actuals as ffa
+    configured = _pos(vt.fuel_consumption_l_per_100km) if vt is not None else None
+    shared = vt is not None and vt.company_id is None
+    row = ffa.type_measurement(company, vt) if vt is not None else None
+    measured = ffa.measurement_out(row, company, now) if row is not None else None
+    mode = row.burn_mode if row is not None else 'AUTO'
+    usable = bool(measured and measured['usable'])
+    if usable and mode != 'CONFIGURED' and not use_configured:
+        value = row.rated_burn_l_per_100km
+        return {'value': value, 'source': 'measured', 'label': measured['label'], 'configured': configured,
+                'measured': measured, 'mode': mode, 'chosen_by': 'measured'}
+    if configured is None:
+        return {'value': None, 'source': 'missing', 'label': 'No fuel use set for this truck',
+                'configured': None, 'measured': measured, 'mode': mode, 'chosen_by': None}
+    if shared:
+        label = f'Standard estimate: {fmt_num(configured, 1)} L/100 km (TruckWys default for this truck type)'
+    else:
+        label = f'Your figure: {fmt_num(configured, 1)} L/100 km (vehicle type settings)'
+    if usable:
+        label += f'; measured {measured["display"]}'
+    return {'value': configured, 'source': 'standard' if shared else 'configured', 'label': label,
+            'configured': configured, 'measured': measured, 'mode': mode,
+            'chosen_by': 'quote' if use_configured else ('settings' if usable else None)}
+
+
+def burn_warnings(costing, burn):
+    """DB-side warnings about the truck's fuel figure (not in golden: they
+    depend on stored tracker data). Mutates costing['warnings'] /
+    ['blocking'] stays unchanged (both are warn)."""
+    if not burn or not costing.get('vehicle'):
+        return costing
+    measured = burn.get('measured') or {}
+    ws = costing['warnings']
+    if burn['source'] != 'measured' and measured.get('usable') and burn.get('value'):
+        m = measured['rated_burn_l_per_100km']
+        gap = (burn['value'] - m) / m * 100
+        suspect = next((w for w in ws if w['code'] == 'truck_burn_suspect'), None)
+        if suspect is not None:
+            # The suspect-truck check knows the real figure: say it.
+            suspect['detail'] = suspect['detail'].rstrip('.') + f'; Cartrack measured {measured["display"]}.'
+            suspect['measured_l_per_100km'] = m
+            if 'use_measured_burn' not in [a['id'] for a in suspect['actions']]:
+                suspect['actions'] = [{'id': 'use_measured_burn', 'label': 'Use measured figure'}] + suspect['actions']
+        elif abs(gap) > BURN_DIFFERS_PCT:
+            ws.append(warning('truck_burn_differs_measured', 'warn', 'Your fuel figure differs from measured',
+                              f'{fmt_num(burn["value"], 1)} set, {measured["display"]} measured.',
+                              actions=('use_measured_burn', 'edit_vehicle'),
+                              measured_l_per_100km=m, configured_l_per_100km=burn['value']))
+    return costing
 
 
 # §3 suggestion: specialised bodies are only suggested when the cargo asks
@@ -860,6 +931,8 @@ def build_inputs(payload, company, now=None, *, diesel_override=None):
     cargo = payload.get('cargo_description') or payload.get('cargo')
     vt, how = resolve_vehicle(company, vehicle_type_id=payload.get('vehicle_type_id'),
                               name=payload.get('vehicle_type'), load_kg=load_kg, cargo=cargo)
+    burn = resolve_rated_burn(company, vt, use_configured=bool(_truthy(payload.get('use_configured_burn'))),
+                              now=now) if vt is not None else None
 
     fuel_type = (getattr(vt, 'fuel_type', None) or 'Diesel') if vt is not None else 'Diesel'
     if diesel_override is not None:
@@ -906,7 +979,7 @@ def build_inputs(payload, company, now=None, *, diesel_override=None):
         'distance_confirmed': bool(_truthy(payload.get('distance_confirmed'))),
         'duration_minutes': _pos(payload.get('duration_minutes')),
         'load_kg': load_kg,
-        'vehicle': vehicle_input(vt),
+        'vehicle': vehicle_input(vt, burn),
         'diesel': diesel['input'],
         # No truck => no class => no operating cost (never a generic class).
         'operating_cost_per_km': op['value'] if op else None,
@@ -936,6 +1009,7 @@ def build_inputs(payload, company, now=None, *, diesel_override=None):
     }
     suggested = vt if how == 'suggested' else suggest_vehicle(company, load_kg, cargo)
     context = {'vehicle_type': vt, 'vehicle_how': how, 'suggested': suggested, 'operating_cost': op,
+               'rated_burn': burn,
                'inputs': {'load_kg': load_kg},
                'diesel': diesel,
                'driver_rate_source': rate_source, 'now': now}
@@ -955,13 +1029,14 @@ def _context_out(context):
                                   else 'load_missing' if not (_num((context.get('inputs') or {}).get('load_kg')) or 0) > 0
                                   else 'no_truck_carries_the_load'),
             'operating_cost': context['operating_cost'],
+            'rated_burn': context.get('rated_burn'),
             'driver_rate_source': context['driver_rate_source'], 'diesel_resolution': d}
 
 
 def costing_for_payload(payload, company, now=None):
     """compute() for a builder payload, plus how each input was resolved."""
     inputs, context = build_inputs(payload, company, now)
-    out = compute(inputs)
+    out = burn_warnings(compute(inputs), context.get('rated_burn'))
     out['inputs'] = inputs
     out['resolution'] = _context_out(context)
     return out
@@ -976,7 +1051,7 @@ COSTING_INPUT_KEYS = {
     'tolls_confirmed_none': bool, 'include_empty_return': bool, 'use_official_fuel': bool,
     'tolls_empty_return': float, 'fuel_price_override': float, 'vehicle_type_id': int,
     'driver_nights': int, 'duration_minutes': float, 'toll_cost_one_way': float,
-    'driver_cost_is_override': bool, 'border_cost': float,
+    'driver_cost_is_override': bool, 'border_cost': float, 'use_configured_burn': bool,
 }
 
 
@@ -1031,6 +1106,7 @@ def quote_payload(quote):
         'distance_confirmed': ci.get('distance_confirmed'),
         'use_official_fuel': ci.get('use_official_fuel'),
         'fuel_price_override': ci.get('fuel_price_override'),
+        'use_configured_burn': ci.get('use_configured_burn'),
         'price': _num(quote.total_amount),
     }
     # Quote.distance is the one-way leg (pricing_decisions reads it so too);
@@ -1053,12 +1129,13 @@ def costing_for_quote(quote, now=None, *, use_snapshot_diesel=False):
             'official_stale': False, 'use_official': False, 'override_price': None},
             'source': quote.fuel_price_source}
     inputs, context = build_inputs(quote_payload(quote), company, now, diesel_override=override)
-    out = compute(inputs)
+    out = burn_warnings(compute(inputs), context.get('rated_burn'))
     if override is not None:
         out['diesel']['source'] = quote.fuel_price_source
     out['inputs'] = inputs
     out['resolution'] = _context_out(context) if override is None else {
         'vehicle_selection': context['vehicle_how'], 'operating_cost': context['operating_cost'],
+        'rated_burn': context.get('rated_burn'),
         'driver_rate_source': context['driver_rate_source'], 'diesel_resolution': 'snapshot'}
     return out
 

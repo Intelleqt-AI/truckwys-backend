@@ -448,6 +448,12 @@ class VehicleTypeSerializer(serializers.ModelSerializer):
     # frontend uses this to offer "Reset to shared default" instead of
     # "Delete" for these specifically.
     overrides_shared_default = serializers.SerializerMethodField()
+    # The rated burn quotes on this type use right now: measured by the fleet
+    # tracker (when usable and not overridden) or the configured figure.
+    # {value, source: measured|configured|standard|missing, label, configured,
+    #  burn_mode, measured: {rated_burn_l_per_100km, distance_km, confidence, ...} | null}.
+    # Stored data only (core.services.fleet_fuel_actuals); never calls the tracker.
+    fuel_use_in_use = serializers.SerializerMethodField()
 
     class Meta:
         model = VehicleType
@@ -459,6 +465,14 @@ class VehicleTypeSerializer(serializers.ModelSerializer):
             'max_distance': {'required': False, 'default': 0},
             'base_rate': {'required': False, 'default': 0},
         }
+
+    def get_fuel_use_in_use(self, obj):
+        from core.services.quote_costing import resolve_rated_burn
+        request = self.context.get('request')
+        company = getattr(getattr(request, 'user', None), 'company', None)
+        burn = resolve_rated_burn(company, obj)
+        return {'value': burn['value'], 'source': burn['source'], 'label': burn['label'],
+                'configured': burn['configured'], 'burn_mode': burn['mode'], 'measured': burn['measured']}
 
     def get_owned_vehicle_count(self, obj):
         request = self.context.get('request')
