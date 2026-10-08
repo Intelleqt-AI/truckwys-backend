@@ -369,7 +369,12 @@ import sys as _sys
 _RUNNING_TESTS = len(_sys.argv) > 1 and _sys.argv[1] == 'test'
 # Exchange rates for border charges (core/services/fx.py): live fetch, never in tests.
 FX_LIVE_FETCH = (not _RUNNING_TESTS) and config('FX_LIVE_FETCH', default=True, cast=bool)
-EMAIL_DELIVERY = 'off' if _RUNNING_TESTS else config('EMAIL_DELIVERY', default='resend').strip().lower()
+# A DEBUG (local/dev) server never emails real customers unless it is told to
+# explicitly: unset EMAIL_DELIVERY means 'console' under DEBUG, 'resend' in
+# production (DEBUG off). Quote follow-up reminders, fuel alerts and the
+# weekly margin email all go through this switch.
+EMAIL_DELIVERY = 'off' if _RUNNING_TESTS else config(
+    'EMAIL_DELIVERY', default='console' if DEBUG else 'resend').strip().lower()
 if EMAIL_DELIVERY not in ('resend', 'console', 'off'):
     EMAIL_DELIVERY = 'resend'
 if EMAIL_DELIVERY == 'console':
@@ -749,6 +754,29 @@ CELERY_BEAT_SCHEDULE = {
     'send-weekly-summaries': {
         'task': 'core.tasks.send_weekly_summaries',
         'schedule': crontab(day_of_week='mon', hour='7', minute='15'),
+    },
+    # Quote follow-ups. Fuel change alert: 00:10 (just after the first-
+    # Wednesday 00:01 change) and 06:20 (after the 06:00 refresh); also queued
+    # after every successful refresh. Idempotent per company per period.
+    'send-fuel-change-alerts-midnight': {
+        'task': 'core.tasks.send_fuel_change_alerts',
+        'schedule': crontab(hour='0', minute='10'),
+    },
+    'send-fuel-change-alerts-morning': {
+        'task': 'core.tasks.send_fuel_change_alerts',
+        'schedule': crontab(hour='6', minute='20'),
+    },
+    # Expiry and no-answer nudges for sent quotes, 08:00 SAST daily (after
+    # the 07:10 expiry sweep, so an expired quote is never nudged).
+    'sweep-quote-nudges': {
+        'task': 'core.tasks.sweep_quote_nudges',
+        'schedule': crontab(hour='8', minute='0'),
+    },
+    # Weekly margin email to admins, Mondays 07:00 SAST. Idempotent per
+    # company per week (WeeklyMarginReport).
+    'send-weekly-margin-emails': {
+        'task': 'core.tasks.send_weekly_margin_emails',
+        'schedule': crontab(day_of_week='mon', hour='7', minute='0'),
     },
     # Dead-man's-switch for everything above: emails the superusers when a
     # tracked task has gone quiet or is failing every run. 09:00 SAST, i.e.

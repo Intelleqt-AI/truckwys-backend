@@ -177,7 +177,10 @@ class Quote(models.Model):
     # quote with total_tonnes is a VOLUME CONTRACT: each booked call-off is a
     # Load (Load.quote) drawing down the remaining tonnes.
     PRICING_BASIS_CHOICES = [('per_load', 'Per load'), ('per_tonne', 'Per tonne')]
-    pricing_basis = models.CharField(max_length=10, choices=PRICING_BASIS_CHOICES, default='per_load')
+    pricing_basis = models.CharField(max_length=10, choices=PRICING_BASIS_CHOICES, default='per_load',
+                                     # db_default: rows created by code that predates the column
+                                     # (an older image during a rolling deploy) still insert.
+                                     db_default='per_load')
     rate_per_tonne = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True,
                                          help_text='Rate per tonne excl. VAT (per_tonne quotes)')
     total_tonnes = models.DecimalField(max_digits=12, decimal_places=3, null=True, blank=True,

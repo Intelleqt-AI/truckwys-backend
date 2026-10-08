@@ -948,6 +948,8 @@ NOTIFICATION_DEFAULTS = {
         "payments": True,
         "fleet_alerts": True,
         "weekly_reports": False,
+        "fuel_alerts": True,
+        "margin_report": True,
     },
     "push": {
         "new_bookings": True,
@@ -955,6 +957,7 @@ NOTIFICATION_DEFAULTS = {
         "maintenance_due": True,
         "driver_updates": False,
         "product_news": False,
+        "quote_reminders": True,
     },
     "sms": {"critical_alerts": False, "payment_confirmations": False},
 }
@@ -3124,7 +3127,8 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         if refusal is not None:
             return refusal
         if quote.pricing_basis == 'per_tonne':
-            from core.services.tonnage_jobs import CallOffError, call_off_tonnes, tonnage_load_fields
+            from core.services.tonnage_jobs import (CallOffError, call_off_tonnes, copy_tonnage_costing,
+                                                    tonnage_load_fields)
             if quote.rate_per_tonne is None:
                 return Response({'error': 'Set the rate per tonne before booking this quote.'},
                                 status=status.HTTP_400_BAD_REQUEST)
@@ -3256,7 +3260,8 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
                     # empty return, floor, fuel, truck, quoted margin). A
                     # per-tonne quote's snapshot is the whole plan (a contract's
                     # many loads), so its job is costed from its own data below.
-                    **({} if quote.pricing_basis == 'per_tonne' else copy_quote_costing(quote)),
+                    **(copy_tonnage_costing(quote, tonnage_fields) if quote.pricing_basis == 'per_tonne'
+                       else copy_quote_costing(quote)),
                 ), **tonnage_fields})   # per-tonne: rate x tonnes, planned tonnes
                 if not load.costing_source:
                     # A legacy quote with no pricing snapshot: cost the job from its
@@ -3392,8 +3397,12 @@ class PublicQuoteView(APIView):
             # NOTE: Cost breakdown (base rate, fuel, tolls, driver allowance,
             # margin) and driver details are intentionally NOT returned — the
             # customer only ever sees route, cargo, dates and the final price.
+            from core.services.quote_pdf import diesel_reference_line, fuel_clause_line
             return Response({
                 'quote_number': quote.quote_number,
+                # Fuel price reference + clause, as on the PDF (null when none).
+                'fuel_reference': diesel_reference_line(quote),
+                'fuel_clause': fuel_clause_line(quote),
                 'customer_name': quote.customer.name if quote.customer else '',
                 'company_name': company.company_name if company else '',
                 'company_logo_url': company_logo_url,

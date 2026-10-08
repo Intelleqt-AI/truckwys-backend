@@ -339,8 +339,14 @@ def apply_record(company, load, rec, *, source, user=None, origin_keys=None, des
         new['notes'] = rec['notes']
     # Per-tonne loads: the weighbridge tonnes (and slip) from the TMS; the
     # load and its DRAFT invoice are re-priced (rate x max(tonnes, minimum)).
-    tonnes = _dec(rec.get('actual_tonnes'))
-    if tonnes is not None and getattr(load, 'pricing_basis', 'per_load') == 'per_tonne' and 0 < tonnes <= 100:
+    # A cancelled load is never re-weighed or re-priced.
+    if (rec.get('actual_tonnes') not in (None, '') and getattr(load, 'pricing_basis', 'per_load') == 'per_tonne'
+            and load.status != 'CANCELLED'):
+        tonnes = _dec(rec.get('actual_tonnes'))
+        if not tonnes.is_finite() or not (0 < tonnes <= 100) or tonnes.as_tuple().exponent < -3:
+            # This record only: the sync carries on with the others.
+            raise SyncError(f'actual_tonnes must be a number above 0 and up to 100 with at most 3 decimals: '
+                            f'{rec.get("actual_tonnes")!r}')
         new['actual_tonnes'] = tonnes.quantize(Decimal('0.001'))
         new['actual_tonnes_source'] = 'tms'
         if rec.get('weighbridge_slip'):

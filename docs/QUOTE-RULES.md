@@ -564,6 +564,67 @@ not priced); one lane per contract in v1 (a client with several lanes has one co
 status, pickup_date, planned_tonnes, actual_tonnes, weighbridge_slip, total_amount}]`. Load `weighbridge_slip`
 (ticket number, optional) is saved with the weighbridge tonnes.
 
+**Verifier fixes (8 Oct 2026).** Migration 0177 gives every new NOT NULL column a `db_default` (`quotes.pricing_basis`,
+`loads.pricing_basis`, `loads.actual_tonnes_source`, `loads.weighbridge_slip`): code from before 0177 still inserts.
+Call-off `tonnes` (convert_to_load, booking-preview `?tonnes=`): a finite number above 0 with at most 3 decimals
+(`28,5` or `28.5`), else 400 (`invalid_tonnes` on the preview); at least 0,1 t; one consignment at most its quoted tonnes;
+a contract at most the remaining tonnes and at most the largest eligible truck's payload (`volume_contract.
+max_tonnes_per_load`; clients cap at the same figure). Call-offs are costed at booking from the contract's priced truck
+(one full load, `costing_source: "quote"`). TMS `actual_tonnes` that is not a finite number above 0 and up to 100 t with at
+most 3 decimals is a per-record SyncError; a CANCELLED load ignores it. Weighbridge tonnes that change the amount after the
+invoice is issued set `invoice_mismatch {code: "weighed_after_invoicing", ...}` and never re-price. The invoice line names
+the slip ("Weighbridge slip WB-1042") and says "planned" for planned tonnes.
+
+## Quote follow-ups (8 Oct 2026, branch truckwys/quote-followups)
+Tables (not new Company/Quote columns): `QuoteAutomationSettings` (1:1 company), `QuoteFollowUp` (1:1 quote),
+`QuoteFuelClause` (1:1 quote), `FuelChangeAlert`, `WeeklyMarginReport`. Migrations 0178 (models, `db_default` on every NOT NULL column) + 0179 (backfill, non-atomic, 1 000-row batches).
+API JSON: `FOLLOWUPS-CLIENT-SPEC.md` (tw-wt root). Endpoints in `core/views_quote_followups.py`.
+- **Fuel price clause.** Company `fuel_surcharge_enabled` (new companies ON; existing OFF with
+  `fuel_surcharge_prompt_pending` until they decide) and `fuel_surcharge_threshold_pct` (default 5, 1–25).
+  Basis = `fuel_official_at_pricing` (official zone price at pricing, for the fuel the quote was priced on), even
+  when the quote used the fleet's own price. Adjustment = `cents(fuel_litres × (official in force on trip date −
+  basis))` only when |change| / basis × 100 > threshold, up or down. Trip date = load pickup date, else quote
+  pickup_date, else today (SAST; price at 12:00 SAST that day, so a Wednesday trip takes that day's change).
+  Future trip → `provisional: true`, never invoiced. This deliberately differs from `fuel_delta_zar` (today's
+  fuel lines − snapshot): the clause is a promise about a public figure, so it moves with the official price.
+  PDF / public quote: the §11 line followed by "If the official price moves more than 5% before the trip, the
+  fuel part of this quote changes by the same amount." (own-price quotes name the official basis:
+  "If the official inland diesel price (R 32,50/L on 7 Oct 2026) moves …"). The clause is stamped when the quote
+  is sent (`QuoteFuelClause`); only a stamped clause adjusts an invoice; a quote sent before/without it never
+  gets one. Invoicing hook: `fuel_surcharge.apply_to_invoice_lines(load, lines)` inside
+  `invoicing.invoice_lines_for_load` (so the booking preview, manual convert, delivery auto-invoice and a
+  weighbridge re-price of a DRAFT invoice all agree). Per-tonne loads: litres = clause litres / the quote's
+  billed tonnes (`costing_snapshot.tonnage.billable_tonnes`) × the load's billed tonnes (each call-off adjusts
+  only its share; the quote endpoint of a volume contract shows one planned load's share, `load_id` null); a down
+  adjustment discounts the whole per-tonne line (quantity × rate), never below zero. Weighbridge tonnes after the
+  invoice is issued (`weighed_after_invoicing`) never add or change an adjustment on it; the flag compares the issued
+  excl.-VAT amount with the weighed amount plus the adjustment those tonnes would carry. Up → line "Fuel price adjustment
+  (diesel R 32,80 → R 34,10/L)", revenue type FUEL_SURCHARGE, freight tax code. Down → discount on the freight
+  line (invoice lines can't be negative), description gains "less fuel price adjustment (…)". The trip-generator
+  invoice path (`InvoiceGenerator`) is not hooked (no quote link there).
+- **Fuel change alert.** A change = the official price in force now took effect this period and differs from
+  the one before by ≥ R 0,005, per (fuel, zone). Beat 00:10 + 06:20 SAST, plus queued after every successful
+  `refresh_fuel_price` and after a staff MANUAL price that is in force. Per company and fuel, once per period:
+  open quotes (DRAFT/SENT, valid_until ≥ today SAST, priced before the change, same fuel + zone) with
+  `changes_since_priced` (changed = |Δfloor| ≥ R 1). Copy: "Diesel up R 3,24/L today. 6 open quotes are now under
+  your 10% target. Re-price them?" ("on Wed 7 Oct" when the run is later; down: "… now cost less to run.").
+  Bell for every user; push category `quote_reminders`; own email (lists ≤ 25 quotes) to users with email
+  `fuel_alerts` on. A MANUAL then FIASA price in one period alerts once (the first).
+- **Nudges.** Beat 08:00 SAST. SENT quotes only; `expiry_nudge_days` (2) → "Quote Q-123 for Acme expires on Fri."
+  (today / tomorrow / on Fri / on Fri 17 Oct); `follow_up_after_days` (3, SAST calendar days since sent) →
+  "No answer from Acme on Q-123 (sent 3 days ago). Follow up?"; both due → one combined nudge. Once per stage per
+  send cycle (expiry once per valid_until); re-entering SENT resets. Quotes sent before this have `sent_at`
+  estimated from updated_at (never early). Bell + push only. Customer reminder only via
+  `POST …/follow-up/reminder/ {"confirm": true}` after a GET preview; ≤ 1 per 24 h; reply-to = the sender.
+- **Weekly margin email.** Monday 07:00 SAST, active ADMINs with email `margin_report` on, company switch
+  `weekly_margin_email_enabled`. One service function `margin_review.weekly_margin_figures` (also
+  `GET /reports/weekly-margin/`) on `reports.load_economics`; actual margin uses only `cost_basis == 'actual'`
+  (the modelled estimate is never shown as actual). No email when nothing happened in 4 weeks.
+- **Pricing setup.** `GET /company/pricing-setup/`: target margin, operating cost, driver allowance, fuel mode —
+  set when a save changed it ("changed"), the user confirmed the shown value ("confirmed") or the migration
+  saw a non-default value ("inferred"). Driver default text from `quote_costing.driver_rate()` (the approved
+  NBCRFLI allowance when on record).
+
 ## Measured fuel use from the fleet tracker (8 Oct 2026, fleet-actuals)
 - Source data (audited against Cartrack's OpenAPI spec): distance = `GET /vehicles/:reg/odometer` (`distance`
   metres; windows with `odometer_reset` / `terminal_has_changed` rejected); litres = CAN fuel-used counter
@@ -607,4 +668,7 @@ status, pickup_date, planned_tonnes, actual_tonnes, weighbridge_slip, total_amou
   `burn_source` / `burn_label`, `resolution.rated_burn` is the basis truck's, and the snapshot keeps it. Jobs keep
   the burn they were costed on (`Load.costing_snapshot.rated_burn`, copied from the quote or set when a TMS job is
   costed from its own data); the economics `fuel` cost group carries it as `rated_burn`. Migration
-  `0178_fleet_fuel_measurements` (after `0177_quote_load_tonnage`). Dev notes: `docs/FLEET_ACTUALS.md`.
+  `0180_fleet_fuel_measurements` (after `0179_quote_followups_backfill`; NOT NULL columns have `db_default`).
+  Fuel price clause: its litres (`Quote.fuel_litres`) come from the same costing as `costing_snapshot.rated_burn`,
+  so the clause adjusts the litres of the figure the quote was priced on; a re-measure never changes them.
+  Dev notes: `docs/FLEET_ACTUALS.md`.

@@ -58,7 +58,10 @@ def contract_status(quote):
                      'actual_tonnes': float(load.actual_tonnes) if load.actual_tonnes is not None else None,
                      'weighbridge_slip': load.weighbridge_slip or None, 'total_amount': float(load.total_amount)})
     size = quote_load_size(quote)
+    cap = max_load_tonnes(quote)
     return {'total_tonnes': float(total), 'booked_tonnes': float(booked),
+            # The most one call-off can carry: the largest eligible truck's payload.
+            'max_tonnes_per_load': float(cap) if cap is not None else None,
             # Weighbridge tonnes on record (loads with actual tonnes).
             'delivered_tonnes': float(delivered),
             'remaining_tonnes': float(max(total - booked, Decimal('0'))), 'loads_booked': len(rows),
@@ -103,9 +106,13 @@ def invoice_line_for_load(load, description):
     rate = b['rate_per_tonne']
     text = f'{description}: {t(b["billable_tonnes"])} at {fmt_rand(rate, 0 if float(rate).is_integer() else 2)}/t'
     if b['min_tonnes'] and b['billable_tonnes'] > b['tonnes']:
-        text += f' (minimum {t(b["min_tonnes"])}; {t(b["tonnes"])} delivered)'
+        text += (f' (minimum {t(b["min_tonnes"])}; {t(b["tonnes"])} '
+                 f'{"delivered" if b["tonnes_source"] == "actual" else "planned"})')
     if b['awaiting_weighbridge']:
         text += ' (planned tonnes, awaiting the weighbridge)'
+    slip = (getattr(load, 'weighbridge_slip', '') or '').strip()
+    if slip and not b['awaiting_weighbridge']:
+        text += f'. Weighbridge slip {slip}'
     return {'description': text, 'quantity': Decimal(str(b['billable_tonnes'])),
             'unit_price': Decimal(str(b['rate_per_tonne']))}
 
@@ -115,20 +122,26 @@ def refresh_load_amount(load, save=True):
     tonnes after its tonnes change. Issued invoices are never touched."""
     from core.models import Invoice, Load
     b = load_billing(load)
-    if b is None:
+    if b is None or load.status == 'CANCELLED':
         return None
-    if Invoice.objects.filter(load=load).exclude(status='DRAFT').exists():
-        return b    # issued: corrected with a credit note, never re-priced here
+    issued = (Invoice.objects.filter(load=load).exclude(status__in=('DRAFT', 'VOID', 'CANCELLED'))
+              .order_by('-id').first())
+    if issued is not None:
+        # Issued: never re-priced here (a credit note or a new invoice
+        # corrects it); flagged on the load so it is seen.
+        flag_weighed_after_invoicing(load, issued, b)
+        return b
     amount = _money(b['amount'])
     if save:
         Load.objects.filter(pk=load.pk).update(total_amount=amount, rate=amount)
     load.total_amount = load.rate = amount
     inv = Invoice.objects.filter(load=load, status='DRAFT').first()
     if inv is not None:
-        from core.services.invoice_lines import apply_lines, load_tax_code
-        from core.services.invoicing import _load_line_description
-        line = invoice_line_for_load(load, _load_line_description(load))
-        apply_lines(inv, [{**line, 'tax_code': load_tax_code(load, inv.company), 'load': load.pk}])
+        from core.services.invoice_lines import apply_lines
+        from core.services.invoicing import invoice_lines_for_load
+        # The same lines a fresh invoice gets (incl. a fuel price adjustment,
+        # which follows the billed tonnes).
+        apply_lines(inv, invoice_lines_for_load(load, inv.company))
         note = f'{AWAITING_WEIGHBRIDGE}: invoiced on planned tonnes.'
         notes = (inv.notes or '').replace(note, '').strip()
         if b['awaiting_weighbridge']:
@@ -138,39 +151,112 @@ def refresh_load_amount(load, save=True):
     return b
 
 
+def flag_weighed_after_invoicing(load, invoice, billing):
+    from django.utils import timezone
+    from core.models import ActivityEvent, Load
+    invoiced = (invoice.total_amount or Decimal('0')) - (invoice.vat_amount or Decimal('0'))
+    weighed = _money(billing['amount'])
+    # The issued invoice may carry a fuel price adjustment (quote follow-ups);
+    # compare like with like: the weighed amount plus the adjustment those
+    # tonnes would carry. Nothing is added to the issued invoice itself.
+    from core.services.fuel_surcharge import invoice_adjustment_for_load
+    adj = invoice_adjustment_for_load(load)
+    if adj is not None:
+        weighed = max(weighed + adj['amount'], Decimal('0'))
+    if abs(invoiced - weighed) < Decimal('0.01'):
+        return None
+    flag = {
+        'code': 'weighed_after_invoicing', 'invoice_id': invoice.pk, 'invoice_number': invoice.invoice_number,
+        'invoice_status': invoice.status, 'invoice_excl_vat': float(invoiced), 'load_total_excl_vat': float(weighed),
+        'difference': float(weighed - invoiced), 'tonnes': billing['tonnes'],
+        'billable_tonnes': billing['billable_tonnes'], 'source': getattr(load, 'actual_tonnes_source', '') or '',
+        'detected_at': timezone.now().isoformat(),
+        'title': 'Weighed after invoicing',
+        'detail': 'The weighbridge tonnes changed the amount; issue a credit note or a new invoice.',
+    }
+    if hasattr(load, 'invoice_mismatch'):
+        Load.objects.filter(pk=load.pk).update(invoice_mismatch=flag)
+        load.invoice_mismatch = flag
+    ActivityEvent.objects.create(event_type='load', title=f'Weighed after invoicing: {load.load_number}'[:200],
+                                 entity_id=load.pk, entity_type='Load', company=load.company, metadata=flag)
+    return flag
+
+
 class CallOffError(ValueError):
-    pass
+    """A call-off the server refuses. `invalid`: the tonnes are not a usable
+    number at all (the request itself is bad)."""
+
+    def __init__(self, message, invalid=False):
+        super().__init__(message)
+        self.invalid = invalid
+
+
+MIN_CALL_OFF = Decimal('0.1')
+
+
+def parse_tonnes(raw):
+    """Requested tonnes -> Decimal: finite, more than 0, at most 3 decimals
+    ("28,5" and "28.5" alike). Anything else is a CallOffError (400)."""
+    from decimal import InvalidOperation
+    if isinstance(raw, bool):
+        raise CallOffError('Enter the tonnes as a number, e.g. 28,5.', invalid=True)
+    try:
+        d = Decimal(str(raw).strip().replace(' ', '').replace(',', '.'))
+    except (InvalidOperation, ValueError, TypeError):
+        raise CallOffError('Enter the tonnes as a number, e.g. 28,5.', invalid=True)
+    if not d.is_finite():
+        raise CallOffError('Enter the tonnes as a number, e.g. 28,5.', invalid=True)
+    if d <= 0:
+        raise CallOffError('Enter the tonnes for this load.', invalid=True)
+    if d.as_tuple().exponent < -3:
+        raise CallOffError('Tonnes take at most 3 decimals.', invalid=True)
+    return d
+
+
+def max_load_tonnes(quote):
+    """The largest eligible truck's payload (tonnes) from the pricing
+    snapshot, or None when unknown."""
+    trucks = ((quote.costing_snapshot or {}).get('tonnage') or {}).get('trucks') or []
+    caps = [Decimal(str(t['payload_t'])) for t in trucks if t.get('payload_t')]
+    return max(caps) if caps else None
 
 
 def call_off_tonnes(quote, requested=None):
-    """Planned tonnes for the next load of a per-tonne quote. One consignment:
-    its tonnes_per_load (once). Volume: the requested tonnes (default the
-    planned load size), never more than what remains."""
+    """Planned tonnes for the next load of a per-tonne quote.
+
+    One consignment: its quoted tonnes, once; a figure may be sent but never
+    above the quoted tonnes. Volume contract: the requested tonnes (default
+    the planned load size), never more than what remains nor more than the
+    largest eligible truck carries. Always at least 0,1 t. Raises CallOffError."""
+    from core.services.quote_costing import fmt_num
+    t = lambda d: f'{fmt_num(float(d), 0 if d == d.to_integral() else 3).rstrip("0").rstrip(",")} t'
+    tonnes = parse_tonnes(requested) if requested not in (None, '') else None
     if quote.total_tonnes is None:
         if quote.loads.exists():
             raise CallOffError('Quote already converted')
-        tonnes = quote_load_size(quote) or Decimal('0')
-        if requested not in (None, ''):
-            tonnes = Decimal(str(requested))
-        if tonnes <= 0:
-            raise CallOffError('Enter the tonnes for this load.')
+        quoted = quote_load_size(quote)
+        if tonnes is None:
+            tonnes = quoted or Decimal('0')
+        elif quoted is not None and tonnes > quoted:
+            raise CallOffError(f'At most the quoted {t(quoted)} on this load.')
+        if tonnes < MIN_CALL_OFF:
+            raise CallOffError('A load is at least 0,1 t.')
         return tonnes, None
     status = contract_status(quote)
     remaining = Decimal(str(status['remaining_tonnes']))
     if remaining <= 0:
         raise CallOffError('Every tonne on this contract is booked.')
-    if requested not in (None, ''):
-        try:
-            tonnes = Decimal(str(requested))
-        except Exception:
-            raise CallOffError('tonnes must be a number.')
-        if tonnes <= 0:
-            raise CallOffError('Enter the tonnes for this load.')
-        if tonnes > remaining:
-            raise CallOffError(f'Only {float(remaining):g} t is left on this contract.')
-    else:
+    cap = max_load_tonnes(quote)
+    if tonnes is None:
         size = quote_load_size(quote) or remaining
-        tonnes = min(size, remaining)
+        tonnes = min(size, remaining, *( [cap] if cap is not None else []))
+    else:
+        if tonnes > remaining:
+            raise CallOffError(f'Only {t(remaining)} is left on this contract.')
+        if cap is not None and tonnes > cap:
+            raise CallOffError(f'At most {t(cap)} on one load (the largest truck).')
+    if tonnes < MIN_CALL_OFF:
+        raise CallOffError('A load is at least 0,1 t.')
     return tonnes, status
 
 
@@ -185,3 +271,30 @@ def tonnage_load_fields(quote, tonnes):
             # Not itemised per load: one line, rate x tonnes.
             'rate': amount, 'fuel_surcharge': Decimal('0'), 'toll_charges': Decimal('0'),
             'driver_allowance': Decimal('0'), 'additional_charges': Decimal('0'), 'total_amount': amount}
+
+
+def copy_tonnage_costing(quote, fields):
+    """Trip-economics fields for a per-tonne call-off: one load on the truck
+    the contract was priced on (the pricing snapshot's basis truck, a full
+    load), so the job's margin shows a cost. costing_source 'quote'."""
+    from core.services.trip_costing import SNAPSHOT_KEYS, copy_quote_costing
+    out = copy_quote_costing(quote)
+    one = ((quote.costing_snapshot or {}).get('tonnage') or {}).get('basis_load_costing') or {}
+    if not one.get('lines'):
+        out.update({'costing_snapshot': {}, 'cost_floor': None, 'quoted_cost_floor': None,
+                    'quoted_margin_pct': None, 'quoted_price': fields.get('total_amount'), 'costing_source': ''})
+        return out
+    floor = one.get('floor')
+    price = fields.get('total_amount')
+    floor_d = Decimal(str(floor)).quantize(Decimal('0.01')) if floor is not None else None
+    litres = (one.get('litres') or {}).get('total')
+    margin = (((Decimal(price) - floor_d) / Decimal(price) * 100).quantize(Decimal('0.01'))
+              if floor_d is not None and price else None)
+    out.update({
+        'costing_snapshot': {k: one.get(k) for k in SNAPSHOT_KEYS if k in one},
+        'cost_floor': floor_d, 'quoted_cost_floor': floor_d, 'quoted_price': price, 'quoted_margin_pct': margin,
+        'empty_return_assumed': (one.get('trip') or {}).get('empty_return_included'),
+        'fuel_litres': Decimal(str(litres)).quantize(Decimal('0.001')) if litres is not None else None,
+        'costing_source': 'quote',
+    })
+    return out

@@ -48,6 +48,10 @@ TRACKED_TASKS = {
     # Accounting integrations: hourly payment catch-up, nightly reconciliation.
     'accounting_poll_payments': timedelta(hours=3),
     'accounting_reconcile_all': timedelta(hours=36),
+    # Quote follow-ups. The Monday margin email is tracked by track_task_run
+    # but not listed (weekly; it would read 'never run' for days after deploy).
+    'send_fuel_change_alerts': timedelta(hours=36),
+    'sweep_quote_nudges': timedelta(hours=36),
 }
 
 

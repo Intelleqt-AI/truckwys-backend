@@ -79,6 +79,10 @@ Where the same figure is used:
   from its own data (TMS) stores the burn in use at costing time. In `/loads/{id}/economics/` the `fuel` cost group
   carries `rated_burn` (the figure the fuel estimate used), next to the actual fuel expenses.
 
+Fuel price clause (quote follow-ups): the clause adjusts `Quote.fuel_litres`, which comes from the same costing
+as `costing_snapshot.rated_burn`, so it always applies to the litres of the figure the quote was priced on
+(measured or typed). A later re-measure never changes a saved quote's litres or its clause.
+
 Saved quotes snapshot the burn they were priced on: `costing_snapshot.rated_burn` {value, source, label,
 configured, measured_at, measured_value}. Reopening a quote compares it with today's figure and adds
 `changes_since_priced.fuel_use_change` (its text is appended to `notice`).
@@ -114,8 +118,9 @@ Vehicle types (`/api/v1/vehicle-types/`) gain read-only `fuel_use_in_use`. No re
 
 ## Deploy
 1. Merge in stack order (tolls, voice, trip-economics, tonnage, quote-followups, then this). The migration is one
-   file, `core/migrations/0178_fleet_fuel_measurements.py` (two new tables, additive, reversible); renumber it
-   after the follow-ups migrations when restacking.
+   file, `core/migrations/0180_fleet_fuel_measurements.py` after `0179_quote_followups_backfill` (two new
+   tables, additive, reversible; every NOT NULL column has a `db_default`, so the previous image keeps working
+   mid-deploy).
 2. `python manage.py migrate` (the image entrypoint does this).
 3. Restart the Celery worker **and beat** so the new task and schedule load.
 4. Optional first fill instead of waiting for Monday:
@@ -123,7 +128,7 @@ Vehicle types (`/api/v1/vehicle-types/`) gain read-only `fuel_use_in_use`. No re
 5. Check: `GET /api/v1/fleet/fuel-actuals/` for a Cartrack company shows `last_run.status` `ok` or `partial`.
    Until a type has 2 000 km measured, quotes keep the typed figure, so nothing changes for users on day one.
 
-Rollback: set every type to `CONFIGURED`, or migrate back to `0177` (drops both tables; quotes fall back to the
+Rollback: set every type to `CONFIGURED`, or migrate back to `0179` (drops both tables; quotes fall back to the
 typed figures).
 
 ## Tests

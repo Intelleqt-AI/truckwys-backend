@@ -43,6 +43,9 @@ from .location_search_history import LocationSearchHistory
 from .ml_model_version import MLModelVersion, MLUserRetrainQueue
 from .ai_quote_price_analysis import AIQuotePriceAnalysis
 from .verified_rate import VerifiedRate
+from .quote_followups import (
+    QuoteAutomationSettings, QuoteFollowUp, QuoteFuelClause, FuelChangeAlert, WeeklyMarginReport,
+)
 from .invoice_line import InvoiceLine
 from .credit_note import CreditNote, CreditNoteLine
 from .document_sequence import DocumentSequence
@@ -128,4 +131,9 @@ __all__ = [
     'DataRoomExport',
     'CapitalAIUsage',
     'ImmutableRowError',
+    'QuoteAutomationSettings',
+    'QuoteFollowUp',
+    'QuoteFuelClause',
+    'FuelChangeAlert',
+    'WeeklyMarginReport',
 ]

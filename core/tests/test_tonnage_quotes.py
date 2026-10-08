@@ -177,6 +177,13 @@ class TonnageApiTests(_Base):
         q.refresh_from_db()
         self.assertEqual((q.toll_charges, q.driver_allowance, q.total_amount), before)
 
+    def test_saved_truck_is_the_priced_truck_unless_chosen(self):
+        q = self.create(**self.tonnage_payload(vehicle_type='Tautliner'))
+        self.assertIsNone(q.basis_vehicle_type_id)
+        self.assertEqual((q.vehicle_type, q.priced_vehicle_type_id), ('Superlink', self.vt.id))
+        q2 = self.create(**self.tonnage_payload(vehicle_type='Tautliner', basis_vehicle_type=self.taut.id))
+        self.assertEqual((q2.vehicle_type, q2.priced_vehicle_type_id), ('Tautliner', self.taut.id))
+
     def test_rate_below_cost_warns_but_sends(self):
         q = self.create(**self.tonnage_payload(rate_per_tonne='500'))
         r = self.api.patch(f'/api/v1/quotes/{q.id}/', {'status': 'SENT'}, format='json')
@@ -315,6 +322,85 @@ class TonnageApiTests(_Base):
                          (Decimal('31.500'), 'tms', 'TMS-7'))
         self.assertEqual(load.total_amount, Decimal('40950.00'))     # 31,5 t x R 1 300
         self.assertEqual(invoice_preview(load)['subtotal'], 40950.0)
+
+    def test_call_off_tonnes_are_validated(self):
+        q = self.create(**self.tonnage_payload(total_tonnes='70', tonnes_per_load='30', rate_per_tonne='1300'))
+        url = f'/api/v1/quotes/{q.id}/convert_to_load/'
+        for bad in ('abc', 'NaN', 'sNaN', 'Infinity', '-Infinity', 1e9, '1e9', '28.1234', 0, '-5', True):
+            r = self.api.post(url, {'tonnes': bad}, format='json')
+            self.assertEqual(r.status_code, 400, (bad, r.content))
+            pv = self.api.get(f'/api/v1/quotes/{q.id}/booking-preview/', {'tonnes': str(bad)})
+            self.assertEqual(pv.status_code, 400 if bad not in (1e9, '1e9') else 200, (bad, pv.content))
+        self.assertEqual(self.api.post(url, {'tonnes': '0.05'}, format='json').status_code, 400)   # below 0,1 t
+        # The largest eligible truck here is the 34 t superlink.
+        r = self.api.post(url, {'tonnes': 35}, format='json')
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('34 t', r.json()['error'])
+        self.assertEqual(self.api.get(f'/api/v1/quotes/{q.id}/').json()['volume_contract']['max_tonnes_per_load'], 34.0)
+        r = self.api.post(url, {'tonnes': '28,125'}, format='json')
+        self.assertEqual((r.status_code, r.json()['planned_tonnes']), (201, '28.125'))
+
+    def test_single_consignment_tonnes_capped_at_quoted(self):
+        q = self.create(**self.tonnage_payload(rate_per_tonne='1300'))
+        url = f'/api/v1/quotes/{q.id}/convert_to_load/'
+        self.assertEqual(self.api.post(url, {'tonnes': 31}, format='json').status_code, 400)
+        r = self.api.post(url, {'tonnes': 30}, format='json')
+        self.assertEqual(r.status_code, 201, r.content)
+
+    def test_call_off_is_costed_from_the_priced_truck(self):
+        from core.models import Load
+        q = self.create(**self.tonnage_payload(total_tonnes='70', tonnes_per_load='30', rate_per_tonne='1300'))
+        load = Load.objects.get(id=self.api.post(f'/api/v1/quotes/{q.id}/convert_to_load/', {},
+                                                 format='json').json()['id'])
+        self.assertEqual(load.costing_source, 'quote')
+        self.assertEqual(load.priced_vehicle_type_id, q.priced_vehicle_type_id)
+        self.assertEqual(float(load.cost_floor), q.costing_snapshot['tonnage']['basis_load_costing']['floor'])
+        self.assertEqual(load.quoted_price, Decimal('39000.00'))
+
+    def test_weighed_after_invoicing_flags_and_keeps_the_invoice(self):
+        from core.models import Invoice, Load
+        from core.services.invoicing import create_invoice_for_load
+        q = self.create(**self.tonnage_payload(rate_per_tonne='1300', min_tonnes_per_load='30'))
+        load = Load.objects.get(id=self.api.post(f'/api/v1/quotes/{q.id}/convert_to_load/', {},
+                                                 format='json').json()['id'])
+        Load.objects.filter(id=load.id).update(actual_tonnes=Decimal('30'))
+        inv, _ = create_invoice_for_load(Load.objects.get(id=load.id))
+        Invoice.objects.filter(id=inv.id).update(status='SENT')
+        r = self.api.patch(f'/api/v1/loads/{load.id}/', {'actual_tonnes': '32.5'}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        load.refresh_from_db()
+        inv.refresh_from_db()
+        self.assertEqual(load.invoice_mismatch['code'], 'weighed_after_invoicing')
+        self.assertEqual(inv.subtotal, Decimal('39000.00'))       # never re-priced
+        self.assertEqual(load.total_amount, Decimal('39000.00'))
+
+    def test_tms_tonnes_bad_record_and_cancelled_load(self):
+        from core.models import Load
+        from core.services.tms_sync import SyncError, apply_record
+        q = self.create(**self.tonnage_payload(rate_per_tonne='1300'))
+        load = Load.objects.get(id=self.api.post(f'/api/v1/quotes/{q.id}/convert_to_load/', {},
+                                                 format='json').json()['id'])
+        for bad in ('NaN', 'sNaN', 'Infinity', 'abc', '0', '250', '30.12345'):
+            with self.assertRaises(SyncError, msg=bad):
+                apply_record(self.company, load, {'actual_tonnes': bad}, source='tms')
+        Load.objects.filter(id=load.id).update(status='CANCELLED')
+        load.refresh_from_db()
+        self.assertEqual(apply_record(self.company, load, {'actual_tonnes': '31'}, source='tms'), {})
+        load.refresh_from_db()
+        self.assertIsNone(load.actual_tonnes)
+
+    def test_slip_and_planned_wording_on_the_invoice_line(self):
+        from core.models import Load
+        from core.services.tonnage_jobs import invoice_line_for_load
+        q = self.create(**self.tonnage_payload(rate_per_tonne='1300', min_tonnes_per_load='30',
+                                               tonnes_per_load='28', weight='28000'))
+        load = Load.objects.get(id=self.api.post(f'/api/v1/quotes/{q.id}/convert_to_load/', {},
+                                                 format='json').json()['id'])
+        self.assertIn('(minimum 30 t; 28 t planned)', invoice_line_for_load(load, 'Transport')['description'])
+        Load.objects.filter(id=load.id).update(actual_tonnes=Decimal('29.5'), weighbridge_slip='WB-1042')
+        text = invoice_line_for_load(Load.objects.get(id=load.id), 'Transport')['description']
+        self.assertIn('29,5 t delivered', text)
+        self.assertIn('Weighbridge slip WB-1042', text)
 
     def test_per_tonne_quotes_are_not_per_load_evidence(self):
         from core.models import Quote

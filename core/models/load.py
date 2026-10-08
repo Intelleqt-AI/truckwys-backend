@@ -71,16 +71,16 @@ class Load(models.Model):
     # here, and the field a TMS sync should write (trip-economics branch);
     # actual_tonnes_source says where it came from. Without it the invoice
     # uses planned_tonnes and is flagged "Awaiting weighbridge tonnes".
-    pricing_basis = models.CharField(max_length=10, default='per_load',
+    pricing_basis = models.CharField(max_length=10, default='per_load', db_default='per_load',
                                      choices=[('per_load', 'Per load'), ('per_tonne', 'Per tonne')])
     rate_per_tonne = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     min_tonnes = models.DecimalField(max_digits=8, decimal_places=3, null=True, blank=True)
     planned_tonnes = models.DecimalField(max_digits=8, decimal_places=3, null=True, blank=True)
     actual_tonnes = models.DecimalField(max_digits=8, decimal_places=3, null=True, blank=True,
                                         help_text='Weighbridge tonnes delivered')
-    weighbridge_slip = models.CharField(max_length=60, blank=True, default='',
+    weighbridge_slip = models.CharField(max_length=60, blank=True, default='', db_default='',
                                         help_text='Weighbridge ticket / slip number')
-    actual_tonnes_source = models.CharField(max_length=20, blank=True, default='',
+    actual_tonnes_source = models.CharField(max_length=20, blank=True, default='', db_default='',
                                             help_text='weighbridge | manual | tms')
     
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='PENDING')

@@ -669,3 +669,55 @@ class StackIntegrationTests(_Base):
         snap = fields['costing_snapshot']
         self.assertEqual(snap['rated_burn']['source'], 'measured')
         self.assertNotIn('rejections', str(snap['resolution']['rated_burn']))
+
+
+class FuelClauseConsistencyTests(_Base):
+    """Follow-ups fuel price clause: its litres (Quote.fuel_litres) come from the
+    same costing as costing_snapshot.rated_burn, so the clause adjusts exactly
+    the litres the quote was priced on (measured or typed figure), and a later
+    re-measure never changes a quote's clause litres."""
+    measured = PricingTests.measured
+    create_quote = SnapshotAndSuggestionTests.create_quote
+
+    def setUp(self):
+        super().setUp()
+        from core.tests.quote_rules_fixtures import add_vehicle
+        add_vehicle(self.company, self.vt)
+        self.customer = Customer.objects.create(company=self.company, name='Acme', email='a@x.test', phone='',
+                                                address='', city='', state='', zip_code='')
+
+    def litres_at(self, quote, burn):
+        """compute() litres for the saved quote's inputs at a given rated burn."""
+        c = qc.costing_for_quote(quote)
+        return qc.compute({**c['inputs'], 'vehicle': {**c['inputs']['vehicle'], 'rated_burn_l_per_100km': burn}})[
+            'litres']['total']
+
+    def test_clause_litres_are_the_litres_of_the_burn_priced_on(self):
+        from core.services.fuel_surcharge import _terms_from_snapshot
+        row = self.measured(rated=40.2)
+        q = self.create_quote()
+        snap = q.costing_snapshot['rated_burn']
+        self.assertEqual((snap['source'], round(snap['value'], 1)), ('measured', 40.2))
+        self.assertAlmostEqual(float(q.fuel_litres), self.litres_at(q, snap['value']), places=2)
+        self.assertNotAlmostEqual(float(q.fuel_litres), self.litres_at(q, 42.0), places=0)
+        terms = _terms_from_snapshot(q, 5)
+        if terms is not None:                              # official price on record
+            self.assertAlmostEqual(terms['litres'], float(q.fuel_litres), places=3)
+        # The weekly refresh re-measures: the saved quote keeps its litres and burn.
+        row.rated_burn_l_per_100km = 36.0
+        row.save()
+        q.refresh_from_db()
+        self.assertEqual(round(q.costing_snapshot['rated_burn']['value'], 1), 40.2)
+        self.assertAlmostEqual(float(q.fuel_litres), self.litres_at(q, 40.2), places=2)
+
+    def test_quote_on_my_figure_clause_uses_the_typed_burn_litres(self):
+        self.measured(rated=40.2)
+        q = self.create_quote()
+        q.costing_inputs = {**(q.costing_inputs or {}), 'use_configured_burn': True}
+        q.save(update_fields=['costing_inputs'])
+        from core.services.quote_snapshot import snapshot_fields
+        for k, v in snapshot_fields(qc.costing_for_quote(q), timezone.now()).items():
+            setattr(q, k, v)
+        q.save()
+        self.assertEqual(q.costing_snapshot['rated_burn']['source'], 'configured')
+        self.assertAlmostEqual(float(q.fuel_litres), self.litres_at(q, 42.0), places=2)

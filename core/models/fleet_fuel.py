@@ -9,6 +9,7 @@ from.
 """
 from django.conf import settings
 from django.db import models
+from django.db.models.functions import Now
 
 
 class FleetFuelMeasurement(models.Model):
@@ -32,39 +33,39 @@ class FleetFuelMeasurement(models.Model):
     vehicle = models.ForeignKey('Vehicle', on_delete=models.CASCADE, null=True, blank=True,
                                 related_name='fuel_measurements')
 
-    provider = models.CharField(max_length=20, default='cartrack')
+    provider = models.CharField(max_length=20, default='cartrack', db_default='cartrack')
     # can_bus = Cartrack "fuel consumed" counter (GET /fuel/consumed);
     # fuel_level = Cartrack's refuel-adjusted fuel-level estimate
     # (GET /fuel/level estimated_fuel_used); mixed = a type built from both.
-    fuel_source = models.CharField(max_length=20, blank=True)
+    fuel_source = models.CharField(max_length=20, blank=True, default='', db_default='')
     period_start = models.DateTimeField(null=True, blank=True)
     period_end = models.DateTimeField(null=True, blank=True)
 
-    distance_km = models.FloatField(default=0)
-    litres = models.FloatField(default=0)
+    distance_km = models.FloatField(default=0, db_default=0)
+    litres = models.FloatField(default=0, db_default=0)
     l_per_100km = models.FloatField(null=True, blank=True)           # overall average, all km
-    loaded_km = models.FloatField(default=0)                        # km on recorded loads (TMS trips)
-    loaded_litres = models.FloatField(default=0)
+    loaded_km = models.FloatField(default=0, db_default=0)                        # km on recorded loads (TMS trips)
+    loaded_litres = models.FloatField(default=0, db_default=0)
     loaded_l_per_100km = models.FloatField(null=True, blank=True)
     loaded_mean_load_ratio = models.FloatField(null=True, blank=True)
-    other_km = models.FloatField(default=0)                         # km not on a recorded load
+    other_km = models.FloatField(default=0, db_default=0)                         # km not on a recorded load
     other_l_per_100km = models.FloatField(null=True, blank=True)
     # The figure pricing uses: full-load burn under the 0,70 + 0,30 × ratio rule.
     rated_burn_l_per_100km = models.FloatField(null=True, blank=True)
     # 'loaded_trips' (from recorded loads' own ratios) | 'overall_assumed'
     # (all km, unlinked km assumed at ASSUMED_LOAD_RATIO).
-    rated_method = models.CharField(max_length=30, blank=True)
-    vehicles_count = models.PositiveIntegerField(default=0)
-    windows_used = models.PositiveIntegerField(default=0)
-    windows_rejected = models.PositiveIntegerField(default=0)
-    rejections = models.JSONField(default=list, blank=True)        # [{reason, start, end, detail}]
+    rated_method = models.CharField(max_length=30, blank=True, default='', db_default='')
+    vehicles_count = models.PositiveIntegerField(default=0, db_default=0)
+    windows_used = models.PositiveIntegerField(default=0, db_default=0)
+    windows_rejected = models.PositiveIntegerField(default=0, db_default=0)
+    rejections = models.JSONField(default=list, db_default=[], blank=True)        # [{reason, start, end, detail}]
     # high | medium | low | insufficient | rejected
-    confidence = models.CharField(max_length=20, default='insufficient')
-    sufficient = models.BooleanField(default=False)
-    note = models.CharField(max_length=300, blank=True)
+    confidence = models.CharField(max_length=20, default='insufficient', db_default='insufficient')
+    sufficient = models.BooleanField(default=False, db_default=False)
+    note = models.CharField(max_length=300, blank=True, default='', db_default='')
     computed_at = models.DateTimeField(null=True, blank=True)
 
-    burn_mode = models.CharField(max_length=20, choices=MODE_CHOICES, default=MODE_AUTO)
+    burn_mode = models.CharField(max_length=20, choices=MODE_CHOICES, default=MODE_AUTO, db_default=MODE_AUTO)
     burn_mode_set_at = models.DateTimeField(null=True, blank=True)
     burn_mode_set_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True,
                                          blank=True, related_name='+')
@@ -87,13 +88,13 @@ class FleetFuelMeasurement(models.Model):
 class FleetFuelSyncRun(models.Model):
     """One refresh attempt for one company (status for the settings screen)."""
     company = models.ForeignKey('Company', on_delete=models.CASCADE, related_name='fleet_fuel_runs')
-    provider = models.CharField(max_length=20, blank=True)
-    started_at = models.DateTimeField(auto_now_add=True)
+    provider = models.CharField(max_length=20, blank=True, default='', db_default='')
+    started_at = models.DateTimeField(auto_now_add=True, db_default=Now())
     finished_at = models.DateTimeField(null=True, blank=True)
     # ok | partial | skipped | failed | running
-    status = models.CharField(max_length=20, default='running')
-    message = models.CharField(max_length=300, blank=True)
-    summary = models.JSONField(default=dict, blank=True)
+    status = models.CharField(max_length=20, default='running', db_default='running')
+    message = models.CharField(max_length=300, blank=True, default='', db_default='')
+    summary = models.JSONField(default=dict, db_default={}, blank=True)
 
     class Meta:
         db_table = 'fleet_fuel_sync_runs'

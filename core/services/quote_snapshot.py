@@ -155,8 +155,13 @@ def _snapshot(quote, now, Quote, costing_for_quote):
     fields = snapshot_fields(costing, now)
     if fields['priced_vehicle_type_id'] is not None:
         from core.models import VehicleType
-        if not VehicleType.objects.filter(id=fields['priced_vehicle_type_id']).exists():
+        priced_name = VehicleType.objects.filter(id=fields['priced_vehicle_type_id']).values_list('name', flat=True).first()
+        if priced_name is None:
             fields['priced_vehicle_type_id'] = None
+        elif getattr(quote, 'pricing_basis', 'per_load') == 'per_tonne' and quote.basis_vehicle_type_id is None:
+            # Truck unknown: the quote names the truck it was priced on (the
+            # safest), never a different one a client showed.
+            fields['vehicle_type'] = priced_name[:50]
     if quote.fuel_price_at_creation is None and fields['fuel_price_used'] is not None:
         # Legacy field, kept for old readers: the zone price this quote
         # was priced on (never a fallback figure).
