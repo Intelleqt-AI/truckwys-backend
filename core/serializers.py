@@ -816,6 +816,9 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
                 # raising rolls the whole create back.
                 from core.services.quote_snapshot import enforce_send_guard
                 enforce_send_guard(instance)
+                # Read at commit by the post_save email (core.signals): only a
+                # create that passed the guard emails the customer.
+                instance._send_guard_passed = True
         return instance
 
     def update(self, instance, validated_data):
@@ -1478,7 +1481,7 @@ class CompanySerializer(serializers.ModelSerializer):
     class Meta:
         model = Company
         fields = [
-            'company_name', 'registration_number', 'vat_number',
+            'company_name', 'registration_number', 'vat_number', 'vat_registered',
             'industry', 'website', 'description', 'logo_url',
             'address', 'contact',
             'default_base_rate_per_km', 'default_sla_hours',

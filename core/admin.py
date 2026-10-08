@@ -113,10 +113,22 @@ def run_billing_sweeps(modeladmin, request, queryset):
 
 @admin.register(Company)
 class CompanyAdmin(admin.ModelAdmin):
-    list_display = ['company_name', 'subscription_status', 'cancel_at_period_end', 'subscription_plan', 'grace_period_expires_at', 'next_billing_date', 'updated_at']
-    list_filter = ['subscription_status', 'cancel_at_period_end', 'subscription_plan']
-    search_fields = ['company_name', 'registration_number']
-    actions = [run_billing_sweeps]
+    list_display = ['company_name', 'vat_registered', 'vat_number', 'subscription_status', 'cancel_at_period_end', 'subscription_plan', 'grace_period_expires_at', 'next_billing_date', 'updated_at']
+    list_filter = ['vat_registered', 'subscription_status', 'cancel_at_period_end', 'subscription_plan']
+    search_fields = ['company_name', 'registration_number', 'vat_number']
+    actions = [run_billing_sweeps, 'mark_vat_registered', 'mark_not_vat_registered']
+
+    # A company that isn't a SARS VAT vendor may not charge VAT: switching it
+    # off issues new invoices as INVOICE without VAT. Past invoices never change.
+    @admin.action(description='Mark as VAT registered (charges 15% VAT)')
+    def mark_vat_registered(self, request, queryset):
+        n = queryset.update(vat_registered=True)
+        self.message_user(request, f'{n} marked as VAT registered.')
+
+    @admin.action(description='Mark as not VAT registered (no VAT on new invoices)')
+    def mark_not_vat_registered(self, request, queryset):
+        n = queryset.update(vat_registered=False)
+        self.message_user(request, f'{n} marked as not VAT registered.')
 
 
 @admin.register(Trip)
