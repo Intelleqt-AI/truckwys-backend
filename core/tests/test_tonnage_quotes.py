@@ -373,6 +373,18 @@ class TonnageApiTests(_Base):
         self.assertEqual(load.invoice_mismatch['code'], 'weighed_after_invoicing')
         self.assertEqual(inv.subtotal, Decimal('39000.00'))       # never re-priced
         self.assertEqual(load.total_amount, Decimal('39000.00'))
+        # Weighed back to the invoiced figure: the flag clears.
+        r = self.api.patch(f'/api/v1/loads/{load.id}/', {'actual_tonnes': '30'}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        load.refresh_from_db()
+        self.assertFalse(load.invoice_mismatch)
+
+    def test_call_off_messages_keep_whole_tonnes(self):
+        from core.services.tonnage_jobs import CallOffError, call_off_tonnes
+        q = self.create(**self.tonnage_payload(rate_per_tonne='1300'))
+        with self.assertRaises(CallOffError) as cm:
+            call_off_tonnes(q, '1e9')
+        self.assertIn(' 30 t', str(cm.exception))
 
     def test_tms_tonnes_bad_record_and_cancelled_load(self):
         from core.models import Load
