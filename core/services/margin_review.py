@@ -22,8 +22,7 @@ with that Sunday. A load belongs to the week it was delivered
 (actual_delivered_at, else delivery_date).
 """
 import logging
-from datetime import datetime, time, timedelta
-from decimal import Decimal
+from datetime import date as date_cls, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from django.db.models import Q
@@ -201,9 +200,25 @@ def weekly_margin_figures(company, as_of=None):
 # The email (Monday 07:00 SAST, admins, opt-out)
 # ---------------------------------------------------------------------------
 
-def _d(iso):
-    from core.services.quote_costing import sa_date
-    return sa_date(datetime.fromisoformat(iso).replace(hour=12, tzinfo=SAST))
+def _range(a, b):
+    """'5–11 Oct 2026', '28 Sep – 4 Oct 2026', '28 Dec 2026 – 3 Jan 2027'."""
+    d1, d2 = date_cls.fromisoformat(a), date_cls.fromisoformat(b)
+    m = _MON
+    if (d1.year, d1.month) == (d2.year, d2.month):
+        return f'{d1.day}–{d2.day} {m[d2.month - 1]} {d2.year}'
+    if d1.year == d2.year:
+        return f'{d1.day} {m[d1.month - 1]} – {d2.day} {m[d2.month - 1]} {d2.year}'
+    return f'{d1.day} {m[d1.month - 1]} {d1.year} – {d2.day} {m[d2.month - 1]} {d2.year}'
+
+
+_MON = ('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec')
+
+
+def _tp(v):
+    """Target margin: '10%', '12,5%'."""
+    from core.services.quote_costing import fmt_num
+    v = float(v)
+    return f'{fmt_num(v, 0 if v == int(v) else 1)}%'
 
 
 def _rand(v):
@@ -220,7 +235,7 @@ def build_email(company, fig):
     """(subject, html, text) — plain and scannable."""
     from core.services import followup_emails as fe
     name = getattr(company, 'company_name', '') or 'your company'
-    wk = f"{_d(fig['week']['start'])} – {_d(fig['week']['end'])}"
+    wk = _range(fig['week']['start'], fig['week']['end'])
     subject = f'Your margins last week ({wk})'
     t = fig['target_margin_pct']
     html, text = [], []
@@ -247,13 +262,13 @@ def build_email(company, fig):
     am = fig['average_margin']
     if am['actual_4_weeks_pct'] is not None:
         gap = am['actual_vs_target_pts']
-        line = (f'Average actual margin {_p(am["actual_4_weeks_pct"])} against your {_p(t)} target '
+        line = (f'Average actual margin {_p(am["actual_4_weeks_pct"])} (last 4 weeks) against your {_tp(t)} target '
                 f'({"+" if gap >= 0 else "−"}{_p(abs(gap))[:-1]} points).')
     elif am['quoted_won_4_weeks_pct'] is not None:
-        line = (f'Average quoted margin on won quotes {_p(am["quoted_won_4_weeks_pct"])} against your '
-                f'{_p(t)} target. No actual costs recorded yet.')
+        line = (f'Average quoted margin on quotes won in the last 4 weeks {_p(am["quoted_won_4_weeks_pct"])} '
+                f'against your {_tp(t)} target. No actual costs recorded yet.')
     else:
-        line = f'Your target margin is {_p(t)}. Not enough data yet to compare.'
+        line = f'Your target margin is {_tp(t)}. Not enough data yet to compare.'
     add(fe.h2('Margin against target') + fe.para(fe.esc(line)), 'MARGIN AGAINST TARGET\n' + line)
 
     # Worst lanes
@@ -274,14 +289,16 @@ def build_email(company, fig):
         if not items:
             add(fe.h2(heading) + fe.para('Not enough data yet.', muted=True), heading.upper() + '\nNot enough data yet.')
             continue
-        hdr = [title[3:].capitalize(), 'Loads', 'Quoted', 'Actual']
+        last = {i['name']: i for i in fig['last_week'][key]}
+        hdr = [title[3:].capitalize(), 'Loads', 'Quoted', 'Actual', 'Actual last week']
         rows = [[fe.esc(i['name']), str(i['loads']), _p(i['quoted_margin_pct']),
                  _p(i['actual_margin_pct']) + (f' ({i["actual_loads"]})' if i['actual_loads'] and
-                                                i['actual_loads'] != i['loads'] else '')]
+                                                i['actual_loads'] != i['loads'] else ''),
+                 _p((last.get(i['name']) or {}).get('actual_margin_pct'))]
                 for i in items]
         total_key = 'lanes_total' if key == 'by_lane' else 'customers_total'
         more = block[total_key] - len(items)
-        add(fe.h2(heading) + fe.table(hdr, rows, ['left', 'right', 'right', 'right'])
+        add(fe.h2(heading) + fe.table(hdr, rows, ['left', 'right', 'right', 'right', 'right'])
             + (fe.para(f'And {more} more in TruckWys.', muted=True) if more > 0 else ''),
             heading.upper() + '\n' + fe.text_table(hdr, rows) + (f'\nAnd {more} more in TruckWys.' if more > 0 else ''))
 
@@ -296,7 +313,8 @@ def build_email(company, fig):
     add(fe.button(f'{base}/finance/reports?tab=margin', 'Open margin report'),
         f'Open margin report: {base}/finance/reports?tab=margin')
     footer = (f'{fig["notes"]["actual_cost"]} {fig["notes"]["revenue"]} Quoted margin is the quote price less its '
-              'cost floor. Turn this email off in Settings → Notifications.')
+              'cost floor. A figure in brackets is the number of loads with recorded costs. '
+              'Turn this email off in Settings → Notifications.')
     intro = fe.para(fe.esc(f'{name}, {wk}.'), muted=True)
     html_body = fe.page(subject, intro, ''.join(html), footer)
     text_body = '\n\n'.join([subject, f'{name}, {wk}.'] + text + [footer])

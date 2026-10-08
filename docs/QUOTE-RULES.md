@@ -369,3 +369,47 @@ Copy the file into each client repo's test fixtures (keep identical).
   Every bounded company setting answers with one plain, SA-format sentence (out of range, not a number, too many
   digits or decimals alike), e.g. "Enter a diesel price between R 5 and R 100 per litre, or leave it blank.";
   the toll rate per km is now bounded R 0–R 50 (unchanged stored values always save).
+
+## Quote follow-ups (8 Oct 2026, branch truckwys/quote-followups)
+Tables (not new Company/Quote columns): `QuoteAutomationSettings` (1:1 company), `QuoteFollowUp` (1:1 quote),
+`QuoteFuelClause` (1:1 quote), `FuelChangeAlert`, `WeeklyMarginReport`. Migrations 0158 (models) + 0159 (backfill).
+API JSON: `FOLLOWUPS-CLIENT-SPEC.md` (tw-wt root). Endpoints in `core/views_quote_followups.py`.
+- **Fuel price clause.** Company `fuel_surcharge_enabled` (new companies ON; existing OFF with
+  `fuel_surcharge_prompt_pending` until they decide) and `fuel_surcharge_threshold_pct` (default 5, 1–25).
+  Basis = `fuel_official_at_pricing` (official zone price at pricing, for the fuel the quote was priced on), even
+  when the quote used the fleet's own price. Adjustment = `cents(fuel_litres × (official in force on trip date −
+  basis))` only when |change| / basis × 100 > threshold, up or down. Trip date = load pickup date, else quote
+  pickup_date, else today (SAST; price at 12:00 SAST that day, so a Wednesday trip takes that day's change).
+  Future trip → `provisional: true`, never invoiced. This deliberately differs from `fuel_delta_zar` (today's
+  fuel lines − snapshot): the clause is a promise about a public figure, so it moves with the official price.
+  PDF / public quote: the §11 line followed by "If the official price moves more than 5% before the trip, the
+  fuel part of this quote changes by the same amount." (own-price quotes name the official basis:
+  "If the official inland diesel price (R 32,50/L on 7 Oct 2026) moves …"). The clause is stamped when the quote
+  is sent (`QuoteFuelClause`); only a stamped clause adjusts an invoice; a quote sent before/without it never
+  gets one. Invoicing hook: `fuel_surcharge.apply_to_invoice_lines(load, lines)` from
+  `invoicing.create_invoice_for_load` (manual convert + delivery auto-invoice). Up → line "Fuel price adjustment
+  (diesel R 32,80 → R 34,10/L)", revenue type FUEL_SURCHARGE, freight tax code. Down → discount on the freight
+  line (invoice lines can't be negative), description gains "less fuel price adjustment (…)". The trip-generator
+  invoice path (`InvoiceGenerator`) is not hooked (no quote link there).
+- **Fuel change alert.** A change = the official price in force now took effect this period and differs from
+  the one before by ≥ R 0,005, per (fuel, zone). Beat 00:10 + 06:20 SAST, plus queued after every successful
+  `refresh_fuel_price` and after a staff MANUAL price that is in force. Per company and fuel, once per period:
+  open quotes (DRAFT/SENT, valid_until ≥ today SAST, priced before the change, same fuel + zone) with
+  `changes_since_priced` (changed = |Δfloor| ≥ R 1). Copy: "Diesel up R 3,24/L today. 6 open quotes are now under
+  your 10% target. Re-price them?" ("on Wed 7 Oct" when the run is later; down: "… now cost less to run.").
+  Bell for every user; push category `quote_reminders`; own email (lists ≤ 25 quotes) to users with email
+  `fuel_alerts` on. A MANUAL then FIASA price in one period alerts once (the first).
+- **Nudges.** Beat 08:00 SAST. SENT quotes only; `expiry_nudge_days` (2) → "Quote Q-123 for Acme expires on Fri."
+  (today / tomorrow / on Fri / on Fri 17 Oct); `follow_up_after_days` (3, SAST calendar days since sent) →
+  "No answer from Acme on Q-123 (sent 3 days ago). Follow up?"; both due → one combined nudge. Once per stage per
+  send cycle (expiry once per valid_until); re-entering SENT resets. Quotes sent before this have `sent_at`
+  estimated from updated_at (never early). Bell + push only. Customer reminder only via
+  `POST …/follow-up/reminder/ {"confirm": true}` after a GET preview; ≤ 1 per 24 h; reply-to = the sender.
+- **Weekly margin email.** Monday 07:00 SAST, active ADMINs with email `margin_report` on, company switch
+  `weekly_margin_email_enabled`. One service function `margin_review.weekly_margin_figures` (also
+  `GET /reports/weekly-margin/`) on `reports.load_economics`; actual margin uses only `cost_basis == 'actual'`
+  (the modelled estimate is never shown as actual). No email when nothing happened in 4 weeks.
+- **Pricing setup.** `GET /company/pricing-setup/`: target margin, operating cost, driver allowance, fuel mode —
+  set when a save changed it ("changed"), the user confirmed the shown value ("confirmed") or the migration
+  saw a non-default value ("inferred"). Driver default text from `quote_costing.driver_rate()` (the approved
+  NBCRFLI allowance when on record).

@@ -1,7 +1,7 @@
 """Company settings for the quote follow-up features, and the pricing setup
 status (were the pricing inputs consciously set, or still defaults?).
 
-See core/models/quote_followups.py and docs/QUOTE-FOLLOWUPS.md.
+See core/models/quote_followups.py and docs/QUOTE-RULES.md ("Quote follow-ups").
 """
 import logging
 from datetime import datetime
@@ -115,6 +115,7 @@ PRICING_FIELDS = {
 }
 COMPANY_FIELD_TO_KEY = {v[0]: k for k, v in PRICING_FIELDS.items()}
 DEFAULT_TARGET_MARGIN = Decimal('10.00')
+_MONTHS = ('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec')
 
 
 def infer_pricing_setup(company):
@@ -167,7 +168,7 @@ def _fmt_pct(v):
 
 def pricing_setup_status(company, today=None):
     """{needs_setup, dismissed_at, items: [...]} — see the client spec."""
-    from core.services.quote_costing import driver_rate, sa_date
+    from core.services.quote_costing import driver_rate
     s = get_settings(company)
     setup = s.pricing_setup or {}
     today = today or timezone.now().astimezone(SAST).date()
@@ -195,9 +196,11 @@ def pricing_setup_status(company, today=None):
     if source == 'approved_allowance':
         from core.services.quote_ai_pricing import stored_allowance
         allowance = stored_allowance(today) or {}
-        eff = allowance.get('effective_from') or allowance.get('valid_from')
-        when = f' from {sa_date(eff)}' if eff and sa_date(eff) else ''
-        default_text = f'We use the approved NBCRFLI allowance of {_fmt_rand(rate)} a night{when}.'
+        eff = allowance.get('effective_from')
+        when = f' from {eff.day} {_MONTHS[eff.month - 1]} {eff.year}' if hasattr(eff, 'month') else ''
+        label = ('NBCRFLI allowance' if allowance.get('allowance_type') == 'nbcrfli'
+                 else (allowance.get('label') or 'allowance'))
+        default_text = f'We use the approved {label} of {_fmt_rand(rate)} a night{when}.'
     elif source == 'company_setting':
         default_text = 'You pay your own allowance per night away.'
     else:

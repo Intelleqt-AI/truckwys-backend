@@ -589,7 +589,7 @@ class WeeklyMarginTests(_Base):
         self.assertEqual(send_weekly_margin_emails()['emails_sent'], 1)
         self.assertEqual([m['to'] for m in self.sent_mail], ['boss@haul.test'])
         mail = self.sent_mail[0]
-        self.assertEqual(mail['subject'], 'Your margins last week (5 Oct 2026 – 11 Oct 2026)')
+        self.assertEqual(mail['subject'], 'Your margins last week (5–11 Oct 2026)')
         self.assertIn('JHB → DBN', mail['text'])
         self.assertIn('Last week: 1 load delivered, quoted margin 16,7%, actual 13,9% on 1 with costs.', mail['text'])
         self.assertEqual(send_weekly_margin_emails()['emails_sent'], 0)
@@ -654,3 +654,15 @@ class PricingSetupTests(_Base):
         self.assertEqual(items['driver_allowance']['default_text'],
                          'No approved allowance is on record yet. Enter what you pay your drivers per night away.')
         self.assertIsNone(items['driver_allowance']['rate_in_use'])
+
+    def test_approved_nbcrfli_allowance_text(self):
+        from core.models import VerifiedRate
+        Company.objects.filter(pk=self.company.pk).update(driver_allowance_per_night=None)
+        self.company.refresh_from_db()
+        VerifiedRate.objects.create(kind=VerifiedRate.KIND_DRIVER_ALLOWANCE, key='nbcrfli', value=Decimal('243.63'),
+                                    unit='per_night',
+                                    effective_from=date(2026, 3, 1), status=VerifiedRate.STATUS_APPROVED)
+        items = {i['key']: i for i in self.api.get(self.URL).json()['items']}
+        self.assertEqual(items['driver_allowance']['default_text'],
+                         'We use the approved NBCRFLI allowance of R 243,63 a night from 1 Mar 2026.')
+        self.assertEqual(items['driver_allowance']['rate_source'], 'approved_allowance')

@@ -1,5 +1,5 @@
 """API for the quote follow-up features. Request/response JSON is documented
-in /docs/QUOTE-FOLLOWUPS.md (backend) and the client spec.
+in docs/QUOTE-RULES.md ("Quote follow-ups") and FOLLOWUPS-CLIENT-SPEC.md.
 
   GET/PATCH  /api/v1/company/quote-automation/
   GET/POST   /api/v1/company/pricing-setup/

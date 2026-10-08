@@ -20,7 +20,7 @@ they weren't shown. Invoicing calls invoice_adjustment_for_load() (the one
 hook, see core.services.invoicing.create_invoice_for_load).
 """
 import logging
-from datetime import date, datetime, time
+from datetime import datetime, time
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
