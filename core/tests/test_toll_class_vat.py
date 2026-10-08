@@ -28,11 +28,17 @@ JHB = (-26.2041, 28.0473)
 DBN = (-29.8587, 31.0218)
 CPT = (-33.9249, 18.4241)
 
-# Waypoints through the seeded plaza coordinates (same as the pricing review's
-# worked_routes.py), densified to 0.5 km so the geofence sees a road-like line.
+# Waypoints through the plazas' MAINLINE booths (OSM motorway toll_booth nodes),
+# densified to 0.5 km so the geofence sees a road-like line. Mooi and Grasmere
+# used to go through the points first seeded for them, which are ramp booths
+# (since 0161 those are the Mooi Ramp (N) and Grasmere Ramp (S) plazas). Past
+# Mooi and Grasmere the line follows the real carriageway (the ramps' mainline
+# through-points), as a road route does, so it is a through trip, not a ramp one.
 JHB_DBN = [JHB, (-26.52, 28.35), (-26.66393, 28.38992), (-27.04049, 28.62624), (-28.25, 29.13),
-           (-28.46233, 29.56156), (-29.21802, 30.00396), (-29.60, 30.38), (-29.82302, 30.80276), DBN]
-JHB_CPT = [JHB, (-26.41711, 27.88075), (-26.85645, 27.6353), (-27.65, 27.23), (-28.79878, 26.69057),
+           (-28.46233, 29.56156), (-29.20669, 30.00194), (-29.2099, 30.00248), (-29.21809, 30.00348),
+           (-29.22864, 30.0057), (-29.23167, 30.00765), (-29.60, 30.38), (-29.82302, 30.80276), DBN]
+JHB_CPT = [JHB, (-26.40158, 27.89162), (-26.40579, 27.88868), (-26.41162, 27.88414), (-26.42063, 27.87732),
+           (-26.42612, 27.87307), (-26.85645, 27.6353), (-27.65, 27.23), (-28.79878, 26.69057),
            (-29.12, 26.21), (-30.72, 25.10), (-32.35, 22.58), (-33.20, 20.86), (-33.65, 19.44),
            (-33.74268, 19.01986), CPT]
 

@@ -68,7 +68,78 @@ ROUTE_FUEL_KEYS = ('fuel_usage_litres', 'fuel_cost_zar', 'fuel_rate_l_per_100km'
 ROUTE_NEW_KEYS = ('distance_estimated', 'fuel_unknown_reason', 'fuel_vehicle_type_id', 'fuel_price_per_litre',
                   'fuel_price_source', 'tolls_unknown',
                   # Additive (8 Oct 2026): which border costs are not on file.
-                  'border_costs_complete', 'border_costs_unknown')
+                  'border_costs_complete', 'border_costs_unknown',
+                  # Additive (toll/border audit, 8 Oct 2026): the day tolls were priced for,
+                  # the VAT basis, the tariff-year check and how much of the border is estimated.
+                  'toll_trip_date', 'toll_vat_registered', 'toll_schedule_warning',
+                  'border_costs_verified', 'border_estimate_zar', 'border_vehicle_profile')
+ROUTE_OPTION_NEW_KEYS = ('toll_routes', 'toll_plazas', 'toll_summary', 'return_leg', 'return_leg_reason',
+                         # each option's own border lines (the best option's equal the top level)
+                         'cross_border', 'countries', 'additional_costs', 'cross_border_breakdown',
+                         'border_costs_complete', 'border_costs_unknown', 'border_costs_verified',
+                         'border_estimate_zar', 'border_vehicle_profile')
+
+# Toll/border audit (8 Oct 2026, docs: TOLL-BORDER-AUDIT.md), APPROVED changes:
+#  * each toll_breakdown entry gains plaza_type / operator / country /
+#    tariff_effective_from, and the list is in DRIVING order (it was route
+#    code, then km) — the plazas and amounts themselves are unchanged here,
+#    because these goldens load main's own 31-plaza reference table;
+#  * border, permit and foreign-road charges come from the per-component
+#    schedule (core/services/border_schedule.py): each line has a code,
+#    source, as-of date and verified flag; no weighbridge fees; Mozambique's
+#    flat country toll is gone (TRAC/REVIMO plazas are TollPlaza rows, not in
+#    this reference table); C-BRTA class by gross mass, one permit per
+#    country served. Only the (code, amount) of each line is pinned here;
+#    the line texts are tested in test_border_schedule_2026.
+#  * new response keys (VAT basis, tariff-year check, border estimate,
+#    per-option toll plazas/summary) are additive and not pinned here.
+# The expected values below were derived from those rules, not copied.
+TOLL_KEYS_PINNED = ('plaza', 'route', 'location_km', 'tariff', 'tariff_excl_vat', 'tariff_incl_vat')
+# Border lines since the per-component schedule (core/services/border_schedule.py,
+# second audit pass): worked out by hand from the published tariffs, at the
+# fallback exchange rates the tests run on (core/services/fx.FALLBACK, no
+# live fetch in tests), for a Class 4 truck with no gross mass / axle layout
+# on its type (so 56 000 kg / 3+2+2 assumed, every line an estimate), the
+# reference company's 24 crossings a year.
+USD = 16.6391          # fx.FALLBACK['USD']
+BWP = 1.1675           # fx.FALLBACK['BWP']
+PERMIT_C2 = round(9041 / 24, 2)                       # C-BRTA Class 2, one country
+ZW_KM_S10 = 582.9                                     # km in Zimbabwe, measured off the captured route
+AUDIT_2026_10 = {
+    's04_jhb_gaborone_semi': [                        # Botswana P975 one way (54 501-56 500 kg band)
+        ('bw_single_trip_permit', round(975 * BWP, 2)), ('sa_cbrta_permit', PERMIT_C2)],
+    's05_jhb_maputo_semi': [                          # unverified Mozambique figure, unchanged
+        ('mz_insurance_inspection', 473.29), ('sa_cbrta_permit', PERMIT_C2)],
+    's10_jhb_harare_beitbridge_semi': [
+        ('zw_border_access_toll', round(221 * USD, 2)),   # Zimborders Goods vehicle (legal load; Abnormal only when marked)
+        ('zw_clearing_agent', 2005.0),                    # agent estimate
+        ('sa_cbrta_permit', PERMIT_C2),
+        ('zw_transit_fee', round(10 * 6 * USD, 2)),       # US$10 per 100 km or part: 6 x 100 km
+        ('zw_toll_gates', round(20 * 4 * USD, 2)),        # ~4 gates (582.9 / 145) x US$20
+    ],
+}
+
+
+def audit_additional_costs(lines):
+    border = round(sum(a for c, a in lines if not c.startswith(('zw_transit', 'zw_toll'))), 2)
+    tolls = round(sum(a for c, a in lines if c.startswith(('zw_transit', 'zw_toll'))), 2)
+    return {'border_fees': border, 'weighbridge_fees': 0, 'non_sa_tolls': tolls}
+
+
+def _pinned(breakdown):
+    return sorted(({k: b.get(k) for k in TOLL_KEYS_PINNED if k in b} for b in breakdown or []),
+                  key=lambda b: (b.get('route') or '', b.get('plaza') or ''))
+
+
+def apply_audit_2026_10(key, exp):
+    """main's captured response, moved by the approved audit changes only."""
+    lines = AUDIT_2026_10.get(key)
+    if lines is None:
+        return exp
+    exp['additional_costs'] = audit_additional_costs(lines)
+    exp['cross_border_breakdown'] = [{'code': c, 'amount': a} for c, a in lines]
+    return exp
+
 
 with open(os.path.join(FIXTURES, 'reference_data.json')) as _f:
     REF = json.load(_f)
@@ -217,7 +288,7 @@ class RouteCalculateGoldenTests(_GoldenBase):
             src = fx['tomtom_response']['routes'][i]['legs'][0]['points']
             self.assertEqual(geoms[i], [{'lat': p['latitude'], 'lon': p['longitude']} for p in src])
 
-        exp = json.loads(json.dumps(exp))
+        exp = apply_audit_2026_10(key, json.loads(json.dumps(exp)))
         self.check_route_fuel(key, fx, got, exp)
         # The headline numbers first, so a failure names what moved.
         for k in ('source', 'distance_km', 'duration_minutes', 'toll_sanral_class', 'toll_class_source',
@@ -225,9 +296,12 @@ class RouteCalculateGoldenTests(_GoldenBase):
                   'toll_routes', 'cross_border', 'countries', 'additional_costs', 'warnings'):
             self.assertEqual(got.get(k), exp.get(k), f'{key}: {k}')
         self.assertEqual(
-            [(b['plaza'], b['route'], b['tariff_excl_vat'], b['tariff_incl_vat']) for b in got['toll_breakdown']],
-            [(b['plaza'], b['route'], b['tariff_excl_vat'], b['tariff_incl_vat']) for b in exp['toll_breakdown']],
+            sorted((b['plaza'], b['route'], b['tariff_excl_vat'], b['tariff_incl_vat']) for b in got['toll_breakdown']),
+            sorted((b['plaza'], b['route'], b['tariff_excl_vat'], b['tariff_incl_vat']) for b in exp['toll_breakdown']),
             f'{key}: toll plazas')
+        if key in AUDIT_2026_10:
+            got['cross_border_breakdown'] = [{'code': b['code'], 'amount': b['amount']}
+                                             for b in got.get('cross_border_breakdown') or []]
         self.assertEqual(got.get('cross_border_breakdown'), exp.get('cross_border_breakdown'),
                          f'{key}: cross-border line items')
         for i, (g, e) in enumerate(zip(got['routes'], exp['routes'])):
@@ -235,6 +309,8 @@ class RouteCalculateGoldenTests(_GoldenBase):
                       'motorway_pct', 'road_type', 'terrain', 'country_codes'):
                 if k == 'country_codes':   # built from a set: order is not part of the contract
                     self.assertEqual(sorted(g[k]), sorted(e[k]), f'{key}: routes[{i}].{k}')
+                elif k == 'toll_breakdown':
+                    self.assertEqual(_pinned(g[k]), _pinned(e[k]), f'{key}: routes[{i}].{k}')
                 else:
                     self.assertEqual(g[k], e[k], f'{key}: routes[{i}].{k}')
         # And then everything else, byte for byte.
@@ -242,10 +318,12 @@ class RouteCalculateGoldenTests(_GoldenBase):
             got.pop(k, None)
             exp.pop(k, None)
         for g, e in zip(got['routes'], exp['routes']):
-            for k in ROUTE_FUEL_KEYS + ('fuel_usage_litres', 'tolls_unknown'):
+            for k in ROUTE_FUEL_KEYS + ROUTE_OPTION_NEW_KEYS + ('fuel_usage_litres', 'tolls_unknown'):
                 g.pop(k, None)
                 e.pop(k, None)
             g['country_codes'], e['country_codes'] = sorted(g['country_codes']), sorted(e['country_codes'])
+            g['toll_breakdown'], e['toll_breakdown'] = _pinned(g['toll_breakdown']), _pinned(e['toll_breakdown'])
+        got['toll_breakdown'], exp['toll_breakdown'] = _pinned(got['toll_breakdown']), _pinned(exp['toll_breakdown'])
         self.assertEqual(got, exp, f'{key}: full response')
 
 

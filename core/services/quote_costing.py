@@ -343,10 +343,22 @@ def compute(inputs):
       vehicle              {id, name, capacity, rated_burn_l_per_100km} | null
       diesel               see resolve_diesel()
       operating_cost_per_km, operating_cost_source
-      tolls                {one_way, empty_return, lookup_failed, confirmed_none}
+      tolls                {one_way, empty_return, return_leg, lookup_failed, confirmed_none}
+                           return_leg: a round trip's way back priced on its own route;
+                           the loaded toll line is then one_way + return_leg (else one_way x 2)
       driver               {allowance_per_night, nights, amount}
       hours_per_day        driving hours per day (9)
-      border_cost
+      border_cost          border, permit and non-SA road costs for ALL loaded legs
+                           (a round trip: the way out + the way back, each priced by
+                           the route calculation on its own route)
+      border_estimate      the part of border_cost that is an estimate (unverified
+                           tariff, assumed vehicle fact, agent estimate) — likewise
+                           out + back on a round trip; 0 when the user's own figures
+                           replaced every estimate (e.g. their clearing-agent fee)
+      border_cost_empty_return / border_estimate_empty_return
+                           the same two figures for the empty run home (exit-only
+                           charges on the way back); without them the loaded
+                           figure stands in
       international        cross-border trip: no border cost -> incomplete floor (block)
       border_costs_unknown {countries: [names], crossings: ['Namibia→Angola'], known: [{label, amount}]}:
                            parts of the route whose border costs are not on file; unless
@@ -478,11 +490,21 @@ def compute(inputs):
                                 actions=('enter_tolls', 'confirm_no_tolls')))
     # R 0 from a toll lookup that worked is a known R 0: the route has no
     # plazas (owner rule: we know every toll; no "check / add your own").
-    toll_amt = cents(toll_one_way * legs_loaded) if toll_one_way is not None else None
+    # A round trip's way back is priced on its own route's plazas when the
+    # route calculation gave them (tolls.return_leg); otherwise the same
+    # plazas again.
+    toll_back = _num(tolls.get('return_leg')) if round_trip else None
+    if toll_one_way is None:
+        toll_amt = None
+    elif round_trip and toll_back is not None:
+        toll_amt = cents(toll_one_way + toll_back)
+    else:
+        toll_amt = cents(toll_one_way * legs_loaded)
     add('tolls', 'loaded', toll_amt,
-        'Unknown' if toll_amt is None else 'No toll plazas on this route' if toll_one_way == 0
-        else (f'{fmt_rand(toll_one_way, 2)} × 2 legs' if round_trip else f'{fmt_rand(toll_one_way, 2)} one way'),
-        one_way=toll_one_way, legs=legs_loaded)
+        'Unknown' if toll_amt is None else 'No toll plazas on this route' if toll_one_way == 0 and not toll_back
+        else (f'{fmt_rand(toll_one_way, 2)} out + {fmt_rand(toll_back, 2)} back' if toll_back is not None
+              else f'{fmt_rand(toll_one_way, 2)} × 2 legs' if round_trip else f'{fmt_rand(toll_one_way, 2)} one way'),
+        one_way=toll_one_way, legs=legs_loaded, **({'return_leg': toll_back} if toll_back is not None else {}))
 
     # --- driver nights (§6) ---
     driver = inputs.get('driver') or {}
@@ -543,7 +565,11 @@ def compute(inputs):
                                 f'Border costs for {" and ".join(names)} not known', detail,
                                 actions=('enter_border_costs',)))
     elif border is not None and border > 0:
-        add('border', 'loaded', cents(border), 'Border, permit and non-SA toll costs')
+        est = _num(inputs.get('border_estimate'))
+        add('border', 'loaded', cents(border),
+            'Border, permit and non-SA toll costs'
+            + (f' (includes {fmt_rand(est, 2)} estimated)' if est else ''),
+            **({'estimate': est} if est else {}))
     elif inputs.get('international'):
         # An international trip always has border costs (often R 5 000+):
         # without them the floor is badly low, so it is incomplete.
@@ -590,9 +616,15 @@ def compute(inputs):
         if inputs.get('international') and border_unknown:
             add('border_return', 'empty_return', None, 'Not known crossing back', status='needs_input')
         elif inputs.get('international') and border is not None and border > 0:
-            # The empty truck crosses the border(s) back: the same border,
-            # permit and non-SA toll costs per crossing as the loaded leg.
-            add('border_return', 'empty_return', cents(border), 'Border costs crossing back, empty')
+            # The empty truck crosses back. The route calculation prices that
+            # leg itself (return_leg: exit-only charges, the way back's own
+            # km); without it, the loaded leg's figure is the stand-in.
+            back = _num(inputs.get('border_cost_empty_return'))
+            est_back = _num(inputs.get('border_estimate_empty_return')) if back is not None else None
+            add('border_return', 'empty_return', cents(back if back is not None else border),
+                'Border costs crossing back, empty'
+                + (f' (includes {fmt_rand(est_back, 2)} estimated)' if est_back else ''),
+                **({'estimate': est_back} if est_back else {}))
 
     if op is None and distance is not None:
         complete = False
@@ -969,12 +1001,19 @@ def build_inputs(payload, company, now=None, *, diesel_override=None):
         'operating_cost_per_km': op['value'] if op else None,
         'operating_cost_source': op['source'] if op else None,
         'tolls': {'one_way': toll_one_way, 'empty_return': _num(payload.get('toll_cost_empty_return')),
+                  'return_leg': _num(payload.get('toll_cost_return')),
                   'lookup_failed': tolls_unknown,
                   'confirmed_none': bool(_truthy(payload.get('tolls_confirmed_none')))},
         'driver': {'allowance_per_night': rate, 'nights': _num(payload.get('driver_nights')),
                    'amount': driver_amount},
         'hours_per_day': float(getattr(dj_settings, 'DRIVER_DRIVING_HOURS_PER_DAY', DEFAULT_HOURS_PER_DAY)),
         'border_cost': _num(payload.get('cross_border_cost')) or 0.0,
+        'border_cost_empty_return': _num(payload.get('cross_border_cost_empty_return')),
+        'border_estimate': _num(payload.get('cross_border_estimate_zar')),
+        'border_estimate_empty_return': _num(payload.get('cross_border_estimate_empty_return_zar')),
+        # Not a cost input itself: the route calculation prices the border
+        # with it; carried so the inputs (and a saved quote) record it.
+        'abnormal_load': bool(_truthy(payload.get('abnormal_load'))),
         'border_costs_unknown': border_costs_unknown_input(payload),
         'border_cost_is_override': bool(_truthy(payload.get('border_cost_is_override'))),
         'international': international,
@@ -1036,6 +1075,15 @@ def costing_for_payload(payload, company, now=None):
                               'minimum_charge': inputs.get('minimum_charge')}
     out['inputs'] = inputs
     out['resolution'] = _context_out(context)
+    # Trip date (pickup_date): warn when it falls after the newest published
+    # toll schedule, so the toll figure is known to be on old tariffs.
+    raw = (payload or {}).get('pickup_date') or (payload or {}).get('trip_date')
+    if raw:
+        from core.services.toll_calculator import parse_trip_date, tariff_schedule_warning
+        tw = tariff_schedule_warning(parse_trip_date(raw))
+        if tw:
+            out.setdefault('warnings', []).append(warning(
+                tw['code'], 'warn', f"Toll tariffs for this date are not published yet", tw['message']))
     return out
 
 
@@ -1050,6 +1098,14 @@ COSTING_INPUT_KEYS = {
     'driver_nights': int, 'duration_minutes': float, 'toll_cost_one_way': float,
     'driver_cost_is_override': bool, 'border_cost': float,
     'border_cost_is_override': bool, 'border_costs_unknown': dict,
+    # Both legs exactly as the builder showed them (toll/border audit):
+    # the way back's own tolls, the empty return's border figure and how
+    # much of the border is estimated, and the user's clearing-agent fee.
+    'toll_cost_return': float, 'border_cost_empty_return': float,
+    'border_estimate': float, 'border_estimate_empty_return': float, 'clearing_agent_fee': float,
+    # The load is abnormal (Zimbabwe's Abnormal access-toll class): kept so a
+    # reopened / re-sent quote prices its border the same way.
+    'abnormal_load': bool,
 }
 
 
@@ -1104,9 +1160,12 @@ def quote_payload(quote):
     if quote.estimated_duration_minutes:
         ci.pop('duration_minutes', None)
     toll_total = _num(quote.toll_charges)
-    if ci.get('toll_cost_one_way') is not None and toll_total is not None \
-            and abs(float(ci['toll_cost_one_way']) * legs - toll_total) > 0.01:
-        ci.pop('toll_cost_one_way')
+    if ci.get('toll_cost_one_way') is not None and toll_total is not None:
+        back = (float(ci['toll_cost_return']) if legs == 2 and ci.get('toll_cost_return') is not None
+                else float(ci['toll_cost_one_way']) * (legs - 1))
+        if abs(float(ci['toll_cost_one_way']) + back - toll_total) > 0.01:
+            ci.pop('toll_cost_one_way')
+            ci.pop('toll_cost_return', None)
     name = (quote.vehicle_type or '').strip().lower()
     vt_id = ci.get('vehicle_type_id') or getattr(quote, 'priced_vehicle_type_id', None)
     if vt_id and name:
@@ -1127,6 +1186,7 @@ def quote_payload(quote):
         'tolls_unknown': ci.get('tolls_unknown'),
         'tolls_confirmed_none': ci.get('tolls_confirmed_none'),
         'toll_cost_empty_return': ci.get('tolls_empty_return'),
+        'toll_cost_return': ci.get('toll_cost_return'),
         'cargo_description': quote.cargo_description,
         'driver_cost': _num(quote.driver_allowance),
         # A stored driver figure counts as entered ONLY when the client said
@@ -1140,6 +1200,11 @@ def quote_payload(quote):
         'cross_border_cost': ci.get('border_cost') or 0.0,
         'border_costs_unknown': ci.get('border_costs_unknown'),
         'border_cost_is_override': bool(ci.get('border_cost_is_override')),
+        'cross_border_cost_empty_return': ci.get('border_cost_empty_return'),
+        'cross_border_estimate_zar': ci.get('border_estimate'),
+        'cross_border_estimate_empty_return_zar': ci.get('border_estimate_empty_return'),
+        'clearing_agent_fee': ci.get('clearing_agent_fee'),
+        'abnormal_load': bool(ci.get('abnormal_load')),
         'is_international': bool(getattr(quote, 'is_international', False)),
         'include_empty_return': ci.get('include_empty_return'),
         'distance_estimated': ci.get('distance_estimated'),
