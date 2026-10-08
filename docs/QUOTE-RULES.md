@@ -397,3 +397,6 @@ Copy the file into each client repo's test fixtures (keep identical).
     "No toll plazas on this route"; every `default_price` / alternative `default_price` now rounded up to R 50 /
     R 100 (e.g. 8 257 → 8 300, 37 102 → 37 200); rules gain `default_price` and the toll R 0 note. No line amount,
     floor, target or warning code changed otherwise.
+  - Merge of origin/development (Maruf's e295449 SENT-create email only after the send guard; 34cfb7d VAT
+    registered): no conflicts, no incoming migrations. Migration 0159: `location_search_history.country_code`
+    (nullable), stored and returned by /location/recent/.
