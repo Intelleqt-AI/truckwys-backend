@@ -27,7 +27,7 @@ def external_ids_from_notes(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('core', '0161_load_estimate_cache'),
+        ('core', '0169_load_estimate_cache'),
     ]
 
     operations = [

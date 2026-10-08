@@ -157,15 +157,15 @@ empty values back to 10.00 first.
 ### Migrations (all reversible; checked forward + back on PostgreSQL 8091 scratch and a SQLite copy)
 | # | What | Notes |
 |---|------|-------|
-| 0158 | `WebhookSubscription.company` (nullable FK) | Fleet webhooks refuse a subscription without one (403). Right after migrate run `python manage.py bind_webhook_subscriptions` (dry run: lists every unbound subscription and the company it would get), then `--apply`. It binds only when exactly one company fits (an IntegrationAPIKey with the same name as partner_name whose operators share one company, else exactly one company with that name); bind the rest in Django admin or with `--bind SUB_ID=COMPANY_ID --apply`. |
-| 0159 | Load costing fields + back-fill from each converted load's quote snapshot | Adds columns with defaults (fast on PG 11+), then a batched data update (500 rows). |
-| 0160 | `Load.return_of` (one-to-one self), link source / time / user, `expecting_return` | Unique index on `return_of_id`. |
-| 0161 | Cached `estimated_cost` / `estimate_basis` / `economics_updated_at` | Fill with `python manage.py recompute_trip_economics` after migrate (idempotent, safe to re-run). |
-| 0162 | `external_id`, `external_source`, `return_of_external_ref`, `invoice_mismatch` + move trips/sync's `ext_id:` notes onto `external_id` | First load per (company, id) wins; duplicates keep only the note. |
-| 0163 | Unique (company, external_id) where external_id ≠ '' | Own migration so PostgreSQL never ALTERs after 0162's data update in one transaction. Builds a unique index (locks `loads` writes briefly). |
-| 0164 | QuoteOutcome actuals (`actual_revenue`, `actual_cost`, `actual_margin_pct`, `actual_cost_basis`, `backhaul_found`, `actuals_recorded_at`) | Labels only. |
+| 0166 | `WebhookSubscription.company` (nullable FK) | Fleet webhooks refuse a subscription without one (403). Right after migrate run `python manage.py bind_webhook_subscriptions` (dry run: lists every unbound subscription and the company it would get), then `--apply`. It binds only when exactly one company fits (an IntegrationAPIKey with the same name as partner_name whose operators share one company, else exactly one company with that name); bind the rest in Django admin or with `--bind SUB_ID=COMPANY_ID --apply`. |
+| 0167 | Load costing fields + back-fill from each converted load's quote snapshot | Adds columns with defaults (fast on PG 11+), then a batched data update (500 rows). |
+| 0168 | `Load.return_of` (one-to-one self), link source / time / user, `expecting_return` | Unique index on `return_of_id`. |
+| 0169 | Cached `estimated_cost` / `estimate_basis` / `economics_updated_at` | Fill with `python manage.py recompute_trip_economics` after migrate (idempotent, safe to re-run). |
+| 0170 | `external_id`, `external_source`, `return_of_external_ref`, `invoice_mismatch` + move trips/sync's `ext_id:` notes onto `external_id` | First load per (company, id) wins; duplicates keep only the note. |
+| 0171 | Unique (company, external_id) where external_id ≠ '' | Own migration so PostgreSQL never ALTERs after 0170's data update in one transaction. Builds a unique index (locks `loads` writes briefly). |
+| 0172 | QuoteOutcome actuals (`actual_revenue`, `actual_cost`, `actual_margin_pct`, `actual_cost_basis`, `backhaul_found`, `actuals_recorded_at`) | Labels only. |
 
-Rollback: `migrate core 0157` (drops the new columns; no data outside them is changed).
+Rollback: `migrate core 0165` (drops the new columns; no data outside them is changed).
 
 After migrate: `python manage.py recompute_trip_economics` (or `--company ID`).
 
@@ -194,6 +194,14 @@ After migrate: `python manage.py recompute_trip_economics` (or `--company ID`).
   "pickup_lat": -26.20, "pickup_lng": 28.04, "delivery_lat": -29.85, "delivery_lng": 31.02,
   "return_of_external_id": "TMS-12000"}]
 ```
+Tolls / border for a job without its own figures come from the toll/border engine (same as route/calculate):
+send `route_geometry` ([{lat, lon}] of the route driven) and, for a round trip or the empty run home,
+`return_route_geometry`; for a cross-border job `countries` (["SA", "BW"]) or `origin_country` / `dest_country`,
+and optionally `gross_mass_kg`, `axle_config`, `abnormal_load`, `clearing_agent_fee`. Tolls are priced at the
+truck's SANRAL class on the tariffs in force on the PICKUP date; `toll_cost` / `border_cost` sent by the TMS always
+win. No live routing is done from a sync: no geometry and no `toll_cost` = tolls unknown (the job asks for them).
+What was filled is in `load.costing_inputs.route_costs` {filled, trip_date, toll_class, countries}.
+
 Response: `{created, updated, unchanged, skipped (= unchanged, for old clients), errors, total, load_ids
 (created), updated_ids, results: [{index, load_id, external_id, outcome, changed: [...], return_link?,
 invoice_mismatch?}]}`. Only fields present in a record are changed. `return_of_external_id: null` unlinks; an

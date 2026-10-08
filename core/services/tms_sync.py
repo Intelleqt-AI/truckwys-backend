@@ -227,6 +227,8 @@ def _record_changes(rec, *, origin_keys=('pickup_location', 'origin'), dest_keys
         out['cargo_description'] = str(first('cargo_description'))
     if 'stops' in rec and isinstance(rec.get('stops'), list):
         out['stops'] = rec['stops']
+    if isinstance(rec.get('route_geometry'), list) and rec['route_geometry']:
+        out['route_geometry'] = rec['route_geometry'][:20000]
     if first('trip_type') is not None:
         out['trip_type'] = trip_type_from(rec)
     st = first('status')
@@ -238,7 +240,8 @@ def _record_changes(rec, *, origin_keys=('pickup_location', 'origin'), dest_keys
     return out
 
 
-PRICING_FIELDS = {'distance', 'weight', 'trip_type', 'vehicle', 'costing_inputs'}
+PRICING_FIELDS = {'distance', 'weight', 'trip_type', 'vehicle', 'costing_inputs', 'route_geometry', 'pickup_date',
+                  'pickup_location', 'delivery_location'}
 AUDITED_FIELDS = ('total_amount', 'rate', 'distance', 'weight', 'pickup_location', 'pickup_city', 'pickup_date',
                   'delivery_location', 'delivery_city', 'delivery_date', 'status', 'vehicle', 'driver', 'stops',
                   'trip_type', 'cargo_description', 'costing_inputs', 'notes')
@@ -302,13 +305,13 @@ def apply_record(company, load, rec, *, source, user=None, origin_keys=None, des
         metadata={'source': source, 'external_id': load.external_id or None,
                   'changes': {k: changes[k] for k in AUDITED_FIELDS if k in changes}})
     recost = PRICING_FIELDS if load.costing_source != 'quote' else PRICING_FIELDS - {'vehicle'}
-    if recost & set(changes):
+    if recost & set(changes) or rec.get('return_route_geometry') or rec.get('countries'):
         # A quote-costed job keeps its as-quoted figures (quoted_*); its
         # estimate moves to the new data (costing_source becomes computed).
         # Assigning a truck alone doesn't re-cost a quoted job (it was
         # priced on that truck type already).
         from core.services.trip_costing import cost_load
-        cost_load(load)
+        cost_load(load, rec=rec)
     if 'total_amount' in changes:
         check_invoice_mismatch(load, source=source)
     return changes
@@ -427,7 +430,7 @@ def _create_load(company, rec, *, load_number, external_id, source, origin_keys,
         driver=company_driver(company, rec.get('driver_id')),
         **fields)
     from core.services.trip_costing import cost_load
-    cost_load(load)
+    cost_load(load, rec=rec)
     return load
 
 

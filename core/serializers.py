@@ -753,6 +753,14 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
             if v is None or v == '':
                 continue
             try:
+                if kind is dict:
+                    from core.services.quote_costing import border_costs_unknown_input
+                    if not isinstance(v, dict):
+                        raise serializers.ValidationError(f'costing_inputs.{key} must be a JSON object.')
+                    norm = border_costs_unknown_input({'border_costs_unknown': v})
+                    if norm:
+                        out[key] = norm
+                    continue
                 if kind is bool:
                     if not isinstance(v, bool):
                         raise ValueError
@@ -920,6 +928,22 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
+        # Pricing completeness from the stored snapshot (no query): tolls that
+        # were unknown when it was priced are shown as unknown (null), never
+        # as R 0, and the quote is marked incomplete.
+        snap = getattr(instance, 'costing_snapshot', None) or {}
+        blocking = list(snap.get('blocking') or [])
+        tolls_unknown = 'tolls_unknown' in blocking or bool((instance.costing_inputs or {}).get('tolls_unknown'))
+        if tolls_unknown and 'tolls_unknown' not in blocking:
+            blocking.append('tolls_unknown')
+        if tolls_unknown:
+            data['toll_charges'] = None
+            if isinstance(data.get('customer_price'), dict):
+                data['customer_price'] = {**data['customer_price'], 'incomplete': True,
+                                          'incomplete_reason': 'Tolls are unknown on this quote.'}
+        data['tolls_unknown'] = tolls_unknown
+        data['pricing_complete'] = not blocking if snap or tolls_unknown else None
+        data['pricing_blocking'] = blocking
         if isinstance(self.parent, serializers.ListSerializer):
             data.pop('route_snapshot', None)
         else:

@@ -223,6 +223,8 @@ class CostFloorTests(_Base):
         self.assertNotIn('estimate_fixed_cost', {w['code'] for w in r['warnings']})
 
     def test_driver_allowance_defaults_to_approved_rate_times_nights(self):
+        from core.models import VerifiedRate
+        VerifiedRate.objects.filter(proposed_by='migration_0158').delete()   # tests own their allowance rows
         VerifiedRate.objects.create(kind='driver_allowance', key='nbcrfli', label='NBCRFLI', value=Decimal('500'),
                                     unit='per_night', effective_from=date(date.today().year, 3, 1)
                                     if date.today() >= date(date.today().year, 3, 1) else date(date.today().year - 1, 3, 1),
@@ -244,6 +246,8 @@ class CostFloorTests(_Base):
         self.assertEqual(line['suggested'], 1000)
 
     def test_no_allowance_warns_and_prices_nights_at_zero(self):
+        from core.models import VerifiedRate
+        VerifiedRate.objects.filter(proposed_by='migration_0158').delete()   # tests own their allowance rows
         self.company.driver_allowance_per_night = None
         self.company.save()
         r = self.analyze(duration_minutes=1200, include_return=False)
@@ -825,11 +829,13 @@ class Round1FixTests(_Base):
         self.assertEqual(r['attention'][0]['code'], 'payment_risk')
         self.assertEqual(r['attention'][0]['level'], 'high')
         self.assertIn('deposit', r['attention'][0]['message'])
-        self.assertEqual(r['recommendation']['key'], 'balanced')
+        self.assertIsNone(r['recommendation']['key'])           # no market, no model: no_evidence
         self.assertTrue(r['your_price']['below_floor'])
         self.assertIsNone(r['your_price']['likelihood'])
 
     def test_driver_line_needs_input_when_nights_and_no_rate(self):
+        from core.models import VerifiedRate
+        VerifiedRate.objects.filter(proposed_by='migration_0158').delete()   # tests own their allowance rows
         self.company.driver_allowance_per_night = None
         self.company.save()
         r = self.analyze(duration_minutes=1200)
@@ -1150,9 +1156,14 @@ class Round4Tests(_Base):
         self.assertFalse(r['market']['available'])
         reason = r['recommendation']['reason']
         self.assertNotIn('what this lane pays', reason)
-        self.assertIn('while this lane has no market data', reason)
-        self.assertEqual(r['recommendation']['code'], 'no_market')
-        self.assertFalse(r['recommendation']['short'].startswith('Balanced'))
+        self.assertEqual(reason, 'No market data for this lane yet. Prices are your cost floor plus your margin.')
+        self.assertEqual(r['recommendation']['code'], 'no_evidence')
+        self.assertIsNone(r['recommendation']['key'])
+        self.assertFalse(any(c['recommended'] for c in r['choices']))
+        self.assertEqual(r['target_margin'], {'pct': 10, 'source': 'settings'})
+        mp = r['win_prediction']['model_progress']
+        self.assertEqual(set(mp), {'accepted', 'rejected', 'accepted_needed', 'rejected_needed'})
+        self.assertEqual((mp['accepted_needed'], mp['rejected_needed']), (200, 200))
 
     def test_never_recommend_under_25_pct_unless_all_are(self):
         choices = [_choice('safe', 30000, 2000, 90), _choice('balanced', 31000, 3000, 40),
@@ -1265,6 +1276,8 @@ class Round4Tests(_Base):
 
     # 5b + 8
     def test_round_trip_nights_and_company_allowance_setting(self):
+        from core.models import VerifiedRate
+        VerifiedRate.objects.filter(proposed_by='migration_0158').delete()   # tests own their allowance rows
         self.company.driver_allowance_per_night = None
         self.company.save()
         r = self.analyze(legs=2, trip_type='ROUND_TRIP', distance_km=1136, duration_minutes=420)
@@ -1468,7 +1481,7 @@ class Round5Tests(_Base):
     # K-1
     def test_headline_per_case(self):
         none = self.analyze(origin='BFN', destination='PLK')
-        self.assertEqual(none['likelihood']['headline'], 'No chance to win yet: no real quotes on this lane.')
+        self.assertEqual(none['likelihood']['headline'], 'No market data for this lane yet. Prices are your cost floor plus your margin.')
         self.assertEqual(none['likelihood']['reason_code'], 'no_basis')
         self._platform()
         rules = self.analyze(include_return=False)
@@ -1546,9 +1559,9 @@ class Round5Tests(_Base):
     def test_cold_estimate_never_claims_the_lane_pays(self):
         r = self.analyze(origin='JHB', destination='CPT', distance_km=1400, one_way_distance_km=1400)
         self.assertFalse(r['market']['available'])
-        self.assertEqual(r['recommendation']['code'], 'no_market')
+        self.assertEqual(r['recommendation']['code'], 'no_evidence')
         self.assertNotIn('what this lane pays', r['recommendation']['reason'])
-        self.assertEqual(r['likelihood']['headline'], 'No chance to win yet: no real quotes on this lane.')
+        self.assertEqual(r['likelihood']['headline'], 'No market data for this lane yet. Prices are your cost floor plus your margin.')
 
     # K-3 / K-7
     def test_reasoning_items_and_vocabulary(self):
@@ -1972,8 +1985,29 @@ class FinalCopyTests(_Base):
         for c in r['choices']:
             if c['summary'].startswith('At your minimum charge'):
                 self.assertEqual(c['summary'], 'At your minimum charge of R\u00a090\u00a0000.')
+        # No market and no model: nothing is recommended (owner rule).
+        self.assertEqual(r['recommendation']['code'], 'no_evidence')
         self.assertNotIn('target', r['recommendation']['reason'])
-        self.assertIn('minimum charge', r['recommendation']['reason'])
+        # With a market, the minimum-charge recommendation names the charge.
+        self._minimum_with_market()
+
+    def _minimum_with_market(self):
+        platform_market(self.company, self.customer, start=20000)
+        pa._MARKET_MEMO.clear()                 # the first analysis cached "no market"
+        r = self.analyze(include_return=False, your_price=60000)
+        self.assertTrue(r['market']['available'])
+        self.assertNotIn('target', r['recommendation']['reason'])
+        # The wording itself: only the choice AT the minimum says "at".
+        market = {'median': 25000, 'p25': 24000, 'p75': 26000}
+        lk = {'level': 'rules', 'band': 'even'}
+        choices = [{'key': 'safe', 'label': 'Safe', 'price': 30000, 'margin': 1, 'margin_pct': 20, 'likelihood': lk},
+                   {'key': 'balanced', 'label': 'Balanced', 'price': 30900, 'margin': 1, 'margin_pct': 22,
+                    'likelihood': lk},
+                   {'key': 'stretch', 'label': 'Stretch', 'price': 31900, 'margin': 1, 'margin_pct': 24,
+                    'likelihood': lk}]
+        rec = pa._recommend(choices, None, market=market, target=10, minimum=30000)
+        self.assertEqual(rec['code'], 'rules_minimum')
+        self.assertIn('R\u00a030\u00a0900, just above your R\u00a030\u00a0000 minimum charge', rec['reason'])
 
     def test_empty_return_gap_without_recommendation_says_none(self):
         rec = pa._never_recommend_less_likely(

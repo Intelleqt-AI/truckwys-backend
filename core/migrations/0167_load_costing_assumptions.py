@@ -36,7 +36,7 @@ def copy_from_quotes(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('core', '0158_webhooksubscription_company'),
+        ('core', '0166_webhooksubscription_company'),
     ]
 
     operations = [

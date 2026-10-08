@@ -62,6 +62,48 @@ def _sg_extract_json(text):
     return None
 
 
+class FuelPriceRefreshView(APIView):
+    """POST /api/v1/fuel-prices/refresh/ — the "Try again" button for a stale
+    official price, for any signed-in user. Reads FIASA now (synchronously,
+    5 s timeout) — no Celery needed — at most once per 10 minutes across the
+    app (cache lock); inside that window it answers with what is stored.
+    Returns the same payload as GET fuel-prices/current/ plus `refresh`:
+    {attempted, ok, throttled, message}."""
+    permission_classes = [IsAuthenticated]
+    LOCK_SECONDS = 600
+
+    def post(self, request):
+        from django.core.cache import cache
+        from core.services.fuel_price import official_row_in_force, refresh_official, row_effective_from
+        now = timezone.now()
+        before = official_row_in_force(now)
+        attempted = bool(cache.add('fuel_price_user_refresh', True, self.LOCK_SECONDS))
+        ok = None
+        if attempted:
+            try:
+                after = refresh_official(force=True, now=now)
+                ok = after is not None and getattr(after, 'fetch_failed_at', None) is None
+            except Exception as exc:
+                logger.warning('user fuel refresh failed: %s', exc)
+                ok = False
+        row = official_row_in_force(now)
+        when = (f'{timezone.localtime(row_effective_from(row)).day} '
+                f'{timezone.localtime(row_effective_from(row)):%b}') if row is not None else None
+        if not attempted:
+            message = 'Checked a few minutes ago; showing the latest price on record.'
+        elif ok:
+            message = 'Official price checked just now.'
+        else:
+            message = ("FIASA couldn't be reached, using the price from " + when + '.' if when
+                       else "FIASA couldn't be reached and no official price is on record.")
+        # Answer exactly as GET current/ does (no second refresh).
+        response = FuelPriceCurrentView().get(request)
+        data = dict(response.data)
+        data['refresh'] = {'attempted': attempted, 'ok': ok, 'throttled': not attempted, 'message': message,
+                           'changed': (row is not None and (before is None or row.pk != before.pk))}
+        return Response(data, status=response.status_code)
+
+
 class FuelPriceCurrentView(APIView):
     """GET /api/v1/fuel-prices/current/ — the official diesel price in force
     now, its freshness, and the caller's company price (QUOTE-RULES.md §1-§2).
@@ -288,6 +330,8 @@ class AIQuoteSuggestionView(APIView):
                             status=status.HTTP_400_BAD_REQUEST)
         choices = r.get('choices') or []
         rec = next((c for c in choices if c.get('recommended')), None)
+        if rec is None and (r.get('recommendation') or {}).get('code') == 'no_evidence' and choices:
+            rec = choices[0]          # no evidence: cost floor + margin (Safe), not "recommended"
         m = r.get('market') or {}
         lk = r.get('likelihood') or {}
         margins = [c['margin_pct'] for c in choices if c.get('margin_pct') is not None]

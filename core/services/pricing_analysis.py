@@ -235,9 +235,8 @@ def round_price(price):
     """Prices are offered in sensible whole amounts: up to the next R50 below
     R20,000, else the next R100. Always UP, so rounding never drops a choice
     below the margin it was built for."""
-    p = float(price or 0)
-    unit = 50 if p < 20000 else 100
-    return int(math.ceil(p / unit - 1e-9) * unit)
+    from core.services.quote_costing import round_price_up
+    return round_price_up(price)
 
 
 def _target_price(floor_total, target_pct, minimum=None):
@@ -603,17 +602,10 @@ def _panel_lines(costing, fixed):
     tolls = by.get('tolls')
     if tolls is not None and tolls['amount'] is not None:
         legs = tolls.get('legs') or 1
-        none_found = 'tolls_none_found' in {w['code'] for w in costing['warnings']}
-        if none_found:
-            # R0 means no plazas were FOUND: ask to check, never state it as fact.
-            out.append(_line('tolls', 'Tolls', 0, _source('calculated', 'No tolls found for this route'),
-                             'The route calculation found no toll plazas on this route. Check this if the trip '
-                             'uses toll roads, and add them in the build-up.', status='check') | {'amount': 0.0})
-        else:
-            basis = ('No tolls on this route (confirmed)' if not tolls['amount']
-                     else f'{_fmt2(tolls["one_way"])} one way' + (' × 2 legs' if legs == 2 else ''))
-            out.append(_line('tolls', 'Tolls', 0, _source('calculated', 'Route toll calculation'), basis)
-                       | {'amount': tolls['amount']})
+        basis = ('No toll plazas on this route' if not tolls['amount']
+                 else f'{_fmt2(tolls["one_way"])} one way' + (' × 2 legs' if legs == 2 else ''))
+        out.append(_line('tolls', 'Tolls', 0, _source('calculated', 'Route toll calculation'), basis)
+                   | {'amount': tolls['amount']})
     drv = by.get('driver')
     if drv is not None:
         status = 'needs_input' if drv['amount'] is None or drv.get('source') == 'missing' else 'ok'
@@ -621,7 +613,11 @@ def _panel_lines(costing, fixed):
                else _source('user', 'Your setting') if (costing.get('resolution') or {}).get('driver_rate_source')
                == 'company_setting' else _source('official', 'Approved driver allowance'))
         details = []
-        if drv.get('rate_per_night') is not None:
+        rate_detail = (costing.get('resolution') or {}).get('driver_rate_detail')
+        if rate_detail and drv.get('source') != 'user':
+            # The approved figure it came from, e.g. "NBCRFLI minimum R 243,63/night (from 1 Mar 2026)".
+            details.append({'label': 'Rate', 'value': rate_detail.replace('R ', 'R' + NBSP)})
+        elif drv.get('rate_per_night') is not None:
             details.append({'label': 'Rate', 'value': f'{_fmt2(drv["rate_per_night"])} per night away'})
         if drv.get('nights') is not None:
             details.append({'label': 'Nights away', 'value': str(drv['nights'])})
@@ -1474,6 +1470,24 @@ def model_likelihood(*, ctx, company, user, payload, origin, destination, vt_nam
 # Entry point
 # ---------------------------------------------------------------------------
 
+NO_EVIDENCE_HEADLINE = 'No market data for this lane yet. Prices are your cost floor plus your margin.'
+
+
+def win_prediction_block(user, company):
+    """{'model_progress': {accepted, rejected, accepted_needed, rejected_needed}}
+    for the company tier — the same shape as win_prediction.model_progress, so
+    clients can say "Win chance appears after 200 won and 200 lost quotes
+    (you have X and Y)". None on failure."""
+    try:
+        from core.services.win_prediction import model_progress
+        tier = model_progress(user, company)['company']
+        return {'model_progress': {k: tier[k] for k in ('accepted', 'rejected', 'accepted_needed',
+                                                        'rejected_needed')}}
+    except Exception as exc:
+        logger.warning('pricing analysis: model progress failed: %s', exc)
+        return None
+
+
 BASIS_LABELS = {'one_way': 'one-way quotes', 'round_trip': 'return-trip quotes', 'one_way_x2': 'one-way quotes ×2'}
 
 
@@ -1557,7 +1571,8 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
 
     from core.models import Customer, Quote
 
-    target = _f(getattr(company, 'margin_target_pct', None), 10.0) or 10.0
+    target_set = _f(getattr(company, 'margin_target_pct', None))
+    target = target_set or 10.0
     target = min(max(target, float(MARGIN_TARGET_RANGE[0])), float(MARGIN_TARGET_RANGE[1]))
 
     quote_id = _i(payload.get('quote_id'))
@@ -1734,7 +1749,13 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
                                     market=market_out if _market_usable(market) else None, target=target,
                                     minimum=min_sets)
         recommendation = _never_recommend_less_likely(choices, recommendation, raw_p)
-        if recommendation['key'] is None:
+        if not _market_usable(market) and model_block is None:
+            # No market data and no model: nothing says one price is likelier
+            # to win, so none is "Recommended" (owner rule).
+            text = NO_EVIDENCE_HEADLINE
+            recommendation = {'key': None, 'code': 'no_evidence', 'short': text, 'reason': text}
+            likelihood['headline'] = text
+        elif recommendation['key'] is None:
             likelihood['headline'] = 'All three prices are less likely to win on this lane.'
         fwr = floor.get('floor_with_return')
         for c in choices:
@@ -1842,6 +1863,11 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
         'computed_ms': int((time.monotonic() - started) * 1000),
         'missing': missing,
         'target_margin_pct': int(target) if float(target).is_integer() else round(target, 1),
+        # Where the target margin comes from: the company setting (clamped to
+        # MARGIN_TARGET_RANGE), or the 10% default when none is set.
+        'target_margin': {'pct': int(target) if float(target).is_integer() else round(target, 1),
+                          'source': 'settings' if target_set else 'default'},
+        'win_prediction': win_prediction_block(user, company),
         'cost_floor': floor,
         'market': market_out,
         'choices': choices,

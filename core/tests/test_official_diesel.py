@@ -420,3 +420,32 @@ class ManualStopgapTests(TestCase):
         with at(sast(2026, 10, 7, 11)), patch.object(fps, 'enqueue_refresh', return_value=True) as q:
             fps.resolve_official('INLAND')
         q.assert_not_called()
+
+
+class UserRefreshTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        user = get_user_model().objects.create_user(username='plain', email='plain@x.test', password='x')
+        self.api = APIClient()
+        self.api.force_authenticate(user)
+
+    def test_any_user_can_refresh_once_per_ten_minutes(self):
+        row(date(2026, 9, 2), 29.5551, 28.6831, eff=sast(2026, 9, 2, 0, 1))
+        with serve(OCTOBER_PREPUBLISHED), at(sast(2026, 10, 7, 9)):
+            body = self.api.post('/api/v1/fuel-prices/refresh/', {}, format='json').json()
+        self.assertTrue(body['refresh']['attempted'])
+        self.assertTrue(body['refresh']['ok'], body['refresh'])
+        self.assertTrue(body['refresh']['changed'])
+        self.assertFalse(body['stale'])
+        with serve(OCTOBER_PREPUBLISHED) as get, at(sast(2026, 10, 7, 9, 5)):
+            body = self.api.post('/api/v1/fuel-prices/refresh/', {}, format='json').json()
+        self.assertTrue(body['refresh']['throttled'])
+        get.assert_not_called()
+
+    def test_unreachable_fiasa_says_so(self):
+        row(date(2026, 9, 2), 29.5551, 28.6831, eff=sast(2026, 9, 2, 0, 1))
+        with offline(), at(sast(2026, 10, 7, 9)):
+            body = self.api.post('/api/v1/fuel-prices/refresh/', {}, format='json').json()
+        self.assertFalse(body['refresh']['ok'])
+        self.assertEqual(body['refresh']['message'], "FIASA couldn't be reached, using the price from 2 Sep.")
+        self.assertTrue(body['stale'])

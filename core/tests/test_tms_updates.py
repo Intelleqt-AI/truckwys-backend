@@ -179,3 +179,73 @@ class ReturnLinkTests(_Base):
         out = self.trips([self.rec(external_id='R-3', return_of_external_id='O-3')])
         self.assertTrue(out['results'][0]['return_link']['pending'])
         self.assertIsNone(Load.objects.get(company=self.co, external_id='R-3').return_of_id)
+
+
+class RouteEngineTests(_Base):
+    """TMS jobs with no toll / border figures use the toll/border engine on
+    their own route (trip date, the truck's class, both legs)."""
+
+    def _plaza(self):
+        from core.models.toll_plaza import TollPlaza
+        return (TollPlaza.objects.filter(is_active=True, country='SA', lat__isnull=False)
+                .exclude(plaza_group__isnull=False).order_by('pk').first()
+                or TollPlaza.objects.filter(is_active=True, lat__isnull=False).order_by('pk').first())
+
+    def _line_through(self, plaza):
+        lat, lng = float(plaza.lat), float(plaza.lng)
+        return [{'lat': lat - 0.05, 'lon': lng}, {'lat': lat, 'lon': lng}, {'lat': lat + 0.05, 'lon': lng}]
+
+    def test_tolls_from_route_geometry_on_trip_date(self):
+        from core.services.toll_calculator import calculate_tolls_by_geometry, resolve_toll_class
+        plaza = self._plaza()
+        geom = self._line_through(plaza)
+        rec = self.rec(external_id='G-1', toll_cost=None, route_geometry=geom, pickup_date='2026-11-02')
+        rec.pop('toll_cost')
+        load = Load.objects.get(pk=self.trips([rec])['load_ids'][0])
+        ci = load.costing_inputs
+        self.assertEqual(ci['route_costs']['trip_date'], '2026-11-02')
+        self.assertIn('toll_cost_one_way', ci['route_costs']['filled'])
+        cls = resolve_toll_class(self.vt.name, self.co)
+        from datetime import date as _d
+        expected = calculate_tolls_by_geometry(geom, cls.truck_type, trip_date=_d(2026, 11, 2))
+        self.assertAlmostEqual(ci['toll_cost_one_way'], float(expected.total_excl_vat), places=2)
+        self.assertEqual(load.costing_source, 'computed')
+        tolls = next(ln for ln in load.costing_snapshot['lines'] if ln['key'] == 'tolls')
+        self.assertAlmostEqual(tolls['amount'], float(expected.total_excl_vat), places=2)
+
+    def test_tms_toll_figure_wins_and_no_geometry_stays_unknown(self):
+        plaza = self._plaza()
+        load = Load.objects.get(pk=self.trips([self.rec(external_id='G-2', toll_cost=123,
+                                                        route_geometry=self._line_through(plaza))])['load_ids'][0])
+        self.assertEqual(load.costing_inputs['toll_cost'], 123.0)
+        self.assertNotIn('toll_cost_one_way', load.costing_inputs)
+        rec = self.rec(external_id='G-3')
+        rec.pop('toll_cost')
+        load = Load.objects.get(pk=self.trips([rec])['load_ids'][0])
+        self.assertEqual(load.costing_source, 'unknown')
+        from core.services.trip_costing import missing_inputs
+        self.assertIn('tolls_unknown', [m['code'] for m in missing_inputs(load)])
+
+    def test_round_trip_way_back_on_its_own_route(self):
+        plaza = self._plaza()
+        rec = self.rec(external_id='G-4', trip_type='ROUND_TRIP', route_geometry=[{'lat': -20.0, 'lon': 10.0},
+                                                                                  {'lat': -20.1, 'lon': 10.1}],
+                       return_route_geometry=self._line_through(plaza))
+        rec.pop('toll_cost')
+        load = Load.objects.get(pk=self.trips([rec])['load_ids'][0])
+        ci = load.costing_inputs
+        self.assertEqual(ci['toll_cost_one_way'], 0.0)
+        self.assertGreater(ci['toll_cost_return'], 0)
+        tolls = next(ln for ln in load.costing_snapshot['lines'] if ln['key'] == 'tolls')
+        self.assertAlmostEqual(tolls['amount'], ci['toll_cost_return'], places=2)
+
+    def test_cross_border_both_legs(self):
+        rec = self.rec(external_id='G-5', destination='Gaborone, Botswana', countries=['SA', 'BW'], distance=360)
+        load = Load.objects.get(pk=self.trips([rec])['load_ids'][0])
+        ci = load.costing_inputs
+        self.assertTrue(load.is_international)
+        self.assertGreater(ci['border_cost'], 0)
+        self.assertIn('border_cost_empty_return', ci)
+        self.assertEqual(ci['route_costs']['countries'], ['SA', 'BW'])
+        keys = {ln['key'] for ln in load.costing_snapshot['lines']}
+        self.assertIn('border', keys)

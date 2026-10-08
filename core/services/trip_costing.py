@@ -33,6 +33,12 @@ LOAD_COSTING_INPUT_KEYS = {
     'tolls_empty_return': float, 'duration_minutes': float, 'driver_cost': float,
     'driver_cost_is_override': bool, 'driver_nights': int, 'include_empty_return': bool,
     'vehicle_type_id': int, 'border_cost': float, 'use_official_fuel': bool, 'fuel_price_override': float,
+    # Toll / border engine (toll-border-coverage): both legs as priced.
+    'toll_cost_return': float, 'border_cost_empty_return': float, 'border_estimate': float,
+    'border_estimate_empty_return': float, 'border_cost_is_override': bool, 'border_costs_unknown': dict,
+    'clearing_agent_fee': float, 'abnormal_load': bool,
+    # What load_route_costs filled (and on which trip date / toll class).
+    'route_costs': dict,
 }
 
 
@@ -53,6 +59,9 @@ def clean_costing_inputs(raw):
         try:
             if typ is bool:
                 out[k] = v if isinstance(v, bool) else str(v).strip().lower() in ('1', 'true', 'yes')
+            elif typ is dict:
+                if isinstance(v, dict):
+                    out[k] = v
             else:
                 out[k] = typ(v)
         except (TypeError, ValueError):
@@ -139,6 +148,14 @@ def load_payload(load):
         'driver_cost_is_override': bool(ci.get('driver_cost_is_override') or ci.get('driver_cost') is not None),
         'driver_nights': ci.get('driver_nights'),
         'cross_border_cost': ci.get('border_cost') or 0.0,
+        'cross_border_cost_empty_return': ci.get('border_cost_empty_return'),
+        'cross_border_estimate_zar': ci.get('border_estimate'),
+        'cross_border_estimate_empty_return_zar': ci.get('border_estimate_empty_return'),
+        'border_costs_unknown': ci.get('border_costs_unknown'),
+        'border_cost_is_override': bool(ci.get('border_cost_is_override')),
+        'clearing_agent_fee': ci.get('clearing_agent_fee'),
+        'abnormal_load': bool(ci.get('abnormal_load')),
+        'toll_cost_return': ci.get('toll_cost_return'),
         'is_international': bool(load.is_international),
         'include_empty_return': ci.get('include_empty_return'),
         'use_official_fuel': ci.get('use_official_fuel'),
@@ -218,10 +235,27 @@ def computed_fields(costing, now):
     }
 
 
-def cost_load(load, now=None):
-    """Cost a load from its own data and store it. Returns the fields."""
+def cost_load(load, now=None, rec=None):
+    """Cost a load from its own data and store it. Returns the fields.
+    Tolls / border the load doesn't carry come from the toll/border engine
+    on its own route (core.services.load_route_costs); `rec` is the TMS
+    record being applied (route_geometry, return_route_geometry, countries)."""
     from core.models import Load
     now = now or timezone.now()
+    try:
+        from core.services.load_route_costs import merge_route_costs
+        ci, international = merge_route_costs(load, rec)
+        updates = {}
+        if ci != (load.costing_inputs or {}):
+            updates['costing_inputs'] = ci
+        if international and not load.is_international:
+            updates['is_international'] = True
+        if updates:
+            Load.objects.filter(pk=load.pk).update(**updates)
+            for k, v in updates.items():
+                setattr(load, k, v)
+    except Exception:
+        logger.exception('load %s: route costs merge failed', load.pk)
     try:
         costing = costing_for_load(load, now)
     except Exception:

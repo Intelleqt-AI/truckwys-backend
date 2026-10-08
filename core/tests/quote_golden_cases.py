@@ -181,8 +181,8 @@ CASES = [
     ('default_price_no_rate_one_way_long',
      'No default price per km: default price = target price rounded up; alternative included.',
      long_trip(default_price_per_km=None)),
-    ('tolls_none_found',
-     'Route found R 0 tolls (not confirmed): warning tolls_none_found, floor still complete.',
+    ('tolls_no_plazas',
+     'Toll lookup worked and found no plazas: R 0 known, line "No toll plazas on this route", no warning.',
      base(tolls={'one_way': 0.0, 'empty_return': None, 'lookup_failed': False, 'confirmed_none': False})),
     ('international_border_costs_missing',
      'International trip without border costs: border line null, border_costs_missing blocks.',
@@ -222,6 +222,43 @@ CASES = [
      petrol_trip(diesel={'zone': 'INLAND', 'mode': 'OWN', 'own_price': None, 'own_set_at': None,
                          'official_price': None, 'official_effective_from': None, 'official_stale': False,
                          'use_official': False, 'override_price': None, 'fuel_type': 'Electric'})),
+    # Border costs not on file for part of the route (added 8 Oct 2026).
+    ('international_border_unknown_country',
+     'SA -> Namibia -> Angola: the Namibia->Angola crossing has no figures on file; the route border total '
+     'leaves it out, so the border lines are null and border_costs_missing blocks.',
+     long_trip(international=True, border_cost=4840.0,
+               border_costs_unknown={'countries': ['Angola'], 'crossings': ['Namibia→Angola'],
+                                     'known': [{'label': 'SA→NA', 'amount': 4463.29},
+                                               {'label': 'permit', 'amount': 376.71}]})),
+    ('international_border_unknown_country_user_cost',
+     'The same trip with the border costs entered by the user (border_cost_is_override): complete.',
+     long_trip(international=True, border_cost=9800.0, border_cost_is_override=True,
+               border_costs_unknown={'countries': ['Angola'], 'crossings': ['Namibia→Angola'],
+                                     'known': [{'label': 'SA→NA', 'amount': 4463.29},
+                                               {'label': 'permit', 'amount': 376.71}]})),
+    # Both legs as the route calculation prices them (toll/border audit, 8 Oct 2026).
+    ('round_trip_return_leg_tolls',
+     'Round trip whose way back has its own plazas: tolls = one_way + return_leg (R1 043,48 + R812,61), '
+     'not one_way x 2.',
+     long_trip(trip_type='ROUND_TRIP', price=62000.0,
+               tolls={'one_way': 1043.48, 'empty_return': None, 'return_leg': 812.61,
+                      'lookup_failed': False, 'confirmed_none': False})),
+    ('international_border_estimate_one_way',
+     'One-way international trip, empty return: border R6 239,66 out of which R2 005,00 (agent) is an '
+     'estimate; the way back empty is priced on its own (R2 381,71, all estimate).',
+     long_trip(international=True, include_empty_return=True, border_cost=6239.66, border_estimate=2005.0,
+               border_cost_empty_return=2381.71, border_estimate_empty_return=2381.71)),
+    ('international_border_estimate_round_trip',
+     'Round trip: border_cost and border_estimate are out + back (R9 618,08 of which R4 386,71 '
+     'estimated = R2 005,00 + R2 381,71).',
+     long_trip(trip_type='ROUND_TRIP', international=True, price=70000.0,
+               border_cost=9618.08, border_estimate=4386.71,
+               tolls={'one_way': 1043.48, 'empty_return': None, 'return_leg': 812.61,
+                      'lookup_failed': False, 'confirmed_none': False})),
+    ('international_border_agent_fee_entered',
+     "The user entered their clearing agent's fee: the route calculation then has no estimate left "
+     '(border_estimate 0) and the line says nothing about estimates.',
+     long_trip(international=True, include_empty_return=False, border_cost=5734.66, border_estimate=0.0)),
 ]
 
 

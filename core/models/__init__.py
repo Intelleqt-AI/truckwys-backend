@@ -31,7 +31,7 @@ from .delivery_fee_charge import DeliveryFeeCharge
 from .invite_token import InviteToken
 from .fuel_price import FuelPrice
 from .task_run import TaskRunLog
-from .toll_plaza import TollPlaza
+from .toll_plaza import TollPlaza, TollTariff
 from .rag_chunk import InvoiceEmbedding
 from .border_crossing_fee import BorderCrossingFee
 from .country_transit_rate import CountryTransitRate
@@ -97,6 +97,7 @@ __all__ = [
     'InviteToken',
     'FuelPrice',
     'TollPlaza',
+    'TollTariff',
     'InvoiceEmbedding',
     'BorderCrossingFee',
     'CountryTransitRate',

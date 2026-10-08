@@ -1,12 +1,12 @@
 # Separate migration (own transaction): on PostgreSQL an ALTER TABLE right
-# after the data update in 0162 could fail with "pending trigger events".
+# after the data update in 0170 could fail with "pending trigger events".
 from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('core', '0162_load_external_id'),
+        ('core', '0170_load_external_id'),
     ]
 
     operations = [
