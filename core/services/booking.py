@@ -211,7 +211,12 @@ def preview_load(quote, request):
                 setattr(load, k, v)
     from core.services.trip_costing import copy_quote_costing
     # A per-tonne quote's snapshot is the whole plan, not this one load.
-    for k, v in (copy_quote_costing(quote).items() if quote.pricing_basis != 'per_tonne' else ()):
+    if quote.pricing_basis == 'per_tonne':
+        from core.services.tonnage_jobs import copy_tonnage_costing
+        costing = copy_tonnage_costing(quote, {'total_amount': load.total_amount})
+    else:
+        costing = copy_quote_costing(quote)
+    for k, v in costing.items():
         setattr(load, k, v)
     return load
 
@@ -247,6 +252,9 @@ def booking_preview_response(request, quote):
             try:
                 call_off_tonnes(quote, request.query_params.get('tonnes'))
             except CallOffError as exc:
+                if exc.invalid:
+                    # Not a usable number at all: the request is bad.
+                    return Response({'code': 'invalid_tonnes', 'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
                 refusal = Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         if is_contract:
             contract = contract_status(quote)

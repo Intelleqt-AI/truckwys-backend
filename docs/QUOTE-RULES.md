@@ -563,3 +563,14 @@ not priced); one lane per contract in v1 (a client with several lanes has one co
 `volume_contract` adds `delivered_tonnes` (weighbridge tonnes on record), the period and `loads [{id, load_number,
 status, pickup_date, planned_tonnes, actual_tonnes, weighbridge_slip, total_amount}]`. Load `weighbridge_slip`
 (ticket number, optional) is saved with the weighbridge tonnes.
+
+**Verifier fixes (8 Oct 2026).** Migration 0177 gives every new NOT NULL column a `db_default` (`quotes.pricing_basis`,
+`loads.pricing_basis`, `loads.actual_tonnes_source`, `loads.weighbridge_slip`): code from before 0177 still inserts.
+Call-off `tonnes` (convert_to_load, booking-preview `?tonnes=`): a finite number above 0 with at most 3 decimals
+(`28,5` or `28.5`), else 400 (`invalid_tonnes` on the preview); at least 0,1 t; one consignment at most its quoted tonnes;
+a contract at most the remaining tonnes and at most the largest eligible truck's payload (`volume_contract.
+max_tonnes_per_load`; clients cap at the same figure). Call-offs are costed at booking from the contract's priced truck
+(one full load, `costing_source: "quote"`). TMS `actual_tonnes` that is not a finite number above 0 and up to 100 t with at
+most 3 decimals is a per-record SyncError; a CANCELLED load ignores it. Weighbridge tonnes that change the amount after the
+invoice is issued set `invoice_mismatch {code: "weighed_after_invoicing", ...}` and never re-price. The invoice line names
+the slip ("Weighbridge slip WB-1042") and says "planned" for planned tonnes.

@@ -19,7 +19,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='load',
             name='actual_tonnes_source',
-            field=models.CharField(blank=True, default='', help_text='weighbridge | manual | tms', max_length=20),
+            field=models.CharField(blank=True, db_default='', default='', help_text='weighbridge | manual | tms', max_length=20),
         ),
         migrations.AddField(
             model_name='load',
@@ -34,7 +34,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='load',
             name='pricing_basis',
-            field=models.CharField(choices=[('per_load', 'Per load'), ('per_tonne', 'Per tonne')], default='per_load', max_length=10),
+            field=models.CharField(choices=[('per_load', 'Per load'), ('per_tonne', 'Per tonne')], db_default='per_load', default='per_load', max_length=10),
         ),
         migrations.AddField(
             model_name='load',
@@ -44,7 +44,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='load',
             name='weighbridge_slip',
-            field=models.CharField(blank=True, default='', help_text='Weighbridge ticket / slip number', max_length=60),
+            field=models.CharField(blank=True, db_default='', default='', help_text='Weighbridge ticket / slip number', max_length=60),
         ),
         migrations.AddField(
             model_name='quote',
@@ -74,7 +74,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='quote',
             name='pricing_basis',
-            field=models.CharField(choices=[('per_load', 'Per load'), ('per_tonne', 'Per tonne')], default='per_load', max_length=10),
+            field=models.CharField(choices=[('per_load', 'Per load'), ('per_tonne', 'Per tonne')], db_default='per_load', default='per_load', max_length=10),
         ),
         migrations.AddField(
             model_name='quote',
