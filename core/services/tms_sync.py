@@ -125,6 +125,29 @@ def new_load_number():
     return num
 
 
+def costing_inputs_from(company, rec):
+    """compute() inputs a TMS record may carry: toll_cost (all loaded legs),
+    toll_cost_one_way, tolls_confirmed_none, duration_minutes (one way),
+    driver_cost, driver_nights, include_empty_return, border_cost and the
+    truck: vehicle_type_id or vehicle_type (name), both only among the
+    vehicle types this company can see."""
+    from core.services.trip_costing import clean_costing_inputs
+    ci = clean_costing_inputs(rec)
+    vt_id = ci.pop('vehicle_type_id', None)
+    name = (rec.get('vehicle_type') or '').strip()
+    if vt_id or name:
+        from core.services.quote_costing import resolve_vehicle
+        vt, how = resolve_vehicle(company, vehicle_type_id=vt_id, name=name, suggest=False)
+        if vt is not None:
+            ci['vehicle_type_id'] = vt.id
+    return ci
+
+
+def trip_type_from(rec):
+    t = str(rec.get('trip_type') or '').upper()
+    return 'ROUND_TRIP' if t == 'ROUND_TRIP' else 'ONE_WAY'
+
+
 def apply_fleet_trip(company, data):
     """POST integrations/fleet/sync/ (and each bulk item). Returns
     (load, created). Raises SyncError."""
@@ -165,6 +188,8 @@ def apply_fleet_trip(company, data):
             total_amount=_dec(data.get('total_amount'), Decimal('0')),
             status='PENDING',
             notes=data.get('notes', ''),
+            trip_type=trip_type_from(data),
+            costing_inputs=costing_inputs_from(company, data),
         )
         created = True
 
@@ -192,6 +217,9 @@ def apply_fleet_trip(company, data):
     else:
         raise SyncError(f'Unknown action {action}')
     load.save()
+    if created:
+        from core.services.trip_costing import cost_load
+        cost_load(load)
     return load, created
 
 
@@ -215,6 +243,9 @@ def _create_load_from_record(company, rec, ext_id):
         total_amount=rate,
         status='PENDING',
         notes=f'ext_id:{ext_id}' if ext_id else 'imported via API',
+        trip_type=trip_type_from(rec),
+        costing_inputs=costing_inputs_from(company, rec),
+        vehicle=company_vehicle(company, rec.get('vehicle_plate')),
     )
 
 
@@ -229,4 +260,7 @@ def sync_trip_record(company, rec):
         dup = Load.objects.filter(company=company, notes__icontains=f'ext_id:{ext_id}').first()
         if dup is not None:
             return 'skipped', dup
-    return 'created', _create_load_from_record(company, rec, ext_id)
+    load = _create_load_from_record(company, rec, ext_id)
+    from core.services.trip_costing import cost_load
+    cost_load(load)
+    return 'created', load

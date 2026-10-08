@@ -3091,6 +3091,7 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
             return timezone.make_aware(datetime.combine(d, datetime.min.time()))
 
         from core.services.lane_benchmark import lane_place
+        from core.services.trip_costing import copy_quote_costing
         pickup_city, pickup_state = lane_place(quote.origin, quote.pickup_location)
         delivery_city, delivery_state = lane_place(quote.destination, quote.delivery_location)
 
@@ -3156,8 +3157,16 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
             additional_charges=quote.additional_charges,
             total_amount=quote.total_amount,
             status='ASSIGNED' if vehicle else 'PENDING',
-            created_by=request.user
+            created_by=request.user,
+            # Trip economics: what the job was priced on (lines incl. the
+            # empty return, floor, fuel, truck, quoted margin).
+            **copy_quote_costing(quote),
         )
+        if not load.costing_source:
+            # A legacy quote with no pricing snapshot: cost the job from its
+            # own data (or mark it unknown) instead of a generic model.
+            from core.services.trip_costing import cost_load
+            cost_load(load)
 
         # Quote stays ACCEPTED — its own lifecycle ends here. The Load created
         # above (status PENDING/ASSIGNED) now owns delivery progress

@@ -87,6 +87,46 @@ class Load(models.Model):
     pod_source = models.CharField(max_length=10, choices=POD_SOURCE_CHOICES, blank=True, default='')
     pod_file_sha256 = models.CharField(max_length=64, blank=True)
 
+    # --- Costing assumptions (trip economics, 2026-10) -----------------------
+    # What the job was priced on, so its P&L estimate and "quoted vs actual"
+    # use the quote's own compute() figures instead of a generic model.
+    # Written by convert_to_load (copied from the quote's pricing snapshot) or
+    # by core.services.trip_costing for loads that never had a quote (TMS).
+    COSTING_SOURCE_CHOICES = [
+        ('', 'Not costed (legacy)'),
+        ('quote', 'Quote snapshot'),
+        ('computed', 'Computed from the load'),
+        ('unknown', 'Not enough information'),
+    ]
+    TRIP_TYPE_CHOICES = [('ONE_WAY', 'One Way'), ('ROUND_TRIP', 'Round Trip')]
+    trip_type = models.CharField(max_length=20, choices=TRIP_TYPE_CHOICES, default='ONE_WAY')
+    return_location = models.CharField(max_length=500, blank=True, default='')
+    return_distance = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    return_date = models.DateField(null=True, blank=True)
+    return_cargo = models.TextField(blank=True, default='')
+    costing_source = models.CharField(max_length=10, choices=COSTING_SOURCE_CHOICES, blank=True, default='')
+    # compute() inputs the load fields don't carry (same keys as
+    # Quote.costing_inputs, plus toll_cost = all loaded legs).
+    costing_inputs = models.JSONField(default=dict, blank=True)
+    # compute() output (lines incl. the empty_return leg, floor, warnings).
+    costing_snapshot = models.JSONField(default=dict, blank=True)
+    cost_floor = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True,
+                                     help_text='Floor of costing_snapshot (null = incomplete / unknown)')
+    empty_return_assumed = models.BooleanField(null=True, blank=True,
+                                               help_text='The costing includes an empty return leg (null = unknown)')
+    fuel_price_used = models.DecimalField(max_digits=8, decimal_places=4, null=True, blank=True)
+    fuel_price_source = models.CharField(max_length=10, blank=True, default='')
+    fuel_zone = models.CharField(max_length=10, blank=True, default='')
+    fuel_effective_from = models.DateTimeField(null=True, blank=True)
+    fuel_litres = models.DecimalField(max_digits=10, decimal_places=3, null=True, blank=True)
+    priced_vehicle_type = models.ForeignKey('core.VehicleType', on_delete=models.SET_NULL, null=True, blank=True,
+                                            related_name='+')
+    costed_at = models.DateTimeField(null=True, blank=True)
+    # As quoted: never changed after conversion (quoted vs actual margin).
+    quoted_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    quoted_cost_floor = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    quoted_margin_pct = models.DecimalField(max_digits=9, decimal_places=2, null=True, blank=True)
+
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name='loads_created')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
