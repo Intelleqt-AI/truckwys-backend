@@ -1395,3 +1395,22 @@ class NbcrfliAllowanceTests(_Base):
         self.assertEqual(VerifiedRate.objects.filter(kind='driver_allowance').count(), before)
         mod.unseed(django_apps, None)
         self.assertFalse(VerifiedRate.objects.filter(proposed_by='migration_0158').exists())
+
+
+class RecentLocationCountryTests(_Base):
+    URL = '/api/v1/location/recent/'
+
+    def test_country_code_is_stored_returned_and_kept(self):
+        r = self.api.post(self.URL, {'location_text': 'Thaba-Tseka, Lesotho', 'lat': -29.52, 'lon': 28.61,
+                                     'country_code': 'ls'}, format='json')
+        self.assertEqual(r.status_code, 204)
+        body = self.api.get(self.URL).json()
+        self.assertEqual(body[0]['country_code'], 'LS')
+        # A later pick without a country keeps the one on record.
+        self.api.post(self.URL, {'location_text': 'Thaba-Tseka, Lesotho', 'lat': -29.52, 'lon': 28.61}, format='json')
+        self.assertEqual(self.api.get(self.URL).json()[0]['country_code'], 'LS')
+        # Junk is ignored; an old row without one reads null.
+        self.api.post(self.URL, {'location_text': 'Durban', 'lat': -29.86, 'lon': 31.02, 'country_code': '1!'},
+                      format='json')
+        rows = {r['label']: r for r in self.api.get(self.URL).json()}
+        self.assertIsNone(rows['Durban']['country_code'])

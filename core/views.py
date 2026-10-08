@@ -4431,7 +4431,8 @@ class LocationRecentView(APIView):
             limit = 5
         rows = qs[:limit]
         return Response([
-            {'label': r.location_text, 'lat': float(r.lat), 'lon': float(r.lon), 'is_recent': True}
+            {'label': r.location_text, 'lat': float(r.lat), 'lon': float(r.lon), 'is_recent': True,
+             'country_code': r.country_code or None}
             for r in rows
         ])
 
@@ -4450,14 +4451,20 @@ class LocationRecentView(APIView):
         except (TypeError, ValueError):
             return Response({'error': 'lat/lon must be numeric'}, status=status.HTTP_400_BAD_REQUEST)
 
+        raw_cc = str(request.data.get('country_code') or '').strip().upper()
+        country_code = raw_cc if raw_cc.isalpha() and 2 <= len(raw_cc) <= 3 else None
+
         obj, created = LocationSearchHistory.objects.get_or_create(
             company=company, location_text=location_text,
-            defaults={'lat': lat, 'lon': lon},
+            defaults={'lat': lat, 'lon': lon, 'country_code': country_code},
         )
         if not created:
             # last_used_at is auto_now=True, so this save() also bumps it —
-            # F() keeps the increment atomic under concurrent picks.
-            LocationSearchHistory.objects.filter(pk=obj.pk).update(use_count=F('use_count') + 1, lat=lat, lon=lon)
+            # F() keeps the increment atomic under concurrent picks. A pick
+            # without a country keeps the one on record.
+            extra = {'country_code': country_code} if country_code else {}
+            LocationSearchHistory.objects.filter(pk=obj.pk).update(use_count=F('use_count') + 1, lat=lat, lon=lon,
+                                                                   **extra)
             obj.refresh_from_db()
             obj.save(update_fields=['last_used_at'])
         return Response(status=status.HTTP_204_NO_CONTENT)
