@@ -66,7 +66,9 @@ CAPTURE_NOW = datetime(2026, 10, 6, 10, 0, tzinfo=dt_timezone.utc)
 # capture; every other key is still pinned byte for byte.
 ROUTE_FUEL_KEYS = ('fuel_usage_litres', 'fuel_cost_zar', 'fuel_rate_l_per_100km', 'total_cost_zar')
 ROUTE_NEW_KEYS = ('distance_estimated', 'fuel_unknown_reason', 'fuel_vehicle_type_id', 'fuel_price_per_litre',
-                  'fuel_price_source', 'tolls_unknown')
+                  'fuel_price_source', 'tolls_unknown',
+                  # Additive (8 Oct 2026): which border costs are not on file.
+                  'border_costs_complete', 'border_costs_unknown')
 
 with open(os.path.join(FIXTURES, 'reference_data.json')) as _f:
     REF = json.load(_f)

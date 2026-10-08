@@ -181,8 +181,8 @@ CASES = [
     ('default_price_no_rate_one_way_long',
      'No default price per km: default price = target price rounded up; alternative included.',
      long_trip(default_price_per_km=None)),
-    ('tolls_none_found',
-     'Route found R 0 tolls (not confirmed): warning tolls_none_found, floor still complete.',
+    ('tolls_no_plazas',
+     'Toll lookup worked and found no plazas: R 0 known, line "No toll plazas on this route", no warning.',
      base(tolls={'one_way': 0.0, 'empty_return': None, 'lookup_failed': False, 'confirmed_none': False})),
     ('international_border_costs_missing',
      'International trip without border costs: border line null, border_costs_missing blocks.',
@@ -222,6 +222,20 @@ CASES = [
      petrol_trip(diesel={'zone': 'INLAND', 'mode': 'OWN', 'own_price': None, 'own_set_at': None,
                          'official_price': None, 'official_effective_from': None, 'official_stale': False,
                          'use_official': False, 'override_price': None, 'fuel_type': 'Electric'})),
+    # Border costs not on file for part of the route (added 8 Oct 2026).
+    ('international_border_unknown_country',
+     'SA -> Namibia -> Angola: the Namibia->Angola crossing has no figures on file; the route border total '
+     'leaves it out, so the border lines are null and border_costs_missing blocks.',
+     long_trip(international=True, border_cost=4840.0,
+               border_costs_unknown={'countries': ['Angola'], 'crossings': ['Namibia→Angola'],
+                                     'known': [{'label': 'SA→NA', 'amount': 4463.29},
+                                               {'label': 'permit', 'amount': 376.71}]})),
+    ('international_border_unknown_country_user_cost',
+     'The same trip with the border costs entered by the user (border_cost_is_override): complete.',
+     long_trip(international=True, border_cost=9800.0, border_cost_is_override=True,
+               border_costs_unknown={'countries': ['Angola'], 'crossings': ['Namibia→Angola'],
+                                     'known': [{'label': 'SA→NA', 'amount': 4463.29},
+                                               {'label': 'permit', 'amount': 376.71}]})),
 ]
 
 

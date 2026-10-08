@@ -212,7 +212,7 @@ Copy the file into each client repo's test fixtures (keep identical).
 - Route calculate: `vehicle_type_id` selects the truck for fuel AND toll class.
 
 ## Coordinator decisions (round 3, after critics)
-- **Default price** (web and mobile identical): `default_price = max(rate_price, target_price)` rounded UP to the whole rand, where `rate_price = default_price_per_km × billable km` (only if the company set a default price per km > 0) and `target_price = floor / (1 − target_margin)`. If the floor is incomplete: no default price ("Margin unavailable"). The user's typed/applied price always wins. Backend exposes this as `default_price` in compute() output; golden cases include it; clients use the shared function.
+- **Default price** (web and mobile identical): `default_price = max(rate_price, target_price)` rounded UP like the choices (next R 50 below R 20 000, else next R 100 — so with no market it equals Safe), where `rate_price = default_price_per_km × billable km` (only if the company set a default price per km > 0) and `target_price = floor / (1 − target_margin)`. If the floor is incomplete: no default price ("Margin unavailable"). The user's typed/applied price always wins. Backend exposes this as `default_price` in compute() output; golden cases include it; clients use the shared function.
 - **Return-load alternative**: compute() returns `alternative_with_return_load: {floor, target_price, default_price}` for one-way trips where the empty return applies (null otherwise). Clients show "Loaded back R x" from it (local mirror for instant display, golden-checked).
 - **Cost card** = cost lines only, total = Cost floor. Price card/bar = price, Adjustment, margin. Vocabulary: Base rate, Fuel, Tolls, Driver allowance, Adjustment, Cost floor, Operating costs, Empty return, Border fees.
 - **Truck suggestion** only from the company's own visible vehicle types.
@@ -281,7 +281,7 @@ Copy the file into each client repo's test fixtures (keep identical).
 - Merge with the dev branch (arif-dev-backend): their floor-gap rules now live INSIDE compute() (one floor):
   input `international` (bool); an international trip with no border cost → border line `amount: null`,
   `status: "needs_input"`, block `border_costs_missing`; tolls R 0 that are not `confirmed_none` → warn
-  `tolls_none_found` ("No tolls found on this route", actions enter_tolls / confirm_no_tolls). Golden: every
+  `tolls_none_found` (REMOVED 8 Oct 2026, owner: a working lookup's R 0 is known). Golden: every
   case's inputs gain `international: false` (no expected output changed) + 3 new cases (`tolls_none_found`,
   `international_border_costs_missing`, `international_with_border_costs`). Pricing analysis keeps their
   `cost_floor.needs` (fuel/tolls/border), the operating-cost overlap check (`operating_cost_overlap` warn,
@@ -369,3 +369,47 @@ Copy the file into each client repo's test fixtures (keep identical).
   Every bounded company setting answers with one plain, SA-format sentence (out of range, not a number, too many
   digits or decimals alike), e.g. "Enter a diesel price between R 5 and R 100 per litre, or leave it blank.";
   the toll rate per km is now bounded R 0–R 50 (unchanged stored values always save).
+- **Owner feedback (8 Oct 2026).**
+  - Tolls: `tolls_none_found` is removed. A toll lookup that worked and found no plazas is a known R 0 (line
+    basis "No toll plazas on this route"; no warning, no action). Only `tolls_unknown` (lookup failed) remains.
+    Engine check, Thaba-Tseka → Durban (live TomTom, 31 seeded plazas): the best route (393 km, via the N3 at
+    Pietermaritzburg) picks up Mariannhill (R 32,17 excl. VAT, class 4); the long N3 route (695 km) picks up
+    Tugela, Mooi and Mariannhill; TomTom's 450 km alternative leaves the N3 and passes 3,3 km from the
+    Mariannhill plaza on the old road, so R 0 is correct for that route. Lesotho segments don't affect the
+    lookup. No engine change needed.
+  - `default_price` = max(rate price, target price) rounded UP like the choices (R 50 below R 20 000, else
+    R 100), so with no market it equals Safe.
+  - No market data and no model: no choice is recommended (`recommendation.code: "no_evidence"`, key null),
+    headline "No market data for this lane yet. Prices are your cost floor plus your margin."; the suggested
+    price for /quotes/analyze/ and /quotes/suggest/ is Safe (cost floor + margin). Responses add
+    `target_margin {pct, source: settings|default}` and `win_prediction.model_progress {accepted, rejected,
+    accepted_needed, rejected_needed}` (company tier; also on /quotes/ai-price-analysis/).
+  - `POST /api/v1/fuel-prices/refresh/` (any signed-in user): FIASA read now (5 s), at most once per 10 minutes
+    app-wide; returns the current-price payload plus `refresh {attempted, ok, throttled, changed, message}`
+    ("FIASA couldn't be reached, using the price from 2 Sep."). Staff `?force=true` unchanged.
+  - Driver allowance: migration 0158 seeds approved NBCRFLI rows — clause 36A night out R 229,83 (1 Mar 2025)
+    and R 243,63 (1 Mar 2026); clause 36B cross-border R 459,48 / R 487,05 — with source URLs and dates. The rate
+    in force on the pricing date is used when the company has no own rate (the company's own rate wins). Nights
+    can't be split by country from the route, so every night of an INTERNATIONAL trip uses the cross-border
+    rate (said in the line detail). Line detail: "NBCRFLI minimum R 243,63/night (from 1 Mar 2026)".
+    `driver_allowance_missing` now only fires when no approved rate is in force.
+  - Golden: case `tolls_none_found` replaced by `tolls_no_plazas` (R 0, no warning); `tolls_confirmed_none` basis
+    "No toll plazas on this route"; every `default_price` / alternative `default_price` now rounded up to R 50 /
+    R 100 (e.g. 8 257 → 8 300, 37 102 → 37 200); rules gain `default_price` and the toll R 0 note. No line amount,
+    floor, target or warning code changed otherwise.
+  - Merge of origin/development (Maruf's e295449 SENT-create email only after the send guard; 34cfb7d VAT
+    registered): no conflicts, no incoming migrations. Migration 0159: `location_search_history.country_code`
+    (nullable), stored and returned by /location/recent/.
+- **Border costs not on file (8 Oct 2026).** compute() input `border_costs_unknown {countries: [names],
+  crossings: ['Namibia→Angola'], known: [{label, amount}]}` (the DB layer fills it from the payload's own key or
+  the route data passed through: `route.border_costs_unknown` + `route.cross_border_breakdown`; saved in
+  `costing_inputs.border_costs_unknown`) and `border_cost_is_override` (the user entered the border costs). When
+  unknown parts exist and the border figure isn't the user's: the border line (and `border_return` on an empty
+  return) is null → floor null → block `border_costs_missing`, title "Border costs for Angola not known", detail
+  "Known: SA→NA R 4 463,29 + permit R 376,71; missing: Namibia→Angola", action "Enter border costs". The send
+  guard and snapshot follow. Golden: new cases `international_border_unknown_country` (blocked) and
+  `international_border_unknown_country_user_cost` (border_cost_is_override, complete); rules gain `border`;
+  no existing case changed.
+- Quote list (`total_amount`, `total_incl_vat`, new `incomplete_count`), board pipeline totals and the
+  dashboard pipeline value leave out incomplete quotes (snapshot blocking, or tolls unknown).
+

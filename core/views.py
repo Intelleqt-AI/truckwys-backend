@@ -1951,7 +1951,9 @@ class QuotesPipelineOverviewView(APIView):
         for status_key in statuses:
             status_quotes = quotes.filter(status=status_key)
             count = status_quotes.count()
-            total_value = status_quotes.aggregate(total=Sum('total_amount'))['total'] or 0
+            from core.services.quote_snapshot import exclude_incomplete
+            total_value = (exclude_incomplete(status_quotes)
+                           .aggregate(total=Sum('total_amount'))['total'] or 0)
             
             pipeline_stats[status_key.lower()] = {
                 'label': status_labels[status_key],
@@ -2812,18 +2814,23 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         # client-side from whatever page happens to be loaded so far.
         queryset = self.filter_queryset(self.get_queryset())
         page = self.paginate_queryset(queryset)
-        total_amount = queryset.aggregate(total=Sum('total_amount'))['total'] or 0
+        # Totals leave out incomplete quotes (tolls / border costs unknown):
+        # their price isn't one to count as pipeline value.
+        from core.services.quote_snapshot import exclude_incomplete, incomplete_quote_q
+        countable = exclude_incomplete(queryset)
+        total_amount = countable.aggregate(total=Sum('total_amount'))['total'] or 0
         # The same total incl. VAT the cards show (15%, 0% international).
         from core.services.quote_vat import sum_incl_vat
-        total_incl_vat = sum_incl_vat(queryset)
+        total_incl_vat = sum_incl_vat(countable)
+        incomplete_count = queryset.filter(incomplete_quote_q()).count()
+        extra = {'total_amount': total_amount, 'total_incl_vat': total_incl_vat, 'incomplete_count': incomplete_count}
         if page is not None:
             serializer = self.get_serializer(page, many=True)
             response = self.get_paginated_response(serializer.data)
-            response.data['total_amount'] = total_amount
-            response.data['total_incl_vat'] = total_incl_vat
+            response.data.update(extra)
             return response
         serializer = self.get_serializer(queryset, many=True)
-        return Response({'results': serializer.data, 'total_amount': total_amount, 'total_incl_vat': total_incl_vat})
+        return Response({'results': serializer.data, **extra})
 
     def update(self, request, *args, **kwargs):
         # Unlike Loads (status-change only), every PATCH/PUT to a quote is
@@ -3840,16 +3847,25 @@ class RouteCalculatorView(APIView):
         # which works even when the endpoints came from a map click with no ISO. Falls
         # back to endpoint ISO / keyword matching when the route carries no country
         # sections (e.g. estimated haversine route).
-        from core.services.cross_border import _ISO_TO_INTERNAL
+        from core.services.cross_border import internal_country
         route_countries = []
         if routes_raw:
             for sec in sorted(
                 (s for s in routes_raw[0].get('sections', []) if s.get('type') == 'COUNTRY' and s.get('country_code')),
                 key=lambda s: s.get('start', 0),
             ):
-                internal = _ISO_TO_INTERNAL.get(sec['country_code'].upper())
+                internal = internal_country(sec['country_code'])
                 if internal and (not route_countries or route_countries[-1] != internal):
                     route_countries.append(internal)
+        # The pick-up / delivery point's own country counts even when the
+        # route's country sections stop short of it (e.g. a GPS point just
+        # inside Angola): never silently domestic-or-shorter.
+        if route_countries:
+            o_c, d_c = internal_country(origin_iso), internal_country(dest_iso)
+            if o_c and route_countries[0] != o_c:
+                route_countries.insert(0, o_c)
+            if d_c and route_countries[-1] != d_c:
+                route_countries.append(d_c)
 
         if len(route_countries) > 1:
             countries = route_countries
@@ -3995,6 +4011,8 @@ class RouteCalculatorView(APIView):
             }
             cross_border_breakdown = cb_costs['breakdown']
             warnings  = get_cross_border_warnings(countries)
+            border_unknown = {'countries': cb_costs.get('unknown_countries') or [],
+                              'crossings': cb_costs.get('unknown_crossings') or []}
 
         response_data = {
             'success': True,
@@ -4050,6 +4068,10 @@ class RouteCalculatorView(APIView):
             # Named line items so the quote can show what each rand is for, the
             # same way the toll line lists its plazas.
             response_data['cross_border_breakdown'] = cross_border_breakdown
+            # Countries / crossings whose costs are not on file (e.g. Angola):
+            # the border figure above leaves them out and says so.
+            response_data['border_costs_complete'] = not (border_unknown['countries'] or border_unknown['crossings'])
+            response_data['border_costs_unknown'] = border_unknown
             if warnings:
                 response_data['warnings'] = warnings
 
@@ -4431,7 +4453,8 @@ class LocationRecentView(APIView):
             limit = 5
         rows = qs[:limit]
         return Response([
-            {'label': r.location_text, 'lat': float(r.lat), 'lon': float(r.lon), 'is_recent': True}
+            {'label': r.location_text, 'lat': float(r.lat), 'lon': float(r.lon), 'is_recent': True,
+             'country_code': r.country_code or None}
             for r in rows
         ])
 
@@ -4450,14 +4473,20 @@ class LocationRecentView(APIView):
         except (TypeError, ValueError):
             return Response({'error': 'lat/lon must be numeric'}, status=status.HTTP_400_BAD_REQUEST)
 
+        raw_cc = str(request.data.get('country_code') or '').strip().upper()
+        country_code = raw_cc if raw_cc.isalpha() and 2 <= len(raw_cc) <= 3 else None
+
         obj, created = LocationSearchHistory.objects.get_or_create(
             company=company, location_text=location_text,
-            defaults={'lat': lat, 'lon': lon},
+            defaults={'lat': lat, 'lon': lon, 'country_code': country_code},
         )
         if not created:
             # last_used_at is auto_now=True, so this save() also bumps it —
-            # F() keeps the increment atomic under concurrent picks.
-            LocationSearchHistory.objects.filter(pk=obj.pk).update(use_count=F('use_count') + 1, lat=lat, lon=lon)
+            # F() keeps the increment atomic under concurrent picks. A pick
+            # without a country keeps the one on record.
+            extra = {'country_code': country_code} if country_code else {}
+            LocationSearchHistory.objects.filter(pk=obj.pk).update(use_count=F('use_count') + 1, lat=lat, lon=lon,
+                                                                   **extra)
             obj.refresh_from_db()
             obj.save(update_fields=['last_used_at'])
         return Response(status=status.HTTP_204_NO_CONTENT)
@@ -4505,10 +4534,11 @@ class DashboardOverviewView(APIView):
         ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0')
 
         # Quote pipeline value (DRAFT + SENT)
-        pipeline = Quote.objects.filter(
+        from core.services.quote_snapshot import exclude_incomplete
+        pipeline = exclude_incomplete(Quote.objects.filter(
             status__in=['DRAFT', 'SENT'],
             company=request.user.company
-        ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0')
+        )).aggregate(total=Sum('total_amount'))['total'] or Decimal('0')
         
         return Response({
             'revenue_mtd': float(revenue_mtd),
