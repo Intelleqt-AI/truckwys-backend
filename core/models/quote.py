@@ -171,6 +171,29 @@ class Quote(models.Model):
     return_base_rate = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     return_notes = models.TextField(blank=True)
 
+    # Tonnage quotes (QUOTE-RULES "Tonnage quotes"). per_load = the classic
+    # price per load (every existing quote); per_tonne = rate per tonne x
+    # actual tonnes, never below min_tonnes_per_load per load. A per_tonne
+    # quote with total_tonnes is a VOLUME CONTRACT: each booked call-off is a
+    # Load (Load.quote) drawing down the remaining tonnes.
+    PRICING_BASIS_CHOICES = [('per_load', 'Per load'), ('per_tonne', 'Per tonne')]
+    pricing_basis = models.CharField(max_length=10, choices=PRICING_BASIS_CHOICES, default='per_load')
+    rate_per_tonne = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True,
+                                         help_text='Rate per tonne excl. VAT (per_tonne quotes)')
+    total_tonnes = models.DecimalField(max_digits=12, decimal_places=3, null=True, blank=True,
+                                       help_text='Volume contract total tonnes (null = one consignment)')
+    tonnes_per_load = models.DecimalField(max_digits=8, decimal_places=3, null=True, blank=True,
+                                          help_text='Tonnes per load (planned load size)')
+    min_tonnes_per_load = models.DecimalField(max_digits=8, decimal_places=3, null=True, blank=True,
+                                              help_text='Minimum tonnes invoiced per load (null = planned load)')
+    loads_planned = models.PositiveIntegerField(null=True, blank=True,
+                                                help_text='Loads on the basis truck (server-set when priced)')
+    # The truck the user CHOSE to price on; null = truck unknown, priced on
+    # the safest (highest cost per tonne) eligible truck, which the snapshot
+    # stores as priced_vehicle_type.
+    basis_vehicle_type = models.ForeignKey('VehicleType', on_delete=models.SET_NULL, null=True, blank=True,
+                                           related_name='+', help_text='Chosen truck for a tonnage quote')
+
     vehicle = models.ForeignKey('Vehicle', on_delete=models.SET_NULL, null=True, blank=True, related_name='quotes')
     driver = models.ForeignKey('Driver', on_delete=models.SET_NULL, null=True, blank=True, related_name='quotes')
 

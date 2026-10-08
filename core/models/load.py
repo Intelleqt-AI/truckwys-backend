@@ -60,6 +60,21 @@ class Load(models.Model):
     toll_charges = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     driver_allowance = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     total_amount = models.DecimalField(max_digits=10, decimal_places=2)
+
+    # Tonnage (per_tonne quotes): invoiced at rate_per_tonne x max(actual
+    # tonnes, min_tonnes). actual_tonnes is the weighbridge figure: editable
+    # here, and the field a TMS sync should write (trip-economics branch);
+    # actual_tonnes_source says where it came from. Without it the invoice
+    # uses planned_tonnes and is flagged "Awaiting weighbridge tonnes".
+    pricing_basis = models.CharField(max_length=10, default='per_load',
+                                     choices=[('per_load', 'Per load'), ('per_tonne', 'Per tonne')])
+    rate_per_tonne = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    min_tonnes = models.DecimalField(max_digits=8, decimal_places=3, null=True, blank=True)
+    planned_tonnes = models.DecimalField(max_digits=8, decimal_places=3, null=True, blank=True)
+    actual_tonnes = models.DecimalField(max_digits=8, decimal_places=3, null=True, blank=True,
+                                        help_text='Weighbridge tonnes delivered')
+    actual_tonnes_source = models.CharField(max_length=20, blank=True, default='',
+                                            help_text='weighbridge | manual | tms')
     
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='PENDING')
     actual_delivered_at = models.DateTimeField(null=True, blank=True, help_text='Timestamp when load was marked DELIVERED')

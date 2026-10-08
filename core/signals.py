@@ -196,6 +196,18 @@ def _deliver_auto_invoice(load, invoice):
     email = getattr(invoice.customer, 'email', '') or ''
     amount = format_zar(invoice.total_amount, 0)
     emailed = False
+    from core.services.tonnage_jobs import AWAITING_WEIGHBRIDGE, load_billing
+    billing = load_billing(load)
+    if billing and billing['awaiting_weighbridge']:
+        # Per-tonne load without weighbridge tonnes: never emailed on planned
+        # tonnes; the team is told to enter the actual tonnes first.
+        try:
+            notify_company(getattr(load, 'company_id', None), 'ALERT', AWAITING_WEIGHBRIDGE,
+                           f'{invoice.invoice_number} · {amount} on planned tonnes · enter the weighbridge tonnes '
+                           f'before sending', link=f'/bookings/{load.id}', event='invoice.auto_created')
+        except Exception as exc:
+            log.warning('auto-invoice notification failed: %s', exc)
+        return
     if auto_email and email:
         try:
             from core.services.invoicing import email_invoice_to_customer

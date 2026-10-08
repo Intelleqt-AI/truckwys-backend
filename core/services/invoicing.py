@@ -47,7 +47,9 @@ def create_invoice_for_load(load, *, company=None, mark_sent: bool = False):
         return None, False
     if not getattr(load, 'customer', None):
         return None, False
-    subtotal = load.total_amount or Decimal('0')
+    from core.services.tonnage_jobs import AWAITING_WEIGHBRIDGE, invoice_line_for_load, load_billing
+    billing = load_billing(load)
+    subtotal = Decimal(str(billing['amount'])) if billing else (load.total_amount or Decimal('0'))
     if subtotal <= 0:
         return None, False
 
@@ -75,10 +77,18 @@ def create_invoice_for_load(load, *, company=None, mark_sent: bool = False):
         )
         from core.services.invoice_lines import terms_days_for
         invoice.terms_days = terms_days_for(terms)
+        if billing:
+            # Per tonne: rate x max(actual tonnes, minimum); without the
+            # weighbridge figure the planned tonnes, flagged (never silently).
+            line = invoice_line_for_load(load, _load_line_description(load))
+            if billing['awaiting_weighbridge']:
+                invoice.notes = f'{invoice.notes}\n{AWAITING_WEIGHBRIDGE}: invoiced on planned tonnes.'
+                mark_sent = False
+        else:
+            line = {'description': _load_line_description(load), 'quantity': 1,
+                    'unit_price': Decimal(str(subtotal))}
         apply_lines(invoice, [{
-            'description': _load_line_description(load),
-            'quantity': 1,
-            'unit_price': Decimal(str(subtotal)),
+            **line,
             # The company's default code (STANDARD for a VAT vendor, NO_VAT
             # otherwise); an international load is zero-rated (s11(2)(a)),
             # matching the VAT 0% its quote showed the customer.

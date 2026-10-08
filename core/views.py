@@ -3046,10 +3046,24 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         import secrets
         quote = self.get_object()
 
+        # Tonnage quotes (QUOTE-RULES "Tonnage quotes"): one consignment
+        # converts once; a volume contract books call-off loads (body
+        # {tonnes?}) until its tonnes are used up.
+        tonnage_fields, contract = {}, None
+        if quote.pricing_basis == 'per_tonne':
+            from core.services.tonnage_jobs import CallOffError, call_off_tonnes, tonnage_load_fields
+            if quote.rate_per_tonne is None:
+                return Response({'error': 'Set the rate per tonne before booking this quote.'},
+                                status=status.HTTP_400_BAD_REQUEST)
+            try:
+                tonnes, contract = call_off_tonnes(quote, request.data.get('tonnes'))
+            except CallOffError as exc:
+                return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            tonnage_fields = tonnage_load_fields(quote, tonnes)
         # Check if quote already converted — a Load referencing this quote is
         # the source of truth (not a quote.status value, which no longer
         # advances past ACCEPTED once converted).
-        if quote.loads.exists():
+        elif quote.loads.exists():
             return Response(
                 {'error': 'Quote already converted'},
                 status=status.HTTP_400_BAD_REQUEST
@@ -3115,7 +3129,7 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
                             status=status.HTTP_400_BAD_REQUEST)
 
         # Create load from quote (stamp the company so it's tenant-scoped/visible)
-        load = Load.objects.create(
+        load = Load.objects.create(**{**dict(
             load_number=load_number,
             company=getattr(quote, 'company', None) or getattr(request.user, 'company', None),
             customer=quote.customer,
@@ -3156,8 +3170,8 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
             additional_charges=quote.additional_charges,
             total_amount=quote.total_amount,
             status='ASSIGNED' if vehicle else 'PENDING',
-            created_by=request.user
-        )
+            created_by=request.user,
+        ), **tonnage_fields})   # per-tonne call-off: rate x tonnes, planned tonnes
 
         # Quote stays ACCEPTED — its own lifecycle ends here. The Load created
         # above (status PENDING/ASSIGNED) now owns delivery progress
@@ -3170,7 +3184,11 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         record_quote_outcome(quote, 'accepted')
 
         serializer = LoadSerializer(load)
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
+        data = serializer.data
+        if contract is not None:
+            from core.services.tonnage_jobs import contract_status
+            data = {**data, 'volume_contract': contract_status(quote)}
+        return Response(data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=['get'])
     def generate_pdf(self, request, pk=None):

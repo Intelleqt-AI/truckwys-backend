@@ -7,7 +7,8 @@ from pathlib import Path
 from django.test import SimpleTestCase
 
 from core.services import quote_costing as qc
-from core.tests.quote_golden_cases import CASES, REOPEN_CASES, EFFECTIVE, INLAND, base, long_trip, official
+from core.tests.quote_golden_cases import (CASES, REOPEN_CASES, TONNAGE_CASES, EFFECTIVE, INLAND, base, long_trip,
+                                          official)
 
 GOLDEN_PATH = Path(__file__).parent / 'fixtures' / 'quote_golden.json'
 
@@ -46,6 +47,33 @@ RULES = {
 }
 
 
+TONNAGE_RULES = {
+    'spec': 'QUOTE-RULES.md "Tonnage quotes" (8 Oct 2026)',
+    'engine': 'every cost is compute() of {**lane, **truck overrides, vehicle, operating_cost_per_km, '
+              'load_kg, price: null} for one load; nothing else is priced',
+    'eligible': 'trucks with capacity and rated burn; one consignment (no total_tonnes): only trucks with '
+                'payload >= tonnes_per_load, else all of them split into loads (tonnes_exceed_payload); the '
+                'chosen truck (vehicle_type_id) always',
+    'load_t': 'min(tonnes_per_load, payload_t), payload_t when tonnes_per_load is null',
+    'loads_needed': 'ceil(total / load_t - 1e-9), total = total_tonnes ?? tonnes_per_load; '
+                    'last_load_t = total - (n - 1) * load_t; tonnes round(x, 6)',
+    'cost_per_load': 'compute(load_kg = load_t * 1000).floor; cost_last_load = the same at last_load_t',
+    'total_cost': 'cents((n - 1) * cost_per_load + cost_last_load)',
+    'billable_tonnes': '(n - 1) * max(load_t, min) + max(last_load_t, min); min = min_tonnes_per_load, else '
+                       'each truck\'s own load_t for its cost_per_tonne, the basis truck\'s load_t for the quote',
+    'cost_per_tonne': 'cents(total_cost / billable_tonnes)',
+    'basis': 'chosen truck, else the highest cost_per_tonne (tie: smaller payload, then higher id ranks first); '
+             'all costs unknown: smallest payload',
+    'target_rate_per_tonne': 'ceil(cost_per_tonne / (1 - target_margin_pct / 100) - 1e-9)',
+    'default_rate_per_tonne': 'max(target_rate, ceil(minimum_charge / min_t - 1e-9))',
+    'rate_used': 'rate_per_tonne ?? default_rate_per_tonne; every truck\'s at_rate uses it with the quote min',
+    'at_rate': 'revenue = cents(rate * billable at the quote min); margin = cents(revenue - total_cost); '
+               'margin_pct = (revenue - total_cost) / revenue * 100',
+    'lines': 'basis truck lines over the plan: cents((n - 1) * full + last) per line; floor = total_cost',
+    'compare': 'every amount to the cent; tonnes within 1e-9; warnings by code / severity / impact_zar.',
+}
+
+
 def build_golden():
     return {
         'version': qc.VERSION,
@@ -59,6 +87,12 @@ def build_golden():
         'reopen_rules': qc.changes_since_priced.__doc__.strip(),
         'reopen_cases': [{'name': name, 'inputs': inputs, 'expected': qc.changes_since_priced(**inputs)}
                          for name, inputs in REOPEN_CASES],
+        # Tonnage quotes (rate per tonne): quote_costing.compute_tonnage(inputs).
+        # Added after everything above (unchanged), so existing clients don't break.
+        'tonnage_rules': TONNAGE_RULES,
+        'tonnage_cases': [{'name': name, 'description': desc, 'inputs': inputs,
+                           'expected': qc.compute_tonnage(inputs)}
+                          for name, desc, inputs in TONNAGE_CASES],
     }
 
 
