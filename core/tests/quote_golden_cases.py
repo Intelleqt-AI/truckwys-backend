@@ -259,6 +259,14 @@ CASES = [
      "The user entered their clearing agent's fee: the route calculation then has no estimate left "
      '(border_estimate 0) and the line says nothing about estimates.',
      long_trip(international=True, include_empty_return=False, border_cost=5734.66, border_estimate=0.0)),
+    # User-applied driver nights (costing_inputs.driver_nights, 8 Oct 2026).
+    ('driver_nights_applied',
+     'User applied 3 nights out (the route suggests 0 on 7 h 20 min): driver line = 3 x R450,00; '
+     'the empty return still adds its own suggested extra night.',
+     long_trip(driver={'allowance_per_night': 450.0, 'nights': 3, 'amount': None})),
+    ('driver_amount_wins_over_nights',
+     'Applied nights AND a typed driver amount: the typed amount wins.',
+     long_trip(driver={'allowance_per_night': 450.0, 'nights': 3, 'amount': 1000.0}, include_empty_return=False)),
 ]
 
 

@@ -59,6 +59,15 @@ class NLResult:
     conflicts: List[str] = field(default_factory=list)
     said: Dict[str, str] = field(default_factory=dict)  # field -> user's own wording (display only)
 
+    def spoken_places(self) -> Dict[str, Optional[str]]:
+        """{pickup, delivery}: how the user said each filled place (falls back
+        to the filled value when they said it that way), None when not filled."""
+        out: Dict[str, Optional[str]] = {}
+        for key, name in (("pickup_location", "pickup"), ("delivery_location", "delivery")):
+            value = self.extracted.get(key)
+            out[name] = (self.said.get(key) or value) if value else None
+        return out
+
 
 def _skip_llm_when_sufficient() -> bool:
     return bool(getattr(settings, "QUOTE_NL_SKIP_LLM_WHEN_RULES_SUFFICE", True))

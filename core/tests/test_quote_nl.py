@@ -558,4 +558,7 @@ class ChatQuoteSaidTests(TestCase):
         r = self.client.post("/api/v1/ai/chat-quote/", {"message": "28 ton staal van Kaapstad na Oos-Londen",
                                                          "history": [], "current_fields": {}}, format="json")
         self.assertEqual(r.data["extracted_fields"]["pickup_location"], "Cape Town")
-        self.assertEqual(r.data["said"], {"pickup_location": "Kaapstad", "delivery_location": "Oos-Londen"})
+        self.assertEqual(r.data["spoken_places"], {"pickup": "Kaapstad", "delivery": "Oos-Londen"})
+        r = self.client.post("/api/v1/ai/chat-quote/", {"message": "28 ton steel to Durban", "history": [],
+                                                         "current_fields": {}}, format="json")
+        self.assertEqual(r.data["spoken_places"], {"pickup": None, "delivery": "Durban"})

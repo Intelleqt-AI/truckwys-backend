@@ -1085,8 +1085,9 @@ class AIChatQuoteView(APIView):
                 'language_label': language_detect.language_label(lang),
                 'mixed_language': result.mixed_language,
                 'vehicle_hint': result.vehicle_hint,
-                # user's own wording for places, for display next to the geocodable value
-                'said': result.said,
+                # The user's own wording for each filled place ("Kaapstad"), shown
+                # beside the geocodable name in extracted_fields ("Cape Town").
+                'spoken_places': result.spoken_places(),
                 'source': 'llm' if result.llm_used else 'rules',
             }
 
