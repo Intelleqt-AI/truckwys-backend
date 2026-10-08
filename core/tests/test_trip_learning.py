@@ -41,11 +41,28 @@ class ActualsTests(TestCase):
             self.load.status = 'DELIVERED'
             self.load.save()
         outcome.refresh_from_db()
-        self.assertEqual(outcome.actual_cost, Decimal('20000.00'))
+        # Only fuel recorded: not complete -> no actual_*, the estimate so far.
+        self.assertIsNone(outcome.actual_cost)
+        self.assertIsNone(outcome.actual_margin_pct)
+        self.assertEqual(outcome.actual_cost_basis, 'part_actual')
+        self.assertIsNotNone(outcome.estimated_cost)
+        self.assertIs(outcome.backhaul_found, False)
+        # The key costs recorded (tolls; driver when the estimate has one): complete.
+        Expense.objects.create(company=self.co, expense_number='EX-LRN-2', category='TOLLS', description='Tolls',
+                               amount=Decimal('900'), vat_amount=Decimal('0'), load=self.load,
+                               expense_date=date.today(), status='APPROVED')
+        Expense.objects.create(company=self.co, expense_number='EX-LRN-3', category='DRIVER_COST',
+                               description='Allowance', amount=Decimal('100'), vat_amount=Decimal('0'),
+                               load=self.load, expense_date=date.today(), status='APPROVED')
+        Expense.objects.create(company=self.co, expense_number='EX-LRN-4', category='MAINTENANCE',
+                               description='Tyres', amount=Decimal('1000'), vat_amount=Decimal('0'),
+                               load=self.load, expense_date=date.today(), status='APPROVED')
+        te.recompute([self.load.pk])
+        outcome.refresh_from_db()
         self.assertEqual(outcome.actual_cost_basis, 'actual')
         self.assertEqual(outcome.actual_revenue, Decimal('30000.00'))
-        self.assertEqual(outcome.actual_margin_pct, Decimal('33.33'))
-        self.assertIs(outcome.backhaul_found, False)
+        self.assertIsNotNone(outcome.actual_cost)
+        self.assertIsNone(outcome.estimated_cost)
         # Labels only: the outcome's dates (what features filter on) don't move.
         self.assertEqual((outcome.created_at, outcome.updated_at), stamp)
 
@@ -58,7 +75,8 @@ class ActualsTests(TestCase):
         self.assertIs(outcome.backhaul_found, True)
         self.assertEqual(outcome.actual_cost_basis, 'estimate')
         self.load.refresh_from_db()
-        self.assertEqual(outcome.actual_cost, te.estimate(self.load)['estimated_cost'])
+        self.assertIsNone(outcome.actual_cost)
+        self.assertEqual(outcome.estimated_cost, te.estimate(self.load)['estimated_cost'])
 
     def test_nothing_written_before_delivery(self):
         te.recompute([self.load.pk])
@@ -133,7 +151,9 @@ class QuoteDetailActualsTests(ActualsTests):
             self.load.save()
         r = self.api.get(f'/api/v1/quotes/{self.q.id}/').json()
         self.assertIs(r['actuals']['backhaul_found'], False)
-        self.assertIsNotNone(r['actuals']['actual_margin_pct'])
+        self.assertFalse(r['actuals']['complete'])
+        self.assertIsNone(r['actuals']['actual_margin_pct'])
+        self.assertIsNotNone(r['actuals']['estimated_margin_pct'])
         self.api.patch(f'/api/v1/quotes/{self.q.id}/', {'actuals': {'backhaul_found': True}}, format='json')
         self.assertIs(QuoteOutcome.objects.get(quote=self.q).backhaul_found, False)
 

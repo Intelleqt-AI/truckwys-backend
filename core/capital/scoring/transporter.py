@@ -158,7 +158,8 @@ def _margin(company, a: date):
                              | Q(actual_delivered_at__isnull=True, delivery_date__date__gt=start,
                                  delivery_date__date__lte=a))
                      .only('id', 'distance', 'total_amount', 'trip_type', 'return_of', 'costing_snapshot',
-                           'empty_return_assumed'))
+                           'empty_return_assumed', 'costing_source', 'costing_inputs', 'status',
+                           'costs_closed'))
         if not loads:
             return unknown
         ids = [l.pk for l in loads]

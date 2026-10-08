@@ -185,7 +185,7 @@ from .models.webhook_subscription import WebhookSubscription as _WebhookSubscrip
 class WebhookSubscriptionAdmin(admin.ModelAdmin):
     """Where platform staff bind a fleet webhook subscription to ONE
     transporter (company); unbound subscriptions can't use /fleet/webhooks/."""
-    list_display = ['id', 'partner_name', 'company', 'is_active', 'last_delivery_at']
+    list_display = ['id', 'partner_name', 'company', 'is_active', 'allow_legacy_signature', 'last_delivery_at']
     list_filter = ['is_active']
     search_fields = ['partner_name', 'company__company_name']
     readonly_fields = ['api_key', 'secret', 'created_at', 'updated_at', 'last_delivery_at', 'failure_count']

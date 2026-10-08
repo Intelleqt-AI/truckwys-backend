@@ -132,3 +132,31 @@ class MissingPromptTests(_Base):
         cost_load(load2)
         codes = [m['code'] for m in te.estimate(load2)['missing']]
         self.assertIn('tolls_unknown', codes)
+
+
+class MigrationAndDefaultsTests(_Base):
+    def test_0167_backfill_copies_trip_shape_and_inputs(self):
+        import importlib
+        from django.apps import apps as global_apps
+        from core.models import Load
+        mig = importlib.import_module('core.migrations.0167_load_costing_assumptions')
+        q = priced_quote(self.company, self.customer, 'LC-MIG', vt=self.vt, trip_type='ROUND_TRIP',
+                         return_location='Johannesburg')
+        load = make_load(self.company, self.customer, 'LC-MIG-L', quote=q)
+        mig.copy_from_quotes(global_apps, None)
+        load.refresh_from_db()
+        self.assertEqual((load.trip_type, load.return_location, load.costing_source), ('ROUND_TRIP', 'Johannesburg',
+                                                                                       'quote'))
+        self.assertEqual(load.costing_inputs['vehicle_type_id'], self.vt.id)
+        self.assertEqual(load.costing_inputs['toll_cost'], 800.0)
+
+    def test_new_not_null_columns_have_database_defaults(self):
+        """An older app image (rollback) can still insert loads."""
+        from django.db.models import NOT_PROVIDED
+        from core.models import Load
+        for f in Load._meta.concrete_fields:
+            if f.name in ('trip_type', 'return_location', 'return_cargo', 'costing_source', 'costing_inputs',
+                          'costing_snapshot', 'fuel_price_source', 'fuel_zone', 'return_link_source',
+                          'expecting_return', 'costs_closed', 'external_id', 'external_source',
+                          'return_of_external_ref', 'invoice_mismatch', 'estimate_basis'):
+                self.assertIsNot(f.db_default, NOT_PROVIDED, f.name)

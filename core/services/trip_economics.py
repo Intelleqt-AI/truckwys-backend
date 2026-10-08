@@ -59,12 +59,16 @@ def _f(v):
 def is_paired(load, return_ids=None):
     """In a return pair (either side). return_ids: outbound ids known to
     have a return (batch callers), else one query."""
-    if load.return_of_id:
-        return True
-    if return_ids is not None:
-        return load.pk in return_ids
     from core.models import Load
-    return Load.objects.filter(return_of_id=load.pk).exists()
+    if load.status == 'CANCELLED':
+        return False
+    if load.return_of_id:
+        if return_ids is not None and 'cancelled' in return_ids:
+            return load.return_of_id not in return_ids['cancelled']
+        return Load.objects.filter(pk=load.return_of_id).exclude(status='CANCELLED').exists()
+    if return_ids is not None:
+        return load.pk in return_ids['with_return']
+    return Load.objects.filter(return_of_id=load.pk).exclude(status='CANCELLED').exists()
 
 
 def _legacy_estimate(load, paired):
@@ -125,9 +129,117 @@ def estimate(load, paired=None):
 
 
 def _paired_ids(loads):
+    """{'with_return': outbound ids with a live (not cancelled) return,
+    'cancelled': cancelled outbounds among the loads' partners}."""
     from core.models import Load
     ids = [l.pk for l in loads]
-    return set(Load.objects.filter(return_of_id__in=ids).values_list('return_of_id', flat=True))
+    with_return = set(Load.objects.filter(return_of_id__in=ids).exclude(status='CANCELLED')
+                      .values_list('return_of_id', flat=True))
+    partner_ids = {l.return_of_id for l in loads if l.return_of_id}
+    cancelled = set(Load.objects.filter(pk__in=partner_ids, status='CANCELLED').values_list('pk', flat=True))
+    return {'with_return': with_return, 'cancelled': cancelled}
+
+
+# --- actual vs estimate, per cost group (verification B4) -------------------
+# One expense never makes the whole job "actual": each cost group uses its
+# recorded expenses when there are any, else its estimate.
+CATEGORY_GROUP = {'FUEL': 'fuel', 'TOLLS': 'tolls', 'DRIVER_COST': 'driver', 'MAINTENANCE': 'operating',
+                  'INSURANCE': 'operating', 'OVERHEAD': 'operating', 'OTHER': 'other',
+                  'SUBCONTRACTOR': 'subcontractor'}
+LINE_GROUP = {'fuel': 'fuel', 'fuel_return': 'fuel', 'operating': 'operating', 'operating_return': 'operating',
+              'tolls': 'tolls', 'tolls_return': 'tolls', 'driver': 'driver', 'driver_return': 'driver',
+              'border': 'border', 'border_return': 'border'}
+# Groups whose expenses must be recorded (when the estimate has them) before
+# a delivered job's cost counts as complete.
+KEY_GROUPS = ('fuel', 'tolls', 'driver')
+COMPLETE_STATUSES = ('DELIVERED', 'INVOICED')
+
+
+def actual_by_group(company, load_ids):
+    """{load_id: {group: Decimal excl. VAT}} from non-rejected expenses on the
+    load or its trips."""
+    from collections import defaultdict
+    from django.db.models import Q
+    from core.services.report_figures import counted_expenses
+    ids = list(load_ids)
+    out = defaultdict(lambda: defaultdict(lambda: ZERO))
+    if not ids:
+        return {}
+    rows = (counted_expenses(company).filter(Q(load_id__in=ids) | Q(trip__load_id__in=ids))
+            .values('load_id', 'trip__load_id', 'category', 'amount', 'vat_amount'))
+    for r in rows:
+        lid = r['load_id'] if r['load_id'] in ids else r['trip__load_id']
+        out[lid][CATEGORY_GROUP.get(r['category'], 'other')] += r['amount'] - (r['vat_amount'] or ZERO)
+    return {k: dict(v) for k, v in out.items()}
+
+
+def merge_costs(load, est, actual_groups):
+    """{cost, cost_basis: actual | part_actual | estimate | None, cost_complete,
+    groups: [{group, estimated, actual, used, basis}]}."""
+    actual_groups = actual_groups or {}
+    actual_total = sum(actual_groups.values(), ZERO)
+    closed = bool(getattr(load, 'costs_closed', False))
+    delivered = load.status in COMPLETE_STATUSES
+    est_groups = {}
+    unknown_groups = set()
+    for ln in est.get('lines') or []:
+        g = LINE_GROUP.get(ln.get('key'), 'other')
+        if ln.get('amount') is None:
+            unknown_groups.add(g)
+            continue
+        est_groups[g] = est_groups.get(g, ZERO) + Decimal(str(ln['amount']))
+    for g in unknown_groups:
+        est_groups.setdefault(g, None)
+        if est_groups[g] is not None:
+            est_groups[g] = None
+
+    def _rows(used_actual_only=False):
+        names = list(dict.fromkeys(list(est_groups) + list(actual_groups)))
+        rows = []
+        for g in names:
+            a = actual_groups.get(g)
+            e = est_groups.get(g)
+            used = a if (a is not None or used_actual_only) else e
+            rows.append({'group': g, 'estimated': _f(e), 'actual': _f(a),
+                         'used': _f(used if used is not None else (ZERO if used_actual_only else None)),
+                         'basis': 'actual' if a is not None else ('none' if used_actual_only else 'estimate')})
+        return rows
+
+    if not actual_groups:
+        cost = est.get('estimated_cost')
+        return {'cost': cost, 'cost_basis': 'estimate' if cost is not None else None, 'cost_complete': False,
+                'groups': _rows()}
+    if closed or 'subcontractor' in actual_groups:
+        # Every cost recorded (closed by the user), or another carrier hauled
+        # it (the subcontractor's bill replaces the truck's own costs).
+        return {'cost': _q(actual_total), 'cost_basis': 'actual', 'cost_complete': delivered,
+                'groups': _rows(used_actual_only=True)}
+    if est_groups:
+        cost, all_actual = ZERO, True
+        for g, e in est_groups.items():
+            a = actual_groups.get(g)
+            if a is not None:
+                cost += a
+            elif e is None:
+                cost = None
+                break
+            else:
+                cost += e
+                all_actual = False
+        if cost is not None:
+            cost += sum((v for g, v in actual_groups.items() if g not in est_groups), ZERO)
+        key_needed = [g for g in KEY_GROUPS if (est_groups.get(g) or ZERO) > 0 or g in unknown_groups]
+        complete = delivered and all(g in actual_groups for g in key_needed)
+        basis = None if cost is None else ('actual' if all_actual else 'part_actual')
+        return {'cost': _q(cost) if cost is not None else None, 'cost_basis': basis,
+                'cost_complete': complete and cost is not None, 'groups': _rows()}
+    # No cost lines (legacy standard estimate / unknown): no group to merge.
+    e = est.get('estimated_cost')
+    complete = delivered and 'fuel' in actual_groups
+    if complete or e is None:
+        return {'cost': _q(actual_total), 'cost_basis': 'actual' if complete else 'part_actual',
+                'cost_complete': complete, 'groups': _rows(used_actual_only=True)}
+    return {'cost': e, 'cost_basis': 'estimate', 'cost_complete': False, 'groups': _rows()}
 
 
 def economics_rows(company, loads):
@@ -138,6 +250,7 @@ def economics_rows(company, loads):
     ids = [l.pk for l in loads]
     revenue = rf.revenue_by_load(company, ids)
     actual = rf.actual_costs_by_load(company, ids)
+    by_group = actual_by_group(company, ids)
     with_return = _paired_ids(loads)
     out = {}
     for l in loads:
@@ -147,15 +260,13 @@ def economics_rows(company, loads):
             rev, rev_basis = revenue[l.pk], 'actual'
         else:
             rev, rev_basis = Decimal(str(l.total_amount or 0)), 'estimate'
-        if l.pk in actual:
-            cost, cost_basis = actual[l.pk], 'actual'
-        else:
-            cost = est['estimated_cost']
-            cost_basis = 'estimate' if cost is not None else None
+        merged = merge_costs(l, est, by_group.get(l.pk))
+        cost, cost_basis = merged['cost'], merged['cost_basis']
         out[l.pk] = {
             'load_id': l.pk, 'paired': paired,
             'revenue': rev, 'revenue_basis': rev_basis,
             'cost': cost, 'cost_basis': cost_basis,
+            'cost_complete': merged['cost_complete'], 'cost_groups': merged['groups'],
             'actual_cost': actual.get(l.pk), 'estimated_cost': est['estimated_cost'],
             'estimate_basis': est['basis'], 'estimate_label': est['label'], 'estimate': est,
         }
@@ -191,6 +302,11 @@ def leg(load, row, role):
         'estimated_cost': _f(row['estimated_cost']),
         'estimate_basis': row['estimate_basis'], 'estimate_label': row['estimate_label'],
         'cost': _f(row['cost']), 'cost_basis': row['cost_basis'],
+        # actual | part_actual (actual where a cost group has expenses,
+        # estimate for the rest) | estimate; cost_complete = delivered and the
+        # key costs recorded (or closed): only then does it count as actual.
+        'cost_complete': row['cost_complete'], 'cost_groups': row['cost_groups'],
+        'costs_closed': bool(load.costs_closed),
         'margin': _f(margin), 'margin_pct': margin_pct,
         'quoted': q,
         'margin_vs_quoted_pts': (round(margin_pct - q['margin_pct'], 2)
@@ -238,6 +354,8 @@ def _basis(values):
         return 'actual'
     if s == {'estimate'}:
         return 'estimate'
+    if s == {'part_actual'}:
+        return 'part_actual'
     if None in s:
         return None
     return 'mixed'
@@ -255,6 +373,7 @@ def _combined(legs):
     return {
         'revenue': revenue, 'revenue_basis': _basis(l['revenue_basis'] for l in legs),
         'cost': cost, 'cost_basis': _basis(l['cost_basis'] for l in legs),
+        'cost_complete': all(l.get('cost_complete') for l in legs),
         'estimated_cost': _sum(l['estimated_cost'] for l in legs),
         'actual_cost': (_sum(l['actual_cost'] for l in legs)
                         if all(l['actual_cost'] is not None for l in legs) else None),

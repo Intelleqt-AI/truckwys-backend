@@ -9,6 +9,30 @@ SNAPSHOT_KEYS = ('version', 'trip', 'vehicle', 'diesel', 'litres', 'lines', 'flo
                  'margin_pct', 'warnings', 'blocking', 'resolution')
 
 
+INPUT_KEYS = ('toll_cost_one_way', 'tolls_confirmed_none', 'tolls_unknown', 'tolls_empty_return', 'duration_minutes',
+              'driver_cost_is_override', 'driver_nights', 'include_empty_return', 'vehicle_type_id', 'border_cost',
+              'use_official_fuel', 'fuel_price_override', 'toll_cost_return', 'border_cost_empty_return',
+              'border_estimate', 'border_estimate_empty_return', 'border_cost_is_override', 'border_costs_unknown',
+              'clearing_agent_fee', 'abnormal_load')
+
+
+def _costing_inputs(q):
+    """A frozen copy of trip_costing.quote_costing_inputs (migrations never
+    import app services)."""
+    ci = dict(q.costing_inputs or {})
+    out = {k: ci[k] for k in INPUT_KEYS if k in ci and ci[k] not in (None, '')}
+    out['toll_cost'] = float(q.toll_charges or 0)
+    if q.estimated_duration_minutes and 'duration_minutes' not in out:
+        out['duration_minutes'] = float(q.estimated_duration_minutes)
+    if ci.get('driver_cost_is_override'):
+        out['driver_cost'] = float(q.driver_allowance or 0)
+    if q.priced_vehicle_type_id and 'vehicle_type_id' not in out:
+        out['vehicle_type_id'] = q.priced_vehicle_type_id
+    if q.empty_return_included is not None and 'include_empty_return' not in out:
+        out['include_empty_return'] = bool(q.empty_return_included)
+    return out
+
+
 def copy_from_quotes(apps, schema_editor):
     """Loads converted before this migration: carry their quote's pricing
     snapshot (same rule as convert_to_load). Loads without a priced quote stay
@@ -19,10 +43,16 @@ def copy_from_quotes(apps, schema_editor):
     for load in qs.iterator(chunk_size=500):
         q = load.quote
         snap = q.costing_snapshot or {}
+        # Trip shape and costing inputs come over whether or not it was priced
+        # (same as convert_to_load).
+        common = dict(trip_type=q.trip_type or 'ONE_WAY', return_location=q.return_location or '',
+                      return_distance=q.return_distance, return_date=q.return_date,
+                      return_cargo=q.return_cargo or '', costing_inputs=_costing_inputs(q))
         if not snap.get('lines'):
+            Load.objects.filter(pk=load.pk).update(**common)
             continue
         Load.objects.filter(pk=load.pk).update(
-            trip_type=q.trip_type or 'ONE_WAY',
+            **common,
             costing_snapshot={k: snap.get(k) for k in SNAPSHOT_KEYS if k in snap},
             cost_floor=q.cost_floor, empty_return_assumed=q.empty_return_included,
             fuel_price_used=q.fuel_price_used, fuel_price_source=q.fuel_price_source or '',

@@ -251,3 +251,76 @@ class RouteEngineTests(_Base):
         self.assertEqual(ci['route_costs']['countries'], ['SA', 'BW'])
         keys = {ln['key'] for ln in load.costing_snapshot['lines']}
         self.assertIn('border', keys)
+
+
+class VerificationFixTests(_Base):
+    def test_status_never_moves_back_after_delivery(self):
+        self.trips([self.rec(external_id='S-1')])
+        self.trips([self.rec(external_id='S-1', status='DELIVERED')])
+        out = self.trips([self.rec(external_id='S-1', status='IN_TRANSIT', rate=31000)])
+        load = Load.objects.get(company=self.co, external_id='S-1')
+        self.assertIn(load.status, ('DELIVERED', 'INVOICED'))
+        self.assertEqual(load.total_amount, Decimal('31000.00'))          # the rest still applies
+        self.assertEqual(out['results'][0]['status_refused']['code'], 'status_backwards')
+
+    def test_cancel_after_invoicing_flags_the_invoice(self):
+        load = Load.objects.get(pk=self.trips([self.rec(external_id='S-2')])['load_ids'][0])
+        Load.objects.filter(pk=load.pk).update(status='INVOICED')
+        Invoice.objects.create(company=self.co, customer=load.customer, load=load, invoice_number='INV-S-2',
+                               issue_date=date.today(), due_date=date.today(), subtotal=Decimal('30000'),
+                               status='SENT')
+        out = self.trips([self.rec(external_id='S-2', status='CANCELLED')])
+        load.refresh_from_db()
+        self.assertEqual(load.status, 'INVOICED')
+        self.assertEqual(load.invoice_mismatch['code'], 'cancelled_after_invoicing')
+        self.assertEqual(out['results'][0]['status_refused']['code'], 'cancelled_after_invoicing')
+
+    def test_external_id_required_and_bounded(self):
+        rec = self.rec()
+        rec.pop('external_id')
+        out = self.trips([rec, self.rec(external_id='X' * 101)])
+        self.assertEqual([e['error'] for e in out['errors']],
+                         ['external_id is required', 'external_id is longer than 100 characters'])
+        self.assertEqual(out['created'], 0)
+
+    def test_external_id_vs_load_number_conflict_is_409(self):
+        a = Load.objects.get(pk=self.trips([self.rec(external_id='C-A')])['load_ids'][0])
+        b = Load.objects.get(pk=self.trips([self.rec(external_id='C-B')])['load_ids'][0])
+        r = APIClient().post(SYNC, {'external_id': 'C-A', 'load_number': b.load_number, 'status': 'LOADING'},
+                             format='json', HTTP_X_API_KEY='TMS-KEY')
+        self.assertEqual(r.status_code, 409)
+        r = APIClient().post(SYNC, {'external_id': 'C-NEW', 'load_number': a.load_number}, format='json',
+                             HTTP_X_API_KEY='TMS-KEY')
+        self.assertEqual(r.status_code, 409)
+
+    def test_legacy_note_id_with_spaces(self):
+        legacy = make_load(self.co, self.cust, 'LEG-SP', notes='ext_id:ORDER 77 / B')
+        out = self.trips([self.rec(external_id='ORDER 77 / B', rate=111)])
+        self.assertEqual(out['updated'], 1)
+        legacy.refresh_from_db()
+        self.assertEqual(legacy.external_id, 'ORDER 77 / B')
+
+    def test_migration_0170_parses_to_end_of_line_and_skips_long_ids(self):
+        import importlib
+        from django.apps import apps as global_apps
+        mig = importlib.import_module('core.migrations.0170_load_external_id')
+        a = make_load(self.co, self.cust, 'MIG-1', notes='ext_id:ORDER 12 A')
+        b = make_load(self.co, self.cust, 'MIG-2', notes='ext_id:' + 'Y' * 120)
+        mig.external_ids_from_notes(global_apps, None)
+        a.refresh_from_db()
+        b.refresh_from_db()
+        self.assertEqual((a.external_id, b.external_id), ('ORDER 12 A', ''))
+
+    def test_assign_driver_recosts_the_job(self):
+        api = APIClient()
+        api.force_authenticate(self.user)
+        rec = self.rec(external_id='AS-1')
+        rec.pop('vehicle_plate')
+        load = Load.objects.get(pk=self.trips([rec])['load_ids'][0])
+        self.assertEqual(load.costing_source, 'unknown')
+        r = api.post(f'/api/v1/loads/{load.id}/assign_driver/', {'vehicle_id': self.truck.id}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        load.refresh_from_db()
+        self.assertEqual(load.costing_source, 'computed')
+        from core.services.trip_costing import missing_inputs
+        self.assertEqual(missing_inputs(load), [])

@@ -4,6 +4,11 @@ from .customer import Customer
 from .vehicle import Vehicle
 from .driver import Driver
 
+# Server-side defaults for the trip-economics columns (db_default): an older
+# app image (rollback) that doesn't know these columns can still insert loads.
+JSON_EMPTY = models.Value({}, output_field=models.JSONField())
+
+
 class Load(models.Model):
     STATUS_CHOICES = [
         ('PENDING', 'Pending'),
@@ -99,24 +104,24 @@ class Load(models.Model):
         ('unknown', 'Not enough information'),
     ]
     TRIP_TYPE_CHOICES = [('ONE_WAY', 'One Way'), ('ROUND_TRIP', 'Round Trip')]
-    trip_type = models.CharField(max_length=20, choices=TRIP_TYPE_CHOICES, default='ONE_WAY')
-    return_location = models.CharField(max_length=500, blank=True, default='')
+    trip_type = models.CharField(max_length=20, choices=TRIP_TYPE_CHOICES, default='ONE_WAY', db_default='ONE_WAY')
+    return_location = models.CharField(max_length=500, blank=True, default='', db_default='')
     return_distance = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     return_date = models.DateField(null=True, blank=True)
-    return_cargo = models.TextField(blank=True, default='')
-    costing_source = models.CharField(max_length=10, choices=COSTING_SOURCE_CHOICES, blank=True, default='')
+    return_cargo = models.TextField(blank=True, default='', db_default='')
+    costing_source = models.CharField(max_length=10, choices=COSTING_SOURCE_CHOICES, blank=True, default='', db_default='')
     # compute() inputs the load fields don't carry (same keys as
     # Quote.costing_inputs, plus toll_cost = all loaded legs).
-    costing_inputs = models.JSONField(default=dict, blank=True)
+    costing_inputs = models.JSONField(default=dict, db_default=JSON_EMPTY, blank=True)
     # compute() output (lines incl. the empty_return leg, floor, warnings).
-    costing_snapshot = models.JSONField(default=dict, blank=True)
+    costing_snapshot = models.JSONField(default=dict, db_default=JSON_EMPTY, blank=True)
     cost_floor = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True,
                                      help_text='Floor of costing_snapshot (null = incomplete / unknown)')
     empty_return_assumed = models.BooleanField(null=True, blank=True,
                                                help_text='The costing includes an empty return leg (null = unknown)')
     fuel_price_used = models.DecimalField(max_digits=8, decimal_places=4, null=True, blank=True)
-    fuel_price_source = models.CharField(max_length=10, blank=True, default='')
-    fuel_zone = models.CharField(max_length=10, blank=True, default='')
+    fuel_price_source = models.CharField(max_length=10, blank=True, default='', db_default='')
+    fuel_zone = models.CharField(max_length=10, blank=True, default='', db_default='')
     fuel_effective_from = models.DateTimeField(null=True, blank=True)
     fuel_litres = models.DecimalField(max_digits=10, decimal_places=3, null=True, blank=True)
     priced_vehicle_type = models.ForeignKey('core.VehicleType', on_delete=models.SET_NULL, null=True, blank=True,
@@ -137,29 +142,32 @@ class Load(models.Model):
                                      related_name='return_load')
     RETURN_LINK_SOURCES = [('manual', 'Linked by a user'), ('tms', 'Linked by the TMS'),
                            ('convert', 'Linked when booking the quote')]
-    return_link_source = models.CharField(max_length=10, choices=RETURN_LINK_SOURCES, blank=True, default='')
+    return_link_source = models.CharField(max_length=10, choices=RETURN_LINK_SOURCES, blank=True, default='', db_default='')
     return_linked_at = models.DateTimeField(null=True, blank=True)
     return_linked_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True,
                                          blank=True, related_name='+')
     # The outbound is waiting for a return load (set when booking; cleared
     # when one is linked). Drives "find a return load" prompts only.
-    expecting_return = models.BooleanField(default=False)
+    expecting_return = models.BooleanField(default=False, db_default=False)
+    # The user says every cost of this job is recorded: actual expenses are
+    # the whole cost (no estimate for unrecorded categories).
+    costs_closed = models.BooleanField(default=False, db_default=False)
     # Cached estimate (core.services.trip_economics.recompute, signals): the
     # pair-aware estimated cost and how it was worked out. Reports compute
     # live from the same function; this is for lists and the app.
     # --- TMS identity (trip economics) ---------------------------------------
     # The id the company's TMS knows this job by (unique per company when
     # set) and which system sent it. Sync endpoints upsert on it.
-    external_id = models.CharField(max_length=100, blank=True, default='')
-    external_source = models.CharField(max_length=50, blank=True, default='')
+    external_id = models.CharField(max_length=100, blank=True, default='', db_default='')
+    external_source = models.CharField(max_length=50, blank=True, default='', db_default='')
     # A TMS named an outbound (return_of_external_id) not synced yet: linked
     # as soon as it arrives. 'number:<load_number>' for return_of_load_number.
-    return_of_external_ref = models.CharField(max_length=100, blank=True, default='')
+    return_of_external_ref = models.CharField(max_length=100, blank=True, default='', db_default='')
     # Set when the TMS changed the rate after the load was invoiced: the
     # invoice is never changed, this says it differs (code, invoice, amounts).
-    invoice_mismatch = models.JSONField(default=dict, blank=True)
+    invoice_mismatch = models.JSONField(default=dict, db_default=JSON_EMPTY, blank=True)
     estimated_cost = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
-    estimate_basis = models.CharField(max_length=30, blank=True, default='')
+    estimate_basis = models.CharField(max_length=30, blank=True, default='', db_default='')
     economics_updated_at = models.DateTimeField(null=True, blank=True)
 
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name='loads_created')
@@ -179,5 +187,20 @@ class Load(models.Model):
                                     name='uniq_load_external_id_per_company'),
         ]
     
+    # Written only by their own services (queryset updates): a full save() of
+    # an instance read earlier must never put back a stale value (e.g. a
+    # webhook's load.save() unlinking a return load linked meanwhile).
+    SERVER_ONLY_FIELDS = frozenset({
+        'return_of', 'return_link_source', 'return_linked_at', 'return_linked_by',
+        'estimated_cost', 'estimate_basis', 'economics_updated_at',
+    })
+
+    def save(self, *args, **kwargs):
+        if (not self._state.adding and self.pk is not None and kwargs.get('update_fields') is None
+                and not kwargs.get('force_insert')):
+            kwargs['update_fields'] = [f.name for f in self._meta.concrete_fields
+                                       if not f.primary_key and f.name not in self.SERVER_ONLY_FIELDS]
+        return super().save(*args, **kwargs)
+
     def __str__(self):
         return f"Load {self.load_number} - {self.status}"

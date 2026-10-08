@@ -759,6 +759,8 @@ def _sync_detail(load, created):
         out['return_link'] = link
     if load.invoice_mismatch:
         out['invoice_mismatch'] = load.invoice_mismatch
+    if getattr(load, '_status_refused', None):
+        out['status_refused'] = load._status_refused
     return out
 
 
@@ -859,6 +861,14 @@ class FleetTripBulkSyncView(APIView):
             'errors': [],
         }
 
+        from core.services.tms_routing import sync_batch
+        with sync_batch():
+            self._sync_all(company, trips, results)
+        return Response(results, status=status.HTTP_200_OK)
+
+    def _sync_all(self, company, trips, results):
+        from django.db import transaction
+        from core.services.tms_sync import SyncError, apply_fleet_trip
         for idx, trip_data in enumerate(trips):
             results['processed'] += 1
             if not isinstance(trip_data, dict):
@@ -879,8 +889,6 @@ class FleetTripBulkSyncView(APIView):
                     'index': idx, 'load_number': trip_data.get('load_number'),
                     'error': 'Could not process this trip',
                 })
-
-        return Response(results, status=status.HTTP_200_OK)
 
 
 class TripSyncView(APIView):
@@ -926,6 +934,23 @@ class TripSyncView(APIView):
 
         counts = {'created': 0, 'updated': 0, 'unchanged': 0}
         errors, created_ids, updated_ids, results = [], [], [], []
+        from core.services.tms_routing import sync_batch
+        with sync_batch():
+            self._sync_records(company, records, counts, errors, created_ids, updated_ids, results)
+
+        return Response({
+            'created': counts['created'], 'updated': counts['updated'], 'unchanged': counts['unchanged'],
+            # Old clients read `skipped` (records already known): now the
+            # records that matched an existing load and changed nothing.
+            'skipped': counts['unchanged'],
+            'errors': errors, 'total': len(records), 'load_ids': created_ids, 'updated_ids': updated_ids,
+            'results': results,
+        })
+
+    @staticmethod
+    def _sync_records(company, records, counts, errors, created_ids, updated_ids, results):
+        from django.db import transaction
+        from core.services.tms_sync import SyncError, sync_trip_record
         for i, rec in enumerate(records):
             if not isinstance(rec, dict):
                 errors.append({'index': i, 'error': 'Not an object'})
@@ -945,11 +970,3 @@ class TripSyncView(APIView):
                 logger.exception('trip sync record %s failed', i)
                 errors.append({'index': i, 'error': 'Could not process this record'})
 
-        return Response({
-            'created': counts['created'], 'updated': counts['updated'], 'unchanged': counts['unchanged'],
-            # Old clients read `skipped` (records already known): now the
-            # records that matched an existing load and changed nothing.
-            'skipped': counts['unchanged'],
-            'errors': errors, 'total': len(records), 'load_ids': created_ids, 'updated_ids': updated_ids,
-            'results': results,
-        })

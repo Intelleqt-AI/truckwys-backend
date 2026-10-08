@@ -71,7 +71,8 @@ def margin_by_lane(company, limit: int = 25, include_loads: bool = False) -> dic
                              status__in=['DELIVERED', 'COMPLETED', 'INVOICED', 'IN_TRANSIT'])
                      .only('id', 'load_number', 'pickup_city', 'delivery_city', 'pickup_location',
                            'delivery_location', 'total_amount', 'distance', 'trip_type', 'return_of',
-                           'costing_snapshot', 'empty_return_assumed'))
+                           'costing_snapshot', 'empty_return_assumed', 'costing_source', 'costing_inputs',
+                           'status', 'costs_closed'))
         econ = load_economics(company, loads)
         for l in loads:
             e = econ[l.pk]

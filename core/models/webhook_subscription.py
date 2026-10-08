@@ -43,6 +43,10 @@ class WebhookSubscription(models.Model):
         'Company', on_delete=models.CASCADE, null=True, blank=True, related_name='webhook_subscriptions',
         help_text="Transporter this subscription acts for on fleet webhooks. Empty = none.",
     )
+    # The trip-update webhook's old body-only signature (no timestamp) can be
+    # replayed; it is accepted only for subscriptions opted in here (Django
+    # admin), and each such signature only once (replay cache).
+    allow_legacy_signature = models.BooleanField(default=False, db_default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     last_delivery_at = models.DateTimeField(

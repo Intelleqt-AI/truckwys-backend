@@ -207,7 +207,10 @@ def missing_inputs(load):
     if snap.get('lines') and any(ln.get('amount') is None for ln in snap['lines']) and not codes:
         codes = ['costing_incomplete']
     job = (load.costing_inputs or {}).get('route_job') or {}
-    routing = job.get('state') in ('pending', 'deferred')
+    from core.services.tms_routing import STALE_PENDING_S, _age_seconds
+    routing = job.get('state') == 'deferred' or (job.get('state') == 'pending'
+                                                 and _age_seconds(job) < STALE_PENDING_S)
+    failed_reason = job.get('reason') if job.get('state') == 'failed' else None
     seen, out = set(), []
     for c in codes:
         if c in seen:
@@ -218,7 +221,10 @@ def missing_inputs(load):
             from core.services.tms_routing import PENDING_PROMPT
             out.append({'code': 'tolls_pending', 'prompt': PENDING_PROMPT, 'pending': True, 'blocks': c})
             continue
-        out.append({'code': c, 'prompt': MISSING_PROMPTS.get(c, 'Complete the costing inputs for this job')})
+        item = {'code': c, 'prompt': MISSING_PROMPTS.get(c, 'Complete the costing inputs for this job')}
+        if failed_reason and c == 'tolls_unknown':
+            item['reason'] = failed_reason          # why routing could not work them out
+        out.append(item)
     if routing:
         dedup, have = [], False
         for m in out:

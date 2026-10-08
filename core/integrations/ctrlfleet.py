@@ -173,6 +173,11 @@ class CtrlFleetAdapter:
         Returns:
             Dict with status and message
         """
+        from core.views_fleet import bad_webhook_input
+        err = bad_webhook_input(dict(data), ints=('load_id',), numbers=('distance_covered_km',))
+        err = err or bad_webhook_input(dict(data), dates=())
+        if err:
+            return {'status': 'error', 'message': err}
         load_id = data.get('load_id')
         load_number = data.get('load_number')
         event_type = data.get('event_type')
@@ -227,7 +232,7 @@ class CtrlFleetAdapter:
             if not load.distance or distance > load.distance:
                 load.distance = distance
 
-        load.save()
+        load.save(update_fields=['status', 'pod_received_by', 'pod_signature', 'notes', 'distance', 'updated_at'])
 
         # Create activity event
         ActivityEvent.objects.create(
@@ -268,6 +273,11 @@ class CtrlFleetAdapter:
         Returns:
             Dict with status and message
         """
+        from core.views_fleet import bad_webhook_input
+        err = bad_webhook_input(dict(data), ints=('vehicle_id',), numbers=('mileage',))
+        err = err or bad_webhook_input(dict(data), dates=('maintenance_due',))
+        if err:
+            return {'status': 'error', 'message': err}
         vehicle_id = data.get('vehicle_id')
         vin = data.get('vin')
         event_type = data.get('event_type', 'status_update')
@@ -339,6 +349,11 @@ class CtrlFleetAdapter:
         Returns:
             Dict with status and message
         """
+        from core.views_fleet import bad_webhook_input
+        err = bad_webhook_input(dict(data), ints=('driver_id', 'violation_count', 'accident_history'), numbers=())
+        err = err or bad_webhook_input(dict(data), dates=('license_expiry',))
+        if err:
+            return {'status': 'error', 'message': err}
         driver_id = data.get('driver_id')
         license_number = data.get('license_number')
         event_type = data.get('event_type', 'status_update')

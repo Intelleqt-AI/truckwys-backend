@@ -44,19 +44,22 @@ def record_actuals(loads, rows):
             continue
         role = _role(load, row)
         backhaul = True if role == 'outbound' else False if role == 'single' else None
-        fields = {'backhaul_found': backhaul, 'actuals_recorded_at': now,
-                  'actual_revenue': Decimal(str(row['revenue'])).quantize(Decimal('0.01'))}
-        cost = row['cost']
-        if cost is not None:
-            rev = row['revenue']
-            fields.update({
-                'actual_cost': Decimal(str(cost)).quantize(Decimal('0.01')),
-                'actual_cost_basis': row['cost_basis'] or '',
-                'actual_margin_pct': (Decimal(str((rev - cost) / rev * 100)).quantize(Decimal('0.01'))
-                                      if rev else None),
-            })
+        fields = {'backhaul_found': backhaul, 'actuals_recorded_at': now}
+        cost, rev = row['cost'], row['revenue']
+        cost_d = Decimal(str(cost)).quantize(Decimal('0.01')) if cost is not None else None
+        margin = (Decimal(str((rev - cost) / rev * 100)).quantize(Decimal('0.01'))
+                  if cost is not None and rev else None)
+        if row.get('cost_complete') and cost is not None:
+            # Complete: delivered and the key costs recorded (or closed).
+            fields.update({'actual_revenue': Decimal(str(rev)).quantize(Decimal('0.01')), 'actual_cost': cost_d,
+                           'actual_margin_pct': margin, 'actual_cost_basis': 'actual',
+                           'estimated_cost': None, 'estimated_margin_pct': None})
         else:
-            fields.update({'actual_cost': None, 'actual_cost_basis': '', 'actual_margin_pct': None})
+            # Not complete yet: no actual_* (labels must be real); the best
+            # estimate so far, labelled.
+            fields.update({'actual_revenue': None, 'actual_cost': None, 'actual_margin_pct': None,
+                           'actual_cost_basis': row.get('cost_basis') or '',
+                           'estimated_cost': cost_d, 'estimated_margin_pct': margin})
         n += QuoteOutcome.objects.filter(quote_id=load.quote_id, outcome='accepted').update(**fields)
     return n
 

@@ -2624,6 +2624,11 @@ class LoadViewSet(LoadTripEconomicsMixin, CompanyFilterMixin, BillingGateMixin, 
             elif not vehicle_id and load.status == 'ASSIGNED':
                 load.status = 'PENDING'
             load.save()
+            # Trip economics: a job not costed from a quote is re-costed on
+            # its (new) truck, so "Add the truck to cost this job" clears.
+            if load.costing_source != 'quote':
+                from core.services.trip_costing import cost_load
+                cost_load(load)
             serializer = self.get_serializer(load)
             return Response(serializer.data)
         except Exception as e:
@@ -2824,6 +2829,12 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
                 'actual_revenue': float(o.actual_revenue) if o.actual_revenue is not None else None,
                 'actual_cost': float(o.actual_cost) if o.actual_cost is not None else None,
                 'actual_cost_basis': o.actual_cost_basis or None,
+                # Costs not complete yet: the estimate so far (actual where
+                # recorded), labelled by actual_cost_basis; actual_* null.
+                'complete': o.actual_cost_basis == 'actual',
+                'estimated_cost': float(o.estimated_cost) if o.estimated_cost is not None else None,
+                'estimated_margin_pct': (float(o.estimated_margin_pct)
+                                         if o.estimated_margin_pct is not None else None),
                 'recorded_at': o.actuals_recorded_at.isoformat(),
             }
         return response

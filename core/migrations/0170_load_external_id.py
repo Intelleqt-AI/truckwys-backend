@@ -10,14 +10,19 @@ def external_ids_from_notes(apps, schema_editor):
     import re
     Load = apps.get_model('core', 'Load')
     seen = set()
-    pattern = re.compile(r'(?:^|\s)ext_id:(\S+)')
+    # trips/sync wrote notes = 'ext_id:<id>' exactly: the id runs to the end of
+    # its line (ids may contain spaces). Over 100 characters: left in the note.
+    pattern = re.compile(r'^\s*ext_id:(.+?)\s*$', re.MULTILINE)
     qs = (Load.objects.filter(notes__contains='ext_id:', external_id='')
           .order_by('pk').only('id', 'company_id', 'notes'))
     for load in qs.iterator(chunk_size=500):
         m = pattern.search(load.notes or '')
         if not m:
             continue
-        key = (load.company_id, m.group(1)[:100])
+        ext = m.group(1).strip()
+        if not ext or len(ext) > 100:
+            continue
+        key = (load.company_id, ext)
         if key in seen or Load.objects.filter(company_id=key[0], external_id=key[1]).exists():
             continue
         seen.add(key)

@@ -164,8 +164,27 @@ empty values back to 10.00 first.
 | 0170 | `external_id`, `external_source`, `return_of_external_ref`, `invoice_mismatch` + move trips/sync's `ext_id:` notes onto `external_id` | First load per (company, id) wins; duplicates keep only the note. |
 | 0171 | Unique (company, external_id) where external_id ≠ '' | Own migration so PostgreSQL never ALTERs after 0170's data update in one transaction. Builds a unique index (locks `loads` writes briefly). |
 | 0172 | QuoteOutcome actuals (`actual_revenue`, `actual_cost`, `actual_margin_pct`, `actual_cost_basis`, `backhaul_found`, `actuals_recorded_at`) | Labels only. |
+| 0173 | Database defaults (`db_default`) on every new NOT NULL column; `Load.costs_closed`; `QuoteOutcome.estimated_cost` / `estimated_margin_pct`; `WebhookSubscription.allow_legacy_signature` | With 0173 applied an OLDER app image can still insert loads (it doesn't name the new columns). Between 0167 and 0172 alone it could not: always migrate through 0173. |
 
-Rollback: `migrate core 0165` (drops the new columns; no data outside them is changed).
+Rollback (order matters):
+1. Image-only rollback (keep the schema): fine at 0173 — the old image inserts loads thanks to the database
+   defaults; the new columns are simply left alone.
+2. Full rollback: run `python manage.py migrate core 0165` with the NEW image still deployed (only it has the
+   reverse migrations 0166–0173), THEN redeploy the old image. Doing it the other way round leaves the old image
+   on a schema it can't migrate back. Drops the new columns; no data outside them is changed.
+
+Pre-deploy checks (PostgreSQL), run and note the numbers:
+```sql
+-- loads whose TMS id is only in notes (0170 moves it onto external_id)
+SELECT count(*) FROM loads WHERE notes LIKE 'ext_id:%';
+-- ids longer than 100 characters (left in the note, not moved)
+SELECT count(*) FROM loads WHERE notes LIKE 'ext_id:%' AND length(split_part(substr(notes, 8), E'\n', 1)) > 100;
+-- duplicates per company (only the first load per company + id gets it)
+SELECT company_id, split_part(substr(notes, 8), E'\n', 1) AS ext, count(*) FROM loads
+ WHERE notes LIKE 'ext_id:%' GROUP BY 1, 2 HAVING count(*) > 1;
+-- fleet webhook subscriptions to bind after migrate (bind_webhook_subscriptions)
+SELECT count(*) FROM webhook_subscriptions;
+```
 
 After migrate: `python manage.py recompute_trip_economics` (or `--company ID`).
 
@@ -260,3 +279,30 @@ per-company daily cap `TMS_ROUTING_DAILY_CAP` (default 200, the rest wait until 
   is the other direction; both at once = 400 `both_directions`. `booking.return_link` adds `direction`
   (`return_of` | `return`), `outbound_id`, `return_id`. `booking.link_fields` = `{outbound_candidates:
   "return_of_load_id", return_candidates: "return_load_id"}` (also in booking-preview).
+
+### Verification fixes (8 Oct)
+- **Cancelled legs**: a load that becomes CANCELLED is unlinked from its pair automatically (ActivityEvent "(a leg
+  was cancelled)"); a cancelled partner never counts as paired; candidates never offer cancelled loads; the
+  outbound is marked expecting a return again.
+- **Stale saves**: `Load.save()` without update_fields never writes `return_of` / link fields / cached estimate
+  (they are written only by their services); TMS / webhook saves name their fields.
+- **Actual vs estimate per cost group**: fuel / tolls / driver / operating (maintenance, insurance, overhead)
+  each use recorded expenses when there are any, else the estimate; OTHER adds on top; a SUBCONTRACTOR bill or
+  `POST /loads/{id}/close-costs/ {closed: true}` makes the recorded expenses the whole cost. `cost_basis`:
+  `actual` | `part_actual` | `estimate`; legs carry `cost_groups[{group, estimated, actual, used, basis}]`,
+  `cost_complete`, `costs_closed`. A job counts as actual (learning, quote `actuals.complete`) only when
+  delivered / invoiced AND fuel, tolls and driver (where estimated) are recorded, or closed. Until then
+  QuoteOutcome.actual_* stay null and `estimated_cost` / `estimated_margin_pct` hold the estimate so far
+  (`actual_cost_basis` says part_actual / estimate).
+- **TMS**: `external_id` is required on trips/sync and at most 100 characters (400); external_id and load_number
+  pointing at different loads = 409; status never moves back once DELIVERED / INVOICED, INVOICED is never taken
+  from a TMS, CANCELLED on an invoiced job flags it (`invoice_mismatch.code = cancelled_after_invoicing`) instead
+  of cancelling — each reported as `status_refused {code, detail}` while the rest of the record applies.
+- **Routing**: bad stop coordinates fail the job with reason `bad_stop_coordinates` (tolls_unknown + reason,
+  never stuck on "Working out tolls…"); failed jobs re-queue on a location change or after 6 h; a pending job
+  older than 2 h is shown as unknown and re-queued on the next sync; at most 50 routing jobs start per sync
+  request, the rest in batches 5 minutes apart; routing merges its keys into costing_inputs under a row lock.
+- **Webhooks**: the trip-update body-only signature only for subscriptions with `allow_legacy_signature` (admin),
+  each signature once (30-day replay cache); bad ids / dates / numbers answer 400.
+- `assign_driver` re-costs a job not costed from a quote. The booking preview's invoice line reads
+  "Transport (load number on booking) (A → B)".

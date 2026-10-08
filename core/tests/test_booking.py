@@ -130,7 +130,7 @@ class BookingPreviewTests(BookingTests):
         prev, real = body['booking']['invoice_preview'], booked['invoice_preview']
         self.assertEqual((prev['subtotal'], prev['vat_amount'], prev['total'], prev['state']),
                          (real['subtotal'], real['vat_amount'], real['total'], real['state']))
-        self.assertEqual(prev['lines'][0]['description'], 'Transport (Durban → Johannesburg)')
+        self.assertEqual(prev['lines'][0]['description'], 'Transport (load number on booking) (Durban → Johannesburg)')
         self.assertEqual(body['booking']['costing']['cost_floor'], booked['costing']['cost_floor'])
         again = self.api.get(f'/api/v1/quotes/{q.id}/booking-preview/').json()
         self.assertFalse(again['preview'])

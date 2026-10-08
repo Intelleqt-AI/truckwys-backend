@@ -149,7 +149,7 @@ def invoice_preview(load):
 
 def _load_line_description(load) -> str:
     route = ' → '.join(p for p in (getattr(load, 'pickup_city', '') or '', getattr(load, 'delivery_city', '') or '') if p)
-    head = f'Transport: load {load.load_number}' if load.load_number else 'Transport'
+    head = f'Transport: load {load.load_number}' if load.load_number else 'Transport (load number on booking)'
     return head + (f' ({route})' if route else '')
 
 

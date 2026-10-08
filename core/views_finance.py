@@ -1454,7 +1454,7 @@ class RouteAnalyticsView(APIView):
                 pickup_date__gte=from_date,
                 pickup_date__lte=to_date
             ).only('id', 'total_amount', 'distance', 'trip_type', 'return_of', 'costing_snapshot',
-                    'empty_return_assumed'))
+                    'empty_return_assumed', 'costing_source', 'costing_inputs', 'status', 'costs_closed'))
             econ = list(load_economics(company, route_loads).values())
             trip_count = r['trip_count']
 

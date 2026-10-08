@@ -197,19 +197,19 @@ class FleetWebhookTenancyTests(_Tenants):
         sub = WebhookSubscription.objects.create(partner_name='Fleet A', webhook_url='https://a.example',
                                                  company=self.co_a)
         body = {'load_number': 'TEN-B-1', 'event_type': 'delivery_confirmed'}
-        self.assertEqual(self._signed('/api/v1/fleet/webhooks/trip-update/', body, sub).status_code, 404)
+        self.assertEqual(signed_post('/api/v1/fleet/webhooks/trip-update/', body, sub).status_code, 404)
         self.load_b.refresh_from_db()
         self.assertEqual(self.load_b.status, 'PENDING')
         body = {'load_id': self.load_b.id, 'event_type': 'delivery_confirmed'}
-        self.assertEqual(self._signed('/api/v1/fleet/webhooks/trip-update/', body, sub).status_code, 404)
-        ok = self._signed('/api/v1/fleet/webhooks/trip-update/', {'load_number': 'TEN-A-1', 'event_type': 'gps_update'}, sub)
+        self.assertEqual(signed_post('/api/v1/fleet/webhooks/trip-update/', body, sub).status_code, 404)
+        ok = signed_post('/api/v1/fleet/webhooks/trip-update/', {'load_number': 'TEN-A-1', 'event_type': 'gps_update'}, sub)
         self.assertEqual(ok.status_code, 200, ok.content)
         self.assertTrue(ActivityEvent.objects.filter(entity_id=self.load_a.id, company=self.co_a,
                                                      title__startswith='Fleet update').exists())
 
     def test_subscription_without_company_is_refused(self):
         sub = WebhookSubscription.objects.create(partner_name='Lender', webhook_url='https://l.example')
-        r = self._signed('/api/v1/fleet/webhooks/trip-update/', {'load_number': 'TEN-A-1', 'event_type': 'x'}, sub)
+        r = signed_post('/api/v1/fleet/webhooks/trip-update/', {'load_number': 'TEN-A-1', 'event_type': 'x'}, sub)
         self.assertEqual(r.status_code, 403)
         r = signed_post('/api/v1/fleet/webhooks/vehicle-event/', {'vehicle_id': self.vehicle_a.id,
                         'status': 'BROKEN'}, sub)
@@ -332,3 +332,40 @@ class BindWebhookSubscriptionsCommandTests(_Tenants):
         self._run('--bind', f'{lost.pk}={self.co_a.pk}', '--apply')
         lost.refresh_from_db()
         self.assertEqual(lost.company_id, self.co_a.id)
+
+
+@override_settings(CTRLFLEET_WEBHOOK_KEY='')
+class LegacySignatureTests(_Tenants):
+    URL = '/api/v1/fleet/webhooks/trip-update/'
+
+    def _legacy(self, sub, body):
+        raw = json.dumps(body).encode()
+        sig = 'sha256=' + hmac.new(sub.secret.encode(), raw, hashlib.sha256).hexdigest()
+        return APIClient().post(self.URL, raw, content_type='application/json', HTTP_X_API_KEY=sub.api_key,
+                                HTTP_X_FLEET_SIGNATURE=sig)
+
+    def test_body_only_signature_refused_unless_opted_in_and_never_replayed(self):
+        sub = WebhookSubscription.objects.create(partner_name='Fleet A', webhook_url='https://a.example',
+                                                 company=self.co_a)
+        body = {'load_number': 'TEN-A-1', 'event_type': 'gps_update'}
+        self.assertEqual(self._legacy(sub, body).status_code, 401)
+        sub.allow_legacy_signature = True
+        sub.save()
+        self.assertEqual(self._legacy(sub, body).status_code, 200)
+        replay = self._legacy(sub, body)
+        self.assertEqual(replay.status_code, 401)
+        self.assertIn('already used', replay.json()['error'])
+
+    def test_bad_ids_and_dates_are_400_not_500(self):
+        sub = WebhookSubscription.objects.create(partner_name='Fleet A', webhook_url='https://a.example',
+                                                 company=self.co_a)
+        self.assertEqual(signed_post(self.URL, {'load_id': 'abc', 'event_type': 'gps_update'}, sub).status_code, 400)
+        r = signed_post('/api/v1/fleet/webhooks/vehicle-event/', {'vehicle_id': self.vehicle_a.id,
+                        'maintenance_due': 'soon'}, sub)
+        self.assertEqual(r.status_code, 400)
+        r = signed_post('/api/v1/fleet/webhooks/driver-event/', {'driver_id': 'x1'}, sub)
+        self.assertEqual(r.status_code, 400)
+        with override_settings(CTRLFLEET_WEBHOOK_KEY=''):
+            r = APIClient().post('/api/v1/fleet/webhooks/ctrlfleet/', {'event_category': 'vehicle', 'vehicle_id': 'abc'},
+                                 format='json', HTTP_X_API_KEY='KEY-A')
+            self.assertEqual(r.status_code, 400)

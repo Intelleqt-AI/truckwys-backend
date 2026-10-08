@@ -148,6 +148,40 @@ def trip_type_from(rec):
     return 'ROUND_TRIP' if t == 'ROUND_TRIP' else 'ONE_WAY'
 
 
+MAX_EXTERNAL_ID = 100
+
+
+def clean_external_id(value):
+    ext = str(value or '').strip()
+    if len(ext) > MAX_EXTERNAL_ID:
+        raise SyncError(f'external_id is longer than {MAX_EXTERNAL_ID} characters')
+    return ext
+
+
+STATUS_RANK = {'PENDING': 0, 'ASSIGNED': 1, 'LOADING': 2, 'IN_TRANSIT': 3, 'DELIVERED': 4, 'INVOICED': 5}
+
+
+def allowed_status_move(load, new):
+    """(status to write | None, refusal | None). No moving back once a job
+    is DELIVERED / INVOICED; INVOICED is set by TruckWys invoicing, not a TMS;
+    CANCELLED after invoicing doesn't cancel the job: it flags the invoice."""
+    cur = load.status
+    if new == cur:
+        return None, None
+    if new == 'INVOICED':
+        return None, {'code': 'invoiced_by_truckwys', 'detail': 'Invoicing sets INVOICED; status left as is.'}
+    if new == 'CANCELLED':
+        from core.models import Invoice
+        if cur in ('DELIVERED', 'INVOICED') and Invoice.objects.filter(load=load).exclude(
+                status='CANCELLED').exists():
+            return None, {'code': 'cancelled_after_invoicing',
+                          'detail': 'The job is invoiced; the invoice is flagged, the job stays as it is.'}
+        return new, None
+    if cur in ('DELIVERED', 'INVOICED') and STATUS_RANK.get(new, 99) < STATUS_RANK[cur]:
+        return None, {'code': 'status_backwards', 'detail': f'{cur.title()} jobs never move back to {new.title()}.'}
+    return new, None
+
+
 def find_by_external_id(company, external_id):
     """A load of THIS company by its TMS id (the field, else the legacy
     'ext_id:' note written by trips/sync before external_id existed, which is
@@ -160,7 +194,7 @@ def find_by_external_id(company, external_id):
     if load is not None:
         return load
     legacy = [l for l in Load.objects.filter(company=company, external_id='', notes__icontains=f'ext_id:{ext}')
-              if f'ext_id:{ext}' in (l.notes or '').split()]
+              if any(line.strip() == f'ext_id:{ext}' for line in (l.notes or '').splitlines())]
     if legacy:
         load = legacy[0]
         Load.objects.filter(pk=load.pk).update(external_id=ext)
@@ -287,6 +321,14 @@ def apply_record(company, load, rec, *, source, user=None, origin_keys=None, des
         if merged != (load.costing_inputs or {}):
             new['costing_inputs'] = merged
 
+    refused = None
+    if 'status' in new:
+        st, refused = allowed_status_move(load, new['status'])
+        if st is None:
+            new.pop('status')
+        if refused and refused['code'] == 'cancelled_after_invoicing':
+            flag_cancelled_after_invoicing(load, source=source)
+    load._status_refused = refused
     changes = {}
     for field, value in new.items():
         old = getattr(load, field)
@@ -297,7 +339,7 @@ def apply_record(company, load, rec, *, source, user=None, origin_keys=None, des
     if not changes:
         return {}
     load._notify_actor_id = None
-    load.save()
+    load.save(update_fields=[f for f in changes] + ['updated_at'])
 
     from core.models import ActivityEvent
     ActivityEvent.objects.create(
@@ -318,6 +360,21 @@ def apply_record(company, load, rec, *, source, user=None, origin_keys=None, des
     if 'total_amount' in changes:
         check_invoice_mismatch(load, source=source)
     return changes
+
+
+def flag_cancelled_after_invoicing(load, *, source='tms'):
+    from core.models import ActivityEvent, Invoice, Load
+    inv = Invoice.objects.filter(load=load).exclude(status='CANCELLED').order_by('-id').first()
+    flag = {'code': 'cancelled_after_invoicing', 'invoice_id': getattr(inv, 'pk', None),
+            'invoice_number': getattr(inv, 'invoice_number', None), 'invoice_status': getattr(inv, 'status', None),
+            'source': source, 'detected_at': timezone.now().isoformat(),
+            'title': 'TMS cancelled an invoiced job',
+            'detail': 'Check the invoice: void it or issue a credit note if the job really was cancelled.'}
+    Load.objects.filter(pk=load.pk).update(invoice_mismatch=flag)
+    load.invoice_mismatch = flag
+    ActivityEvent.objects.create(event_type='load', title=f'TMS cancelled invoiced job {load.load_number}',
+                                 entity_id=load.pk, entity_type='Load', company=load.company, metadata=flag)
+    return flag
 
 
 def check_invoice_mismatch(load, *, source='tms'):
@@ -457,12 +514,18 @@ def apply_fleet_trip(company, data, *, user=None):
     if action not in ('status_update', 'create', 'complete', 'update'):
         raise SyncError(f'Unknown action {action}')
     load_number = data.get('load_number')
-    ext = str(data.get('external_id') or '').strip()
+    ext = clean_external_id(data.get('external_id'))
     if not load_number and not ext:
         raise SyncError('load_number or external_id is required')
     load = find_by_external_id(company, ext) if ext else None
-    if load is None and load_number:
-        load = find_load(company, load_number=load_number)
+    by_number = find_load(company, load_number=load_number) if load_number else None
+    if load is not None and by_number is not None and load.pk != by_number.pk:
+        raise SyncError(f'external_id {ext} belongs to another load than {load_number}', 409)
+    if load is None and by_number is not None and ext and by_number.external_id \
+            and by_number.external_id != ext:
+        raise SyncError(f'Load {load_number} already has external_id {by_number.external_id}', 409)
+    if load is None:
+        load = by_number
     created = False
     if load is None:
         if action != 'create':
@@ -479,7 +542,7 @@ def apply_fleet_trip(company, data, *, user=None):
             Load.objects.filter(pk=load.pk).update(external_id=ext, external_source='fleet_sync')
             load.external_id = ext
         rec = dict(data)
-        if action == 'complete':
+        if action == 'complete' and load.status != 'INVOICED':
             rec['status'] = 'DELIVERED'
         changes = apply_record(company, load, rec, source='fleet_sync', user=user,
                                origin_keys=FLEET_ORIGIN, dest_keys=FLEET_DEST)
@@ -495,8 +558,11 @@ def apply_fleet_trip(company, data, *, user=None):
 def sync_trip_record(company, rec):
     """POST integrations/trips/sync/ record: upsert by external_id. Returns
     (outcome, load, detail) with outcome 'created' | 'updated' | 'unchanged'."""
-    ext = str(rec.get('external_id') or '').strip()
-    load = find_by_external_id(company, ext) if ext else None
+    ext = clean_external_id(rec.get('external_id'))
+    if not ext:
+        # Without an id a re-sent record would create a duplicate job.
+        raise SyncError('external_id is required')
+    load = find_by_external_id(company, ext)
     if load is None:
         missing = [f for f in ('origin', 'destination') if not rec.get(f)]
         if missing:
@@ -516,4 +582,7 @@ def sync_trip_record(company, rec):
         detail['return_link'] = link
     if load.invoice_mismatch:
         detail['invoice_mismatch'] = load.invoice_mismatch
+    refused = getattr(load, '_status_refused', None)
+    if refused:
+        detail['status_refused'] = refused
     return outcome, load, detail

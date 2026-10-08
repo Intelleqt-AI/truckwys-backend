@@ -945,7 +945,18 @@ def trip_economics_credit_note_changed(sender, instance, **kwargs):
 
 @receiver(post_save, sender='core.Load')
 def trip_economics_load_changed(sender, instance, **kwargs):
-    _recompute_after_commit([instance.pk, getattr(instance, 'return_of_id', None)])
+    partner = getattr(instance, 'return_of_id', None)
+    if instance.status == 'CANCELLED':
+        # A cancelled leg no longer brings (or sends) a truck: unlink the
+        # pair (audited) so neither leg drops its empty return for it.
+        from core.models import Load
+        from core.services.return_loads import unlink_return
+        fresh = Load.objects.filter(pk=instance.pk).first()
+        if fresh is not None:
+            res = unlink_return(fresh, source='cancelled')
+            if res:
+                partner = res[1] if res[0] == instance.pk else res[0]
+    _recompute_after_commit([instance.pk, partner])
 
 
 @receiver(pre_delete, sender='core.Load')

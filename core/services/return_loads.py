@@ -202,9 +202,15 @@ def unlink_return(load, *, user=None, source='manual'):
     with transaction.atomic():
         Load.objects.filter(pk=ret.pk).update(return_of=None, return_link_source='', return_linked_at=None,
                                               return_linked_by=None)
+        # The outbound is waiting for a return again (unless it is itself
+        # cancelled or a round trip).
+        out_status = Load.objects.filter(pk=outbound.pk).values_list('status', flat=True).first()
+        Load.objects.filter(pk=outbound.pk).update(
+            expecting_return=out_status not in EXCLUDED_STATUSES and outbound.trip_type == 'ONE_WAY')
         meta = {'outbound_id': outbound.pk, 'return_id': ret.pk, 'source': source}
-        _activity(outbound, f'Return load {ret.load_number} unlinked from {outbound.load_number}', meta, user)
-        _activity(ret, f'{ret.load_number} is no longer the return of {outbound.load_number}', meta, user)
+        why = ' (a leg was cancelled)' if source == 'cancelled' else ''
+        _activity(outbound, f'Return load {ret.load_number} unlinked from {outbound.load_number}{why}', meta, user)
+        _activity(ret, f'{ret.load_number} is no longer the return of {outbound.load_number}{why}', meta, user)
     from core.services.trip_economics import pair_changed
     transaction.on_commit(lambda: pair_changed([outbound.pk, ret.pk]))
     return outbound.pk, ret.pk

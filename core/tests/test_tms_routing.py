@@ -114,3 +114,50 @@ class RoutingTests(_Base):
         b.refresh_from_db()
         self.assertEqual(b.costing_inputs['route_job']['state'], 'deferred')
         self.assertEqual(missing_inputs(b)[0]['code'], 'tolls_pending')
+
+
+class RoutingFixTests(_Base):
+    def test_bad_stop_coordinates_fail_with_reason_and_can_requeue(self):
+        load, _ = self.sync(external_id='RT-BAD')
+        Load.objects.filter(pk=load.pk).update(stops=[{'location': 'Harrismith', 'lat': 'abc', 'lon': 29.1}])
+        self.assertEqual(tms_routing.route_load(load.pk), 'failed')
+        load.refresh_from_db()
+        job = load.costing_inputs['route_job']
+        self.assertEqual((job['state'], job['reason']), ('failed', 'bad_stop_coordinates'))
+        unknown = [m for m in missing_inputs(load) if m['code'] == 'tolls_unknown']
+        self.assertEqual(unknown[0]['reason'], 'bad_stop_coordinates')
+        # Fixed stops (a location change): queued again.
+        _, again = self.sync(external_id='RT-BAD', stops=[{'location': 'Harrismith', 'lat': -28.27, 'lon': 29.12}])
+        self.assertEqual(again.call_count, 1)
+
+    def test_per_sync_cap_staggers_the_rest(self):
+        from unittest import mock as _m
+        with _m.patch.object(tms_routing, 'PER_SYNC_IMMEDIATE', 2):
+            recs = [{'external_id': f'RT-C{i}', 'origin': 'Johannesburg', 'destination': 'Durban', 'distance': 600,
+                     'rate': 30000, 'weight': 10000, 'vehicle_plate': 'RT 01 GP',
+                     'pickup_lat': -26.2, 'pickup_lng': 28.04, 'delivery_lat': -29.85, 'delivery_lng': 31.02}
+                    for i in range(5)]
+            with _m.patch('core.tasks.route_tms_load.apply_async') as queued:
+                with self.captureOnCommitCallbacks(execute=True):
+                    APIClient().post(TRIPS, recs, format='json', HTTP_X_API_KEY='ROUTE-KEY')
+        countdowns = sorted(c.kwargs.get('countdown', 0) for c in queued.call_args_list)
+        self.assertEqual(countdowns, [0, 0, 300, 300, 600])
+
+    def test_routing_merge_keeps_concurrent_sync_changes(self):
+        load, _ = self.sync(external_id='RT-M')
+        stale = Load.objects.get(pk=load.pk)
+        ci = dict(load.costing_inputs)
+        ci['driver_cost'] = 777.0                    # a sync wrote this meanwhile
+        Load.objects.filter(pk=load.pk).update(costing_inputs=ci)
+        tms_routing._set_job(stale, state='pending', key='x')
+        load.refresh_from_db()
+        self.assertEqual(load.costing_inputs['driver_cost'], 777.0)
+
+    def test_stale_pending_is_not_shown_as_working(self):
+        load, _ = self.sync(external_id='RT-S')
+        ci = dict(load.costing_inputs)
+        ci['route_job'] = {**ci['route_job'], 'at': '2020-01-01T00:00:00+00:00'}
+        Load.objects.filter(pk=load.pk).update(costing_inputs=ci)
+        load.refresh_from_db()
+        self.assertNotIn('tolls_pending', [m['code'] for m in missing_inputs(load)])
+        self.assertTrue(tms_routing.needs_routing(load))

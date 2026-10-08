@@ -92,3 +92,21 @@ class LoadTripEconomicsMixin:
         body = economics_for_load(load)
         body['costing'] = costing_summary(load)
         return Response(body)
+
+    @action(detail=True, methods=['post'], url_path='close-costs')
+    def close_costs(self, request, pk=None):
+        """POST /loads/{id}/close-costs/ {closed: true|false}: every cost of the
+        job is recorded (true): actual expenses are the whole cost and, once
+        delivered, it counts as actual (learning). false reopens it."""
+        from core.models import ActivityEvent, Load
+        from core.services.trip_economics import economics_for_load, recompute
+        load = self.get_object()
+        raw = request.data.get('closed', True)
+        closed = raw is True or str(raw).strip().lower() in ('1', 'true', 'yes')
+        Load.objects.filter(pk=load.pk).update(costs_closed=closed)
+        ActivityEvent.objects.create(event_type='load', title=f'Costs {"closed" if closed else "reopened"}: '
+                                     f'{load.load_number}', entity_id=load.pk, entity_type='Load',
+                                     company=load.company, user=request.user, metadata={'costs_closed': closed})
+        recompute([load.pk])
+        load.refresh_from_db()
+        return Response({'load_id': load.pk, 'costs_closed': closed, 'economics': economics_for_load(load)})

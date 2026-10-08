@@ -88,13 +88,68 @@ class EstimateTests(_Pair):
         Expense.objects.create(company=self.co, expense_number='EX-ECON-1', category='FUEL', description='Diesel',
                                amount=Decimal('11500'), vat_amount=Decimal('1500'), load=self.out,
                                expense_date=date.today(), status='APPROVED')
+        self.out.refresh_from_db()
+        est = te.estimate(self.out)
+        est_fuel = sum(Decimal(str(ln['amount'])) for ln in est['lines'] if ln['key'] in ('fuel', 'fuel_return'))
         body = te.economics_for_load_id(self.out.id)
         out_leg, ret_leg = body['legs']
-        self.assertEqual(out_leg['cost_basis'], 'actual')
-        self.assertEqual(out_leg['cost'], 10000.0)
-        self.assertIsNotNone(out_leg['estimated_cost'])
+        # One FUEL expense: fuel is actual, everything else still estimated.
+        self.assertEqual(out_leg['cost_basis'], 'part_actual')
+        self.assertAlmostEqual(out_leg['cost'], float(est['estimated_cost'] - est_fuel + Decimal('10000')), places=2)
+        fuel = next(g for g in out_leg['cost_groups'] if g['group'] == 'fuel')
+        self.assertEqual((fuel['basis'], fuel['actual'], fuel['used']), ('actual', 10000.0, 10000.0))
+        self.assertEqual(next(g for g in out_leg['cost_groups'] if g['group'] == 'tolls')['basis'], 'estimate')
+        self.assertFalse(out_leg['cost_complete'])
         self.assertEqual(ret_leg['cost_basis'], 'estimate')
         self.assertEqual(body['combined']['cost_basis'], 'mixed')
+
+    def test_closed_or_subcontracted_job_is_all_actual(self):
+        Expense.objects.create(company=self.co, expense_number='EX-ECON-2', category='FUEL', description='Diesel',
+                               amount=Decimal('9000'), vat_amount=Decimal('0'), load=self.out,
+                               expense_date=date.today(), status='APPROVED')
+        r = self.api.post(f'/api/v1/loads/{self.out.id}/close-costs/', {'closed': True}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        leg = r.json()['economics']['legs'][0]
+        self.assertEqual((leg['cost_basis'], leg['cost'], leg['costs_closed']), ('actual', 9000.0, True))
+        self.assertFalse(leg['cost_complete'])            # not delivered yet
+        Load.objects.filter(pk=self.out.pk).update(status='DELIVERED')
+        self.assertTrue(te.economics_for_load_id(self.out.id)['legs'][0]['cost_complete'])
+        Expense.objects.create(company=self.co, expense_number='EX-ECON-3', category='SUBCONTRACTOR',
+                               description='Carrier', amount=Decimal('20000'), vat_amount=Decimal('0'),
+                               load=self.ret, expense_date=date.today(), status='APPROVED')
+        ret_leg = te.economics_for_load_id(self.ret.id)['legs'][0]
+        self.assertEqual((ret_leg['cost_basis'], ret_leg['cost']), ('actual', 20000.0))
+
+    def test_cancelled_leg_unlinks_and_restores_the_empty_return(self):
+        link_return(self.out, self.ret)
+        self.ret.refresh_from_db()
+        self.ret.status = 'CANCELLED'
+        self.ret.save()
+        self.ret.refresh_from_db()
+        self.out.refresh_from_db()
+        self.assertIsNone(self.ret.return_of_id)
+        self.assertTrue(self.out.expecting_return)
+        self.assertEqual(te.estimate(self.out)['basis'], 'snapshot')
+        from core.models import ActivityEvent
+        self.assertTrue(ActivityEvent.objects.filter(entity_id=self.out.id, title__contains='a leg was cancelled').exists())
+        from core.services.return_loads import return_candidates
+        self.assertNotIn(self.ret.id, [c['load_id'] for c in return_candidates(self.out)])
+
+    def test_cancelled_partner_never_counts_even_if_still_linked(self):
+        link_return(self.out, self.ret)
+        Load.objects.filter(pk=self.ret.pk).update(status='CANCELLED')      # bypasses signals
+        self.out.refresh_from_db()
+        self.assertFalse(te.is_paired(self.out))
+        rows = te.economics_rows(self.co, [self.out])
+        self.assertEqual(rows[self.out.pk]['estimate_basis'], 'snapshot')
+
+    def test_stale_full_save_never_unlinks(self):
+        stale = Load.objects.get(pk=self.ret.pk)
+        link_return(self.out, self.ret)
+        stale.notes = 'driver called'
+        stale.save()                                    # full save of an instance read before the link
+        self.ret.refresh_from_db()
+        self.assertEqual((self.ret.return_of_id, self.ret.notes), (self.out.id, 'driver called'))
 
     def test_invoice_revenue_wins(self):
         Invoice.objects.create(company=self.co, customer=self.cust, load=self.out, invoice_number='INV-ECON-1',
