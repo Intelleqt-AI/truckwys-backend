@@ -564,6 +564,17 @@ not priced); one lane per contract in v1 (a client with several lanes has one co
 status, pickup_date, planned_tonnes, actual_tonnes, weighbridge_slip, total_amount}]`. Load `weighbridge_slip`
 (ticket number, optional) is saved with the weighbridge tonnes.
 
+**Verifier fixes (8 Oct 2026).** Migration 0177 gives every new NOT NULL column a `db_default` (`quotes.pricing_basis`,
+`loads.pricing_basis`, `loads.actual_tonnes_source`, `loads.weighbridge_slip`): code from before 0177 still inserts.
+Call-off `tonnes` (convert_to_load, booking-preview `?tonnes=`): a finite number above 0 with at most 3 decimals
+(`28,5` or `28.5`), else 400 (`invalid_tonnes` on the preview); at least 0,1 t; one consignment at most its quoted tonnes;
+a contract at most the remaining tonnes and at most the largest eligible truck's payload (`volume_contract.
+max_tonnes_per_load`; clients cap at the same figure). Call-offs are costed at booking from the contract's priced truck
+(one full load, `costing_source: "quote"`). TMS `actual_tonnes` that is not a finite number above 0 and up to 100 t with at
+most 3 decimals is a per-record SyncError; a CANCELLED load ignores it. Weighbridge tonnes that change the amount after the
+invoice is issued set `invoice_mismatch {code: "weighed_after_invoicing", ...}` and never re-price. The invoice line names
+the slip ("Weighbridge slip WB-1042") and says "planned" for planned tonnes.
+
 ## Quote follow-ups (8 Oct 2026, branch truckwys/quote-followups)
 Tables (not new Company/Quote columns): `QuoteAutomationSettings` (1:1 company), `QuoteFollowUp` (1:1 quote),
 `QuoteFuelClause` (1:1 quote), `FuelChangeAlert`, `WeeklyMarginReport`. Migrations 0178 (models, `db_default` on every NOT NULL column) + 0179 (backfill, non-atomic, 1 000-row batches).
@@ -585,7 +596,9 @@ API JSON: `FOLLOWUPS-CLIENT-SPEC.md` (tw-wt root). Endpoints in `core/views_quot
   weighbridge re-price of a DRAFT invoice all agree). Per-tonne loads: litres = clause litres / the quote's
   billed tonnes (`costing_snapshot.tonnage.billable_tonnes`) × the load's billed tonnes (each call-off adjusts
   only its share; the quote endpoint of a volume contract shows one planned load's share, `load_id` null); a down
-  adjustment discounts the whole per-tonne line (quantity × rate), never below zero. Up → line "Fuel price adjustment
+  adjustment discounts the whole per-tonne line (quantity × rate), never below zero. Weighbridge tonnes after the
+  invoice is issued (`weighed_after_invoicing`) never add or change an adjustment on it; the flag compares the issued
+  excl.-VAT amount with the weighed amount plus the adjustment those tonnes would carry. Up → line "Fuel price adjustment
   (diesel R 32,80 → R 34,10/L)", revenue type FUEL_SURCHARGE, freight tax code. Down → discount on the freight
   line (invoice lines can't be negative), description gains "less fuel price adjustment (…)". The trip-generator
   invoice path (`InvoiceGenerator`) is not hooked (no quote link there).

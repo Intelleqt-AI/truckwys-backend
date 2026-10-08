@@ -397,6 +397,54 @@ class TonnageFuelClauseTests(_Base):
         self.assertEqual(Invoice.objects.get(load=load).lines.count(), 1)
 
 
+    def test_costed_call_off_still_gets_exactly_its_share(self):
+        """Call-offs are costed at booking (tonnage verifier fixes): the
+        adjustment still follows the tonnes billed, not the costed full load."""
+        q = self.send(self.tonnage(total_tonnes='70'))
+        self.at(sast(2026, 10, 9, 9, 0))
+        load = self.book(q, tonnes=12)
+        self.assertEqual(load.costing_source, 'quote')
+        # 12 t booked, billed at the 30 t planned-load minimum.
+        body = self.api.get(f'/api/v1/loads/{load.id}/fuel-adjustment/').json()
+        from core.services.tonnage_jobs import load_billing
+        billed = load_billing(load)['billable_tonnes']
+        self.assertEqual(billed, 30.0)
+        self.assertAlmostEqual(body['amount_zar'], self.share(q, billed), places=2)
+        load.status = 'DELIVERED'
+        load.save()
+        line = Invoice.objects.get(load=load).lines.get(revenue_type='FUEL_SURCHARGE')
+        self.assertEqual(float(line.net_amount), self.share(q, billed))
+
+    def test_weighed_after_invoicing_never_adds_to_the_issued_invoice(self):
+        q = self.send(self.tonnage())
+        self.at(sast(2026, 10, 9, 9, 0))
+        load = self.book(q)
+        Load.objects.filter(id=load.id).update(actual_tonnes=Decimal('30'))
+        load.refresh_from_db()
+        load.status = 'DELIVERED'
+        load.save()
+        inv = Invoice.objects.get(load=load)
+        self.assertEqual(inv.lines.count(), 2)
+        Invoice.objects.filter(id=inv.id).update(status='SENT')
+        before = Invoice.objects.get(id=inv.id).subtotal
+        # Same tonnes again: the adjustment is on the invoice, so no mismatch.
+        r = self.api.patch(f'/api/v1/loads/{load.id}/', {'actual_tonnes': '30'}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        load.refresh_from_db()
+        self.assertFalse(load.invoice_mismatch)
+        # More tonnes: flagged, the difference includes the extra fuel share,
+        # and the issued invoice is untouched (still 2 lines, same subtotal).
+        r = self.api.patch(f'/api/v1/loads/{load.id}/', {'actual_tonnes': '32.5'}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        load.refresh_from_db()
+        inv.refresh_from_db()
+        self.assertEqual(load.invoice_mismatch['code'], 'weighed_after_invoicing')
+        expected = 1300 * 2.5 + self.share(q, 32.5) - self.share(q, 30)
+        self.assertAlmostEqual(load.invoice_mismatch['difference'], expected, places=1)
+        self.assertEqual(inv.subtotal, before)
+        self.assertEqual(inv.lines.count(), 2)
+
+
 class TonnageFuelClauseDownTests(_Base):
     NOV = True
     START = sast(2026, 10, 8, 10, 0)

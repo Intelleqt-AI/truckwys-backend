@@ -3127,7 +3127,8 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         if refusal is not None:
             return refusal
         if quote.pricing_basis == 'per_tonne':
-            from core.services.tonnage_jobs import CallOffError, call_off_tonnes, tonnage_load_fields
+            from core.services.tonnage_jobs import (CallOffError, call_off_tonnes, copy_tonnage_costing,
+                                                    tonnage_load_fields)
             if quote.rate_per_tonne is None:
                 return Response({'error': 'Set the rate per tonne before booking this quote.'},
                                 status=status.HTTP_400_BAD_REQUEST)
@@ -3259,7 +3260,8 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
                     # empty return, floor, fuel, truck, quoted margin). A
                     # per-tonne quote's snapshot is the whole plan (a contract's
                     # many loads), so its job is costed from its own data below.
-                    **({} if quote.pricing_basis == 'per_tonne' else copy_quote_costing(quote)),
+                    **(copy_tonnage_costing(quote, tonnage_fields) if quote.pricing_basis == 'per_tonne'
+                       else copy_quote_costing(quote)),
                 ), **tonnage_fields})   # per-tonne: rate x tonnes, planned tonnes
                 if not load.costing_source:
                     # A legacy quote with no pricing snapshot: cost the job from its

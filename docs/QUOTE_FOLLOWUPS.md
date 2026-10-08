@@ -32,7 +32,9 @@ switched, what runs on a schedule, what can email whom, and how to deploy it.
 - Per-tonne loads (tonnage): litres = the clause's litres ÷ the quote's billed tonnes
   (`costing_snapshot.tonnage.billable_tonnes`) × the load's billed tonnes. Each volume contract call-off adjusts
   only its share; a new weighbridge figure re-prices the draft invoice and its adjustment together. The quote
-  endpoint of a volume contract shows one planned load's share.
+  endpoint of a volume contract shows one planned load's share. Call-offs costed at booking still adjust by their
+  billed tonnes. Weighbridge tonnes after the invoice is issued never touch it: the `weighed_after_invoicing` flag
+  compares the issued amount with the weighed amount plus the adjustment those tonnes would carry.
 - A trip date still in the future is `provisional` and is never invoiced.
 - Trip economics: the adjustment is an invoice line, so revenue (and margin) on the load follows the invoice like
   any other line. Cost groups are unchanged (the clause moves the price, not the cost).
