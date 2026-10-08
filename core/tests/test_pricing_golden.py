@@ -69,34 +69,57 @@ ROUTE_NEW_KEYS = ('distance_estimated', 'fuel_unknown_reason', 'fuel_vehicle_typ
                   'fuel_price_source', 'tolls_unknown',
                   # Additive (8 Oct 2026): which border costs are not on file.
                   'border_costs_complete', 'border_costs_unknown',
-                  # Additive (toll/border audit, 8 Oct 2026): the day tolls were priced for.
-                  'toll_trip_date')
+                  # Additive (toll/border audit, 8 Oct 2026): the day tolls were priced for,
+                  # the VAT basis, the tariff-year check and how much of the border is estimated.
+                  'toll_trip_date', 'toll_vat_registered', 'toll_schedule_warning',
+                  'border_costs_verified', 'border_estimate_zar', 'border_vehicle_profile')
+ROUTE_OPTION_NEW_KEYS = ('toll_routes', 'toll_plazas', 'toll_summary')
 
 # Toll/border audit (8 Oct 2026, docs: TOLL-BORDER-AUDIT.md), APPROVED changes:
 #  * each toll_breakdown entry gains plaza_type / operator / country /
 #    tariff_effective_from, and the list is in DRIVING order (it was route
 #    code, then km) — the plazas and amounts themselves are unchanged here,
 #    because these goldens load main's own 31-plaza reference table;
-#  * Zimbabwe: weighbridge R250 -> R0 (no such fee exists) and in-country
-#    charge R0.90/km -> R3.816/km (ZINARA transit US$10/100km + toll gates);
-#  * Mozambique: the flat R598.78 country toll is gone — TRAC/REVIMO plazas
-#    are TollPlaza rows now (not in this reference table, so R0 here);
-#  * C-BRTA Class 1 permit R6,767 -> R6,983/yr (GG 54229).
+#  * border, permit and foreign-road charges come from the per-component
+#    schedule (core/services/border_schedule.py): each line has a code,
+#    source, as-of date and verified flag; no weighbridge fees; Mozambique's
+#    flat country toll is gone (TRAC/REVIMO plazas are TollPlaza rows, not in
+#    this reference table); C-BRTA class by gross mass, one permit per
+#    country served. Only the (code, amount) of each line is pinned here;
+#    the line texts are tested in test_border_schedule_2026.
+#  * new response keys (VAT basis, tariff-year check, border estimate,
+#    per-option toll plazas/summary) are additive and not pinned here.
 # The expected values below were derived from those rules, not copied.
 TOLL_KEYS_PINNED = ('plaza', 'route', 'location_km', 'tariff', 'tariff_excl_vat', 'tariff_incl_vat')
-ZW_KM_S10 = 582.9   # km in Zimbabwe on s10, measured off the captured route (524.61 / 0.90)
+# Border lines since the per-component schedule (core/services/border_schedule.py,
+# second audit pass): worked out by hand from the published tariffs, at the
+# fallback exchange rates the tests run on (core/services/fx.FALLBACK, no
+# live fetch in tests), for a Class 4 truck with no gross mass / axle layout
+# on its type (so 56 000 kg / 3+2+2 assumed, every line an estimate), the
+# reference company's 24 crossings a year.
+USD = 16.6391          # fx.FALLBACK['USD']
+BWP = 1.1675           # fx.FALLBACK['BWP']
+PERMIT_C2 = round(9041 / 24, 2)                       # C-BRTA Class 2, one country
+ZW_KM_S10 = 582.9                                     # km in Zimbabwe, measured off the captured route
 AUDIT_2026_10 = {
-    's05_jhb_maputo_semi': {
-        'additional_costs': {'border_fees': 850.0, 'weighbridge_fees': 0.0, 'non_sa_tolls': 0.0},
-        'line': ('non_sa_toll', 0.0),
-    },
-    's10_jhb_harare_beitbridge_semi': {
-        'additional_costs': {'border_fees': 5926.71, 'weighbridge_fees': 0.0,
-                             'non_sa_tolls': round(ZW_KM_S10 * 3.816, 2)},
-        'line': ('non_sa_toll', round(ZW_KM_S10 * 3.816, 2)),
-        'weighbridge': 0.0,
-    },
+    's04_jhb_gaborone_semi': [                        # Botswana P975 one way (54 501-56 500 kg band)
+        ('bw_single_trip_permit', round(975 * BWP, 2)), ('sa_cbrta_permit', PERMIT_C2)],
+    's05_jhb_maputo_semi': [                          # unverified Mozambique figure, unchanged
+        ('mz_insurance_inspection', 473.29), ('sa_cbrta_permit', PERMIT_C2)],
+    's10_jhb_harare_beitbridge_semi': [
+        ('zw_border_access_toll', round(375 * USD, 2)),   # Zimborders "Abnormal" (GCM >= 56 000 kg)
+        ('zw_clearing_agent', 2005.0),                    # agent estimate
+        ('sa_cbrta_permit', PERMIT_C2),
+        ('zw_transit_fee', round(10 * 6 * USD, 2)),       # US$10 per 100 km or part: 6 x 100 km
+        ('zw_toll_gates', round(20 * 4 * USD, 2)),        # ~4 gates (582.9 / 145) x US$20
+    ],
 }
+
+
+def audit_additional_costs(lines):
+    border = round(sum(a for c, a in lines if not c.startswith(('zw_transit', 'zw_toll'))), 2)
+    tolls = round(sum(a for c, a in lines if c.startswith(('zw_transit', 'zw_toll'))), 2)
+    return {'border_fees': border, 'weighbridge_fees': 0, 'non_sa_tolls': tolls}
 
 
 def _pinned(breakdown):
@@ -106,19 +129,13 @@ def _pinned(breakdown):
 
 def apply_audit_2026_10(key, exp):
     """main's captured response, moved by the approved audit changes only."""
-    a = AUDIT_2026_10.get(key)
-    if not a:
+    lines = AUDIT_2026_10.get(key)
+    if lines is None:
         return exp
-    exp['additional_costs'] = a['additional_costs']
-    for item in exp.get('cross_border_breakdown') or []:
-        if item['type'] == a['line'][0]:
-            item['amount'] = a['line'][1]
-            if key.startswith('s05'):
-                # Now an ordinary per-km line at R0/km over the measured 95km.
-                item['description'] = 'MZ tolls (95 km)'
-        if item['type'] == 'weighbridge' and 'weighbridge' in a:
-            item['amount'] = a['weighbridge']
+    exp['additional_costs'] = audit_additional_costs(lines)
+    exp['cross_border_breakdown'] = [{'code': c, 'amount': a} for c, a in lines]
     return exp
+
 
 with open(os.path.join(FIXTURES, 'reference_data.json')) as _f:
     REF = json.load(_f)
@@ -278,6 +295,9 @@ class RouteCalculateGoldenTests(_GoldenBase):
             sorted((b['plaza'], b['route'], b['tariff_excl_vat'], b['tariff_incl_vat']) for b in got['toll_breakdown']),
             sorted((b['plaza'], b['route'], b['tariff_excl_vat'], b['tariff_incl_vat']) for b in exp['toll_breakdown']),
             f'{key}: toll plazas')
+        if key in AUDIT_2026_10:
+            got['cross_border_breakdown'] = [{'code': b['code'], 'amount': b['amount']}
+                                             for b in got.get('cross_border_breakdown') or []]
         self.assertEqual(got.get('cross_border_breakdown'), exp.get('cross_border_breakdown'),
                          f'{key}: cross-border line items')
         for i, (g, e) in enumerate(zip(got['routes'], exp['routes'])):
@@ -294,7 +314,7 @@ class RouteCalculateGoldenTests(_GoldenBase):
             got.pop(k, None)
             exp.pop(k, None)
         for g, e in zip(got['routes'], exp['routes']):
-            for k in ROUTE_FUEL_KEYS + ('fuel_usage_litres', 'tolls_unknown'):
+            for k in ROUTE_FUEL_KEYS + ROUTE_OPTION_NEW_KEYS + ('fuel_usage_litres', 'tolls_unknown'):
                 g.pop(k, None)
                 e.pop(k, None)
             g['country_codes'], e['country_codes'] = sorted(g['country_codes']), sorted(e['country_codes'])

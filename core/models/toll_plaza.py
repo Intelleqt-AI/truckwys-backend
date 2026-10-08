@@ -108,6 +108,10 @@ class TollPlaza(models.Model):
     operator = models.CharField(max_length=40, blank=True, default='SANRAL',
                                 help_text='SANRAL, N3TC, Bakwena, TRAC, …')
     country = models.CharField(max_length=2, default='ZA', help_text='ISO 3166-1 alpha-2')
+    # Currency the tariff columns (and this plaza's TollTariff history) are
+    # in. SA plazas are ZAR; TRAC's and REVIMO's Mozambican plazas publish in
+    # meticais and are converted at the day's rate (core/services/fx.py).
+    currency = models.CharField(max_length=3, default='ZAR')
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

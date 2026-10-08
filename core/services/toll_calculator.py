@@ -369,6 +369,10 @@ class TollBreakdownItem:
     country: str = 'ZA'
     tariff_effective_from: Optional[object] = None   # date the charged tariff took effect
     route_sequence: int = 0                          # polyline segment where the route reaches it
+    currency: str = 'ZAR'                            # the plaza's own tariff currency
+    tariff_foreign: Optional[Decimal] = None         # the tariff in that currency (non-ZAR only)
+    fx: Optional[dict] = None                        # core.services.fx.Rate.as_dict() used
+    class_mapping_verified: bool = True              # False where SANRAL classes were mapped onto another scheme
 
     def __post_init__(self):
         if self.tariff_excl_vat is None:
@@ -638,6 +642,30 @@ def parse_trip_date(value):
     return _today()
 
 
+def tariff_schedule_warning(trip_date):
+    """A warning when the trip runs after the newest published SA schedule
+    ends (SANRAL years run 1 March to the end of February), e.g. a trip on
+    2 March 2027 while only 2026/27 is on file. None otherwise."""
+    import datetime
+    from django.db.models import Max
+    from core.models.toll_plaza import TollPlaza
+    latest = (TollPlaza.objects.filter(is_active=True, country='ZA')
+              .aggregate(m=Max('tariff_effective_from'))['m'])
+    if latest is None or trip_date is None:
+        return None
+    ends = datetime.date(latest.year + 1, 3, 1) - datetime.timedelta(days=1)
+    if trip_date <= ends:
+        return None
+    return {
+        'code': 'toll_tariffs_not_published',
+        'schedule': f'{latest.year}/{str(latest.year + 1)[-2:]}',
+        'schedule_ends': ends.isoformat(),
+        'message': (f'The trip is on {trip_date.isoformat()}, after the {latest.year}/{str(latest.year + 1)[-2:]} '
+                    f'toll tariffs end ({ends.isoformat()}). The next schedule is not on file yet, so tolls '
+                    f'are priced at the {latest.year}/{str(latest.year + 1)[-2:]} rates and will usually rise.'),
+    }
+
+
 def calculate_tolls_by_geometry(
     route_points: list,
     truck_type: str,
@@ -744,6 +772,15 @@ def calculate_tolls_by_geometry(
     for _rank, plaza, seq in chosen.values():
         history = sorted(plaza.tariff_history.all(), key=lambda r: r.effective_from, reverse=True)
         tariff, effective_from = plaza.tariff_on(vehicle_class, on_date, history)
+        currency = (getattr(plaza, 'currency', '') or 'ZAR').upper()
+        foreign, fx = None, None
+        if currency != 'ZAR':
+            # Stored in the operator's own currency (TRAC / REVIMO publish in
+            # meticais); converted at the day's rate, which travels with it.
+            from core.services.fx import to_zar
+            foreign = tariff
+            tariff, rate = to_zar(foreign, currency)
+            fx = rate.as_dict()
         matched.append(TollBreakdownItem(
             plaza_name=plaza.name,
             route=plaza.route,
@@ -754,6 +791,12 @@ def calculate_tolls_by_geometry(
             country=plaza.country,
             tariff_effective_from=effective_from,
             route_sequence=seq,
+            currency=currency,
+            tariff_foreign=foreign,
+            fx=fx,
+            # Mozambique classes are defined by its own operators; matching
+            # SANRAL Class 1-4 to TRAC/REVIMO Class 1-4 is not confirmed.
+            class_mapping_verified=plaza.country == 'ZA',
         ))
         routes_hit.add(plaza.route)
         total += tariff

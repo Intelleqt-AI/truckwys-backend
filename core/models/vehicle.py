@@ -36,6 +36,15 @@ class VehicleType(models.Model):
         help_text='SANRAL toll class, counting every axle on the truck and its trailers. '
                   'Blank means the class is guessed from the vehicle type name.'
     )
+    # What border schedules are written about (C-BRTA class, Botswana permit
+    # band, Zimbabwe access toll, Namibia charges). Blank = not known: the
+    # border costs then infer them from the toll class and say "estimate".
+    gross_mass_kg = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text='Gross vehicle / combination mass in kg (truck + trailers + maximum load)')
+    axle_configuration = models.CharField(
+        max_length=20, blank=True, default='',
+        help_text='Axles per unit, horse first: "3+2+2" interlink, "3+3" semi, "3" rigid')
     active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

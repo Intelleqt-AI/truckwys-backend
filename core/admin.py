@@ -224,7 +224,9 @@ class BorderCrossingFeeAdmin(admin.ModelAdmin):
 
 @admin.register(CountryTransitRate)
 class CountryTransitRateAdmin(admin.ModelAdmin):
-    list_display = ['country_code', 'country_name', 'weighbridge_fee_zar', 'toll_rate_per_km', 'sa_border_distance_km', 'is_active', 'updated_at']
+    list_display = ['country_code', 'country_name', 'toll_rate_per_km', 'sa_border_distance_km', 'is_active', 'updated_at']
+    # No weighbridge fees exist; the column stays at R0 and is not editable.
+    exclude = ['weighbridge_fee_zar']
     list_filter = ['is_active']
     search_fields = ['country_code', 'country_name']
     readonly_fields = ['updated_at']

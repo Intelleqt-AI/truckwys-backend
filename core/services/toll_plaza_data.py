@@ -967,11 +967,14 @@ MZ_PLAZAS = [
      'source': REVIMO_SOURCE},
     # N200 Maputo–Ponta do Ouro (the Kosi Bay route). The booth on the map is
     # "Portagem da Belavista"; REVIMO lists two N200 plazas, Mahubo and Ponta
-    # D'Ouro, both MZN 300 / 700 / 1,000 for classes 2–4. Which one this booth
-    # is cannot be confirmed; Class 1 differs (130 vs 100) — the higher is used.
+    # D'Ouro, both MZN 300 / 700 / 1,000 for classes 2–4. Class 1 is MZN 100
+    # at both since the Ministry's 15 May 2025 cut (Mahubo 130 -> 100, AIM /
+    # https://www.revimo.co.mz/assets/docs/taxa15052025.pdf). Which of the two
+    # this booth is is not confirmed. Mudissa (REVIMO, MZN 80/250/500/750) is
+    # not on the map, so it cannot be matched — a known gap.
     {'route': 'REVIMO', 'name': 'N200 Belavista', 'plaza_type': 'mainline', 'plaza_group': 'N200 Belavista',
      'operator': 'REVIMO', 'country': 'MZ', 'direction': 'N200 Maputo–Ponta do Ouro', 'points': [[-26.37176, 32.65474]],
-     'osm_nodes': ['n7712387522'], 'through_points': [], 'mzn': (130, 300, 700, 1000), 'effective_from': None,
+     'osm_nodes': ['n7712387522'], 'through_points': [], 'mzn': (100, 300, 700, 1000), 'effective_from': None,
      'source': REVIMO_SOURCE},
 ]
 for _p in MZ_PLAZAS:

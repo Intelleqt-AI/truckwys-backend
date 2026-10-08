@@ -6,7 +6,8 @@ within 2.5 km of a toll booth (plus both ends) to keep the fixture small.
 Expected plazas are the booths each route actually drives through; expected
 amounts are the poster tariffs (VAT inclusive) summed by hand:
 https://www.nra.co.za/uploads/17/SANRAL%20Toll%20Tariff%202026%20A3%20Poster%20v2.pdf
-GG 52072/52073 for 2025/26. Mozambique: TRAC / REVIMO MZN tariffs at R0.2548.
+GG 52072/52073 for 2025/26. Mozambique: TRAC / REVIMO MZN tariffs, converted at
+the fallback rate the tests run on (core/services/fx.FALLBACK; no live fetch).
 """
 import json
 from datetime import date
@@ -23,6 +24,12 @@ ROUTES = json.loads(FIXTURE.read_text())
 D = Decimal
 OCT_2026 = date(2026, 10, 8)
 FEB_2026 = date(2026, 2, 15)   # still the 2025/26 schedule
+
+def _zar(sa_rand, *mzn):
+    from core.services.fx import FALLBACK
+    rate = FALLBACK['MZN'][0]
+    return str(D(sa_rand) + sum((D(m) * rate).quantize(D('0.01')) for m in mzn))
+
 
 # route: (plazas in driving order, SANRAL class 3 total, class 4 total) — 2026/27
 EXPECTED_2026 = {
@@ -41,12 +48,14 @@ EXPECTED_2026 = {
     # N4 east (TRAC): Diamond Hill 133/220 + Middelburg 277/365 + Machadodorp 510/729 + Nkomazi 281/405
     'PTA-LEBOMBO': (['Diamond Hill', 'Middelburg', 'Machadodorp', 'Nkomazi'], '1201.00', '1719.00'),
     'PTA-MBOMBELA': (['Diamond Hill', 'Middelburg', 'Machadodorp'], '920.00', '1314.00'),
-    # + Moamba MZN 1200/1800 + Maputo MZN 375/550 at R0.2548
-    'JHB-MAPUTO': (['Middelburg', 'Machadodorp', 'Nkomazi', 'Moamba', 'Maputo'], '1469.31', '2097.78'),
+    # + Moamba MZN 1200/1800 + Maputo MZN 375/550, each converted to the cent
+    'JHB-MAPUTO': (['Middelburg', 'Machadodorp', 'Nkomazi', 'Moamba', 'Maputo'],
+                   _zar(1068, 1200, 375), _zar(1499, 1800, 550)),
     # N2 north: Othongathi 42/62 + Mvoti 70/104 + Mtunzini 146/217; its ramps are passed, not used
     'DBN-RICHARDS_BAY': (['Othongathi', 'Mvoti', 'Mtunzini'], '258.00', '383.00'),
     # + N200 MZN 700/1000 + Maputo–Katembe bridge MZN 750/1200
-    'DBN-MAPUTO': (['Othongathi', 'Mvoti', 'Mtunzini', 'N200 Belavista', 'Ponte Maputo-Katembe'], '627.46', '943.56'),
+    'DBN-MAPUTO': (['Othongathi', 'Mvoti', 'Mtunzini', 'N200 Belavista', 'Ponte Maputo-Katembe'],
+                   _zar(258, 700, 750), _zar(383, 1000, 1200)),
     'CPT-GQEBERHA': (['Tsitsikamma'], '438.00', '619.00'),
     'JHB-MBABANE': (['Middelburg'], '277.00', '365.00'),
     'JHB-GABORONE': ([], '0.00', '0.00'),
@@ -124,6 +133,17 @@ class RouteTollCoverageTests(TestCase):
         self.assertEqual(by['Moamba'].country, 'MZ')
         ramp = self._run('RAMP-ENNERDALE-VEREENIGING', 'combination', OCT_2026).breakdown[0]
         self.assertEqual(ramp.plaza_type, 'ramp')
+
+    def test_mozambique_plazas_are_converted_from_meticais_and_say_so(self):
+        from core.services.fx import FALLBACK
+        res = self._run('JHB-MAPUTO', 'combination', OCT_2026)
+        moamba = {b.plaza_name: b for b in res.breakdown}['Moamba']
+        self.assertEqual((moamba.currency, moamba.tariff_foreign), ('MZN', D('1800')))
+        self.assertEqual(moamba.tariff, (D('1800') * FALLBACK['MZN'][0]).quantize(D('0.01')))
+        self.assertTrue(moamba.fx['is_fallback'])               # not today's rate in tests, and it says so
+        self.assertFalse(moamba.class_mapping_verified)          # SANRAL Class 4 -> TRAC Class 4: not confirmed
+        n200 = {b.plaza_name: b for b in self._run('DBN-MAPUTO', 'light', OCT_2026).breakdown}['N200 Belavista']
+        self.assertEqual(n200.tariff_foreign, D('100'))         # Class 1 MZN 100 since 15 May 2025
 
     def test_foreign_tolls_carry_no_reclaimable_sa_vat(self):
         res = self._run('JHB-MAPUTO', 'combination', OCT_2026)

@@ -1,24 +1,17 @@
 """
 Management command: seed_cross_border_data
 
-Seeds BorderCrossingFee and CountryTransitRate tables with SADC values.
+SA's neighbours (Zimbabwe, Botswana, Namibia, Lesotho, Eswatini,
+Mozambique) and Zambia/Malawi via Zimbabwe are NOT seeded here any more:
+they are priced from the sourced, per-component schedule in
+core/services/border_schedule.py (each charge with its own source, as-of
+date, verified flag and currency). Migration 0165 retired their old rand
+totals.
 
-Fee model (2026 rework, anchored to client-reported real corridor costs):
-  Per-corridor crossing fee = SA-side CBRTA permit + destination-country entry costs
-  (road access, carbon tax, third-party insurance, gate pass) folded into one number.
-  SACU members (BW, NA, LS, SZ) are far cheaper than non-SACU (ZW, MZ).
-  Every corridor SA actually borders (ZW, BW, MZ, LS, NA, SZ) is now
-  corrected against primary sources (2026-09) — Zimborders' own tariff
-  page, Botswana's SI 48/2017 permit schedule, TRAC N4's own toll tariff,
-  Lesotho's Toll-Gate Act gazette, Namibia's RFA Cross-Border/Mass Distance
-  Charge tariff, Eswatini's ERS border-toll notice, and the 2026 C-BRTA
-  permit gazette — see core/migrations/0110_fix_zw_border_fee.py,
-  0112_fix_bw_mz_border_fees.py, 0113_fix_ls_border_fee.py and
-  0114_fix_na_sz_border_fees.py for exact sourcing and the one-off backfill
-  of an already-seeded database; this command is the seed for a fresh one.
-  The further multi-hop crossings (ZW-ZM, ZW-MW, ZM-TZ, TZ-KE) remain
-  unverified industry estimates. DB rows are the runtime source of truth
-  and override the hardcoded fallbacks in cross_border.py.
+What remains are the further multi-hop corridors (Zambia→Tanzania,
+Tanzania→Kenya) and those countries' per-km rates: industry ESTIMATES with
+no source, shown on a quote as estimates. No weighbridge fees: no country
+charges a compliant truck for being weighed.
 
 Usage:
     python manage.py seed_cross_border_data
@@ -28,130 +21,23 @@ from decimal import Decimal
 
 from django.core.management.base import BaseCommand
 
-# ---------------------------------------------------------------------------
-# Border crossing fees (ZAR, one-way). Keep in sync with the fallback dicts in
-# core/services/cross_border.py.
-# ---------------------------------------------------------------------------
-_ZW_FEE   = Decimal('5550.00')   # Beitbridge: Zimborders border access toll ($221) + SA-side clearing agent estimate
-_BW_FEE   = Decimal('1175.27')   # Skilpadshek/Pioneer Gate: BW single-trip permit, 56t band (P975 x 1.2054)
-_MZ_FEE   = Decimal('473.29')    # Lebombo/Ressano Garcia: SORCA insurance + inspection fee (NOT verified)
-_LS_FEE   = Decimal('650.00')    # Maseru Bridge/Maputsoe: toll-gate charge (foreign 4+ axle, M650)
-_NA_FEE   = Decimal('4463.00')   # Vioolsdrift/Ariamsvlei: RFA Cross-Border Charge (7-axle interlink, additive)
-_SZ_FEE   = Decimal('450.00')    # Oshoek/Ngwenya: ERS border toll (foreign 4+ axle, E450)
-
 _BORDER_FEES = [
-    {'from_country': 'SA', 'to_country': 'ZW', 'fee_zar': _ZW_FEE, 'notes': "Beitbridge — Zimborders bridge toll ($221 Goods Vehicle rate) + SA-side customs/clearing agent"},
-    {'from_country': 'SA', 'to_country': 'MZ', 'fee_zar': _MZ_FEE, 'notes': 'Lebombo/Ressano Garcia — Mozambique SORCA insurance + inspection fee + amortised C-BRTA permit'},
-    {'from_country': 'SA', 'to_country': 'BW', 'fee_zar': _BW_FEE, 'notes': 'Skilpadshek/Pioneer Gate — Botswana single-trip permit (56t band, SI 48/2017) + amortised C-BRTA permit'},
-    {'from_country': 'SA', 'to_country': 'NA', 'fee_zar': _NA_FEE, 'notes': 'Vioolsdrift/Ariamsvlei — Namibia RFA Cross-Border Charge (7-axle interlink, additive) + amortised C-BRTA permit'},
-    {'from_country': 'SA', 'to_country': 'LS', 'fee_zar': _LS_FEE, 'notes': 'Maseru Bridge/Maputsoe — Lesotho toll-gate charge (foreign 4+ axle, L.N. 65 of 2025) + amortised C-BRTA permit'},
-    {'from_country': 'SA', 'to_country': 'SZ', 'fee_zar': _SZ_FEE, 'notes': 'Oshoek/Ngwenya — Eswatini ERS border toll (foreign 4+ axle, E450) + amortised C-BRTA permit'},
-    # SA re-entries — same cost class on return
-    {'from_country': 'ZW', 'to_country': 'SA', 'fee_zar': _ZW_FEE, 'notes': ''},
-    {'from_country': 'MZ', 'to_country': 'SA', 'fee_zar': _MZ_FEE, 'notes': ''},
-    {'from_country': 'BW', 'to_country': 'SA', 'fee_zar': _BW_FEE, 'notes': ''},
-    {'from_country': 'NA', 'to_country': 'SA', 'fee_zar': _NA_FEE, 'notes': ''},
-    {'from_country': 'LS', 'to_country': 'SA', 'fee_zar': _LS_FEE, 'notes': ''},
-    {'from_country': 'SZ', 'to_country': 'SA', 'fee_zar': _SZ_FEE, 'notes': ''},
-    # Multi-hop internal crossings — industry estimates (non-SA, not in gazette)
-    {'from_country': 'ZW', 'to_country': 'ZM', 'fee_zar': Decimal('900.00'),  'notes': 'Chirundu / Kariba'},
-    {'from_country': 'ZW', 'to_country': 'MW', 'fee_zar': Decimal('850.00'),  'notes': 'Forbes / Nyamapanda'},
-    {'from_country': 'ZM', 'to_country': 'TZ', 'fee_zar': Decimal('1200.00'), 'notes': 'Nakonde / Tunduma — COMESA'},
-    {'from_country': 'TZ', 'to_country': 'KE', 'fee_zar': Decimal('1100.00'), 'notes': 'Namanga / Lunga Lunga'},
+    {'from_country': 'ZM', 'to_country': 'TZ', 'fee_zar': Decimal('1200.00'),
+     'notes': 'Nakonde / Tunduma — industry estimate, no source'},
+    {'from_country': 'TZ', 'to_country': 'KE', 'fee_zar': Decimal('1100.00'),
+     'notes': 'Namanga / Lunga Lunga — industry estimate, no source'},
 ]
 
-# ---------------------------------------------------------------------------
-# Per-country transit rates (2024 estimates)
-# sa_border_distance_km = approximate km from Johannesburg to the SA border post
-# ---------------------------------------------------------------------------
 _COUNTRY_RATES = [
-    {
-        'country_code': 'ZW', 'country_name': 'Zimbabwe',
-        'weighbridge_fee_zar': Decimal('0.00'),      # no fee for weighing a compliant truck (0162)
-        'toll_rate_per_km':    Decimal('3.816'),     # ZINARA transit US$10/100km + 4 gates x US$20 / 580km @ R16.04 (0162)
-        'sa_border_distance_km': Decimal('580.0'),   # Beitbridge via N1
-    },
-    {
-        # No weighbridge fee found anywhere (ANE/REVIMO/Fundo de Estradas all
-        # silent on it); toll is TRAC N4's real flat R598.78 one-way through
-        # Mozambique's 2 plazas, spread over the ~95km border-to-Maputo
-        # corridor to fit this model's per-km field — see
-        # core/migrations/0112_fix_bw_mz_border_fees.py.
-        'country_code': 'MZ', 'country_name': 'Mozambique',
-        'weighbridge_fee_zar': Decimal('0.00'),
-        'toll_rate_per_km':    Decimal('0.000'),     # MZ tolls are TollPlaza rows since 0161
-        'toll_flat_zar':       Decimal('0.00'),
-        'sa_border_distance_km': Decimal('450.0'),   # Komatipoort/Lebombo via N4
-    },
-    {
-        # No weighbridge fee (gov.bw's own service page lists none) and no
-        # toll roads exist yet in Botswana — see 0112_fix_bw_mz_border_fees.py.
-        'country_code': 'BW', 'country_name': 'Botswana',
-        'weighbridge_fee_zar': Decimal('0.00'),
-        'toll_rate_per_km':    Decimal('0.000'),
-        'sa_border_distance_km': Decimal('290.0'),   # Skilpadshek/Pioneer Gate via N4 (Trans-Kalahari)
-    },
-    {
-        # No published weighbridge fee (Roads Authority). toll_rate_per_km
-        # here is a REAL charge, not an approximation: Namibia's Road Fund
-        # Administration Mass Distance Charge for a >44,000kg combination —
-        # see core/migrations/0114_fix_na_sz_border_fees.py. Reached from
-        # Cape Town via the N7, not Johannesburg.
-        'country_code': 'NA', 'country_name': 'Namibia',
-        'weighbridge_fee_zar': Decimal('0.00'),
-        'toll_rate_per_km':    Decimal('0.733'),
-        'sa_border_distance_km': Decimal('666.0'),   # Cape Town -> Vioolsdrif via N7
-    },
-    {
-        # No weighbridge legislation exists (WFP Logistics Cluster) and no
-        # toll roads exist (the border charge is a toll-GATE charge, paid
-        # once at entry, not a per-km road-use fee) — see
-        # core/migrations/0113_fix_ls_border_fee.py. Reached from
-        # Bloemfontein via the N8, not Johannesburg like the other rows here.
-        'country_code': 'LS', 'country_name': 'Lesotho',
-        'weighbridge_fee_zar': Decimal('0.00'),
-        'toll_rate_per_km':    Decimal('0.000'),
-        'sa_border_distance_km': Decimal('150.0'),   # Bloemfontein -> Maseru Bridge via N8
-    },
-    {
-        # No published weighbridge fee (MR3/MR16 weighbridges still being
-        # commissioned) and no toll roads — the border charge above is the
-        # only cost. Reached via the N17, not the N4 — see
-        # core/migrations/0114_fix_na_sz_border_fees.py.
-        'country_code': 'SZ', 'country_name': 'eSwatini',
-        'weighbridge_fee_zar': Decimal('0.00'),
-        'toll_rate_per_km':    Decimal('0.000'),
-        'sa_border_distance_km': Decimal('335.0'),   # Johannesburg -> Oshoek via N17
-    },
-    {
-        'country_code': 'ZM', 'country_name': 'Zambia',
-        'weighbridge_fee_zar': Decimal('0.00'),
-        'toll_rate_per_km':    Decimal('0.600'),
-        'sa_border_distance_km': Decimal('580.0'),   # same as ZW (enters via ZW)
-    },
-    {
-        'country_code': 'MW', 'country_name': 'Malawi',
-        'weighbridge_fee_zar': Decimal('0.00'),
-        'toll_rate_per_km':    Decimal('0.550'),
-        'sa_border_distance_km': Decimal('580.0'),
-    },
-    {
-        'country_code': 'TZ', 'country_name': 'Tanzania',
-        'weighbridge_fee_zar': Decimal('0.00'),
-        'toll_rate_per_km':    Decimal('0.600'),
-        'sa_border_distance_km': Decimal('580.0'),
-    },
-    {
-        'country_code': 'KE', 'country_name': 'Kenya',
-        'weighbridge_fee_zar': Decimal('0.00'),
-        'toll_rate_per_km':    Decimal('0.650'),
-        'sa_border_distance_km': Decimal('580.0'),
-    },
+    {'country_code': 'TZ', 'country_name': 'Tanzania', 'weighbridge_fee_zar': Decimal('0.00'),
+     'toll_rate_per_km': Decimal('0.600'), 'sa_border_distance_km': Decimal('580.0')},
+    {'country_code': 'KE', 'country_name': 'Kenya', 'weighbridge_fee_zar': Decimal('0.00'),
+     'toll_rate_per_km': Decimal('0.650'), 'sa_border_distance_km': Decimal('580.0')},
 ]
 
 
 class Command(BaseCommand):
-    help = 'Seed BorderCrossingFee and CountryTransitRate tables with SADC values (SA fees: 2025 CBRTA gazette rates).'
+    help = 'Seed the multi-hop (ZM-TZ, TZ-KE) border estimates. SA neighbours are priced by core/services/border_schedule.py.'
 
     def add_arguments(self, parser):
         parser.add_argument('--force', action='store_true', help='Overwrite existing records')
@@ -191,6 +77,6 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(
             f'BorderCrossingFee: {fee_created} created, {fee_updated} skipped.\n'
             f'CountryTransitRate: {rate_created} created, {rate_updated} skipped.\n'
-            f'Corridor fees (heavy band): ZW R5550, BW R1175.27, MZ R473.29, LS R650, NA R4463, SZ R450.\n'
+            f'SA-neighbour charges come from core/services/border_schedule.py (not seeded).\n'
             f'Re-run with --force to overwrite existing records.'
         ))
