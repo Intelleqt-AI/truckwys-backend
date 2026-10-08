@@ -8343,6 +8343,369 @@
         "blocking": [],
         "can_send": true
       }
+    },
+    {
+      "name": "driver_nights_applied",
+      "description": "User applied 3 nights out (the route suggests 0 on 7 h 20 min): driver line = 3 x R450,00; the empty return still adds its own suggested extra night.",
+      "inputs": {
+        "trip_type": "ONE_WAY",
+        "distance_km": 568.4,
+        "distance_estimated": false,
+        "distance_confirmed": false,
+        "duration_minutes": 440,
+        "load_kg": 28000,
+        "vehicle": {
+          "id": 11,
+          "name": "Superlink",
+          "capacity": 34,
+          "rated_burn_l_per_100km": 42
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "official_price": 32.7989,
+          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_stale": false,
+          "use_official": false,
+          "override_price": null
+        },
+        "operating_cost_per_km": 16.0,
+        "operating_cost_source": "vehicle_default",
+        "tolls": {
+          "one_way": 1043.48,
+          "empty_return": 812.61,
+          "lookup_failed": false,
+          "confirmed_none": false
+        },
+        "driver": {
+          "allowance_per_night": 450.0,
+          "nights": 3,
+          "amount": null
+        },
+        "hours_per_day": 9.0,
+        "border_cost": 0.0,
+        "international": false,
+        "include_empty_return": null,
+        "settings": {
+          "include_empty_return_default": true,
+          "empty_return_min_km": 300.0
+        },
+        "minimum_charge": null,
+        "default_price_per_km": null,
+        "target_margin_pct": 10.0,
+        "price": 31500.0
+      },
+      "expected": {
+        "version": "qc-1",
+        "trip": {
+          "type": "ONE_WAY",
+          "legs_loaded": 1,
+          "distance_km": 568.4,
+          "empty_return_included": true,
+          "empty_return_default": true,
+          "km_loaded": 568.4,
+          "km_empty": 568.4,
+          "km_driven": 1136.8,
+          "hours_one_way": 7.333333333333333,
+          "return_nights": 1
+        },
+        "vehicle": {
+          "id": 11,
+          "name": "Superlink",
+          "capacity_t": 34.0,
+          "load_t": 28.0,
+          "load_ratio": 0.8235294117647058,
+          "rated_burn_l_per_100km": 42.0,
+          "burn_loaded_l_per_100km": 39.77647058823529,
+          "burn_empty_l_per_100km": 29.4
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "fuel_type": "Diesel",
+          "official_price": 32.7989,
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
+          "official_stale": false,
+          "price": 32.7989,
+          "source": "official"
+        },
+        "litres": {
+          "loaded": 226.08945882352938,
+          "empty_return": 167.1096,
+          "total": 393.1990588235294
+        },
+        "lines": [
+          {
+            "key": "fuel",
+            "label": "Fuel",
+            "leg": "loaded",
+            "amount": 7415.49,
+            "basis": "568 km at 39,8 L/100km × R 32,80/L",
+            "litres": 226.08945882352938,
+            "burn_l_per_100km": 39.77647058823529,
+            "price_per_litre": 32.7989,
+            "km": 568.4
+          },
+          {
+            "key": "operating",
+            "label": "Operating costs",
+            "leg": "loaded",
+            "amount": 9094.4,
+            "basis": "568 km × R 16,00/km",
+            "rate_per_km": 16.0,
+            "km": 568.4,
+            "source": "vehicle_default"
+          },
+          {
+            "key": "tolls",
+            "label": "Tolls",
+            "leg": "loaded",
+            "amount": 1043.48,
+            "basis": "R 1 043,48 one way",
+            "one_way": 1043.48,
+            "legs": 1
+          },
+          {
+            "key": "driver",
+            "label": "Driver nights out",
+            "leg": "loaded",
+            "amount": 1350.0,
+            "basis": "3 nights × R 450,00",
+            "nights": 3,
+            "suggested_nights": 0,
+            "rate_per_night": 450.0,
+            "suggested": 1350.0,
+            "source": "suggested"
+          },
+          {
+            "key": "fuel_return",
+            "label": "Fuel, empty return",
+            "leg": "empty_return",
+            "amount": 5481.01,
+            "basis": "568 km empty at 29,4 L/100km × R 32,80/L",
+            "litres": 167.1096,
+            "burn_l_per_100km": 29.4,
+            "price_per_litre": 32.7989,
+            "km": 568.4
+          },
+          {
+            "key": "operating_return",
+            "label": "Operating costs, empty return",
+            "leg": "empty_return",
+            "amount": 9094.4,
+            "basis": "568 km × R 16,00/km",
+            "rate_per_km": 16.0,
+            "km": 568.4,
+            "source": "vehicle_default"
+          },
+          {
+            "key": "tolls_return",
+            "label": "Tolls, empty return",
+            "leg": "empty_return",
+            "amount": 812.61,
+            "basis": "R 812,61 home empty",
+            "one_way": 812.61
+          },
+          {
+            "key": "driver_return",
+            "label": "Driver nights, empty return",
+            "leg": "empty_return",
+            "amount": 450.0,
+            "basis": "1 extra night × R 450,00",
+            "nights": 1,
+            "rate_per_night": 450.0
+          }
+        ],
+        "floor": 34741.39,
+        "floor_known": 34741.39,
+        "floor_complete": true,
+        "target_margin_pct": 10.0,
+        "target_price": 38601.54,
+        "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": 38700.0,
+        "alternative_with_return_load": {
+          "floor": 18903.37,
+          "target_price": 21003.74,
+          "default_price": 21100.0
+        },
+        "price": 31500.0,
+        "margin": -3241.39,
+        "margin_pct": -10.290126984126982,
+        "warnings": [
+          {
+            "code": "below_floor",
+            "severity": "warn",
+            "title": "Price is below your costs",
+            "detail": "This trip loses R 3 241.",
+            "impact_zar": -3241.39,
+            "actions": []
+          }
+        ],
+        "blocking": [],
+        "can_send": true
+      }
+    },
+    {
+      "name": "driver_amount_wins_over_nights",
+      "description": "Applied nights AND a typed driver amount: the typed amount wins.",
+      "inputs": {
+        "trip_type": "ONE_WAY",
+        "distance_km": 568.4,
+        "distance_estimated": false,
+        "distance_confirmed": false,
+        "duration_minutes": 440,
+        "load_kg": 28000,
+        "vehicle": {
+          "id": 11,
+          "name": "Superlink",
+          "capacity": 34,
+          "rated_burn_l_per_100km": 42
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "official_price": 32.7989,
+          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_stale": false,
+          "use_official": false,
+          "override_price": null
+        },
+        "operating_cost_per_km": 16.0,
+        "operating_cost_source": "vehicle_default",
+        "tolls": {
+          "one_way": 1043.48,
+          "empty_return": 812.61,
+          "lookup_failed": false,
+          "confirmed_none": false
+        },
+        "driver": {
+          "allowance_per_night": 450.0,
+          "nights": 3,
+          "amount": 1000.0
+        },
+        "hours_per_day": 9.0,
+        "border_cost": 0.0,
+        "international": false,
+        "include_empty_return": false,
+        "settings": {
+          "include_empty_return_default": true,
+          "empty_return_min_km": 300.0
+        },
+        "minimum_charge": null,
+        "default_price_per_km": null,
+        "target_margin_pct": 10.0,
+        "price": 31500.0
+      },
+      "expected": {
+        "version": "qc-1",
+        "trip": {
+          "type": "ONE_WAY",
+          "legs_loaded": 1,
+          "distance_km": 568.4,
+          "empty_return_included": false,
+          "empty_return_default": true,
+          "km_loaded": 568.4,
+          "km_empty": 0.0,
+          "km_driven": 568.4,
+          "hours_one_way": 7.333333333333333,
+          "return_nights": null
+        },
+        "vehicle": {
+          "id": 11,
+          "name": "Superlink",
+          "capacity_t": 34.0,
+          "load_t": 28.0,
+          "load_ratio": 0.8235294117647058,
+          "rated_burn_l_per_100km": 42.0,
+          "burn_loaded_l_per_100km": 39.77647058823529,
+          "burn_empty_l_per_100km": 29.4
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "fuel_type": "Diesel",
+          "official_price": 32.7989,
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
+          "official_stale": false,
+          "price": 32.7989,
+          "source": "official"
+        },
+        "litres": {
+          "loaded": 226.08945882352938,
+          "empty_return": 0.0,
+          "total": 226.08945882352938
+        },
+        "lines": [
+          {
+            "key": "fuel",
+            "label": "Fuel",
+            "leg": "loaded",
+            "amount": 7415.49,
+            "basis": "568 km at 39,8 L/100km × R 32,80/L",
+            "litres": 226.08945882352938,
+            "burn_l_per_100km": 39.77647058823529,
+            "price_per_litre": 32.7989,
+            "km": 568.4
+          },
+          {
+            "key": "operating",
+            "label": "Operating costs",
+            "leg": "loaded",
+            "amount": 9094.4,
+            "basis": "568 km × R 16,00/km",
+            "rate_per_km": 16.0,
+            "km": 568.4,
+            "source": "vehicle_default"
+          },
+          {
+            "key": "tolls",
+            "label": "Tolls",
+            "leg": "loaded",
+            "amount": 1043.48,
+            "basis": "R 1 043,48 one way",
+            "one_way": 1043.48,
+            "legs": 1
+          },
+          {
+            "key": "driver",
+            "label": "Driver nights out",
+            "leg": "loaded",
+            "amount": 1000.0,
+            "basis": "Your figure",
+            "nights": 3,
+            "suggested_nights": 0,
+            "rate_per_night": 450.0,
+            "suggested": 1350.0,
+            "source": "user"
+          }
+        ],
+        "floor": 18553.37,
+        "floor_known": 18553.37,
+        "floor_complete": true,
+        "target_margin_pct": 10.0,
+        "target_price": 20614.86,
+        "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": 20700.0,
+        "alternative_with_return_load": null,
+        "price": 31500.0,
+        "margin": 12946.63,
+        "margin_pct": 41.100412698412704,
+        "warnings": [],
+        "blocking": [],
+        "can_send": true
+      }
     }
   ],
   "reopen_rules": "What changed since a saved quote was priced, for the reopen notice.\n\n  delta_zar      = cents(floor_now − floor_then)\n  margin_then    = (price − floor_then) / price × 100   (unrounded)\n  margin_now     = (price − floor_now) / price × 100\n  repriced_price_keep_margin = cents(floor_now / (1 − margin_then / 100))\n                   (\"Re-price (keeps margin)\"; null when margin_then >= 100)\n  changed        = |delta_zar| >= 1\nAny unknown input -> the figures that need it are null.",

@@ -10,7 +10,7 @@ detection is uncertain/unavailable (existing default behavior applies)."""
 from unittest import mock
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from core.models import Company
@@ -46,7 +46,9 @@ class DetectTextLanguageTests(TestCase):
     @mock.patch('core.services.language_detect.detect_langs')
     def test_confident_result_returned(self, mock_detect):
         mock_detect.return_value = [self._candidate('af', 0.999)]
-        text = 'x' * 25  # past the minimum-length guard
+        # Afrikaans now also needs its own words in the text (short English
+        # with SA place names was misread as 'af'), so use a real sentence.
+        text = 'twintig ton staal van Kaapstad na Durban'
         self.assertEqual(ld.detect_text_language(text), 'af')
 
     @mock.patch('core.services.language_detect.detect_langs')
@@ -86,13 +88,15 @@ class TranslateTemplateTests(TestCase):
     def test_translates_and_caches(self, _provider, mock_generate):
         from django.core.cache import cache
         cache.clear()
+        # Afrikaans comes from the local table (no paid call), so the paid
+        # path is exercised with another language.
         text = 'Hello there, unique-marker-1'
-        result = ld.translate_template(text, 'af')
+        result = ld.translate_template(text, 'de')
         self.assertEqual(result, 'Hallo daar')
         self.assertEqual(mock_generate.call_count, 1)
 
         # Second call for the exact same (text, lang) hits the cache, not the LLM again.
-        result2 = ld.translate_template(text, 'af')
+        result2 = ld.translate_template(text, 'de')
         self.assertEqual(result2, 'Hallo daar')
         self.assertEqual(mock_generate.call_count, 1)
 
@@ -100,7 +104,19 @@ class TranslateTemplateTests(TestCase):
     @mock.patch('core.services.agent._provider', return_value='openai')
     def test_llm_failure_falls_back_to_english(self, _provider, _generate):
         text = 'Hello there, unique-marker-2'
-        self.assertEqual(ld.translate_template(text, 'af'), text)
+        self.assertEqual(ld.translate_template(text, 'de'), text)
+
+    @mock.patch('core.services.agent._llm_generate')
+    @mock.patch('core.services.agent._provider', return_value='openai')
+    def test_afrikaans_fixed_replies_never_call_the_llm(self, _provider, mock_generate):
+        from core.views_ai_quote import AIChatQuoteView as V
+        self.assertTrue(ld.translate_template(V.INTRO_REPLY, 'af').startswith('Hallo! Ek is die TruckWys'))
+        self.assertIn('Ek het nog die aflaaiplek, tipe goedere en gewig nodig',
+                      V._fallback_reply({'pickup_location': 'Durban'}, 'af'))
+        self.assertEqual(ld.translate_template("What's their email address?", 'af'), 'Wat is hul e-posadres?')
+        self.assertEqual(ld.translate_template("Add 'Acme' as a new client with email a@b.co? (yes/no)", 'af'),
+                         "Voeg 'Acme' by as 'n nuwe kliënt met e-pos a@b.co? (ja/nee)")
+        mock_generate.assert_not_called()
 
 
 class SystemPromptLanguageDirectiveTests(TestCase):
@@ -126,6 +142,9 @@ class SystemPromptLanguageDirectiveTests(TestCase):
             self.assertIn(f"'{code}'", prompt)
 
 
+# These tests are about what reaches the LLM, so the rules-first cost guard
+# (which skips the model for fully-explained messages) is switched off.
+@override_settings(QUOTE_NL_SKIP_LLM_WHEN_RULES_SUFFICE=False)
 @mock.patch('core.services.llm_quote.is_enabled', return_value=True)
 class ChatQuoteDetectedLanguagePlumbingTests(TestCase):
     """End-to-end through AIChatQuoteView: confirms detected_language from the

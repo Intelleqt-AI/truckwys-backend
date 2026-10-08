@@ -8,10 +8,11 @@ endpoint built its candidate list from every VehicleType visible to the
 tenant, without the same "must have >=1 AVAILABLE vehicle" filter the
 dropdown applies (core/services/vehicle_types.py, views_ai_quote.py,
 llm_quote.py)."""
+import itertools
 from unittest import mock
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from core.models import Company, Vehicle, VehicleType
@@ -22,10 +23,15 @@ from core.services.vehicle_types import available_vehicle_types, capacity_tonnes
 User = get_user_model()
 
 
+_plates = itertools.count(1)
+
+
 def _vehicle(company, vehicle_type, type_name, status='AVAILABLE', vin=None):
+    # Plates are unique per company (vehicles.company_id + plate), so each
+    # test vehicle gets its own.
     return Vehicle.objects.create(
         company=company, vin=vin or f'VIN-{type_name}-{status}-{vehicle_type_id(vehicle_type)}',
-        plate='ABC123GP', vehicle_type=vehicle_type, make='Merc', model='Actros', year=2020,
+        plate=f'ABC{next(_plates):03d}GP', vehicle_type=vehicle_type, make='Merc', model='Actros', year=2020,
         type=type_name, capacity=vehicle_type.capacity if vehicle_type else 10000,
         fuel_type='Diesel', status=status,
     )
@@ -196,6 +202,9 @@ class KnownWeightKgTests(TestCase):
         self.assertIsNone(_known_weight_kg(None, {}))
 
 
+# These tests are about what reaches the LLM, so the rules-first cost guard
+# (which skips the model for fully-explained messages) is switched off.
+@override_settings(QUOTE_NL_SKIP_LLM_WHEN_RULES_SUFFICE=False)
 @mock.patch('core.services.llm_quote.is_enabled', return_value=True)
 class ChatQuoteCandidateListTests(TestCase):
     """AIChatQuoteView — the candidate list handed to the LLM must equal the
