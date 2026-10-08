@@ -164,10 +164,42 @@ def costing_for_load(load, now=None):
     return out
 
 
+# What the UI asks for when a job can't be costed (block codes of compute()
+# plus no_vehicle for a job with no truck). One short prompt each.
+MISSING_PROMPTS = {
+    'no_vehicle': 'Add the truck to cost this job',
+    'distance_missing': 'Add the route distance to cost this job',
+    'distance_estimated': 'Confirm the distance to cost this job',
+    'tolls_unknown': 'Add the tolls (or confirm none) to cost this job',
+    'driver_nights_unknown': 'Add the driving time or driver cost to cost this job',
+    'diesel_missing': 'Set a fuel price to cost this job',
+    'truck_burn_missing': "Set the truck's fuel use to cost this job",
+    'border_costs_missing': 'Add the border costs to cost this job',
+    'overload': 'Choose a truck that carries this load',
+}
+
+
+def missing_inputs(load):
+    """[{code, prompt}] for a job whose costing is unknown / incomplete."""
+    snap = load.costing_snapshot or {}
+    codes = list(snap.get('missing') or snap.get('blocking') or [])
+    if load.costing_source == 'unknown' and not codes:
+        codes = ['no_vehicle']
+    if snap.get('lines') and any(ln.get('amount') is None for ln in snap['lines']) and not codes:
+        codes = ['costing_incomplete']
+    seen, out = set(), []
+    for c in codes:
+        if c in seen:
+            continue
+        seen.add(c)
+        out.append({'code': c, 'prompt': MISSING_PROMPTS.get(c, 'Complete the costing inputs for this job')})
+    return out
+
+
 def computed_fields(costing, now):
     if costing is None:
-        return {'costing_source': 'unknown', 'costing_snapshot': {}, 'cost_floor': None,
-                'empty_return_assumed': None, 'costed_at': now}
+        return {'costing_source': 'unknown', 'costing_snapshot': {'missing': ['no_vehicle'], 'lines': []},
+                'cost_floor': None, 'empty_return_assumed': None, 'costed_at': now}
     d = costing.get('diesel') or {}
     vehicle = costing.get('vehicle') or {}
     litres = (costing.get('litres') or {}).get('total')
@@ -215,6 +247,9 @@ def costing_summary(load):
         'empty_return_assumed': load.empty_return_assumed,
         'lines': snap.get('lines') or [],
         'blocking': snap.get('blocking') or [],
+        # Unknown / incomplete costing: exactly what to add ({code, prompt}).
+        'missing': missing_inputs(load) if load.costing_source in ('unknown',) or any(
+            ln.get('amount') is None for ln in (snap.get('lines') or [])) else [],
         'fuel': {'price_per_litre': float(load.fuel_price_used) if load.fuel_price_used is not None else None,
                  'source': load.fuel_price_source or None, 'zone': load.fuel_zone or None,
                  'litres': float(load.fuel_litres) if load.fuel_litres is not None else None},

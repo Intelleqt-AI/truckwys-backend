@@ -175,6 +175,16 @@ class TripSyncTenancyTests(_Tenants):
         self.assertEqual(Customer.objects.filter(email='b@cust.test').count(), 2)
 
 
+def signed_post(url, body, sub, ts=None, secret=None):
+    """POST signed with the timestamped scheme (X-Fleet-Timestamp)."""
+    import time
+    raw = json.dumps(body).encode()
+    ts = int(time.time()) if ts is None else ts
+    sig = 'sha256=' + hmac.new((secret or sub.secret).encode(), f'{ts}.'.encode() + raw, hashlib.sha256).hexdigest()
+    return APIClient().post(url, raw, content_type='application/json', HTTP_X_API_KEY=sub.api_key,
+                            HTTP_X_FLEET_SIGNATURE=sig, HTTP_X_FLEET_TIMESTAMP=str(ts))
+
+
 @override_settings(CTRLFLEET_WEBHOOK_KEY='')
 class FleetWebhookTenancyTests(_Tenants):
     def _signed(self, url, body, sub):
@@ -201,21 +211,20 @@ class FleetWebhookTenancyTests(_Tenants):
         sub = WebhookSubscription.objects.create(partner_name='Lender', webhook_url='https://l.example')
         r = self._signed('/api/v1/fleet/webhooks/trip-update/', {'load_number': 'TEN-A-1', 'event_type': 'x'}, sub)
         self.assertEqual(r.status_code, 403)
-        r = APIClient().post('/api/v1/fleet/webhooks/vehicle-event/', {'vehicle_id': self.vehicle_a.id,
-                             'status': 'BROKEN'}, format='json', HTTP_X_API_KEY=sub.api_key)
+        r = signed_post('/api/v1/fleet/webhooks/vehicle-event/', {'vehicle_id': self.vehicle_a.id,
+                        'status': 'BROKEN'}, sub)
         self.assertEqual(r.status_code, 403)
 
     def test_vehicle_and_driver_webhooks_scoped(self):
         sub = WebhookSubscription.objects.create(partner_name='Fleet A', webhook_url='https://a.example',
                                                  company=self.co_a)
-        r = APIClient().post('/api/v1/fleet/webhooks/vehicle-event/', {'vehicle_id': self.vehicle_b.id,
-                             'status': 'MAINTENANCE', 'event_type': 'breakdown'}, format='json',
-                             HTTP_X_API_KEY=sub.api_key)
+        r = signed_post('/api/v1/fleet/webhooks/vehicle-event/', {'vehicle_id': self.vehicle_b.id,
+                        'status': 'MAINTENANCE', 'event_type': 'breakdown'}, sub)
         self.assertEqual(r.status_code, 404)
         self.vehicle_b.refresh_from_db()
         self.assertEqual(self.vehicle_b.status, 'AVAILABLE')
-        r = APIClient().post('/api/v1/fleet/webhooks/driver-event/', {'driver_id': self.driver_b.id,
-                             'violation_count': 9}, format='json', HTTP_X_API_KEY=sub.api_key)
+        r = signed_post('/api/v1/fleet/webhooks/driver-event/', {'driver_id': self.driver_b.id,
+                        'violation_count': 9}, sub)
         self.assertEqual(r.status_code, 404)
 
     def test_outbound_fleet_sync_scoped_to_user_company(self):
@@ -262,3 +271,64 @@ class CtrlFleetWebhookTenancyTests(_Tenants):
         self.assertEqual(r.status_code, 400)
         self.vehicle_b.refresh_from_db()
         self.assertEqual(self.vehicle_b.status, 'AVAILABLE')
+
+
+@override_settings(CTRLFLEET_WEBHOOK_KEY='')
+class FleetWebhookSignatureTests(_Tenants):
+    URLS = ('/api/v1/fleet/webhooks/vehicle-event/', '/api/v1/fleet/webhooks/driver-event/')
+
+    def setUp(self):
+        self.sub = WebhookSubscription.objects.create(partner_name='Fleet A', webhook_url='https://a.example',
+                                                      company=self.co_a)
+
+    def test_unsigned_wrong_secret_and_stale_are_refused(self):
+        import time
+        for url in self.URLS:
+            body = {'vehicle_id': self.vehicle_a.id, 'status': 'MAINTENANCE'}
+            self.assertEqual(APIClient().post(url, body, format='json', HTTP_X_API_KEY=self.sub.api_key)
+                             .status_code, 401)
+            self.assertEqual(signed_post(url, body, self.sub, secret='wrong').status_code, 401)
+            self.assertEqual(signed_post(url, body, self.sub, ts=int(time.time()) - 3600).status_code, 401)
+        self.vehicle_a.refresh_from_db()
+        self.assertEqual(self.vehicle_a.status, 'AVAILABLE')
+
+    def test_valid_signature_once_replay_refused(self):
+        import time
+        ts = int(time.time())
+        body = {'vehicle_id': self.vehicle_a.id, 'status': 'MAINTENANCE', 'event_type': 'maintenance'}
+        ok = signed_post(self.URLS[0], body, self.sub, ts=ts)
+        self.assertEqual(ok.status_code, 200, ok.content)
+        self.vehicle_a.refresh_from_db()
+        self.assertEqual(self.vehicle_a.status, 'MAINTENANCE')
+        replay = signed_post(self.URLS[0], body, self.sub, ts=ts)
+        self.assertEqual(replay.status_code, 401)
+        self.assertIn('already used', replay.json()['error'])
+
+    def test_trip_update_accepts_timestamped_scheme(self):
+        r = signed_post('/api/v1/fleet/webhooks/trip-update/', {'load_number': 'TEN-A-1', 'event_type': 'gps_update'},
+                        self.sub)
+        self.assertEqual(r.status_code, 200, r.content)
+
+
+class BindWebhookSubscriptionsCommandTests(_Tenants):
+    def _run(self, *args):
+        from io import StringIO
+        from django.core.management import call_command
+        out = StringIO()
+        call_command('bind_webhook_subscriptions', *args, stdout=out)
+        return out.getvalue()
+
+    def test_dry_run_then_apply_binds_only_unambiguous(self):
+        by_key = WebhookSubscription.objects.create(partner_name='key KEY-A', webhook_url='https://k.example')
+        by_name = WebhookSubscription.objects.create(partner_name='tenancy b', webhook_url='https://b.example')
+        lost = WebhookSubscription.objects.create(partner_name='Nobody', webhook_url='https://n.example')
+        out = self._run()
+        self.assertIn('WOULD BIND', out)
+        self.assertIn('UNRESOLVED #%d' % lost.pk, out)
+        self.assertFalse(WebhookSubscription.objects.filter(company__isnull=False).exists())
+        self._run('--apply')
+        by_key.refresh_from_db(); by_name.refresh_from_db(); lost.refresh_from_db()
+        self.assertEqual((by_key.company_id, by_name.company_id, lost.company_id), (self.co_a.id, self.co_b.id, None))
+        self._run('--bind', f'{lost.pk}={self.co_a.pk}', '--apply')
+        lost.refresh_from_db()
+        self.assertEqual(lost.company_id, self.co_a.id)

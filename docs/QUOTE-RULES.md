@@ -412,3 +412,10 @@ Accurate job margins when a return load is added after a quote, and TMS sync tha
   takes `return_of_load_id` / `expect_return`, and adds `booking` {return_link, return / outbound candidates,
   invoice_preview, costing, economics}. `invoicing.invoice_lines_for_load` is the single source of the delivery
   invoice's lines (hook for per-tonne / weighbridge billing); the preview equals what delivery raises.
+- **Follow-ups (8 Oct, coordinator):** pairs only in v1; triangular routes (A→B, B→C, C→A) are future work. A job
+  whose costing is `unknown` / incomplete has NO estimate (no silent 1,3× fallback) and every economics / costing
+  response carries `missing: [{code, prompt}]`, e.g. `{code: "no_vehicle", prompt: "Add the truck to cost this
+  job"}` (codes: no_vehicle, distance_missing, distance_estimated, tolls_unknown, driver_nights_unknown,
+  diesel_missing, truck_burn_missing, border_costs_missing, overload). Quote detail (`GET /quotes/{id}/`) adds
+  read-only `actuals` {actual_margin_pct, backhaul_found, actual_revenue, actual_cost, actual_cost_basis,
+  recorded_at} or null. Fleet vehicle/driver webhooks require the timestamped HMAC (see the deploy doc).

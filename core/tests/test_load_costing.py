@@ -114,3 +114,21 @@ class ComputedCostingTests(_Base):
         load = Load.objects.get(load_number='C-2')
         self.assertEqual(load.costing_source, 'computed')
         self.assertEqual(load.costing_inputs['vehicle_type_id'], self.vt.id)
+
+
+class MissingPromptTests(_Base):
+    def test_unknown_job_says_what_to_add_and_has_no_fallback_estimate(self):
+        from core.services import trip_economics as te
+        load = make_load(self.company, self.customer, 'LC-M1', costing_inputs={'toll_cost': 800})
+        cost_load(load)
+        est = te.estimate(load)
+        self.assertEqual((est['basis'], est['estimated_cost']), ('unknown', None))
+        self.assertEqual(est['missing'], [{'code': 'no_vehicle', 'prompt': 'Add the truck to cost this job'}])
+        body = self.api.get(f'/api/v1/loads/{load.id}/economics/').json()
+        self.assertEqual(body['legs'][0]['missing'][0]['prompt'], 'Add the truck to cost this job')
+        self.assertEqual(body['costing']['missing'][0]['code'], 'no_vehicle')
+        load2 = make_load(self.company, self.customer, 'LC-M2', vehicle=self.vehicle,
+                          costing_inputs={'duration_minutes': 600})
+        cost_load(load2)
+        codes = [m['code'] for m in te.estimate(load2)['missing']]
+        self.assertIn('tolls_unknown', codes)

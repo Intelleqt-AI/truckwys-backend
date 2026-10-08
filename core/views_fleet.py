@@ -35,6 +35,52 @@ def _subscription_company(request):
     return getattr(sub, 'company', None)
 
 
+SIGNATURE_WINDOW_SECONDS = 300
+
+
+def verify_fleet_signature(request, *, allow_legacy=False):
+    """HMAC check for fleet webhooks, with the subscription's own secret.
+
+    Scheme (required on vehicle/driver events, preferred everywhere):
+      X-Fleet-Timestamp: <unix seconds>
+      X-Fleet-Signature: sha256=hex(HMAC_SHA256(secret, "<timestamp>." + raw body))
+    The timestamp must be within 5 minutes of now, and each signature is
+    accepted once (replays inside the window are refused).
+    allow_legacy: the trip-update webhook still accepts the old body-only
+    signature (no timestamp) for existing integrations.
+    Returns (ok, reason)."""
+    import time
+    from django.core.cache import cache
+    sub = getattr(request, 'auth', None)
+    signature = request.META.get('HTTP_X_FLEET_SIGNATURE') or ''
+    if sub is None or not getattr(sub, 'secret', None) or not signature:
+        return False, 'Missing signature'
+    ts = request.META.get('HTTP_X_FLEET_TIMESTAMP')
+    if not ts:
+        if not allow_legacy:
+            return False, 'Missing X-Fleet-Timestamp'
+        expected = 'sha256=' + hmac.new(sub.secret.encode(), request.body, hashlib.sha256).hexdigest()
+        return (hmac.compare_digest(signature, expected), 'Invalid signature')
+    try:
+        ts_int = int(ts)
+    except (TypeError, ValueError):
+        return False, 'Invalid X-Fleet-Timestamp'
+    if abs(time.time() - ts_int) > SIGNATURE_WINDOW_SECONDS:
+        return False, 'Signature expired'
+    expected = 'sha256=' + hmac.new(sub.secret.encode(), f'{ts_int}.'.encode() + request.body,
+                                    hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        return False, 'Invalid signature'
+    replay_key = f'fleet-sig:{sub.pk}:{hashlib.sha256(signature.encode()).hexdigest()}'
+    if not cache.add(replay_key, 1, timeout=SIGNATURE_WINDOW_SECONDS * 2):
+        return False, 'Signature already used'
+    return True, None
+
+
+def _signature_refusal(reason):
+    return Response({'error': reason}, status=status.HTTP_401_UNAUTHORIZED)
+
+
 def _no_company_response():
     return Response({'error': 'This API key is not linked to a company.'},
                     status=status.HTTP_403_FORBIDDEN)
@@ -301,23 +347,9 @@ class FleetWebhookTripUpdateView(APIView):
     permission_classes = []  # Authentication is via API key
 
     def _verify_signature(self, request):
-        """Verify webhook signature from fleet system."""
-        signature = request.META.get('HTTP_X_FLEET_SIGNATURE')
-        if not signature:
-            return False
-
-        # Get the subscription/API key from request.auth (set by APIKeyAuthentication)
-        if not hasattr(request, 'auth') or not request.auth:
-            return False
-
-        subscription = request.auth
-        expected_signature = 'sha256=' + hmac.new(
-            subscription.secret.encode(),
-            request.body,
-            hashlib.sha256
-        ).hexdigest()
-
-        return hmac.compare_digest(signature, expected_signature)
+        """Verify webhook signature from fleet system (timestamped scheme, or
+        the legacy body-only one for existing integrations)."""
+        return verify_fleet_signature(request, allow_legacy=True)[0]
 
     @extend_schema(
         tags=['Fleet Management'],
@@ -490,6 +522,9 @@ class FleetWebhookVehicleEventView(APIView):
     )
     def post(self, request):
         """Process vehicle event webhook."""
+        ok, reason = verify_fleet_signature(request)
+        if not ok:
+            return _signature_refusal(reason)
         company = _subscription_company(request)
         if company is None:
             return _no_company_response()
@@ -592,6 +627,9 @@ class FleetWebhookDriverEventView(APIView):
     )
     def post(self, request):
         """Process driver event webhook."""
+        ok, reason = verify_fleet_signature(request)
+        if not ok:
+            return _signature_refusal(reason)
         company = _subscription_company(request)
         if company is None:
             return _no_company_response()

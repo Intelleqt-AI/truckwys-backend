@@ -157,7 +157,7 @@ empty values back to 10.00 first.
 ### Migrations (all reversible; checked forward + back on PostgreSQL 8091 scratch and a SQLite copy)
 | # | What | Notes |
 |---|------|-------|
-| 0158 | `WebhookSubscription.company` (nullable FK) | Fleet webhooks refuse a subscription without one (403). Bind fleet subscriptions to their transporter in Django admin BEFORE deploy, or their webhooks stop. |
+| 0158 | `WebhookSubscription.company` (nullable FK) | Fleet webhooks refuse a subscription without one (403). Right after migrate run `python manage.py bind_webhook_subscriptions` (dry run: lists every unbound subscription and the company it would get), then `--apply`. It binds only when exactly one company fits (an IntegrationAPIKey with the same name as partner_name whose operators share one company, else exactly one company with that name); bind the rest in Django admin or with `--bind SUB_ID=COMPANY_ID --apply`. |
 | 0159 | Load costing fields + back-fill from each converted load's quote snapshot | Adds columns with defaults (fast on PG 11+), then a batched data update (500 rows). |
 | 0160 | `Load.return_of` (one-to-one self), link source / time / user, `expecting_return` | Unique index on `return_of_id`. |
 | 0161 | Cached `estimated_cost` / `estimate_basis` / `economics_updated_at` | Fill with `python manage.py recompute_trip_economics` after migrate (idempotent, safe to re-run). |
@@ -207,3 +207,24 @@ load_number, external_id, created, changed, return_link?, invoice_mismatch?}` (b
 Invoices are never changed by a sync: a total that differs from the load's invoice (excl. VAT, net of credit
 notes) sets `load.invoice_mismatch` `{code: "invoice_differs_from_rate", invoice_id, invoice_number,
 invoice_status, invoice_excl_vat, load_total_excl_vat, difference, title, detail}` until they match again.
+
+### Fleet webhook signatures (vehicle / driver events now REQUIRE them)
+`/fleet/webhooks/vehicle-event/` and `/fleet/webhooks/driver-event/` now verify an HMAC with the subscription's own
+`secret` (it never had one before: the API key alone was enough):
+```
+X-API-Key: <subscription api_key>
+X-Fleet-Timestamp: 1791446400                       # unix seconds, within 5 minutes of now
+X-Fleet-Signature: sha256=<hex HMAC-SHA256(secret, "1791446400." + raw request body)>
+```
+Each signature is accepted once (a replay inside the window gets 401 "Signature already used"). The trip-update
+webhook accepts the same scheme and, for existing integrations, still the old body-only signature (no timestamp).
+Partners sending vehicle/driver events must add the timestamp + signature before this deploy.
+
+### CtrlFleet webhook (accepted change)
+`/fleet/webhooks/ctrlfleet/` callers must send their company's `X-API-Key` (IntegrationAPIKey) in addition to
+`X-CtrlFleet-Key` when `CTRLFLEET_WEBHOOK_KEY` is set. The shared key alone names no company and is refused (401).
+CtrlFleet's documented API is pull-only, so no live caller is expected.
+
+### Behaviour change
+`POST /quotes/{id}/convert_to_load/` on an already-converted quote now answers 200 with the existing job (was 400
+"Quote already converted").

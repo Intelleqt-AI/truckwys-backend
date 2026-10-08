@@ -2808,6 +2808,24 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
     pagination_class = QuoteResultsPagination
     billing_blocked_message = 'Update your payment method to continue quoting.'
 
+    def retrieve(self, request, *args, **kwargs):
+        """Quote detail + `actuals`: what the job really earned once delivered
+        (QuoteOutcome, trip economics). Read-only; null until recorded."""
+        response = super().retrieve(request, *args, **kwargs)
+        if isinstance(response.data, dict):
+            from core.models import QuoteOutcome
+            o = (QuoteOutcome.objects.filter(quote_id=response.data.get('id'), outcome='accepted')
+                 .exclude(actuals_recorded_at__isnull=True).first())
+            response.data['actuals'] = None if o is None else {
+                'actual_margin_pct': float(o.actual_margin_pct) if o.actual_margin_pct is not None else None,
+                'backhaul_found': o.backhaul_found,
+                'actual_revenue': float(o.actual_revenue) if o.actual_revenue is not None else None,
+                'actual_cost': float(o.actual_cost) if o.actual_cost is not None else None,
+                'actual_cost_basis': o.actual_cost_basis or None,
+                'recorded_at': o.actuals_recorded_at.isoformat(),
+            }
+        return response
+
     def list(self, request, *args, **kwargs):
         # Adds `total_amount` — the sum over every quote matching the
         # current filters (status/search), not just the current page — so

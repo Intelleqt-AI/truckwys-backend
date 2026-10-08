@@ -122,3 +122,17 @@ class LaneShareTests(TestCase):
                          'On this lane 60% of your trips found a return load (3 of 5).')
         self.assertTrue(out['cost_floor']['include_return'])
         self.assertEqual(out['alternative_with_return_load']['return_load_history']['found'], 3)
+
+
+class QuoteDetailActualsTests(ActualsTests):
+    def test_quote_detail_exposes_actuals_read_only(self):
+        r = self.api.get(f'/api/v1/quotes/{self.q.id}/').json()
+        self.assertIsNone(r['actuals'])
+        with self.captureOnCommitCallbacks(execute=True):
+            self.load.status = 'DELIVERED'
+            self.load.save()
+        r = self.api.get(f'/api/v1/quotes/{self.q.id}/').json()
+        self.assertIs(r['actuals']['backhaul_found'], False)
+        self.assertIsNotNone(r['actuals']['actual_margin_pct'])
+        self.api.patch(f'/api/v1/quotes/{self.q.id}/', {'actuals': {'backhaul_found': True}}, format='json')
+        self.assertIs(QuoteOutcome.objects.get(quote=self.q).backhaul_found, False)

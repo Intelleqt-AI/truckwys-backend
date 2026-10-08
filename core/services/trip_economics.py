@@ -84,6 +84,12 @@ def _legacy_estimate(load, paired):
         return None
 
 
+def _legacy_missing(load):
+    from core.services.trip_costing import MISSING_PROMPTS
+    code = 'distance_missing' if not load.distance or float(load.distance) <= 0 else 'diesel_missing'
+    return [{'code': code, 'prompt': MISSING_PROMPTS[code]}]
+
+
 def estimate(load, paired=None):
     """{estimated_cost, basis, label, lines, removed_lines, empty_return_removed}."""
     if paired is None:
@@ -98,12 +104,24 @@ def estimate(load, paired=None):
             cost = _q(sum(Decimal(str(ln['amount'])) for ln in kept))
             basis = 'snapshot_return_linked' if paired else 'snapshot'
         saved = sum((Decimal(str(ln['amount'])) for ln in removed if ln.get('amount') is not None), ZERO)
+        missing = []
+        if cost is None:
+            from core.services.trip_costing import missing_inputs
+            missing = missing_inputs(load)
         return {'estimated_cost': cost, 'basis': basis, 'label': BASIS_LABELS[basis], 'lines': kept,
-                'removed_lines': removed, 'empty_return_removed': _q(saved) if removed else ZERO}
+                'removed_lines': removed, 'empty_return_removed': _q(saved) if removed else ZERO,
+                'missing': missing}
+    if load.costing_source == 'unknown':
+        # Costed and found incomplete (e.g. a TMS job with no truck): no
+        # silent fallback to the standard model; say what's missing.
+        from core.services.trip_costing import missing_inputs
+        return {'estimated_cost': None, 'basis': 'unknown', 'label': BASIS_LABELS['unknown'], 'lines': [],
+                'removed_lines': [], 'empty_return_removed': ZERO, 'missing': missing_inputs(load)}
     cost = _legacy_estimate(load, paired)
     basis = ('legacy_paired' if paired else 'legacy_deadhead') if cost is not None else 'unknown'
     return {'estimated_cost': _q(cost) if cost is not None else None, 'basis': basis,
-            'label': BASIS_LABELS[basis], 'lines': [], 'removed_lines': [], 'empty_return_removed': ZERO}
+            'label': BASIS_LABELS[basis], 'lines': [], 'removed_lines': [], 'empty_return_removed': ZERO,
+            'missing': [] if cost is not None else _legacy_missing(load)}
 
 
 def _paired_ids(loads):
@@ -180,6 +198,8 @@ def leg(load, row, role):
         'estimate_lines': est['lines'],
         'empty_return_removed': _f(est['empty_return_removed']),
         'removed_lines': est['removed_lines'],
+        # Why there's no estimate, as prompts the UI can show / act on.
+        'missing': est.get('missing') or [],
         'costing_source': load.costing_source or 'legacy',
     }
 
