@@ -163,6 +163,10 @@ def translate_template(text: str, target_lang: Optional[str]) -> str:
     messages) must keep working in English rather than ever raise or block."""
     if not text or not target_lang or target_lang == "en":
         return text
+    if target_lang == "af":
+        # Afrikaans is spoken natively: every fixed reply comes from the local
+        # table below — never a paid translation call.
+        return afrikaans_template(text)
 
     key = _cache_key(text, target_lang)
     cached = cache.get(key)
@@ -197,3 +201,87 @@ def language_label(code: Optional[str]) -> Optional[str]:
     if not code:
         return None
     return _LABELS.get(code) or (_WHISPER_CODE_TO_NAME.get(code) or "").title() or None
+
+
+
+# English reply templates (views_ai_quote, quote_entity_chat, llm_quote) ->
+# Afrikaans. Applied in order; {…} parts are carried over unchanged.
+_AF_LABELS = {"customer": "kliënt", "vehicle type": "voertuigtipe", "client": "kliënt"}
+_AF_MISSING = {"pickup location": "oplaaiplek", "delivery location": "aflaaiplek", "cargo type": "tipe goedere",
+               "weight": "gewig"}
+
+
+def _af_label(s: str) -> str:
+    return _AF_LABELS.get(s.strip().lower(), s)
+
+
+def _af_list(s: str) -> str:
+    parts = [p.strip() for p in s.replace(" and ", ", ").split(",") if p.strip()]
+    parts = [_AF_MISSING.get(p, p) for p in parts]
+    return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " en " + parts[-1]
+
+
+_AF_PATTERNS = [
+    (r"Hi! I'm the TruckWys quoting assistant — describe a load in plain English \(pickup, delivery, cargo and "
+     r"weight\) and I'll turn it into a freight quote\.",
+     "Hallo! Ek is die TruckWys-kwotasie-assistent — beskryf 'n vrag in gewone taal (oplaai, aflaai, goedere en "
+     "gewig) en ek maak 'n vragkwotasie daarvan."),
+    (r"I turn a plain-English load description into a freight quote — give me the pickup, delivery, cargo and "
+     r"weight and I'll price it\.",
+     "Ek maak van 'n gewone beskrywing van 'n vrag 'n vragkwotasie — gee my die oplaai- en aflaaiplek, goedere en "
+     "gewig en ek prys dit."),
+    (r"What trip would you like to quote\?", "Watter rit wil jy kwoteer?"),
+    (r"Happy to help!", "Met plesier!"),
+    (r"Got it — (.+?) from (.+?) to (.+?), (\d+) tons\. Ready to calculate your quote\.",
+     r"Reg so — \1 van \2 na \3, \4 ton. Gereed om jou kwotasie te bereken."),
+    (r"Almost there\. Just need the (.+?) to complete the quote\.",
+     lambda m: f"Amper klaar. Ek het net die {_af_list(m.group(1))} nodig om die kwotasie klaar te maak."),
+    (r"Thanks! I still need the (.+?) to build your quote\.",
+     lambda m: f"Dankie! Ek het nog die {_af_list(m.group(1))} nodig om jou kwotasie op te stel."),
+    (r"I had trouble understanding that\. Can you describe the load again\? For example: '20 tons of pallets from "
+     r"Johannesburg to Cape Town, flatbed\.'",
+     "Ek kon dit nie mooi verstaan nie. Beskryf asseblief die vrag weer, bv. '20 ton palette van Johannesburg na "
+     "Kaapstad, platbak.'"),
+    (r"There's no (customer|vehicle type|client) named '(.+?)' in your system, and your role doesn't allow adding "
+     r"one — ask an admin, or add it here\.",
+     lambda m: f"Daar is geen {_af_label(m.group(1))} met die naam '{m.group(2)}' in jou stelsel nie, en jou rol "
+               f"mag nie een byvoeg nie — vra 'n admin, of voeg dit hier by."),
+    (r"I couldn't find a (customer|vehicle type|client) named '(.+?)'\. Want me to add them\?",
+     lambda m: f"Ek kon nie 'n {_af_label(m.group(1))} met die naam '{m.group(2)}' vind nie. Moet ek dit byvoeg?"),
+    (r"\(Or add them manually here\.\)", "(Of voeg dit self hier by.)"),
+    (r"What's their email address\?", "Wat is hul e-posadres?"),
+    (r"What's its max load capacity, in kg\?", "Wat is die maksimum vragvermoë, in kg?"),
+    (r"What's its max distance per trip, in km\?", "Wat is die maksimum afstand per rit, in km?"),
+    (r"What's its base rate, in ZAR\?", "Wat is die basistarief, in rand?"),
+    (r"No problem — I'll leave the (customer|vehicle type|client) unset for now\.",
+     lambda m: f"Geen probleem — ek laat die {_af_label(m.group(1))} vir nou oop."),
+    (r"Got it — using the existing (customer|vehicle type|client) '(.+?)' instead\.",
+     lambda m: f"Reg so — ek gebruik eerder die bestaande {_af_label(m.group(1))} '{m.group(2)}'."),
+    (r"That doesn't look like a valid email\.", "Dit lyk nie na 'n geldige e-posadres nie."),
+    (r"I didn't catch a number there\.", "Ek het nie 'n getal gehoor nie."),
+    (r"Add '(.+?)' as a new client with email (.+?)\? \(yes/no\)",
+     r"Voeg '\1' by as 'n nuwe kliënt met e-pos \2? (ja/nee)"),
+    (r"Add '(.+?)' as a new vehicle type — capacity (.+?) kg, max distance (.+?) km, base rate R(.+?)\? \(yes/no\)",
+     r"Voeg '\1' by as 'n nuwe voertuigtipe — vermoë \2 kg, maksimum afstand \3 km, basistarief R\4? (ja/nee)"),
+    (r"Couldn't add that: (.+?) Try again, or say cancel\.",
+     r"Kon dit nie byvoeg nie: \1 Probeer weer, of sê kanselleer."),
+    (r"Added! (Customer|Vehicle Type|Client) '(.+?)' is set\.",
+     lambda m: f"Bygevoeg! {_af_label(m.group(1)).capitalize()} '{m.group(2)}' is ingestel."),
+    (r"(.+?) tops out at (.+?) t, so I've set (.+?) for this (.+?) t load\.",
+     r"\1 dra hoogstens \2 t, so ek het \3 gekies vir hierdie vrag van \4 t."),
+    (r"Nothing in your available fleet carries (.+?) t(?: — the largest is (.+?) at (.+?) t)?\. I've left the "
+     r"vehicle type unset\.",
+     lambda m: f"Niks in jou beskikbare vloot dra {m.group(1)} t nie"
+               + (f" — die grootste is {m.group(2)} met {m.group(3)} t" if m.group(2) else "")
+               + ". Ek het die voertuigtipe oopgelaat."),
+]
+
+
+def afrikaans_template(text: str) -> str:
+    """Afrikaans for this app's fixed English replies, from the local table.
+    Anything not in the table is returned unchanged (English)."""
+    import re
+    out = text
+    for pat, rep in _AF_PATTERNS:
+        out = re.sub(pat, rep, out)
+    return out

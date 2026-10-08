@@ -127,6 +127,7 @@ _PLACES: List[Tuple[str, str, Sequence[str]]] = [
     ("Maputo", "MZ", ["maputo", "lourenco marques"]),
     ("Beira", "MZ", ["beira"]),
     ("Harare", "ZW", ["harare"]),
+    ("Beitbridge", "ZW", ["beitbridge", "beit bridge"]),
     ("Bulawayo", "ZW", ["bulawayo"]),
     ("Lusaka", "ZM", ["lusaka"]),
     ("Ndola", "ZM", ["ndola"]),
@@ -182,8 +183,8 @@ def _border_posts() -> List[Tuple[str, Sequence[str]]]:
         aliases += [name] + _BORDER_EXTRA_ALIASES.get(name, [])
         aliases = [a for a in aliases if norm_phrase(a) not in _BORDER_SKIP_ALIASES]
         rows.append((name, aliases))
-    # outside SA's own borders, spoken often enough to matter
-    rows += [("Kazungula", ["kazungula"]), ("Chirundu", ["chirundu"]), ("Kasumbalesa", ["kasumbalesa"])]
+    # Only SA-neighbour posts (cross_border.BORDER_POSTS): border costing knows
+    # nothing else, so e.g. Kasumbalesa/Chirundu are never filled as a post.
     return rows
 
 
@@ -204,7 +205,8 @@ _CARGO: List[Tuple[str, Sequence[str]]] = [
     ("frozen goods", ["bevrore goedere", "frozen goods", "frozen food", "bevrore kos", "frozen"]),
     ("chilled goods", ["verkoelde goedere", "chilled goods", "chilled"]),
     ("cement", ["sement", "cement"]),
-    ("maize", ["mielies", "mielie", "mealies", "maize", "mielie meel", "mieliemeel", "mealie meal"]),
+    ("maize meal", ["mielie meel", "mieliemeel", "mealie meal", "maize meal", "mielie pap", "mieliepap"]),
+    ("maize", ["mielies", "mielie", "mealies", "maize"]),
     ("wheat", ["koring", "wheat"]),
     ("sunflower seed", ["sonneblomsaad", "sonneblom", "sunflower seed", "sunflowers", "sunflower"]),
     ("soya beans", ["sojabone", "soja", "soya beans", "soybeans", "soya"]),
@@ -235,7 +237,9 @@ _CARGO: List[Tuple[str, Sequence[str]]] = [
     ("beverages", ["koeldrank", "cooldrinks", "cool drinks", "drinks", "beverages", "drank", "cold drinks",
                    "soft drinks"]),
     ("bottled water", ["bottelwater", "bottled water"]),
-    ("fuel", ["brandstof", "fuel", "diesel fuel", "diesel", "petrol", "paraffien", "paraffin"]),
+    ("diesel", ["diesel", "diesel fuel"]),
+    ("petrol", ["petrol"]),
+    ("fuel", ["brandstof", "fuel", "paraffien", "paraffin"]),
     ("lubricants", ["olie", "oil", "lubricants", "smeermiddels"]),
     ("chemicals", ["chemikaliee", "chemikalie", "chemicals", "chemical"]),
     ("LPG", ["lpg", "gas bottles", "gasbottels"]),
@@ -247,6 +251,7 @@ _CARGO: List[Tuple[str, Sequence[str]]] = [
     ("furniture", ["meubels", "meubles", "furniture"]),
     ("electronics", ["elektronika", "electronics"]),
     ("clothing", ["klere", "clothing", "clothes", "textiles", "tekstiel"]),
+    ("paper rolls", ["papierrolle", "paper rolls", "paper reels"]),
     ("paper", ["papier", "paper"]),
     ("cardboard", ["karton", "cardboard", "boxes"]),
     ("plastics", ["plastiek", "plastic", "plastics"]),
@@ -254,10 +259,12 @@ _CARGO: List[Tuple[str, Sequence[str]]] = [
     ("chrome ore", ["chroom", "chrome ore", "chrome"]),
     ("manganese ore", ["mangaan", "manganese ore", "manganese"]),
     ("iron ore", ["ystererts", "iron ore"]),
-    ("copper", ["koper", "copper cathodes", "copper"]),
+    ("copper cathodes", ["koperkatodes", "copper cathodes", "copper cathode"]),
+    ("copper", ["koper", "copper"]),
     ("ore", ["erts", "ore"]),
     ("scrap metal", ["skroot", "skrootmetaal", "scrap metal", "scrap"]),
     ("livestock", ["vee", "beeste", "cattle", "livestock", "skape", "sheep"]),
+    ("chicken feed", ["hoendervoer", "chicken feed", "poultry feed"]),
     ("animal feed", ["veevoer", "voer", "animal feed", "feed", "lucerne", "lusern"]),
     ("hay bales", ["hooi", "hay bales", "hay", "baale"]),
     ("groceries", ["kruideniersware", "groceries", "food", "kos"]),
@@ -328,6 +335,7 @@ _MONTHS = {
     "october": 10, "oct": 10, "oktober": 10, "okt": 10, "november": 11, "nov": 11, "december": 12,
     "dec": 12, "desember": 12, "des": 12,
 }
+_MONTH_SHORT = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split()
 _WEEKDAYS = {
     "monday": 0, "mon": 0, "maandag": 0, "tuesday": 1, "tue": 1, "tues": 1, "dinsdag": 1,
     "wednesday": 2, "wed": 2, "woensdag": 2, "thursday": 3, "thu": 3, "thur": 3, "thurs": 3,
@@ -378,6 +386,7 @@ pick picked picking pickup up collect collection collected deliver delivery deli
 dropoff offload aflaai oplaai laai loaded loading aflewer aflewering afgelewer
 do doen does want please per each elke all alles
 soek look looking af haal kom come wee sien see plek place
+something anything somewhere anywhere iets iewers erens whatever
 through thru ve ll re d teen vat stop port hawe harbour depot
 """.split())
 
@@ -614,6 +623,7 @@ _CARGO_LOOKUP = {r[0]: r[1] for r in _CARGO_ROWS}
 _VEHICLE_LOOKUP = {r[0]: (r[1], r[2]) for r in _VEHICLE_ROWS}
 
 # Every word the rules know about — an unknown-place capture must not swallow these.
+_CARGO_WORDS = {w for r in _CARGO_ROWS for w in r[0].split()}
 _KNOWN_VOCAB = set(_FILLER) | set(_UNITS) | set(_TENS) | set(_SCALES) | set(_MONTHS) | set(_WEEKDAYS)
 for _rows in (_CARGO_ROWS, _VEHICLE_ROWS, _BORDER_ROWS):
     for _r in _rows:
@@ -677,6 +687,7 @@ class _Ctx:
     def __init__(self, text: str, raw: str = ""):
         self.raw = raw
         self.t = text
+        self.weight_ends: List[int] = []
         self.spans: List[Tuple[int, int]] = []
 
     def consume(self, a: int, b: int) -> None:
@@ -723,6 +734,7 @@ def preparse(message: str, *, today: Optional[date] = None,
     _dates(ctx, out, today)
     _driver_and_fuel(ctx, out)
     _customers(ctx, out, customers)
+    _cargo_after_weight(ctx, out)
     _places(ctx, out)
     _cargo(ctx, out)
     _international_from_places(out)
@@ -766,6 +778,7 @@ def _weights(ctx: _Ctx, out: PreParse) -> None:
             ctx.consume(m.start(), m.end(2))
             continue
         ctx.consume(m.start(), m.end(2))
+        ctx.weight_ends.append(m.end(2))
         found.append((kg, m.start(), m.end()))
     if not found:
         # "half a ton" / "n halwe ton"
@@ -777,13 +790,13 @@ def _weights(ctx: _Ctx, out: PreParse) -> None:
         return
     kgs = {round(f[0], 1) for f in found}
     kg = found[0][0]
-    if not (MIN_WEIGHT_KG <= kg <= MAX_WEIGHT_KG):
-        out.flag(f"weight {_fmt_num(kg / 1000)} t looks wrong", "weight_missing")
-        return
-    conf = 0.95 if len(kgs) == 1 else 0.5
     if len(kgs) > 1:
-        out.flag("more than one weight mentioned")
-    out.set("weight", kg, conf)
+        out.flag("more than one weight mentioned \u2014 which is the load?", "weight_invalid")
+        return
+    if not (MIN_WEIGHT_KG <= kg <= MAX_WEIGHT_KG):
+        out.flag(f"weight {_fmt_num(kg / 1000)} t looks wrong", "weight_invalid")
+        return
+    out.set("weight", kg, 0.95)
 
 
 def _trip_shape(ctx: _Ctx, out: PreParse) -> None:
@@ -849,6 +862,14 @@ def _trip_shape(ctx: _Ctx, out: PreParse) -> None:
 
 def _border_and_international_keywords(ctx: _Ctx, out: PreParse) -> None:
     for m in _BORDER_RX.finditer(ctx.t):
+        before, after = ctx.t[max(0, m.start() - 20):m.start()], ctx.t[m.end():m.end() + 5]
+        # "Beitbridge to Lusaka" / "from Beitbridge": the town is the origin,
+        # not a border post the truck crosses ("via/oor/through Beitbridge").
+        as_place = (re.search(rf"(?:^|\s)(?:{_PICKUP_MARKERS}|{_DELIVERY_MARKERS})\s+$", before)
+                    or re.match(r"\s+(?:to|na|2)\s", after)) \
+            and not re.search(rf"(?:^|\s)(?:{_STOP_MARKERS})\s+$", before)
+        if as_place and _PLACE_RX.match(ctx.t, m.start()):
+            continue
         ctx.consume(m.start(), m.end())
         out.set("border_post", _BORDER_LOOKUP[m.group(1)], 0.95)
         out.set("international", True, 0.95)
@@ -935,28 +956,37 @@ def _resolve_weekday(today: date, wd: int, prefix: str) -> Tuple[date, float]:
     return today + timedelta(days=delta), conf
 
 
-def _date_role(ctx: _Ctx, start: int, end: Optional[int] = None) -> Optional[str]:
-    # Afrikaans puts the verb last: "Vrydag aflewer", "Saterdag oplaai".
-    if end is not None:
-        m = re.match(r"\s+(aflewer|afgelewer|aflaai|deliver|delivery|oplaai|laai|optel|haal|afhaal|pickup|vertrek)\b",
-                     ctx.t[end:end + 16])
-        if m:
-            return "delivery_date" if m.group(1) in ("aflewer", "afgelewer", "aflaai", "deliver", "delivery") \
-                else "pickup_date"
-    before = ctx.before(start, 45)
+_DELIVERY_CUE = (r"\b(?:deliver(?:ed|y|ing)?|drop(?:\s*off)?|offload|arriv(?:e|al|ing)|eta|by|before|"
+                 r"no\s+later\s+than|aflewer(?:ing)?|afgelewer|aflaai|teen|voor|kom\s+aan|aankoms|"
+                 r"daar\s+wees|there\s+by)\b")
+_PICKUP_CUE = (r"\b(?:pick\s*up|pickup|collect(?:ion)?|load(?:ing|s|ed)?|leave|leaves|leaving|depart(?:ure|s)?|"
+               r"ready|oplaai|optel|laai|haal|afhaal|vertrek|gereed|start)\b")
+_VALID_CUE = r"\b(?:valid|geldig|quote\s+expires|expires)\b(?:\s+(?:until|till|tot|for|vir))?"
+_POSTPOSED = re.compile(r"\s+(aflewer|afgelewer|aflaai|deliver|delivery|oplaai|laai|optel|haal|afhaal|pickup|vertrek)\b")
+
+
+def _date_role(ctx: _Ctx, start: int, end: int, boundary: int) -> Tuple[Optional[str], int]:
+    """Role of the date at [start, end) -> (role, new boundary).
+
+    The nearest cue BEFORE the date (but after `boundary`, the end of the
+    previous date or the verb it used) wins: "pickup Friday deliver Saturday".
+    Only when there is none does an Afrikaans verb-last cue right after it
+    count ("Vrydag aflewer"); that verb then belongs to this date, so the next
+    date can't reuse it."""
+    before = ctx.t[max(boundary, start - 45):start]
     best, best_pos = None, -1
-    for role, rx in (
-        ("valid_until", r"\b(?:valid|geldig|quote\s+expires|expires)\b(?:\s+(?:until|till|tot|for|vir))?"),
-        ("delivery_date", r"\b(?:deliver(?:ed|y|ing)?|drop(?:\s*off)?|offload|arriv(?:e|al|ing)|eta|by|before|"
-                          r"no\s+later\s+than|aflewer(?:ing)?|afgelewer|aflaai|teen|voor|kom\s+aan|aankoms|"
-                          r"daar\s+wees|there\s+by)\b"),
-        ("pickup_date", r"\b(?:pick\s*up|pickup|collect(?:ion)?|load(?:ing|s|ed)?|leave|leaves|leaving|depart(?:ure|s)?|"
-                        r"ready|oplaai|optel|laai|haal|afhaal|vertrek|gereed|start)\b"),
-    ):
+    for role, rx in (("valid_until", _VALID_CUE), ("delivery_date", _DELIVERY_CUE), ("pickup_date", _PICKUP_CUE)):
         for m in re.finditer(rx, before):
             if m.end() > best_pos:
                 best, best_pos = role, m.end()
-    return best
+    if best:
+        return best, end
+    m = _POSTPOSED.match(ctx.t[end:end + 16])
+    if m:
+        role = "delivery_date" if m.group(1) in ("aflewer", "afgelewer", "aflaai", "deliver", "delivery") \
+            else "pickup_date"
+        return role, end + m.end()
+    return None, end
 
 
 def _dates(ctx: _Ctx, out: PreParse, today: date) -> None:
@@ -968,7 +998,7 @@ def _dates(ctx: _Ctx, out: PreParse, today: date) -> None:
         if ctx.consumed(a, b):
             return
         if d < today - timedelta(days=1) or d > today + timedelta(days=MAX_DATE_AHEAD_DAYS):
-            out.flag(f"date {d.isoformat()} is out of range")
+            out.flag(f"date {d.isoformat()} is out of range", "date")
             ctx.consume(a, b)
             return
         ctx.consume(a, b)
@@ -1007,22 +1037,30 @@ def _dates(ctx: _Ctx, out: PreParse, today: date) -> None:
         except ValueError:
             return None
 
-    def next_occurrence(mo, d):
+    def next_occurrence(mo, d, m=None):
+        """This year's date, or next year's when it is well past. A date only
+        just past (<= 60 days, e.g. "2 October" said on 8 October) is a
+        mistake or a typo, not next year: flagged, never filled."""
         cand = ymd(today.year, mo, d)
-        if cand and cand < today - timedelta(days=1):
+        if cand and cand < today:
+            if (today - cand).days <= 60:
+                if m is not None:
+                    ctx.consume(m.start(), m.end())
+                out.flag(f"{cand.day} {_MONTH_SHORT[cand.month - 1]} is in the past \u2014 which date?", "date")
+                return None
             cand = ymd(today.year + 1, mo, d)
         return cand
 
     for m in re.finditer(rf"\b(\d{{1,2}})(?:st|nd|rd|th|ste|de)?\s+(?:of\s+)?({month_rx})\b(?:\s+(\d{{4}}))?", t):
         d = ymd(int(m.group(3)), _MONTHS[m.group(2)], int(m.group(1))) if m.group(3) else \
-            next_occurrence(_MONTHS[m.group(2)], int(m.group(1)))
+            next_occurrence(_MONTHS[m.group(2)], int(m.group(1)), m)
         if d:
             add(m, d, 0.95)
     for m in re.finditer(rf"\b({month_rx})\s+(\d{{1,2}})(?:st|nd|rd|th)?\b(?:\s+(\d{{4}}))?", t):
         if m.group(1) in ("may", "mar", "sep", "des", "mei") and not m.group(2):
             continue
         d = ymd(int(m.group(3)), _MONTHS[m.group(1)], int(m.group(2))) if m.group(3) else \
-            next_occurrence(_MONTHS[m.group(1)], int(m.group(2)))
+            next_occurrence(_MONTHS[m.group(1)], int(m.group(2)), m)
         if d:
             add(m, d, 0.9)
     for m in re.finditer(r"\b(?:on\s+)?(?:the|die|op\s+die)\s+(\d{1,2})(?:st|nd|rd|th|ste|de)\b(?!\s+(?:of\s+)?(?:"
@@ -1047,27 +1085,28 @@ def _dates(ctx: _Ctx, out: PreParse, today: date) -> None:
             y = int(yy) + (2000 if len(yy) == 2 else 0)
             d = ymd(y, mm, dd)
         else:
-            d = next_occurrence(mm, dd)
+            d = next_occurrence(mm, dd, m)
         if d:
             add(m, d, 0.85)
     for m in re.finditer(r"\b(?:next|volgende|this|hierdie)\s+week\b|\b(?:end\s+of\s+(?:the\s+)?month|month\s*end|"
                          r"einde\s+van\s+die\s+maand|maandeinde)\b|\bsoon\b|\bgou\b|\basap\b", t):
         if not ctx.consumed(m.start(), m.end()):
             ctx.consume(m.start(), m.end())
-            if m.group(0) not in ("asap", "soon", "gou"):
+            # "volgende week Woensdag" is resolved by the weekday: no question
+            resolved = re.match(r"\s+(?:on\s+|op\s+)?(?:" + "|".join(_WEEKDAYS) + r")\b", t[m.end():m.end() + 16]) \
+                or re.search(r"(?:" + "|".join(_WEEKDAYS) + r")\s+$", t[max(0, m.start() - 14):m.start()])
+            if m.group(0) not in ("asap", "soon", "gou") and not resolved:
                 out.flag(f"“{m.group(0)}” — which day?")
 
     if not hits:
         return
     hits.sort(key=lambda h: h[0])
     unassigned = []
+    boundary = 0
     for a, b, d, conf in hits:
-        role = _date_role(ctx, a, b)
+        role, boundary = _date_role(ctx, a, b, boundary)
         if role and role not in out.fields:
             out.set(role, d.isoformat(), conf)
-            # the marker word itself is understood
-            for mm in re.finditer(r"\b\w+\b", ctx.before(a, 20)):
-                pass
         elif role and out.fields.get(role) != d.isoformat():
             out.flag(f"two {role.replace('_', ' ')}s mentioned")
         else:
@@ -1079,8 +1118,10 @@ def _dates(ctx: _Ctx, out: PreParse, today: date) -> None:
                 break
     pd, dd = out.fields.get("pickup_date"), out.fields.get("delivery_date")
     if pd and dd and dd < pd:
-        out.flag("delivery date is before pickup date")
-        out.confidence["delivery_date"] = min(out.confidence.get("delivery_date", 0.5), 0.4)
+        # never return a delivery before the pickup: ask instead
+        out.flag("delivery date is before pickup date", "delivery_date")
+        out.fields.pop("delivery_date", None)
+        out.confidence.pop("delivery_date", None)
 
 
 def _driver_and_fuel(ctx: _Ctx, out: PreParse) -> None:
@@ -1092,7 +1133,7 @@ def _driver_and_fuel(ctx: _Ctx, out: PreParse) -> None:
         if 0 <= n <= MAX_DRIVER_NIGHTS:
             out.set("driver_nights", n, 0.9)
         else:
-            out.flag(f"{n} driver nights looks wrong")
+            out.flag(f"{n} driver nights looks wrong", "driver_nights")
     m = re.search(r"\b(?:diesel|fuel|brandstof|petrol)\b(?:\s+(?:price|prys))?\s*(?:at|@|is|teen|for|vir|of|van|=)?\s*"
                   r"(?:r\s*)?(\d{1,3}(?:\.\d{1,2})?)\s*(?:rand)?\s*(?:/\s*l|per\s+(?:litre|liter|l)|a\s+litre|n\s+liter|l)?\b", t)
     if m:
@@ -1101,7 +1142,7 @@ def _driver_and_fuel(ctx: _Ctx, out: PreParse) -> None:
         if FUEL_PRICE_RANGE[0] <= v <= FUEL_PRICE_RANGE[1]:
             out.set("fuel_price_override", v, 0.85)
         else:
-            out.flag(f"fuel price R {_fmt_num(v)}/L looks wrong")
+            out.flag(f"fuel price R {_fmt_num(v)}/L looks wrong", "fuel_price_override")
 
 
 def _significant(name: str) -> List[str]:
@@ -1158,6 +1199,17 @@ def _customers(ctx: _Ctx, out: PreParse, customers) -> None:
                         return
 
 
+_PLACE_PARTICLES = {"de", "la", "le", "du", "st", "kwa", "port", "ga", "e"}
+_NOT_PLACE_WORDS = {"close", "near", "next", "up", "down", "back", "way", "right", "also", "them", "half", "it",
+                    "is", "how", "where", "here", "there", "quick", "drive", "trip", "load", "loads", "goods"}
+
+
+def _title_place(phrase: str) -> str:
+    """Title-case an unrecognised place, keeping SA prefixes lower ("kwamashu"
+    stays "Kwamashu"; "de aar" -> "De Aar")."""
+    return " ".join(w[:1].upper() + w[1:] for w in phrase.split())
+
+
 _NOT_PLACE_PRECEDERS = re.compile(r"\b(?:need|needs|want|wants|have|has|going|got|able|like|how|up|close|next|"
                                   r"due|similar|compared|according|nodig)\s*$")
 
@@ -1180,10 +1232,14 @@ def _places(ctx: _Ctx, out: PreParse) -> None:
         if _NOT_PLACE_PRECEDERS.search(t[:m.start()]):
             continue
         words = []
-        for w in m.group(2).split()[:3]:
-            if w in _KNOWN_VOCAB or w in _PLACE_LOOKUP or len(w) < 3:
+        parts = m.group(2).split()[:3]
+        for i, w in enumerate(parts):
+            particle = w in _PLACE_PARTICLES and i + 1 < len(parts) and len(parts[i + 1]) >= 3
+            if (w in _KNOWN_VOCAB and not particle) or w in _PLACE_LOOKUP or (len(w) < 3 and not particle):
                 break
             words.append(w)
+        if words and words[-1] in _PLACE_PARTICLES:
+            words.pop()
         if not words:
             continue
         phrase = " ".join(words)
@@ -1192,7 +1248,41 @@ def _places(ctx: _Ctx, out: PreParse) -> None:
         if fuzzy:
             mentions.append({"start": a, "end": end, "name": _PLACE_LOOKUP[fuzzy[0]], "alias": fuzzy[0], "conf": 0.8})
         else:
-            mentions.append({"start": a, "end": end, "name": phrase.title(), "alias": phrase, "conf": 0.6,
+            mentions.append({"start": a, "end": end, "name": _title_place(phrase), "alias": phrase, "conf": 0.6,
+                             "unknown": True})
+    # Unknown origin right before "to/na" ("Thohoyandou to Giyani", "…,
+    # Lichtenburg na Polokwane"), when what precedes it is a boundary or
+    # already-understood text — never an ordinary word ("close to Durban").
+    for m in re.finditer(r"\s(?:to|na|2)\s", t):
+        if any(mm["start"] < m.start() <= mm["end"] for mm in mentions):
+            continue
+        toks = list(re.finditer(r"[a-z][a-z]*", t[:m.start()]))[-3:]
+        words = []
+        for tk in reversed(toks):
+            w = tk.group(0)
+            if ctx.consumed(tk.start(), tk.end()) or w in _KNOWN_VOCAB or w in _NOT_PLACE_WORDS \
+                    or any(mm["start"] <= tk.start() < mm["end"] for mm in mentions):
+                break
+            if len(w) < 3 and not (w in _PLACE_PARTICLES and words):
+                break
+            words.insert(0, tk)
+            if len(words) == 2:
+                break
+        if not words:
+            continue
+        a, b = words[0].start(), words[-1].end()
+        prev = t[:a].rstrip()
+        prev_tok = re.search(r"([a-z0-9]+)\W*$", prev)
+        boundary = (not prev or prev.endswith(",") or ctx.consumed(len(prev) - 1, len(prev))
+                    or (prev_tok and prev_tok.group(1) in _KNOWN_VOCAB))
+        if not boundary:
+            continue
+        phrase = t[a:b]
+        fuzzy = difflib.get_close_matches(phrase, list(_PLACE_LOOKUP), n=1, cutoff=0.82)
+        if fuzzy:
+            mentions.append({"start": a, "end": b, "name": _PLACE_LOOKUP[fuzzy[0]], "alias": fuzzy[0], "conf": 0.75})
+        else:
+            mentions.append({"start": a, "end": b, "name": _title_place(phrase), "alias": phrase, "conf": 0.6,
                              "unknown": True})
     # STT misspelling anywhere (long single words only, strict cutoff).
     for m in re.finditer(r"\b[a-z]{7,}\b", t):
@@ -1215,7 +1305,10 @@ def _places(ctx: _Ctx, out: PreParse) -> None:
         before = t[max(0, mm["start"] - 40):mm["start"]]
         after = t[mm["end"]:mm["end"] + 5]
         role = None
-        if stop_rx.search(before):
+        if kept and kept[-1]["role"] == "stop" and re.search(r"(?:\ben|\band|,)\s*$", before) \
+                and t[kept[-1]["end"]:mm["start"]].strip(" ,") in ("en", "and", ""):
+            role = "stop"  # "oor Beaufort-Wes en Worcester"
+        elif stop_rx.search(before):
             role = "stop"
         elif pick_rx.search(before):
             role = "pickup"
@@ -1280,8 +1373,64 @@ def _places(ctx: _Ctx, out: PreParse) -> None:
     out._places_meta = kept  # type: ignore[attr-defined]
 
 
+
+# Words that end a cargo noun phrase after a weight ("28 ton steel coils from …").
+_CARGO_STOP = set("""
+from frm van vanaf uit to na naar tot via oor deur through on op in at by for vir with met and en or of en
+the die a an n tomorrow today tonight vandag overmorrow tomorrowaf more next volgende this hierdie
+please asseblief pls asb round one way heen return retoer empty leeg back terug
+""".split())
+
+
+def _cargo_after_weight(ctx: _Ctx, out: PreParse) -> None:
+    """The noun phrase right after the load weight is the cargo, said in full:
+    "22 ton of paper rolls", "5 ton avocados", "45 ton transformer". A phrase
+    that is exactly a known (Afrikaans/English) cargo word gets its English
+    name ("staalrolle" -> steel coils); anything longer or unknown is kept as
+    the user said it, so "chicken feed" never shrinks to "chicken"."""
+    t = ctx.t
+    for end in ctx.weight_ends:
+        m = re.match(r"\s+(?:of\s+|worth\s+of\s+|aan\s+)?((?:[a-z][a-z.]*\s*){1,3})", t[end:])
+        if not m:
+            continue
+        a = end + m.start(1)
+        words, pos = [], a
+        for w in m.group(1).split():
+            wa = t.index(w, pos)
+            if w in _CARGO_STOP or w in _PLACE_LOOKUP or _PLACE_RX.match(t, wa) or ctx.consumed(wa, wa + len(w)) \
+                    or re.fullmatch(_VEHICLE_NOUNS, w) or w in _WEEKDAYS or w in _MONTHS \
+                    or (w in _KNOWN_VOCAB and w not in _CARGO_WORDS):
+                break
+            words.append(w)
+            pos = wa + len(w)
+        # a final word that starts a route ("… transformer Majuba to Ankerlig") is a place
+        if words and re.match(r"\s+(?:to|na|2)\s", t[pos:pos + 5]) and len(words) > 1:
+            words.pop()
+            pos = t.rindex(words[-1], a, pos) + len(words[-1])
+        if not words:
+            continue
+        phrase = " ".join(words)
+        if phrase in _CARGO_LOOKUP:
+            name, conf = _CARGO_LOOKUP[phrase], 0.9
+        elif all(w in _CARGO_WORDS for w in words):
+            hit = _CARGO_RX.search(phrase)
+            name, conf = (_CARGO_LOOKUP[hit.group(1)] if hit else phrase), 0.85
+        else:
+            name, conf = phrase, 0.75
+        if name == "pallets":
+            continue  # a pallet count/load, the goods may be named elsewhere
+        ctx.consume(a, pos)
+        out.set("cargo_description", name, conf)
+        return
+
+
 def _cargo(ctx: _Ctx, out: PreParse) -> None:
     t = ctx.t
+    if "cargo_description" in out.fields:
+        for h in _CARGO_RX.finditer(t):  # pallets etc. said elsewhere are understood
+            if not ctx.consumed(h.start(), h.end()) and _CARGO_LOOKUP[h.group(1)] == "pallets":
+                ctx.consume(h.start(), h.end())
+        return
     hits = [m for m in _CARGO_RX.finditer(t) if not ctx.consumed(m.start(), m.end())]
     if hits:
         goods = [h for h in hits if _CARGO_LOOKUP[h.group(1)] != "pallets"]

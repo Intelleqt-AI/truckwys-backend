@@ -58,6 +58,7 @@ class NLResult:
     vehicle_hint: Optional[str] = None
     conflicts: List[str] = field(default_factory=list)
     said: Dict[str, str] = field(default_factory=dict)  # field -> user's own wording (display only)
+    vehicle_hint_label: Optional[str] = None  # "Superlink" — the truck word, when no fleet type matched
 
     def spoken_places(self) -> Dict[str, Optional[str]]:
         """{pickup, delivery}: how the user said each filled place (falls back
@@ -161,20 +162,106 @@ def _redact(text: str, names: List[str]) -> str:
     return text
 
 
-def _redaction_names(rules: qp.PreParse) -> List[str]:
-    names = []
+def _redaction_names(rules: qp.PreParse, customers: Optional[List[Dict[str, Any]]],
+                     current_fields: Optional[Dict[str, Any]]) -> List[str]:
+    """Every client name the model must never see: this company's customer
+    names in full and their distinguishing words ("Astral", "Clover"), the
+    client the form has selected, and whatever the user called the client."""
+    names: List[str] = []
     if rules.customer_span_text:
         names.append(rules.customer_span_text)
+    full = [c.get("name") or "" for c in (customers or [])]
+    for k, v in (current_fields or {}).items():
+        if isinstance(v, str) and re.search(r"client|customer|klient", k, re.I):
+            full.append(v)
     if rules.fields.get("customer_name"):
-        names.append(rules.fields["customer_name"])
-        names.extend(w for w in qp._significant(rules.fields["customer_name"]))
+        full.append(rules.fields["customer_name"])
+    for n in full:
+        if not n:
+            continue
+        names.append(n)
+        names.append(re.sub(r"\s*\((?:pty|edms)\)\s*", " ", n, flags=re.I).strip())
+        names.extend(w for w in re.findall(r"[A-Za-z][A-Za-z&'-]+", n)
+                     if len(w) >= 4 and w.lower() not in _NON_IDENTIFYING and not qp.canonical_place(w))
     return names
+
+
+# Words in company names that identify nobody (and are needed to read freight text).
+_NON_IDENTIFYING = {
+    "ltd", "limited", "pty", "group", "holdings", "stores", "industries", "foods", "food", "brands", "logistics",
+    "beverages", "company", "transport", "freight", "trading", "services", "steel", "mills", "glass", "super",
+    "famous", "imperial", "pioneer", "tiger", "consol", "coca", "cola", "edms", "bpk", "and", "the",
+}
+
+
+def _redact_value(v: Any, names: List[str]) -> Any:
+    if isinstance(v, str):
+        return _redact(v, names)
+    if isinstance(v, dict):
+        return {k: _redact_value(x, names) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_redact_value(x, names) for x in v]
+    return v
+
+
+# ── validation shared by every source that isn't the strict LLM validator ──
+def validate_fields(fields: Dict[str, Any], today: Optional[date] = None) -> Tuple[Dict[str, Any], List[str]]:
+    """The same range/date/enum checks llm_quote.validate_extraction applies,
+    for values from the legacy regex (and as a final guard on the merge).
+    Returns (kept, notes)."""
+    from datetime import timedelta
+    today = today or qp._sast_today()
+    out: Dict[str, Any] = {}
+    notes: List[str] = []
+    for k, v in fields.items():
+        if v in (None, "", []):
+            continue
+        if k == "weight":
+            try:
+                w = float(v)
+            except (TypeError, ValueError):
+                continue
+            if qp.MIN_WEIGHT_KG <= w <= qp.MAX_WEIGHT_KG:
+                out[k] = w
+            else:
+                notes.append(f"weight {w / 1000:g} t looks wrong")
+        elif k in ("pickup_date", "delivery_date", "valid_until", "trip_date"):
+            try:
+                d = date.fromisoformat(str(v)[:10])
+            except ValueError:
+                continue
+            if today - timedelta(days=1) <= d <= today + timedelta(days=qp.MAX_DATE_AHEAD_DAYS):
+                out[k] = d.isoformat()
+            else:
+                notes.append(f"date {d.isoformat()} is out of range")
+        elif k == "trip_type":
+            if str(v).upper() in ("ONE_WAY", "ROUND_TRIP"):
+                out[k] = str(v).upper()
+        elif k in ("pickup_location", "delivery_location"):
+            text = str(v).strip()[:200]
+            if text and qp.norm_phrase(text) not in qp._FILLER:
+                out[k] = qp.geocodable_place(text)
+        elif k in ("cargo_description", "customer_name", "vehicle_type"):
+            text = str(v).strip()[:200]
+            if text:
+                out[k] = text
+        else:
+            out[k] = v
+    if out.get("pickup_date") and out.get("delivery_date") and out["delivery_date"] < out["pickup_date"]:
+        out.pop("delivery_date")
+        notes.append("delivery date is before pickup date")
+    return out, notes
 
 
 # ── replies ──────────────────────────────────────────────────────────────────
 def _num(v: float) -> str:
     s = f"{v:,.1f}".rstrip("0").rstrip(".")
     return s.replace(",", " ").replace(".", ",")
+
+
+def _money(v: float) -> str:
+    """SA money: "R 24,10", "R 1 250,00"."""
+    return "R " + f"{float(v):,.2f}".replace(",", " ").replace(".", ",")
 
 
 def _short_date(iso: str, lang: str) -> str:
@@ -225,7 +312,7 @@ def _summary(f: Dict[str, Any], lang: str) -> List[str]:
         n = f["driver_nights"]
         bits.append(f"{n} {'nagte' if af else 'nights'}" if n != 1 else ("1 nag" if af else "1 night"))
     if f.get("fuel_price_override"):
-        bits.append(f"diesel R {_num(f['fuel_price_override'])}/L")
+        bits.append(f"diesel {_money(f['fuel_price_override'])}/L")
     return bits
 
 
@@ -252,7 +339,14 @@ _AF_NOTES = [
     (r"^one-way and round trip both mentioned$", "eenrigting en heen-en-terug albei genoem"),
     (r"^round trip and a return-load note both mentioned$", "heen-en-terug en retoervrag albei genoem"),
     (r"^two (.+)s mentioned$", r"twee datums genoem"),
+    (r"^(\d+) (\w+) is in the past \u2014 which date\?$",
+     lambda m: f"{m.group(1)} {_AF_MON.get(m.group(2), m.group(2))} is verby \u2014 watter datum?"),
+    (r"^more than one weight mentioned \u2014 which is the load\?$", "meer as een gewig genoem \u2014 watter is die vrag?"),
+    (r"^border post \u201c(.+)\u201d not recognised$", r"grenspos \u201c\1\u201d nie herken nie"),
 ]
+
+
+_AF_MON = {"Mar": "Mrt", "May": "Mei", "Oct": "Okt", "Dec": "Des"}
 
 
 def localise_note(note: str, lang: Optional[str]) -> str:
@@ -304,12 +398,17 @@ def understand(message: str, *, history: Optional[List[Dict[str, Any]]] = None,
                alternate_text: Optional[str] = None,
                today: Optional[date] = None,
                legacy_extract: Optional[Callable[[], Tuple[Dict[str, Any], Dict[str, Optional[str]]]]] = None,
+               all_vehicle_types: Optional[List[Any]] = None,
                ) -> NLResult:
+    """`vehicle_types` = types the company can fulfil now (the dropdown; what
+    the model is offered). `all_vehicle_types` = every type the company has
+    (a spoken truck word is matched against these too; default: the same)."""
     from core.services import llm_quote
 
-    rules = qp.preparse(message, today=today, customers=customers, vehicle_types=vehicle_types)
+    match_types = all_vehicle_types if all_vehicle_types is not None else vehicle_types
+    rules = qp.preparse(message, today=today, customers=customers, vehicle_types=match_types)
     if alternate_text and alternate_text.strip() and alternate_text.strip() != (message or "").strip():
-        alt = qp.preparse(alternate_text, today=today, customers=customers, vehicle_types=vehicle_types)
+        alt = qp.preparse(alternate_text, today=today, customers=customers, vehicle_types=match_types)
         for k, v in alt.fields.items():
             if k not in rules.fields:
                 rules.set(k, v, alt.confidence.get(k, 0.5) * 0.8)
@@ -337,11 +436,17 @@ def understand(message: str, *, history: Optional[List[Dict[str, Any]]] = None,
     want_llm = llm_quote.is_enabled() and not (_skip_llm_when_sufficient() and rules_suffice)
     if want_llm:
         try:
-            names = _redaction_names(rules)
-            msg = _redact(message, names) if names else message
-            hist = [{**t, "content": _redact(t.get("content") or t.get("text") or "", names)}
-                    if names else t for t in (history or [])]
-            got = llm_quote.extract(msg, hist, current_fields, vehicle_types=vehicle_types, customers=customers,
+            # Privacy: every client name is removed from the message, from ALL
+            # history turns (the user's and this backend's own replies, e.g.
+            # "client Clover Industries Ltd") and from the form fields, before
+            # anything is sent. The customer list itself never is.
+            names = _redaction_names(rules, customers, current_fields)
+            msg = _redact(message, names)
+            hist = [{**t, **{k: _redact(t[k], names) for k in ("content", "text") if isinstance(t.get(k), str)}}
+                    for t in (history or []) if isinstance(t, dict)]
+            cur = {k: _redact_value(v, names) for k, v in (current_fields or {}).items()
+                   if not re.search(r"client|customer|klient", str(k), re.I)}
+            got = llm_quote.extract(msg, hist, cur, vehicle_types=vehicle_types, customers=customers,
                                     detected_language=res.language, return_meta=True)
             if len(got) == 4:
                 llm_fields, llm_reply, llm_unmatched, meta = got
@@ -361,34 +466,83 @@ def understand(message: str, *, history: Optional[List[Dict[str, Any]]] = None,
     extracted, conf, conflicts = merge(rules, llm_fields, llm_conf)
     res.conflicts = conflicts
 
+    # Fields the rules found and rejected (900 t, two weights, a date in the
+    # past) are never filled from another source: the note stands instead.
+    flagged = set()
+    for about in rules.not_understood_fields:
+        if about == "weight_invalid":
+            flagged.add("weight")
+        elif about == "date":
+            flagged.update({"pickup_date", "delivery_date", "trip_date"} - set(rules.fields))
+        elif about in ("delivery_date", "driver_nights", "fuel_price_override"):
+            flagged.add(about)
+    for k in flagged:
+        if k not in rules.fields:
+            extracted.pop(k, None)
+            conf.pop(k, None)
+
     if not res.llm_used and legacy_extract is not None:
         try:
             legacy, legacy_unmatched = legacy_extract()
+            legacy, _ = validate_fields(legacy, today)
             added = False
             for k, v in legacy.items():
-                if k not in extracted and v not in (None, ""):
+                if k not in extracted and k not in flagged:
                     extracted[k], conf[k] = v, 0.6
                     added = True
             for k, v in (legacy_unmatched or {}).items():
-                if v and not res.unmatched.get(k):
+                if v and not res.unmatched.get(k) and k != "vehicle_type":
                     res.unmatched[k] = v
             if added:
                 res.source = "rules+regex"
         except Exception:
             logger.warning("quote_nl: legacy extractor failed", exc_info=True)
 
+    # Cross-border only on evidence: a real border post, a place outside SA,
+    # or the rules' own keyword — never just the model's say-so.
+    if extracted.get("international") is True and rules.fields.get("international") is not True:
+        countries = {qp.place_country(qp.canonical_place(str(extracted.get(k) or "")))
+                     for k in ("pickup_location", "delivery_location")}
+        if not extracted.get("border_post") and not (countries - {None, "ZA"}):
+            extracted.pop("international")
+            conf.pop("international", None)
+    final, final_notes = validate_fields(extracted, today)
+    for k in set(extracted) - set(final):
+        conf.pop(k, None)
+    extracted = final
+    if extracted.get("pickup_date"):
+        extracted["trip_date"], conf["trip_date"] = extracted["pickup_date"], conf.get("pickup_date", 0.6)
+    else:
+        extracted.pop("trip_date", None)
+
+    # A truck word that isn't one of the fleet's types is never turned into an
+    # "add a vehicle type?" dialog here: it's returned as vehicle_hint and the
+    # client offers "Pick a truck". It's matched against EVERY type the
+    # company has first (not only the ones with a vehicle free today).
+    raw_vt = res.unmatched.get("vehicle_type")
+    if not extracted.get("vehicle_type") and raw_vt and match_types:
+        records = [v if isinstance(v, dict) else {"name": v} for v in match_types]
+        hit = llm_quote.match_vehicle_type(raw_vt, [r["name"] for r in records])
+        if hit:
+            extracted["vehicle_type"], conf["vehicle_type"] = hit, 0.7
+    res.vehicle_hint_label = None if extracted.get("vehicle_type") else (rules.vehicle_hint_label or raw_vt)
+    if not res.vehicle_hint and res.vehicle_hint_label:
+        res.vehicle_hint = "other"
     if extracted.get("vehicle_type"):
-        res.unmatched["vehicle_type"] = None
+        res.vehicle_hint = res.vehicle_hint if res.vehicle_hint != "other" else None
+    res.unmatched["vehicle_type"] = None
     if extracted.get("customer_id"):
         res.unmatched["customer_name"] = None
 
-    # Notes: drop rule notes the model resolved (e.g. it worked out the weight).
+    # Notes: every rule note stays, except a bare-number/volume question the
+    # model answered from context with a valid weight.
     notes = []
     for text, about in zip(rules.not_understood, rules.not_understood_fields):
-        if about == "weight_missing" and extracted.get("weight"):
+        if about == "weight_missing" and extracted.get("weight") and res.llm_used:
             continue
         notes.append(localise_note(text, res.language))
-    for n in llm_notes:
+    for n in llm_notes + final_notes:
+        n = localise_note(n, res.language)
         if n not in notes:
             notes.append(n)
     res.not_understood = notes[:5]

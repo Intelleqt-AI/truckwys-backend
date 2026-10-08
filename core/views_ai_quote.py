@@ -1029,11 +1029,18 @@ class AIChatQuoteView(APIView):
             # assistant must never be able to select an option the dropdown
             # doesn't also offer.
             company = getattr(request.user, 'company', None)
-            vehicle_types = customers = None
+            vehicle_types = customers = all_vehicle_types = None
             if company is not None:
                 from core.models import Customer
                 from core.services.vehicle_types import available_vehicle_types
                 vehicle_types = available_vehicle_types(company)  # [] is meaningful — never replace it
+                from core.services.vehicle_types import capacity_tonnes, visible_vehicle_types_queryset
+                # Every type the company has (not only those with a vehicle free
+                # today): a spoken truck word is matched against these.
+                all_vehicle_types = [
+                    {'id': v['id'], 'name': v['name'], 'capacity_t': capacity_tonnes(v['capacity'])}
+                    for v in visible_vehicle_types_queryset(company).values('id', 'name', 'capacity')
+                ]
                 customers = list(
                     Customer.objects.filter(company=company).values('id', 'name')
                 )
@@ -1075,6 +1082,7 @@ class AIChatQuoteView(APIView):
                 vehicle_types=vehicle_types, customers=customers,
                 detected_language=detected_language, alternate_text=alternate_text,
                 legacy_extract=lambda: self._regex_extract(message, current_fields, vehicle_types, customers),
+                all_vehicle_types=all_vehicle_types,
             )
             extracted = result.extracted
             lang = result.language
@@ -1084,7 +1092,10 @@ class AIChatQuoteView(APIView):
                 'language': lang,
                 'language_label': language_detect.language_label(lang),
                 'mixed_language': result.mixed_language,
+                # A truck word that matched no fleet type: the client shows
+                # "Superlink? Pick a truck" (no add-a-type dialog from here).
                 'vehicle_hint': result.vehicle_hint,
+                'vehicle_hint_label': result.vehicle_hint_label,
                 # The user's own wording for each filled place ("Kaapstad"), shown
                 # beside the geocodable name in extracted_fields ("Cape Town").
                 'spoken_places': result.spoken_places(),
@@ -1092,7 +1103,11 @@ class AIChatQuoteView(APIView):
             }
 
             if company is not None:
-                hit = quote_entity_chat.detect_unmatched(result.unmatched, declined_entities)
+                # Only an unknown CLIENT opens the create dialog; vehicle types
+                # come back as vehicle_hint (see quote_nl.understand).
+                hit = quote_entity_chat.detect_unmatched(
+                    {'customer_name': result.unmatched.get('customer_name'), 'vehicle_type': None},
+                    declined_entities)
                 if hit:
                     table, raw_name = hit
                     pending, ask_reply, link = quote_entity_chat.start_pending(
@@ -1188,6 +1203,16 @@ def _mean_avg_logprob(transcript):
     return sum(scores) / len(scores)
 
 
+# What Whisper famously produces from silence or noise (YouTube outro lines in
+# both languages), matched against the WHOLE transcript only — a real load
+# description that merely contains "thank you" is never rejected.
+_HALLUCINATION_RE = re.compile(
+    r'(?:(?:thank you|thanks)(?: (?:so|very) much)?(?: for watching| for listening)?|please subscribe|'
+    r'(?:like and )?subscribe(?: to (?:my|the|our) channel)?|bye(?: bye)?|you|the end|'
+    r'dankie(?: vir (?:kyk|luister))?|baie dankie|totsiens|subtitles? by .*|ondertitels? deur .*|'
+    r'transcribed by .*|music|applause|silence)(?: (?:thank you|thanks|bye|you))*')
+
+
 def _num_attr(obj, name):
     v = getattr(obj, name, None)
     return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
@@ -1206,6 +1231,8 @@ def _is_no_speech(transcript, prompt):
     if probs and all(p > _NO_SPEECH_PROB for p in probs):
         return True
     words = re.findall(r'\w+', text.lower())
+    if _HALLUCINATION_RE.fullmatch(' '.join(words)):
+        return True
     prompt_words = set(re.findall(r'\w+', (prompt or '').lower()))
     return len(words) >= 4 and all(w in prompt_words for w in words)
 
@@ -1304,14 +1331,21 @@ class AIVoiceQuoteView(APIView):
                     'Whisper rejected audio (%d bytes, upload content_type=%s): %s',
                     len(audio_bytes), getattr(audio_file, 'content_type', None), msg,
                 )
+                # The provider's own text (request IDs, internals) stays in the log.
                 return Response({
                     'success': False,
-                    'error': f'Could not transcribe the recording: {msg}',
+                    'error': "Couldn't read that recording — try again, or type the load instead.",
                 }, status=502)
 
             chosen, chosen_lang, other, other_lang = first, first_lang, None, None
             confidence = 'chosen' if forced else 'high'
             first_score = _mean_avg_logprob(first)
+            if _is_no_speech(first, _STT_PROMPTS[first_lang]):
+                # Silence (or a hallucination) on the first pass: no second paid call.
+                return Response({
+                    'success': False,
+                    'error': "Didn't catch any speech — try again a bit closer to the mic.",
+                }, status=422)
             if not forced:
                 # avg_logprob is <= 0, so Afrikaans (which must reach en + margin)
                 # cannot win once English already scores above -margin: skip

@@ -453,7 +453,7 @@ def _build_messages(message: str, history: Optional[List[Dict[str, Any]]],
     # Privacy: the client/customer the form already has selected is never sent
     # to the model — customer matching happens locally (see extract()).
     known = {k: v for k, v in (current_fields or {}).items()
-             if v not in (None, "", 0) and k not in ("customer_name", "customer_id")}
+             if v not in (None, "", 0) and not re.search(r"client|customer|klient", str(k), re.I)}
     prefix = ""
     if known:
         prefix = f"Already captured so far: {json.dumps(known)}\n\n"
@@ -687,9 +687,14 @@ def validate_extraction(data: Dict[str, Any], today: Optional[date] = None,
             out[key] = v.strip().lower() in ("yes", "true")
     bp = data.get("border_post")
     if isinstance(bp, str) and bp.strip():
-        # canonical cross_border name when it's a known post, else as said
+        # Only a real SA-neighbour post (cross_border.BORDER_POSTS) — border
+        # costing knows no other; an unknown or invented one is dropped.
         from core.services.quote_preparse import canonical_border_post
-        out["border_post"] = canonical_border_post(bp) or bp.strip()[:80]
+        canon = canonical_border_post(bp)
+        if canon:
+            out["border_post"] = canon
+        else:
+            notes.append(f"border post \u201c{bp.strip()[:40]}\u201d not recognised")
     stops = data.get("stops")
     if isinstance(stops, list):
         from core.services.quote_preparse import geocodable_place
@@ -709,7 +714,7 @@ def validate_extraction(data: Dict[str, Any], today: Optional[date] = None,
         else:
             notes.append(f"fuel price R {fp:g}/L looks wrong")
     if out.get("international") is None and out.get("border_post"):
-        out["international"] = True
+        out["international"] = True  # a real post only (invented ones were dropped above)
 
     conf: Dict[str, float] = {}
     fc = data.get("field_confidence")

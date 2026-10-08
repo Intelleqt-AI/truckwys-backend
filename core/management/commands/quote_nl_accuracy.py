@@ -9,8 +9,9 @@ class Command(BaseCommand):
     help = "Measure the deterministic quote pre-parser against the EN/AF phrase fixtures."
 
     def handle(self, *args, **options):
-        from core.tests.voice_quote_fixtures import CASES, HELDOUT, TODAY
-        for name, cases in (("tuning", CASES), ("held-out", HELDOUT)):
+        from core.tests.voice_quote_fixtures import CASES, HELDOUT, TODAY, VERIFIER
+        own = [c for c in HELDOUT if c not in VERIFIER]
+        for name, cases in (("tuning", CASES), ("held-out (own)", own), ("held-out (verifier)", VERIFIER)):
             r = evaluate(cases, TODAY)
             self.stdout.write(
                 f"{name}: fields {r['fields_ok']}/{r['fields']} ({r['field_accuracy']:.1%}), "

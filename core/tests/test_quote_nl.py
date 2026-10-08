@@ -17,7 +17,7 @@ from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
 from core.models import Company, Customer
 from core.services import llm_quote, quote_nl
 from core.services import quote_preparse as qp
-from core.services.quote_nl_eval import evaluate
+from core.services.quote_nl_eval import _match, evaluate
 from core.tests.voice_quote_fixtures import CASES, CUSTOMERS, HELDOUT, LLM_CASES, TODAY, llm_payload
 
 User = get_user_model()
@@ -30,10 +30,10 @@ class PreparseFixtureTests(SimpleTestCase):
     def _check(self, cases):
         for c in cases:
             with self.subTest(case=c["id"], text=c["text"]):
-                p = qp.preparse(c["text"], today=TODAY, customers=c.get("customers"))
+                p = qp.preparse(c["text"], today=TODAY, customers=c.get("customers"), vehicle_types=c.get("fleet"))
                 got = dict(p.fields, vehicle_hint=p.vehicle_hint)
                 for k, v in c["expect"].items():
-                    self.assertEqual(got.get(k), v, f"{k} for {c['text']!r}")
+                    self.assertTrue(_match(k, v, got.get(k)), f"{k}: want {v!r}, got {got.get(k)!r} for {c['text']!r}")
                 for k in c.get("absent", []):
                     self.assertIn(got.get(k), (None, "", []), f"{k} invented for {c['text']!r}")
                 if c.get("not_understood"):
@@ -562,3 +562,174 @@ class ChatQuoteSaidTests(TestCase):
         r = self.client.post("/api/v1/ai/chat-quote/", {"message": "28 ton steel to Durban", "history": [],
                                                          "current_fields": {}}, format="json")
         self.assertEqual(r.data["spoken_places"], {"pickup": None, "delivery": "Durban"})
+
+
+class VerifierFindingsTests(SimpleTestCase):
+    """One test per finding of the independent verification (8 Oct 2026)."""
+
+    def test_1_legacy_gap_fill_is_validated_and_notes_kept(self):
+        legacy = lambda: ({"weight": 900000.0, "pickup_date": "2026-10-02", "cargo_description": "sand"}, {})
+        with mock.patch("core.services.llm_quote.is_enabled", return_value=False):
+            res = quote_nl.understand("Durban to Joburg 900 ton sand", today=TODAY, legacy_extract=legacy)
+        self.assertNotIn("weight", res.extracted)
+        self.assertNotIn("pickup_date", res.extracted)
+        self.assertTrue(any("900 t looks wrong" in n for n in res.not_understood))
+        kept, notes = quote_nl.validate_fields({"weight": 120000, "delivery_date": "2026-10-01",
+                                                "pickup_location": "somewhere"}, TODAY)
+        self.assertEqual(kept, {})
+        self.assertEqual(len(notes), 2)
+
+    def test_1_llm_cannot_override_a_rejected_weight(self):
+        with mock.patch("core.services.llm_quote.is_enabled", return_value=True), \
+                mock.patch("core.services.llm_quote.extract",
+                           return_value=({"weight": 30000.0}, "", NO_UNMATCHED)):
+            res = quote_nl.understand("Cape Town to Joburg 30 tons of cement and 25 tons of lime", today=TODAY)
+        self.assertNotIn("weight", res.extracted)
+        self.assertTrue(any("more than one weight" in n for n in res.not_understood))
+
+    def test_2_dates_take_the_nearest_preceding_cue(self):
+        p = qp.preparse("From Kimberley to De Aar 18 tons scrap metal, pickup Friday deliver Saturday", today=TODAY)
+        self.assertEqual((p.fields["pickup_date"], p.fields["delivery_date"]), ("2026-10-09", "2026-10-10"))
+        p = qp.preparse("Saterdag oplaai, Maandag aflewer", today=TODAY)
+        self.assertEqual((p.fields["pickup_date"], p.fields["delivery_date"]), ("2026-10-10", "2026-10-12"))
+        p = qp.preparse("deliver Friday, pickup Monday", today=TODAY)
+        self.assertNotIn("delivery_date", p.fields)
+        self.assertIn("delivery date is before pickup date", p.not_understood)
+
+    @override_settings(QUOTE_NL_SKIP_LLM_WHEN_RULES_SUFFICE=False)
+    def test_3_no_client_name_reaches_the_model_in_any_turn(self):
+        customers = [{"id": 12, "name": "Clover Industries Ltd"}, {"id": 15, "name": "Astral Foods Ltd"}]
+        history = [{"role": "user", "content": "for Astral 18 ton milk Bethlehem to Joburg"},
+                   {"role": "assistant", "content": "Filled: 18 t milk; client Clover Industries Ltd. Ready to price."},
+                   {"role": "user", "text": "Clover wants it Monday"}]
+        with mock.patch("core.services.llm_quote.is_enabled", return_value=True), \
+                mock.patch("core.services.llm_quote.extract", return_value=({}, "", NO_UNMATCHED)) as ex:
+            quote_nl.understand("change it to Lichtenburg please, usual Astral pallets", history=history,
+                                current_fields={"client": "Clover Industries Ltd", "customer": 12,
+                                                "cargo_description": "Clover milk"},
+                                customers=customers, today=TODAY)
+        sent = json.dumps([ex.call_args.args, ex.call_args.kwargs.get("detected_language")]).lower()
+        for word in ("clover", "astral"):
+            self.assertNotIn(word, sent)
+        self.assertNotIn('"customer"', sent)
+        self.assertIn("lichtenburg", sent)
+
+    def test_5_recent_past_date_is_asked_not_rolled_over(self):
+        p = qp.preparse("Joburg to Cape Town 30 ton bricks, pickup 2 October", today=TODAY)
+        self.assertNotIn("pickup_date", p.fields)
+        self.assertIn("2 Oct is in the past — which date?", p.not_understood)
+        self.assertEqual(qp.preparse("pickup 15 January", today=TODAY).fields["pickup_date"], "2027-01-15")
+        self.assertEqual(quote_nl.localise_note("2 Oct is in the past — which date?", "af"),
+                         "2 Okt is verby — watter datum?")
+
+    def test_6_two_weights_fill_nothing(self):
+        p = qp.preparse("Cape Town to Joburg 30 tons of cement and 25 tons of lime", today=TODAY)
+        self.assertNotIn("weight", p.fields)
+        self.assertTrue(p.not_understood)
+
+    def test_7_border_posts_only_real_sa_neighbour_posts(self):
+        p = qp.preparse("Beitbridge to Lusaka 30 ton fertiliser via Chirundu", today=TODAY)
+        self.assertEqual(p.fields["pickup_location"], "Beitbridge")
+        self.assertNotIn("border_post", p.fields)
+        p = qp.preparse("Lubumbashi to Durban via Kasumbalesa and Beitbridge, 28 ton copper", today=TODAY)
+        self.assertEqual(p.fields["border_post"], "Beitbridge")
+        fields, meta = llm_quote.validate_extraction(llm_payload(border_post="Narnia Gate"), today=TODAY)
+        self.assertNotIn("border_post", fields)
+        self.assertNotIn("international", fields)
+        with mock.patch("core.services.llm_quote.is_enabled", return_value=True), \
+                mock.patch("core.services.llm_quote.extract",
+                           return_value=({"international": True, "pickup_location": "Springs",
+                                          "delivery_location": "Nigel"}, "", NO_UNMATCHED)):
+            res = quote_nl.understand("Springs to Nigel, some stuff", today=TODAY)
+        self.assertNotIn("international", res.extracted)
+
+    def test_8_money_and_volgende_week(self):
+        self.assertEqual(quote_nl._money(24.1), "R 24,10")
+        self.assertEqual(quote_nl._money(1250), "R 1 250,00")
+        with mock.patch("core.services.llm_quote.is_enabled", return_value=False):
+            res = quote_nl.understand("Diesel is R24.10 a litre, 28 ton coal Middelburg to Richards Bay", today=TODAY)
+        self.assertIn("diesel R 24,10/L", res.reply)
+        p = qp.preparse("26 ton koring van Swellendam na Kaapstad volgende week Woensdag", today=TODAY)
+        self.assertEqual(p.fields["pickup_date"], "2026-10-14")
+        self.assertFalse(any("week" in n for n in p.not_understood))
+
+    def test_8_cargo_keeps_full_nouns(self):
+        for text, cargo in [("24 ton chicken feed Standerton to Durban", "chicken feed"),
+                            ("7 ton maize meal Polokwane to Giyani", "maize meal"),
+                            ("22 ton of paper rolls Joburg to Durban", "paper rolls"),
+                            ("28 tons of copper cathodes Lubumbashi to Durban", "copper cathodes"),
+                            ("agt-en-twintig ton staalrolle van Joburg na Durban", "steel coils")]:
+            with self.subTest(text=text):
+                self.assertEqual(qp.preparse(text, today=TODAY).fields["cargo_description"], cargo)
+
+
+@mock.patch("core.services.llm_quote.is_enabled", return_value=False)
+class VerifierEndpointTests(TestCase):
+    def setUp(self):
+        from core.models import VehicleType
+        self.client = APIClient()
+        self.company = Company.objects.create(company_name="Verify Co")
+        self.user = User.objects.create_user(username="verify", email="verify@example.com", password="x")
+        self.user.company = self.company
+        self.user.save()
+        self.client.force_authenticate(user=self.user)
+        # A type the company has, with no vehicle free today.
+        VehicleType.objects.create(company=self.company, name="Superlink Tautliner", capacity=34,
+                                   max_distance=2000, base_rate=20)
+
+    def _chat(self, message, **extra):
+        return self.client.post("/api/v1/ai/chat-quote/", {"message": message, "history": [], "current_fields": {},
+                                                           **extra}, format="json")
+
+    def test_4_unmatched_truck_returns_hint_not_a_dialog(self, _):
+        r = self._chat("34 ton steel Joburg na Durban, lowbed", detected_language="af")
+        self.assertIsNone(r.data["pending_entity"])
+        self.assertEqual((r.data["vehicle_hint"], r.data["vehicle_hint_label"]), ("lowbed", "Lowbed"))
+        self.assertTrue(r.data["reply"].startswith("Ingevul:"))
+
+    def test_4_truck_word_matches_types_without_available_vehicles(self, _):
+        r = self._chat("34 ton steel Joburg to Durban, superlink")
+        self.assertEqual(r.data["extracted_fields"].get("vehicle_type"), "Superlink Tautliner")
+        self.assertIsNone(r.data["pending_entity"])
+
+    def test_1_endpoint_never_invents_from_the_regex(self, _):
+        r = self._chat("Durban to Joburg 900 ton sand")
+        self.assertNotIn("weight", r.data["extracted_fields"])
+        self.assertTrue(any("900 t" in n for n in r.data["not_understood"]))
+        r = self._chat("Joburg to Cape Town 30 ton bricks, pickup 2 October")
+        self.assertNotIn("pickup_date", r.data["extracted_fields"])
+        self.assertTrue(any("in the past" in n for n in r.data["not_understood"]))
+
+
+@mock.patch.dict("os.environ", {"OPENAI_API_KEY": "sk-test"})
+class VerifierVoiceTests(TestCase):
+    def _post(self):
+        from core.views_ai_quote import AIVoiceQuoteView
+        req = APIRequestFactory().post("/api/v1/ai/voice-quote/", {
+            "audio": SimpleUploadedFile("r.m4a", b"x" * 2000, content_type="audio/m4a")})
+        force_authenticate(req, user=mock.Mock(is_authenticated=True))
+        return AIVoiceQuoteView.as_view()(req)
+
+    @mock.patch("openai.OpenAI")
+    def test_silence_on_first_pass_skips_second(self, oai):
+        oai.return_value.audio.transcriptions.create.return_value = _tr("", [-0.9], no_speech=0.95)
+        self.assertEqual(self._post().status_code, 422)
+        self.assertEqual(oai.return_value.audio.transcriptions.create.call_count, 1)
+
+    @mock.patch("openai.OpenAI")
+    def test_whisper_outro_hallucinations_rejected(self, oai):
+        for text in ("Thank you for watching!", "Thanks for watching.", "Dankie vir kyk.", "Bye. Bye."):
+            with self.subTest(text=text):
+                oai.return_value.audio.transcriptions.create.return_value = _tr(text, [-0.05])
+                self.assertEqual(self._post().status_code, 422)
+        oai.return_value.audio.transcriptions.create.return_value = _tr(
+            "Thank you, 28 ton steel Joburg to Durban", [-0.05])
+        self.assertEqual(self._post().status_code, 200)
+
+    @mock.patch("openai.OpenAI")
+    def test_502_hides_provider_text(self, oai):
+        import openai as openai_module
+        oai.return_value.audio.transcriptions.create.side_effect = openai_module.OpenAIError("req_abc123 internal")
+        r = self._post()
+        self.assertEqual(r.status_code, 502)
+        self.assertNotIn("req_abc123", r.data["error"])

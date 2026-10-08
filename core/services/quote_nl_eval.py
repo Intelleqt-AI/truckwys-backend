@@ -7,18 +7,37 @@ from typing import Any, Dict, List
 from core.services.quote_preparse import preparse
 
 
+def _match(key, want, got):
+    """Exact, except: a list (other than stops) lists acceptable values; place
+    and text values compare case-insensitively; numbers to 0.01."""
+    if isinstance(want, list) and key != "stops":
+        return any(_match(key, w, got) for w in want)
+    if isinstance(want, bool) or want is None:
+        return got is want
+    if isinstance(want, (int, float)):
+        try:
+            return abs(float(got) - float(want)) < 0.01 and not isinstance(got, bool)
+        except (TypeError, ValueError):
+            return False
+    if isinstance(want, str) and isinstance(got, str):
+        return want.strip().lower() == got.strip().lower()
+    if isinstance(want, list) and isinstance(got, list):
+        return [str(x).lower() for x in want] == [str(x).lower() for x in got]
+    return want == got
+
+
 def evaluate(cases: List[Dict[str, Any]], today) -> Dict[str, Any]:
     fields_total = fields_ok = 0
     cases_ok = 0
     per_field: Dict[str, List[int]] = {}
     failures = []
     for c in cases:
-        p = preparse(c["text"], today=today, customers=c.get("customers"))
+        p = preparse(c["text"], today=today, customers=c.get("customers"), vehicle_types=c.get("fleet"))
         got = dict(p.fields)
         got["vehicle_hint"] = p.vehicle_hint
         errs = []
         for k, v in c.get("expect", {}).items():
-            ok = got.get(k) == v
+            ok = _match(k, v, got.get(k))
             per_field.setdefault(k, [0, 0])
             per_field[k][0] += ok
             per_field[k][1] += 1
