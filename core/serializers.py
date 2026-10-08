@@ -250,9 +250,6 @@ class SelfProfileSerializer(UserSerializer):
                 'Change your password from Security settings (this verifies your '
                 'current password first), not here.'
             ]
-        start, end = get('contract_start'), get('contract_end')
-        if start and end and end < start:
-            errors['contract_end'] = 'The contract ends before it starts.'
         if errors:
             raise serializers.ValidationError(errors)
         return attrs
@@ -308,9 +305,6 @@ class CustomerSerializer(serializers.ModelSerializer):
                     attrs[field] = _validate_identifier(attrs[field], kind, country)
                 except serializers.ValidationError as e:
                     errors[field] = e.detail
-        start, end = get('contract_start'), get('contract_end')
-        if start and end and end < start:
-            errors['contract_end'] = 'The contract ends before it starts.'
         if errors:
             raise serializers.ValidationError(errors)
         return attrs
