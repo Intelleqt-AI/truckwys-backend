@@ -127,6 +127,24 @@ class Load(models.Model):
     quoted_cost_floor = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     quoted_margin_pct = models.DecimalField(max_digits=9, decimal_places=2, null=True, blank=True)
 
+    # --- Return-load linking (trip economics) --------------------------------
+    # A return load (backhaul) points at the outbound load whose truck it
+    # brings home: one return per outbound, pairs only (a return is never
+    # itself an outbound with its own return). Same company always; see
+    # core.services.return_loads for the rules. While linked, neither leg's
+    # estimate carries an empty return (the truck came back loaded).
+    return_of = models.OneToOneField('self', on_delete=models.SET_NULL, null=True, blank=True,
+                                     related_name='return_load')
+    RETURN_LINK_SOURCES = [('manual', 'Linked by a user'), ('tms', 'Linked by the TMS'),
+                           ('convert', 'Linked when booking the quote')]
+    return_link_source = models.CharField(max_length=10, choices=RETURN_LINK_SOURCES, blank=True, default='')
+    return_linked_at = models.DateTimeField(null=True, blank=True)
+    return_linked_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True,
+                                         blank=True, related_name='+')
+    # The outbound is waiting for a return load (set when booking; cleared
+    # when one is linked). Drives "find a return load" prompts only.
+    expecting_return = models.BooleanField(default=False)
+
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name='loads_created')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

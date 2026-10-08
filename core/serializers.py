@@ -542,6 +542,8 @@ LOAD_ECONOMICS_READ_ONLY = (
     'costing_source', 'costing_inputs', 'costing_snapshot', 'cost_floor', 'empty_return_assumed',
     'fuel_price_used', 'fuel_price_source', 'fuel_zone', 'fuel_effective_from', 'fuel_litres',
     'priced_vehicle_type', 'costed_at', 'quoted_price', 'quoted_cost_floor', 'quoted_margin_pct',
+    # Linked only through POST loads/{id}/link-return/ (validated) or the TMS.
+    'return_of', 'return_link_source', 'return_linked_at', 'return_linked_by',
 )
 
 

@@ -2452,7 +2452,10 @@ class VehicleLogViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         serializer.save(user=self.request.user)
 
 
-class LoadViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
+from core.views_trip_economics import LoadTripEconomicsMixin  # noqa: E402
+
+
+class LoadViewSet(LoadTripEconomicsMixin, CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
     # Actual fuel: approved FUEL expenses on the load's trips (one subquery,
     # not a query per row). Read by LoadSerializer.fuel_cost_actual.
     queryset = Load.objects.all().select_related('company').annotate(
