@@ -1009,16 +1009,29 @@ class TripCostView(APIView):
         actual_cost = expenses.aggregate(total=Sum(EXPENSE_EXCL_VAT))['total'] or Decimal('0.00')
         input_vat = expenses.aggregate(total=Sum('vat_amount'))['total'] or Decimal('0.00')
 
-        modelled_cost = None
-        distance = trip.distance_km or trip.estimated_distance_km
-        if distance and distance > 0:
+        # ESTIMATE (trip economics): the load's own compute() costing, without
+        # the empty return when a return load is linked; the 1,3x standard
+        # model only for a legacy load / trip with no costing (labelled).
+        from core.services import trip_economics as te
+        modelled_cost, estimate_basis, estimate_label, economics = None, 'unknown', te.BASIS_LABELS['unknown'], None
+        if trip.load_id:
+            est = te.estimate(trip.load)
+            modelled_cost, estimate_basis, estimate_label = est['estimated_cost'], est['basis'], est['label']
             try:
-                from core.services.margin_calculator import calculate_true_margin
-                modelled_cost = calculate_true_margin(
-                    {'distance_km': float(distance)}, truck_type='articulated',
-                    load_type='general', quote_price=Decimal('0')).true_cost
+                economics = te.economics_for_load(trip.load)
             except Exception:
-                modelled_cost = None
+                economics = None
+        else:
+            distance = trip.distance_km or trip.estimated_distance_km
+            if distance and distance > 0:
+                try:
+                    from core.services.margin_calculator import calculate_true_margin
+                    modelled_cost = calculate_true_margin(
+                        {'distance_km': float(distance)}, truck_type='articulated',
+                        load_type='general', quote_price=Decimal('0')).true_cost
+                    estimate_basis, estimate_label = 'legacy_deadhead', te.BASIS_LABELS['legacy_deadhead']
+                except Exception:
+                    modelled_cost = None
 
         if expense_count:
             cost_basis, cost_used = 'actual', actual_cost
@@ -1057,6 +1070,10 @@ class TripCostView(APIView):
             'estimated_fuel_cost': float(fuel_cost),
             'actual_cost': float(actual_cost) if expense_count else None,
             'estimated_cost': float(modelled_cost) if modelled_cost is not None else None,
+            'estimate_basis': estimate_basis,
+            'estimate_label': estimate_label,
+            # The load's (or its return pair's) full P&L view.
+            'economics': economics,
             'cost': float(cost_used),
             'cost_basis': cost_basis,
             'revenue': float(revenue),
@@ -1436,7 +1453,8 @@ class RouteAnalyticsView(APIView):
                 delivery_location=r['delivery_location'],
                 pickup_date__gte=from_date,
                 pickup_date__lte=to_date
-            ).only('id', 'total_amount', 'distance'))
+            ).only('id', 'total_amount', 'distance', 'trip_type', 'return_of', 'costing_snapshot',
+                    'empty_return_assumed'))
             econ = list(load_economics(company, route_loads).values())
             trip_count = r['trip_count']
 

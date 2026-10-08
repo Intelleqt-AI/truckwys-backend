@@ -1,6 +1,6 @@
 """Django signals for webhook dispatching, activity tracking, and audit logging."""
 
-from django.db.models.signals import post_save, post_delete, pre_save
+from django.db.models.signals import post_save, post_delete, pre_delete, pre_save
 from django.dispatch import receiver
 from core.formatting import format_zar
 
@@ -895,3 +895,63 @@ def audit_driver_delete(sender, instance, **kwargs):
         'driver_name': getattr(instance, 'driver_name', ''),
         'driver_id': getattr(instance, 'driver_id', ''),
     })
+
+
+# ---------------------------------------------------------------------------
+# Trip economics (2026-10): refresh a load's (and its return pair's) cached
+# estimate and learning actuals when anything that feeds them changes. Runs
+# after commit, idempotent (core.services.trip_economics.recompute).
+# ---------------------------------------------------------------------------
+
+def _recompute_after_commit(load_ids):
+    ids = [i for i in load_ids if i]
+    if not ids:
+        return
+    from django.db import transaction
+
+    def run():
+        from core.services.trip_economics import recompute
+        recompute(ids)
+    transaction.on_commit(run)
+
+
+def _expense_load_ids(expense):
+    ids = [getattr(expense, 'load_id', None)]
+    trip_id = getattr(expense, 'trip_id', None)
+    if trip_id:
+        from core.models import Trip
+        ids.append(Trip.objects.filter(pk=trip_id).values_list('load_id', flat=True).first())
+    return ids
+
+
+@receiver(post_save, sender='core.Expense')
+@receiver(post_delete, sender='core.Expense')
+def trip_economics_expense_changed(sender, instance, **kwargs):
+    _recompute_after_commit(_expense_load_ids(instance))
+
+
+@receiver(post_save, sender='core.Invoice')
+@receiver(post_delete, sender='core.Invoice')
+def trip_economics_invoice_changed(sender, instance, **kwargs):
+    _recompute_after_commit(_expense_load_ids(instance))
+
+
+@receiver(post_save, sender='core.CreditNote')
+def trip_economics_credit_note_changed(sender, instance, **kwargs):
+    from core.models import Invoice
+    inv = Invoice.objects.filter(pk=instance.invoice_id).values('load_id', 'trip__load_id').first() or {}
+    _recompute_after_commit([inv.get('load_id'), inv.get('trip__load_id')])
+
+
+@receiver(post_save, sender='core.Load')
+def trip_economics_load_changed(sender, instance, **kwargs):
+    _recompute_after_commit([instance.pk, getattr(instance, 'return_of_id', None)])
+
+
+@receiver(pre_delete, sender='core.Load')
+def trip_economics_load_deleted(sender, instance, **kwargs):
+    # The partner leaves the pair (return_of SET NULL): refresh it after.
+    from core.models import Load
+    partners = [instance.return_of_id] + list(Load.objects.filter(return_of_id=instance.pk)
+                                              .values_list('pk', flat=True))
+    _recompute_after_commit(partners)

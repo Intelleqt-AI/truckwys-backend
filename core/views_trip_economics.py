@@ -77,10 +77,18 @@ class LoadTripEconomicsMixin:
                          'candidates': rows})
 
     def _pair_body(self, outbound_id, return_id, warnings):
-        body = {'linked': True, 'outbound_id': outbound_id, 'return_id': return_id, 'warnings': warnings}
-        try:
-            from core.services.trip_economics import economics_for_load_id
-            body['economics'] = economics_for_load_id(outbound_id)
-        except ImportError:
-            pass
-        return body
+        from core.services.trip_economics import economics_for_load_id
+        return {'linked': True, 'outbound_id': outbound_id, 'return_id': return_id, 'warnings': warnings,
+                'economics': economics_for_load_id(outbound_id)}
+
+    @action(detail=True, methods=['get'], url_path='economics')
+    def economics(self, request, pk=None):
+        """GET /loads/{id}/economics/: the load's P&L, or its return pair's
+        (revenue of both, actual vs estimated cost per leg, margin per load
+        and combined, quoted vs actual margin)."""
+        from core.services.trip_economics import economics_for_load
+        from core.services.trip_costing import costing_summary
+        load = self.get_object()
+        body = economics_for_load(load)
+        body['costing'] = costing_summary(load)
+        return Response(body)

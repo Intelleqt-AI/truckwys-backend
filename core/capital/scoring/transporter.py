@@ -157,7 +157,8 @@ def _margin(company, a: date):
                      .filter(Q(actual_delivered_at__date__gt=start, actual_delivered_at__date__lte=a)
                              | Q(actual_delivered_at__isnull=True, delivery_date__date__gt=start,
                                  delivery_date__date__lte=a))
-                     .only('id', 'distance', 'total_amount'))
+                     .only('id', 'distance', 'total_amount', 'trip_type', 'return_of', 'costing_snapshot',
+                           'empty_return_assumed'))
         if not loads:
             return unknown
         ids = [l.pk for l in loads]

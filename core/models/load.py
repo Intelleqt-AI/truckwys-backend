@@ -144,6 +144,12 @@ class Load(models.Model):
     # The outbound is waiting for a return load (set when booking; cleared
     # when one is linked). Drives "find a return load" prompts only.
     expecting_return = models.BooleanField(default=False)
+    # Cached estimate (core.services.trip_economics.recompute, signals): the
+    # pair-aware estimated cost and how it was worked out. Reports compute
+    # live from the same function; this is for lists and the app.
+    estimated_cost = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    estimate_basis = models.CharField(max_length=30, blank=True, default='')
+    economics_updated_at = models.DateTimeField(null=True, blank=True)
 
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name='loads_created')
     created_at = models.DateTimeField(auto_now_add=True)

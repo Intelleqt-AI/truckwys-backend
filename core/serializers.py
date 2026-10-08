@@ -544,6 +544,7 @@ LOAD_ECONOMICS_READ_ONLY = (
     'priced_vehicle_type', 'costed_at', 'quoted_price', 'quoted_cost_floor', 'quoted_margin_pct',
     # Linked only through POST loads/{id}/link-return/ (validated) or the TMS.
     'return_of', 'return_link_source', 'return_linked_at', 'return_linked_by',
+    'estimated_cost', 'estimate_basis', 'economics_updated_at',
 )
 
 

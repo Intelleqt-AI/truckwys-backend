@@ -537,7 +537,7 @@ class TransporterScoreTests(TestCase):
         co = make_company(months_old=30, subscription_status='active')
         cust = make_customer(co)
         make_load(co, cust, delivered=timezone.now() - timedelta(days=10), distance=D('500'))
-        with mock.patch('core.services.reports._modelled_cost', return_value=D('5000')):
+        with mock.patch('core.services.trip_economics._legacy_estimate', return_value=D('5000')):
             out = tscore.score_transporter(co, self.policy)
         self.assertEqual(out.inputs['margin']['basis'], 'modelled')
         self.assertEqual(self.comp(out, 'margin'), D(7))
