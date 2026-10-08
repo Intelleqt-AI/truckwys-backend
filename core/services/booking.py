@@ -6,9 +6,11 @@ POST /quotes/{id}/convert_to_load/ (QuoteViewSet.convert_to_load) uses this:
 - the same send-guard rules: a DRAFT quote (never through the send guard)
   with a blocking warning can't be booked (400 quote_send_blocked);
   DECLINED / EXPIRED quotes can't be booked (409 quote_not_bookable);
-- `return_of_load_id`: book this job as the return of an existing outbound
-  (validated like POST loads/{id}/link-return/; an impossible pair books
-  nothing, 400 {code});
+- `return_of_load_id`: book this job as the return of an existing outbound,
+  or `return_load_id`: an existing load brings this job's truck home (the
+  job is the outbound) — linked in the same transaction, validated like
+  POST loads/{id}/link-return/ (warnings returned; an impossible pair books
+  nothing, 400 {code}; both fields at once = 400 both_directions);
 - `expect_return: true`: flag the new job as an outbound waiting for a
   return load;
 - the response adds `booking`: candidates both ways, the invoice preview, the
@@ -48,29 +50,59 @@ def _company_loads(request):
     return Load.objects.filter(company=resolve_user_company(request.user))
 
 
+# Which body field links which way (booking-preview tells clients per list):
+#   return_of_load_id  the NEW job is the return of that existing outbound
+#   return_load_id     that existing load brings the NEW job's truck home
+LINK_FIELDS = {'outbound_candidates': 'return_of_load_id', 'return_candidates': 'return_load_id'}
+
+
 def requested_outbound(request, view=None):
-    """(outbound | None, refusal | None) for body.return_of_load_id."""
-    raw = request.data.get('return_of_load_id') if hasattr(request.data, 'get') else None
-    if raw in (None, ''):
-        return None, None
-    try:
-        outbound = _company_loads(request).filter(pk=int(raw)).first()
-    except (TypeError, ValueError):
-        outbound = None
-    if outbound is None:
-        return None, Response({'code': 'not_found', 'error': 'Outbound load not found.'},
-                              status=status.HTTP_404_NOT_FOUND)
-    return outbound, None
+    """(target | None, refusal | None) for body.return_of_load_id (target
+    ('return_of', outbound)) or body.return_load_id (('return', ret)); both
+    at once is refused."""
+    data = request.data if hasattr(request.data, 'get') else {}
+    raw_out, raw_ret = data.get('return_of_load_id'), data.get('return_load_id')
+    if raw_out not in (None, '') and raw_ret not in (None, ''):
+        return None, Response({'code': 'both_directions',
+                               'error': 'Send return_of_load_id or return_load_id, not both.'},
+                              status=status.HTTP_400_BAD_REQUEST)
+    for raw, role, label in ((raw_out, 'return_of', 'Outbound'), (raw_ret, 'return', 'Return')):
+        if raw in (None, ''):
+            continue
+        try:
+            other = _company_loads(request).filter(pk=int(raw)).first()
+        except (TypeError, ValueError):
+            other = None
+        if other is None:
+            return None, Response({'code': 'not_found', 'error': f'{label} load not found.'},
+                                  status=status.HTTP_404_NOT_FOUND)
+        return (role, other), None
+    return None, None
 
 
-def link_or_flag(request, load, outbound):
-    """Link the new job as `outbound`'s return (LinkError propagates: the
-    caller rolls the booking back), or flag it as expecting a return."""
+def _already_linked(load, target):
+    role, other = target
+    if role == 'return_of':
+        return load.return_of_id == other.pk
+    return other.return_of_id == load.pk
+
+
+def link_or_flag(request, load, target):
+    """Link the new job with `target` (('return_of', outbound): the job is
+    its return; ('return', ret): ret brings the job's truck home), with
+    link-return's validation and warnings (LinkError propagates: the caller
+    rolls the booking back), or flag it as expecting a return."""
     from core.models import Load
     from core.services.return_loads import link_return
-    if outbound is not None:
-        warnings = link_return(outbound, load, user=request.user, source='convert')
-        return {'linked': True, 'outbound_id': outbound.pk, 'warnings': warnings}
+    if target is not None:
+        role, other = target
+        if role == 'return_of':
+            warnings = link_return(other, load, user=request.user, source='convert')
+            return {'linked': True, 'direction': 'return_of', 'outbound_id': other.pk, 'return_id': load.pk,
+                    'warnings': warnings}
+        warnings = link_return(load, other, user=request.user, source='convert')
+        return {'linked': True, 'direction': 'return', 'outbound_id': load.pk, 'return_id': other.pk,
+                'warnings': warnings}
     if _truthy(request.data.get('expect_return')) and load.trip_type == 'ONE_WAY':
         Load.objects.filter(pk=load.pk).update(expecting_return=True)
         return {'linked': False, 'expecting_return': True}
@@ -101,6 +133,8 @@ def booking_block(load, *, created, link=None, days=None):
         'invoice_preview': invoice_preview(load),
         'costing': costing_summary(load),
         'economics': economics_for_load(load),
+        # The convert_to_load field to send for a pick from each list.
+        'link_fields': LINK_FIELDS,
     }
 
 
@@ -110,16 +144,16 @@ def booking_response(request, quote, load, *, created, view=None, link=None):
     if not created:
         # Idempotent repeat: a requested link not made yet is made now
         # (impossible -> reported in return_link, the job stays as it is).
-        outbound, refusal = requested_outbound(request, view)
+        target, refusal = requested_outbound(request, view)
         if refusal is not None:
             return refusal
-        if outbound is not None and load.return_of_id != outbound.pk:
+        if target is not None and not _already_linked(load, target):
             from core.services.return_loads import LinkError
             try:
-                link = link_or_flag(request, load, outbound)
+                link = link_or_flag(request, load, target)
             except LinkError as e:
                 link = {'linked': False, 'error': e.code, 'detail': e.message}
-        elif outbound is None and _truthy(request.data.get('expect_return')) and not load.expecting_return:
+        elif target is None and _truthy(request.data.get('expect_return')) and not load.expecting_return:
             link = link_or_flag(request, load, None)
     load = Load.objects.select_related('company', 'customer', 'vehicle', 'return_of').get(pk=load.pk)
     days = request.query_params.get('candidate_days') if hasattr(request, 'query_params') else None
@@ -198,6 +232,7 @@ def booking_preview_response(request, quote):
         'outbound_candidates': outbound_candidates(load, **kw) if one_way else [],
         'invoice_preview': invoice_preview(load),
         'costing': costing_summary(load),
+        'link_fields': LINK_FIELDS,
     }
     return Response({'preview': True, 'can_book': refusal is None,
                      'blocked': refusal.data if refusal is not None else None,

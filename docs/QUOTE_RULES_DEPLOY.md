@@ -255,3 +255,8 @@ per-company daily cap `TMS_ROUTING_DAILY_CAP` (default 200, the rest wait until 
   answers with its job's block, `preview: false`). The preview's invoice line reads "Transport (A → B)" (no load
   number yet); amounts are exactly what delivery raises.
 - `POST /quotes/analyze/` adds `return_load_history` (same shape as the pricing analysis).
+- `convert_to_load` also accepts `return_load_id` (an existing load that brings the new job's truck home: the new job
+  is the OUTBOUND), linked in the same transaction with link-return's validation / warnings; `return_of_load_id`
+  is the other direction; both at once = 400 `both_directions`. `booking.return_link` adds `direction`
+  (`return_of` | `return`), `outbound_id`, `return_id`. `booking.link_fields` = `{outbound_candidates:
+  "return_of_load_id", return_candidates: "return_load_id"}` (also in booking-preview).

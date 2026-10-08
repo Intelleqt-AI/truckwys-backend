@@ -148,3 +148,44 @@ class BookingPreviewTests(BookingTests):
         c = APIClient()
         c.force_authenticate(other_user)
         self.assertEqual(c.get(f'/api/v1/quotes/{q.id}/booking-preview/').status_code, 404)
+
+
+class BookAsOutboundTests(BookingTests):
+    def test_return_load_id_books_job_as_outbound_atomically(self):
+        ret = make_load(self.co, self.cust, 'BO-RET', pickup='Durban', delivery='Johannesburg', pickup_in_days=5)
+        q = priced_quote(self.co, self.cust, 'BO-1', vt=self.vt, origin='Johannesburg', destination='Durban')
+        preview = self.api.get(f'/api/v1/quotes/{q.id}/booking-preview/').json()['booking']
+        self.assertEqual(preview['link_fields'], {'outbound_candidates': 'return_of_load_id',
+                                                  'return_candidates': 'return_load_id'})
+        self.assertIn(ret.id, [c['load_id'] for c in preview['return_candidates']])
+        r = self.book(q, {'return_load_id': ret.id})
+        self.assertEqual(r.status_code, 201, r.content)
+        link = r.json()['booking']['return_link']
+        self.assertEqual((link['direction'], link['outbound_id'], link['return_id']),
+                         ('return', r.json()['id'], ret.id))
+        ret.refresh_from_db()
+        self.assertEqual((ret.return_of_id, ret.return_link_source), (r.json()['id'], 'convert'))
+        self.assertEqual(r.json()['booking']['return_load_id'], ret.id)
+        self.assertTrue(r.json()['booking']['economics']['pair'])
+
+    def test_impossible_return_books_nothing_and_both_fields_refused(self):
+        q = priced_quote(self.co, self.cust, 'BO-2', vt=self.vt)
+        rt = make_load(self.co, self.cust, 'BO-RT', trip_type='ROUND_TRIP')
+        r = self.book(q, {'return_load_id': rt.id})
+        self.assertEqual((r.status_code, r.json()['code']), (400, 'round_trip'))
+        self.assertFalse(Load.objects.filter(quote=q).exists())
+        a = make_load(self.co, self.cust, 'BO-A')
+        r = self.book(q, {'return_load_id': a.id, 'return_of_load_id': rt.id})
+        self.assertEqual((r.status_code, r.json()['code']), (400, 'both_directions'))
+        foreign = make_load(self.other, self.cust_o, 'BO-FOR')
+        self.assertEqual(self.book(q, {'return_load_id': foreign.id}).status_code, 404)
+
+    def test_repeat_call_can_add_the_return(self):
+        ret = make_load(self.co, self.cust, 'BO-RET2', pickup='Durban', delivery='Johannesburg', pickup_in_days=5)
+        q = priced_quote(self.co, self.cust, 'BO-3', vt=self.vt)
+        self.book(q)
+        r = self.book(q, {'return_load_id': ret.id})
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()['booking']['return_link']['linked'])
+        r = self.book(q, {'return_load_id': ret.id})          # idempotent
+        self.assertIsNone(r.json()['booking']['return_link'])
