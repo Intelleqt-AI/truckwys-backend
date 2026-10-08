@@ -171,6 +171,10 @@ def fmt_num(v, dp=0):
     return ('−' if float(v) < 0 and txt.strip('0, ') else '') + txt
 
 
+def iso_date(d):
+    return d.isoformat() if hasattr(d, 'isoformat') else (str(d) if d else None)
+
+
 def round_price_up(price):
     """Offered prices in whole amounts: UP to the next R 50 below R 20 000,
     else the next R 100 (never below the price it was built from)."""
@@ -967,7 +971,12 @@ def build_inputs(payload, company, now=None, *, diesel_override=None):
                'inputs': {'load_kg': load_kg},
                'diesel': diesel,
                'driver_rate_source': rate_source, 'now': now,
-               'driver_rate_detail': allowance_detail(allowance, international)}
+               'driver_rate_detail': allowance_detail(allowance, international),
+               'driver_rate': {'per_night': rate, 'source': rate_source,
+                               'kind': ('company_setting' if rate_source == 'company_setting'
+                                        else (allowance or {}).get('allowance_type')),
+                               'international': international,
+                               'effective_from': iso_date((allowance or {}).get('effective_from'))}}
     return inputs, context
 
 
@@ -985,6 +994,7 @@ def _context_out(context):
                                   else 'no_truck_carries_the_load'),
             'operating_cost': context['operating_cost'],
             'driver_rate_detail': context.get('driver_rate_detail'),
+            'driver_rate': context.get('driver_rate'),
             'driver_rate_source': context['driver_rate_source'], 'diesel_resolution': d}
 
 
@@ -992,6 +1002,12 @@ def costing_for_payload(payload, company, now=None):
     """compute() for a builder payload, plus how each input was resolved."""
     inputs, context = build_inputs(payload, company, now)
     out = compute(inputs)
+    # The company figures the server priced with, so clients mirror them
+    # exactly (e.g. the NBCRFLI cross-border rate on an international trip).
+    out['company_figures'] = {'driver_rate': context.get('driver_rate'),
+                              'operating_cost': context.get('operating_cost'),
+                              'target_margin_pct': inputs.get('target_margin_pct'),
+                              'minimum_charge': inputs.get('minimum_charge')}
     out['inputs'] = inputs
     out['resolution'] = _context_out(context)
     return out

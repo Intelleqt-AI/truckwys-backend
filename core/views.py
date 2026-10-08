@@ -3840,16 +3840,25 @@ class RouteCalculatorView(APIView):
         # which works even when the endpoints came from a map click with no ISO. Falls
         # back to endpoint ISO / keyword matching when the route carries no country
         # sections (e.g. estimated haversine route).
-        from core.services.cross_border import _ISO_TO_INTERNAL
+        from core.services.cross_border import internal_country
         route_countries = []
         if routes_raw:
             for sec in sorted(
                 (s for s in routes_raw[0].get('sections', []) if s.get('type') == 'COUNTRY' and s.get('country_code')),
                 key=lambda s: s.get('start', 0),
             ):
-                internal = _ISO_TO_INTERNAL.get(sec['country_code'].upper())
+                internal = internal_country(sec['country_code'])
                 if internal and (not route_countries or route_countries[-1] != internal):
                     route_countries.append(internal)
+        # The pick-up / delivery point's own country counts even when the
+        # route's country sections stop short of it (e.g. a GPS point just
+        # inside Angola): never silently domestic-or-shorter.
+        if route_countries:
+            o_c, d_c = internal_country(origin_iso), internal_country(dest_iso)
+            if o_c and route_countries[0] != o_c:
+                route_countries.insert(0, o_c)
+            if d_c and route_countries[-1] != d_c:
+                route_countries.append(d_c)
 
         if len(route_countries) > 1:
             countries = route_countries
@@ -3995,6 +4004,8 @@ class RouteCalculatorView(APIView):
             }
             cross_border_breakdown = cb_costs['breakdown']
             warnings  = get_cross_border_warnings(countries)
+            border_unknown = {'countries': cb_costs.get('unknown_countries') or [],
+                              'crossings': cb_costs.get('unknown_crossings') or []}
 
         response_data = {
             'success': True,
@@ -4050,6 +4061,10 @@ class RouteCalculatorView(APIView):
             # Named line items so the quote can show what each rand is for, the
             # same way the toll line lists its plazas.
             response_data['cross_border_breakdown'] = cross_border_breakdown
+            # Countries / crossings whose costs are not on file (e.g. Angola):
+            # the border figure above leaves them out and says so.
+            response_data['border_costs_complete'] = not (border_unknown['countries'] or border_unknown['crossings'])
+            response_data['border_costs_unknown'] = border_unknown
             if warnings:
                 response_data['warnings'] = warnings
 

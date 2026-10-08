@@ -1414,3 +1414,48 @@ class RecentLocationCountryTests(_Base):
                       format='json')
         rows = {r['label']: r for r in self.api.get(self.URL).json()}
         self.assertIsNone(rows['Durban']['country_code'])
+
+
+class BrowserCheckFixTests(_Base):
+    def test_snapshot_with_unknown_tolls_shows_tolls_null_and_incomplete(self):
+        q = self.create(costing_inputs={'tolls_unknown': True})
+        body = self.api.get(f'/api/v1/quotes/{q.id}/').json()
+        self.assertIsNone(body['toll_charges'])
+        self.assertTrue(body['tolls_unknown'])
+        self.assertFalse(body['pricing_complete'])
+        self.assertIn('tolls_unknown', body['pricing_blocking'])
+        self.assertTrue(body['customer_price']['incomplete'])
+        ok = self.api.get(f'/api/v1/quotes/{self.create().id}/').json()
+        self.assertTrue(ok['pricing_complete'])
+        self.assertFalse(ok['tolls_unknown'])
+        self.assertIsNotNone(ok['toll_charges'])
+
+    def test_cost_breakdown_uses_and_returns_the_cross_border_rate(self):
+        self.company.driver_allowance_per_night = None
+        self.company.save()
+        p = {'distance_km': 900, 'duration_minutes': 1200, 'vehicle_type': 'Superlink', 'weight': 28000,
+             'toll_cost': 500, 'fuel_type': 'Diesel'}
+        dom = self.api.post('/api/v1/quotes/cost-breakdown/', p, format='json').json()
+        intl = self.api.post('/api/v1/quotes/cost-breakdown/', {**p, 'is_international': True,
+                                                               'cross_border_cost': 900}, format='json').json()
+        self.assertEqual(dom['company_figures']['driver_rate']['per_night'], 243.63)
+        self.assertEqual(dom['company_figures']['driver_rate']['kind'], 'nbcrfli')
+        self.assertEqual(intl['company_figures']['driver_rate']['per_night'], 487.05)
+        self.assertEqual(intl['company_figures']['driver_rate']['kind'], 'nbcrfli_cross_border')
+        self.assertEqual(intl['resolution']['driver_rate']['per_night'], 487.05)
+        drv = next(ln for ln in intl['lines'] if ln['key'] == 'driver')
+        self.assertEqual(drv['rate_per_night'], 487.05)
+
+    def test_angola_is_detected_and_its_border_costs_reported_unknown(self):
+        from core.services.cross_border import (calculate_cross_border_costs, detect_countries,
+                                                get_cross_border_warnings, internal_country)
+        self.assertEqual(internal_country('AGO'), 'AO')
+        self.assertEqual(detect_countries('Cape Town', 'Lubango', 'ZA', 'AO'), ['SA', 'AO'])
+        countries = ['SA', 'NA', 'AO']
+        out = calculate_cross_border_costs(countries, 3000, weight_kg=28000)
+        self.assertFalse(out['complete'])
+        self.assertEqual(out['unknown_countries'], ['AO'])
+        self.assertEqual(out['unknown_crossings'], ['NA-AO'])
+        self.assertFalse(any('AO' in b['description'] for b in out['breakdown']))
+        self.assertIn('Border costs for Angola not known: add them to the quote by hand.',
+                      get_cross_border_warnings(countries))

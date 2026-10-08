@@ -276,6 +276,8 @@ def _extract_country(location: str) -> str:
         return 'LS'
     if any(kw in loc for kw in ['MBABANE', 'MANZINI', 'ESWATINI', 'SWAZILAND']):
         return 'SZ'
+    if any(kw in loc for kw in ['LUANDA', 'LUBANGO', 'ONDJIVA', 'ANGOLA']):
+        return 'AO'
 
     return 'SA'
 
@@ -293,7 +295,56 @@ _ISO_TO_INTERNAL: dict[str, str] = {
     'MW': 'MW', 'MWI': 'MW',
     'TZ': 'TZ', 'TZA': 'TZ',
     'KE': 'KE', 'KEN': 'KE',
+    # Beyond the corridors with fees on file: detected (never dropped), but
+    # their border costs are NOT known — said so, never estimated.
+    'AO': 'AO', 'AGO': 'AO',
+    'CD': 'CD', 'COD': 'CD',
+    'CG': 'CG', 'COG': 'CG',
+    'UG': 'UG', 'UGA': 'UG',
+    'RW': 'RW', 'RWA': 'RW',
+    'BI': 'BI', 'BDI': 'BI',
+    'MG': 'MG', 'MDG': 'MG',
 }
+
+COUNTRY_NAMES: dict[str, str] = {
+    'SA': 'South Africa', 'ZW': 'Zimbabwe', 'MZ': 'Mozambique', 'BW': 'Botswana', 'NA': 'Namibia',
+    'LS': 'Lesotho', 'SZ': 'Eswatini', 'ZM': 'Zambia', 'MW': 'Malawi', 'TZ': 'Tanzania', 'KE': 'Kenya',
+    'AO': 'Angola', 'CD': 'the DR Congo', 'CG': 'the Republic of the Congo', 'UG': 'Uganda', 'RW': 'Rwanda',
+    'BI': 'Burundi', 'MG': 'Madagascar',
+}
+
+
+def internal_country(code: str):
+    """Internal 2-letter code for a TomTom ISO 2/3-letter code; an unmapped
+    2-letter code is kept as-is (detected, costs unknown); None if empty."""
+    code = (code or '').strip().upper()
+    if not code:
+        return None
+    if code in _ISO_TO_INTERNAL:
+        return _ISO_TO_INTERNAL[code]
+    return code if len(code) == 2 and code.isalpha() else None
+
+
+def country_costs_known(country: str) -> bool:
+    """True when the app has this country's transit figures (DB row or the
+    seeded table); False for e.g. Angola — then nothing is estimated."""
+    if country == 'SA' or country in _FALLBACK_WEIGHBRIDGE:
+        return True
+    try:
+        from core.models.country_transit_rate import CountryTransitRate
+        return CountryTransitRate.objects.filter(country_code=country, is_active=True).exists()
+    except Exception:
+        return False
+
+
+def corridor_fee_known(from_country: str, to_country: str) -> bool:
+    if f'{from_country}-{to_country}' in _FALLBACK_BORDER_FEES:
+        return True
+    try:
+        from core.models.border_crossing_fee import BorderCrossingFee
+        return BorderCrossingFee.get_fee(from_country, to_country) > 0
+    except Exception:
+        return False
 
 
 def detect_countries(
@@ -311,10 +362,10 @@ def detect_countries(
 
     Returns list of country codes in order, or None for domestic SA.
     """
-    origin_country = _ISO_TO_INTERNAL.get(origin_iso.upper()) if origin_iso else None
+    origin_country = internal_country(origin_iso) if origin_iso else None
     origin_country = origin_country or _extract_country(origin)
 
-    dest_country = _ISO_TO_INTERNAL.get(dest_iso.upper()) if dest_iso else None
+    dest_country = internal_country(dest_iso) if dest_iso else None
     dest_country = dest_country or _extract_country(destination)
 
     if origin_country == 'SA' and dest_country == 'SA':
@@ -329,8 +380,12 @@ def detect_countries(
     if dest_country == 'SA' and origin_country in DIRECT_ROUTES:
         return [origin_country, 'SA']
 
-    # Unknown combination — treat as domestic
-    logger.warning('Cannot determine cross-border route for %r → %r', origin, destination)
+    # Unknown combination (e.g. SA -> Angola with no route sections): still
+    # cross-border — the costs of an unmapped corridor are reported unknown,
+    # never treated as a domestic trip.
+    logger.warning('Cannot determine the full cross-border route for %r → %r', origin, destination)
+    if origin_country != dest_country:
+        return [origin_country, dest_country]
     return None
 
 
@@ -389,7 +444,13 @@ def calculate_cross_border_costs(
     vehicle_capacity_kg: float = 0,
 ) -> dict[str, Any]:
     if not countries or len(countries) <= 1:
-        return {'border_fees': 0, 'weighbridge_fees': 0, 'non_sa_tolls': 0, 'total': 0, 'breakdown': []}
+        return {'border_fees': 0, 'weighbridge_fees': 0, 'non_sa_tolls': 0, 'total': 0, 'breakdown': [],
+                'unknown_countries': [], 'unknown_crossings': [], 'complete': True}
+    # Countries / crossings without figures on file (e.g. Angola): left out
+    # of the sums and reported, never estimated with a generic rate.
+    unknown_countries = [c for c in countries if not country_costs_known(c)]
+    unknown_crossings = [f'{countries[i]}-{countries[i + 1]}' for i in range(len(countries) - 1)
+                         if not corridor_fee_known(countries[i], countries[i + 1])]
 
     # Both schedules that scale — the destination country's own charge and the
     # SA permit class — are written about the VEHICLE, not the cargo. A 20t
@@ -412,6 +473,8 @@ def calculate_cross_border_costs(
     # cost depends on the fleet, not the corridor.
     for i in range(len(countries) - 1):
         fc, tc = countries[i], countries[i + 1]
+        if f'{fc}-{tc}' in unknown_crossings:
+            continue
         fee, exact = _get_border_fee(fc, tc, banding_kg)
         if fee > 0:
             border_fees += fee
@@ -447,7 +510,7 @@ def calculate_cross_border_costs(
 
     # --- Weighbridge fees (one per non-SA country) ---
     for country in countries:
-        if country == 'SA':
+        if country == 'SA' or country in unknown_countries:
             continue
         rate = _get_country_rate(country)
         fee = rate['weighbridge']
@@ -457,7 +520,7 @@ def calculate_cross_border_costs(
     # --- Non-SA toll costs with accurate distance splitting ---
     # Use sa_border_distance_km to estimate the SA portion of the journey,
     # then distribute the remainder across non-SA countries equally.
-    non_sa_countries = [c for c in countries if c != 'SA']
+    non_sa_countries = [c for c in countries if c != 'SA' and c not in unknown_countries]
     if non_sa_countries:
         first_foreign = non_sa_countries[0]
         rate_info     = _get_country_rate(first_foreign)
@@ -494,6 +557,9 @@ def calculate_cross_border_costs(
         'non_sa_tolls':     round(non_sa_tolls, 2),
         'total':            round(total, 2),
         'breakdown':        breakdown,
+        'unknown_countries': unknown_countries,
+        'unknown_crossings': unknown_crossings,
+        'complete': not unknown_countries and not unknown_crossings,
     }
 
 
@@ -516,6 +582,10 @@ def get_cross_border_warnings(countries: list[str]) -> list[str]:
     if not countries or len(countries) <= 1:
         return []
     warnings = []
+    for c in countries:
+        if not country_costs_known(c):
+            warnings.append(f'Border costs for {COUNTRY_NAMES.get(c, c)} not known: add them to the quote '
+                            'by hand.')
     if 'ZW' in countries:
         warnings.append('Zimbabwe crossing: ensure cargo insurance and customs documentation')
     if any(c in countries for c in ['ZM', 'MW', 'TZ', 'KE']):
