@@ -233,6 +233,7 @@ class FuelClauseTests(_Base):
         self.assertAlmostEqual(body['amount_zar'], expected, places=2)
         self.assertEqual(body['description'], 'Fuel price adjustment (diesel R 29,56 → R 32,80/L)')
         self.assertFalse(body['provisional'])
+        self.assertTrue(body['reference'].startswith('Priced on diesel at R 29,56/L'))
         # Load delivered -> auto invoice carries the adjustment line.
         load = self.make_load(q, sast(2026, 10, 8, 7, 0))
         load.status = 'DELIVERED'
