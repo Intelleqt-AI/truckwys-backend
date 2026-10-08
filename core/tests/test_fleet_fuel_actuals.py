@@ -528,3 +528,71 @@ class FleetFuelApiTests(_Base):
         r = self.api.post('/api/v1/fleet/fuel-actuals/refresh/')
         self.assertEqual(r.status_code, 400)
         self.assertEqual(r.json()['error'], 'No fleet tracker connected.')
+
+
+class SnapshotAndSuggestionTests(_Base):
+    measured = PricingTests.measured
+
+    def setUp(self):
+        super().setUp()
+        from core.tests.quote_rules_fixtures import add_vehicle
+        add_vehicle(self.company, self.vt)
+        self.customer = Customer.objects.create(company=self.company, name='Acme', email='a@x.test', phone='',
+                                                address='', city='', state='', zip_code='')
+
+    def create_quote(self):
+        from core.models import Quote
+        p = {'customer': self.customer.id, 'pickup_location': 'Johannesburg', 'delivery_location': 'Durban',
+             'origin': 'JHB', 'destination': 'DBN', 'cargo_description': 'Steel', 'weight': '28000',
+             'distance': '568.4', 'vehicle_type': 'Superlink', 'estimated_duration_minutes': 440,
+             'base_rate': '20000', 'fuel_surcharge': '6500', 'toll_charges': '1043.48', 'driver_allowance': '0',
+             'total_amount': '36000', 'valid_until': str(date(2026, 11, 7))}
+        r = self.api.post('/api/v1/quotes/', p, format='json')
+        self.assertEqual(r.status_code, 201, r.content)
+        return Quote.objects.get(id=r.json()['id'])
+
+    def test_snapshot_records_the_burn_and_reopen_explains_a_remeasure(self):
+        row = self.measured(rated=40.2)
+        q = self.create_quote()
+        snap = q.costing_snapshot['rated_burn']
+        self.assertEqual(snap['value'], 40.2)
+        self.assertEqual(snap['source'], 'measured')
+        self.assertEqual(snap['label'], 'Measured by Cartrack: 40,2 L/100 km over 18 400 km (90 days)')
+        self.assertEqual(snap['measured_at'], timezone.localtime(row.computed_at).isoformat())
+        self.assertNotIn('rejections', str(q.costing_snapshot['resolution']['rated_burn']))
+        # Weekly refresh re-measures the type lower.
+        row.rated_burn_l_per_100km = 38.9
+        row.save()
+        body = self.api.post('/api/v1/quotes/cost-breakdown/', {'quote_id': q.id}, format='json').json()
+        csp = body['changes_since_priced']
+        self.assertTrue(csp['changed'])
+        self.assertLess(csp['delta_zar'], 0)
+        self.assertEqual(csp['fuel_use_change']['text'], 'Fuel use updated from Cartrack (40,2 → 38,9 L/100 km).')
+        self.assertTrue(csp['notice'].endswith('Fuel use updated from Cartrack (40,2 → 38,9 L/100 km).'))
+        self.assertTrue(csp['notice'].startswith('Costs down R '))
+        self.assertEqual(body['snapshot']['rated_burn']['value'], 40.2)
+
+    def test_reopen_without_burn_change_has_no_fuel_use_note(self):
+        self.measured(rated=40.2)
+        q = self.create_quote()
+        body = self.api.post('/api/v1/quotes/cost-breakdown/', {'quote_id': q.id}, format='json').json()
+        self.assertIsNone(body['changes_since_priced']['fuel_use_change'])
+
+    def test_burn_change_wording(self):
+        m = {'value': 40.2, 'source': 'measured'}
+        c = {'value': 42.0, 'source': 'configured'}
+        self.assertEqual(qc.burn_change(c, m)['text'], 'Fuel use now measured by Cartrack (42,0 → 40,2 L/100 km).')
+        self.assertEqual(qc.burn_change(m, c)['text'], 'Fuel use now from your figure (40,2 → 42,0 L/100 km).')
+        self.assertEqual(qc.burn_change(c, {'value': 40.0, 'source': 'configured'})['text'],
+                         'Truck fuel use changed (42,0 → 40,0 L/100 km).')
+        self.assertIsNone(qc.burn_change(m, {'value': 40.2, 'source': 'measured'}))
+        self.assertIsNone(qc.burn_change(None, m))
+
+    def test_suggestion_tie_break_uses_burn_in_use(self):
+        from core.tests.quote_rules_fixtures import add_vehicle
+        other = VehicleType.objects.create(company=self.company, name='Interlink', capacity=34, max_distance=3000,
+                                           base_rate=20, fuel_consumption_l_per_100km=40)
+        add_vehicle(self.company, other)
+        self.assertEqual(qc.suggest_vehicle(self.company, 28000).id, other.id)      # typed 40 < 42
+        self.measured(rated=36.5)                                                     # Superlink measured 36,5
+        self.assertEqual(qc.suggest_vehicle(self.company, 28000).id, self.vt.id)

@@ -83,6 +83,14 @@ class QuoteCostBreakdownView(APIView):
                     quote.total_amount, quote.cost_floor, out['floor'], quote.priced_at)
                 from core.services.quote_snapshot import fuel_lines_delta
                 out['changes_since_priced']['fuel_delta_zar'] = fuel_lines_delta(quote, costing_now=out)
+                # A re-measured truck fuel figure explains the change in words.
+                from core.services.quote_costing import burn_change, burn_snapshot
+                csp = out['changes_since_priced']
+                bc = burn_change((quote.costing_snapshot or {}).get('rated_burn'),
+                                 burn_snapshot((out.get('resolution') or {}).get('rated_burn')))
+                csp['fuel_use_change'] = bc
+                if bc and csp.get('notice'):
+                    csp['notice'] = f"{csp['notice']} {bc['text']}"
                 from core.services.quote_costing import iso
                 # Timestamps in SAST (+02:00), like every other rules timestamp.
                 out['snapshot'] = {
@@ -92,6 +100,7 @@ class QuoteCostBreakdownView(APIView):
                     'fuel_litres': quote.fuel_litres, 'priced_at': iso(quote.priced_at),
                     'cost_floor': quote.cost_floor, 'empty_return_included': quote.empty_return_included,
                     'priced_vehicle_type': quote.priced_vehicle_type_id,
+                    'rated_burn': (quote.costing_snapshot or {}).get('rated_burn'),
                 }
             else:
                 out = costing_for_payload(data, company)

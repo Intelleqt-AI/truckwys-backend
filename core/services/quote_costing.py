@@ -707,6 +707,41 @@ def resolve_rated_burn(company, vt, *, use_configured=False, now=None):
             'chosen_by': 'quote' if use_configured else ('settings' if usable else None)}
 
 
+def burn_snapshot(burn):
+    """The compact record of the rated burn a quote was priced on (stored in
+    costing_snapshot.rated_burn): value, source, label, measured_at."""
+    if not burn:
+        return None
+    m = burn.get('measured') or {}
+    return {'value': burn.get('value'), 'source': burn.get('source'), 'label': burn.get('label'),
+            'configured': burn.get('configured'),
+            'measured_at': m.get('computed_at') if burn.get('source') == 'measured' else None,
+            'measured_value': m.get('rated_burn_l_per_100km') if m.get('usable') else None}
+
+
+def burn_change(then, now):
+    """Why the truck's fuel use differs from when the quote was priced, for
+    the reopen notice; None when the figure is the same (or unknown then).
+    then/now: burn_snapshot() dicts."""
+    if not then or not now:
+        return None
+    a, b = _num(then.get('value')), _num(now.get('value'))
+    if a is None or b is None or abs(a - b) < 0.05:
+        return None
+    figs = f'({fmt_num(a, 1)} → {fmt_num(b, 1)} L/100 km)'
+    src_a, src_b = then.get('source'), now.get('source')
+    if src_a == 'measured' and src_b == 'measured':
+        text = f'Fuel use updated from Cartrack {figs}.'
+    elif src_b == 'measured':
+        text = f'Fuel use now measured by Cartrack {figs}.'
+    elif src_a == 'measured':
+        text = f'Fuel use now from your figure {figs}.'
+    else:
+        text = f'Truck fuel use changed {figs}.'
+    return {'then': a, 'now': b, 'source_then': src_a, 'source_now': src_b,
+            'measured_at_then': then.get('measured_at'), 'measured_at_now': now.get('measured_at'), 'text': text}
+
+
 def burn_warnings(costing, burn):
     """DB-side warnings about the truck's fuel figure (not in golden: they
     depend on stored tracker data). Mutates costing['warnings'] /
@@ -792,7 +827,8 @@ def suggest_vehicle(company, load_kg, cargo=None):
     best = None
     for vt in visible_vehicle_types_queryset(company).filter(id__in=own_ids):
         cap = capacity_tonnes(vt.capacity)
-        burn = _pos(vt.fuel_consumption_l_per_100km)
+        # The burn quotes on this type actually use (measured when usable).
+        burn = _pos(resolve_rated_burn(company, vt)['value'])
         if cap is None or burn is None or cap < load_t:
             continue
         if not cargo_fits_body(body_type(vt.name), cargo):

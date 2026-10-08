@@ -54,6 +54,15 @@ def snapshot_fields(costing, now):
         'cost_floor': _dec(costing['floor'], '0.01') if costing['floor'] is not None else None,
         'costing_snapshot': {k: costing.get(k) for k in SNAPSHOT_KEYS},
     }
+    # The truck fuel figure it was priced on (measured by the tracker or
+    # typed), compact: a later re-measure then explains a cost change.
+    from core.services.quote_costing import burn_snapshot
+    res = dict(out['costing_snapshot'].get('resolution') or {})
+    rb = burn_snapshot(res.get('rated_burn'))
+    if 'rated_burn' in res:
+        res['rated_burn'] = rb
+        out['costing_snapshot']['resolution'] = res
+    out['costing_snapshot']['rated_burn'] = rb
     if costing.get('margin_pct') is not None:
         # Server-side margin % on the stored floor and price (margin on price).
         # The true margin on price; null only past what the column holds.

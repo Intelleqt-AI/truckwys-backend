@@ -400,3 +400,11 @@ Copy the file into each client repo's test fixtures (keep identical).
 - API: `GET /api/v1/fleet/fuel-actuals/`, `POST .../vehicle-types/<id>/burn-mode/ {mode: AUTO|MEASURED|CONFIGURED}`
   (admin), `POST .../refresh/` (admin, queues the job, deduplicated 15 min); vehicle types gain read-only
   `fuel_use_in_use`. No tracker call ever happens in a request.
+- Snapshot: `costing_snapshot.rated_burn` {value, source, label, configured, measured_at, measured_value} records the
+  truck fuel figure a saved quote was priced on (and `resolution.rated_burn` is stored in the same compact form).
+  Reopen (`cost-breakdown` with `quote_id`): `changes_since_priced.fuel_use_change` {then, now, source_then, source_now,
+  measured_at_then, measured_at_now, text} when the figure differs (≥ 0,05); its text is appended to the notice, e.g.
+  "Costs down R 112 since 7 Oct. Margin 23% → 23%. Fuel use updated from Cartrack (40,2 → 38,9 L/100 km)." Other
+  texts: "Fuel use now measured by Cartrack (42,0 → 40,2 L/100 km).", "Fuel use now from your figure (…).",
+  "Truck fuel use changed (…).". `changes_since_priced()` (pure, golden) is unchanged; `snapshot.rated_burn` echoed.
+- Truck suggestion (§3): eligibility and the burn tie-break use the burn in use (measured when usable).
