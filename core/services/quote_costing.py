@@ -343,10 +343,22 @@ def compute(inputs):
       vehicle              {id, name, capacity, rated_burn_l_per_100km} | null
       diesel               see resolve_diesel()
       operating_cost_per_km, operating_cost_source
-      tolls                {one_way, empty_return, lookup_failed, confirmed_none}
+      tolls                {one_way, empty_return, return_leg, lookup_failed, confirmed_none}
+                           return_leg: a round trip's way back priced on its own route;
+                           the loaded toll line is then one_way + return_leg (else one_way x 2)
       driver               {allowance_per_night, nights, amount}
       hours_per_day        driving hours per day (9)
-      border_cost
+      border_cost          border, permit and non-SA road costs for ALL loaded legs
+                           (a round trip: the way out + the way back, each priced by
+                           the route calculation on its own route)
+      border_estimate      the part of border_cost that is an estimate (unverified
+                           tariff, assumed vehicle fact, agent estimate) — likewise
+                           out + back on a round trip; 0 when the user's own figures
+                           replaced every estimate (e.g. their clearing-agent fee)
+      border_cost_empty_return / border_estimate_empty_return
+                           the same two figures for the empty run home (exit-only
+                           charges on the way back); without them the loaded
+                           figure stands in
       international        cross-border trip: no border cost -> incomplete floor (block)
       border_costs_unknown {countries: [names], crossings: ['Namibia→Angola'], known: [{label, amount}]}:
                            parts of the route whose border costs are not on file; unless
@@ -608,8 +620,11 @@ def compute(inputs):
             # leg itself (return_leg: exit-only charges, the way back's own
             # km); without it, the loaded leg's figure is the stand-in.
             back = _num(inputs.get('border_cost_empty_return'))
+            est_back = _num(inputs.get('border_estimate_empty_return')) if back is not None else None
             add('border_return', 'empty_return', cents(back if back is not None else border),
-                'Border costs crossing back, empty')
+                'Border costs crossing back, empty'
+                + (f' (includes {fmt_rand(est_back, 2)} estimated)' if est_back else ''),
+                **({'estimate': est_back} if est_back else {}))
 
     if op is None and distance is not None:
         complete = False
@@ -995,6 +1010,10 @@ def build_inputs(payload, company, now=None, *, diesel_override=None):
         'border_cost': _num(payload.get('cross_border_cost')) or 0.0,
         'border_cost_empty_return': _num(payload.get('cross_border_cost_empty_return')),
         'border_estimate': _num(payload.get('cross_border_estimate_zar')),
+        'border_estimate_empty_return': _num(payload.get('cross_border_estimate_empty_return_zar')),
+        # Not a cost input itself: the route calculation prices the border
+        # with it; carried so the inputs (and a saved quote) record it.
+        'abnormal_load': bool(_truthy(payload.get('abnormal_load'))),
         'border_costs_unknown': border_costs_unknown_input(payload),
         'border_cost_is_override': bool(_truthy(payload.get('border_cost_is_override'))),
         'international': international,
@@ -1083,7 +1102,10 @@ COSTING_INPUT_KEYS = {
     # the way back's own tolls, the empty return's border figure and how
     # much of the border is estimated, and the user's clearing-agent fee.
     'toll_cost_return': float, 'border_cost_empty_return': float,
-    'border_estimate': float, 'clearing_agent_fee': float,
+    'border_estimate': float, 'border_estimate_empty_return': float, 'clearing_agent_fee': float,
+    # The load is abnormal (Zimbabwe's Abnormal access-toll class): kept so a
+    # reopened / re-sent quote prices its border the same way.
+    'abnormal_load': bool,
 }
 
 
@@ -1180,7 +1202,9 @@ def quote_payload(quote):
         'border_cost_is_override': bool(ci.get('border_cost_is_override')),
         'cross_border_cost_empty_return': ci.get('border_cost_empty_return'),
         'cross_border_estimate_zar': ci.get('border_estimate'),
+        'cross_border_estimate_empty_return_zar': ci.get('border_estimate_empty_return'),
         'clearing_agent_fee': ci.get('clearing_agent_fee'),
+        'abnormal_load': bool(ci.get('abnormal_load')),
         'is_international': bool(getattr(quote, 'is_international', False)),
         'include_empty_return': ci.get('include_empty_return'),
         'distance_estimated': ci.get('distance_estimated'),

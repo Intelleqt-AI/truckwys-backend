@@ -241,9 +241,15 @@ def country_costs_known(country: str) -> bool:
 
 
 def corridor_fee_known(from_country: str, to_country: str) -> bool:
-    if to_country != 'SA' and from_country in SCHEDULE_ENTRY_FROM.get(to_country, ()):
-        return True
-    if to_country in SCHEDULE_EXIT_TO.get(from_country, ()):
+    """A crossing is known when the country ENTERED has sourced entry
+    charges for it (or, into SA, the country left has its exit rules). An
+    exit rule on the side being left never makes an unknown entry known —
+    e.g. Botswana→Zimbabwe: Zimbabwe's entry charges away from Beitbridge
+    have no source, so the crossing is unknown and the quote blocks."""
+    if to_country != 'SA':
+        if from_country in SCHEDULE_ENTRY_FROM.get(to_country, ()):
+            return True
+    elif to_country in SCHEDULE_EXIT_TO.get(from_country, ()):
         return True
     try:
         from core.models.border_crossing_fee import BorderCrossingFee
@@ -409,6 +415,88 @@ def route_countries(geometry: list, sections: list, origin_country: str | None =
     return out
 
 
+# Border posts on SA's borders (and Botswana–Namibia), from OpenStreetMap
+# barrier=border_control nodes (read 8 Oct 2026), named "SA side / other side".
+BORDER_POSTS = [
+    ('Beitbridge', -22.2206, 29.9858),
+    ('Groblersbrug / Martin\'s Drift', -22.9994, 27.9438),
+    ('Pont Drift', -22.2169, 29.1399),
+    ('Stockpoort / Parr\'s Halt', -23.4022, 27.3527),
+    ('Derdepoort / Sikwane', -24.6430, 26.4041),
+    ('Kopfontein / Tlokweng', -24.7072, 26.0946),
+    ('Swartkopfontein / Ramotswa', -24.8740, 25.8863),
+    ('Skilpadshek / Pioneer Gate', -25.2750, 25.7134),
+    ('Ramatlabama', -25.6489, 25.5755),
+    ('Bray', -25.4571, 23.7147),
+    ('McCarthy\'s Rest', -26.2027, 22.5689),
+    ('Middelputs / Middlepits', -26.6755, 21.8847),
+    ('Nakop / Ariamsvlei', -28.0918, 20.0107),
+    ('Vioolsdrif / Noordoewer', -28.7705, 17.6260),
+    ('Onseepkans / Velloorsdrift', -28.7394, 19.3037),
+    ('Alexander Bay / Oranjemund', -28.5684, 16.5058),
+    ('Sendelingsdrif', -28.1230, 16.8911),
+    ('Rietfontein / Klein Menasse', -26.7562, 20.0001),
+    ('Mata-Mata', -25.7674, 19.9997),
+    ('Trans-Kalahari: Mamuno / Buitepos', -22.2808, 20.0053),
+    ('Lebombo / Ressano Garcia', -25.4425, 31.9858),
+    ('Kosi Bay / Ponta do Ouro', -26.8644, 32.8294),
+    ('Giriyondo', -23.5838, 31.6601),
+    ('Pafuri', -22.4492, 31.3162),
+    ('Oshoek / Ngwenya', -26.2129, 30.9884),
+    ('Mahamba', -27.1054, 31.0696),
+    ('Golela / Lavumisa', -27.3180, 31.8881),
+    ('Jeppe\'s Reef / Matsamo', -25.7504, 31.4687),
+    ('Mananga', -25.9340, 31.7616),
+    ('Nerston / Sandlane', -26.5696, 30.7911),
+    ('Josefsdal / Bulembu', -25.9433, 31.1182),
+    ('Onverwacht / Salitje', -27.3165, 31.6438),
+    ('Bothashoop / Gege', -26.9738, 30.9681),
+    ('Emahlatini / Sicunusa', -26.8615, 30.9077),
+    ('Waverley / Lundzi', -26.3263, 30.8857),
+    ('Maseru Bridge', -29.2989, 27.4560),
+    ('Ficksburg Bridge / Maputsoe', -28.8825, 27.8884),
+    ('Caledonspoort', -28.6964, 28.2346),
+    ('Van Rooyen\'s Gate', -29.7564, 27.1084),
+    ('Qacha\'s Nek', -30.1323, 28.6840),
+    ('Sani Pass', -29.5845, 29.2857),
+    ('Peka Bridge', -28.9466, 27.7357),
+    ('Makhaleng Bridge', -30.1652, 27.4003),
+    ('Telle Bridge', -30.4327, 27.5682),
+    ('Ongeluksnek', -30.3431, 28.3111),
+    ('Ramatseliso\'s Gate', -30.0506, 28.9331),
+    ('Monantsa Pass', -28.5823, 28.6989),
+    ('Bushman\'s Nek', -29.8440, 29.2115),
+]
+BORDER_POST_MAX_KM = 15.0
+
+
+def nearest_border_post(lat: float, lng: float, max_km: float = BORDER_POST_MAX_KM):
+    from core.services.toll_calculator import _haversine_m
+    best = min(BORDER_POSTS, key=lambda p: _haversine_m(lat, lng, p[1], p[2]))
+    return best[0] if _haversine_m(lat, lng, best[1], best[2]) <= max_km * 1000 else None
+
+
+def section_crossings(geometry: list, sections: list) -> list:
+    """[(from, to, lat, lng)] where consecutive COUNTRY sections meet."""
+    secs = sorted((s for s in (sections or []) if (s.get('country_code') or s.get('countryCode'))
+                   and s.get('start') is not None), key=lambda s: s['start'])
+    out = []
+    for a, b in zip(secs, secs[1:]):
+        fc = internal_country(a.get('country_code') or a.get('countryCode'))
+        tc = internal_country(b.get('country_code') or b.get('countryCode'))
+        idx = b['start']
+        if fc != tc and geometry and 0 <= idx < len(geometry):
+            out.append((fc, tc, float(geometry[idx]['lat']), float(geometry[idx]['lon'])))
+    return out
+
+
+def border_post_for(crossings, fc: str, tc: str):
+    for c_from, c_to, lat, lng in crossings or []:
+        if (c_from, c_to) == (fc, tc):
+            return nearest_border_post(lat, lng)
+    return None
+
+
 def calculate_cross_border_costs(
     countries: list[str],
     distance_km: float,
@@ -423,6 +511,8 @@ def calculate_cross_border_costs(
     sanral_class: int | None = None,
     today: date | None = None,
     overrides: dict | None = None,
+    abnormal_load: bool = False,
+    crossings: list | None = None,
 ) -> dict[str, Any]:
     """Border, permit and in-country charges for ONE leg, in travel order.
 
@@ -436,6 +526,10 @@ def calculate_cross_border_costs(
     they are inferred from the SANRAL class, or from the load, and every
     line that depends on them is labelled an estimate.
 
+    `crossings` [(from, to, lat, lng)] — where the route crosses each border
+    (section_crossings); the border post there is named on its lines.
+    `abnormal_load` — the user marked the load abnormal (Zimbabwe's
+    Abnormal access-toll class).
     `overrides` {component code: rand} replaces an estimate with the user's
     own figure (e.g. {'zw_clearing_agent': 1800} — their agent's fee).
     """
@@ -447,7 +541,8 @@ def calculate_cross_border_costs(
     if not countries or len(countries) <= 1:
         return empty
     profile = bs.vehicle_profile(gross_mass_kg=gross_mass_kg, axle_config=axle_config, sanral_class=sanral_class,
-                                 weight_kg=weight_kg, vehicle_capacity_kg=vehicle_capacity_kg)
+                                 weight_kg=weight_kg, vehicle_capacity_kg=vehicle_capacity_kg,
+                                 abnormal_load=abnormal_load)
     unknown_countries = [c for c in countries if not country_costs_known(c)]
     unknown_crossings = [f'{countries[i]}-{countries[i + 1]}' for i in range(len(countries) - 1)
                          if not corridor_fee_known(countries[i], countries[i + 1])]
@@ -482,7 +577,10 @@ def calculate_cross_border_costs(
                 lines.append(_db_line('border_crossing', f'{fc} → {tc} border crossing', fee,
                                       '' if exact else 'priced at the heaviest band on file'))
             continue
+        post = border_post_for(crossings, fc, tc)
         for ch in charges:
+            if post and post not in ch.description:
+                ch.description = f'{ch.description} — {post}'
             if overrides and overrides.get(ch.code) is not None:
                 ch.amount, ch.currency = Decimal(str(overrides[ch.code])), 'ZAR'
                 ch.tariff_verified, ch.depends_on = True, ()
@@ -520,7 +618,7 @@ def calculate_cross_border_costs(
             approx = km is None
             km_d = Decimal(str(round(km if km is not None else split, 1)))
             if bs.has_schedule(c):
-                for ch in bs.SCHEDULES[c].get('per_km', lambda p, k: [])(profile, km_d):
+                for ch in bs.SCHEDULES[c].get('per_km', lambda p, k, h=False: [])(profile, km_d, homebound):
                     if approx:
                         # The km is guessed, so the amount is an estimate whatever the tariff.
                         ch.tariff_verified = False
@@ -529,7 +627,7 @@ def calculate_cross_border_costs(
             else:
                 r = _db_rate(c)
                 if r is not None and float(r.toll_rate_per_km or 0) > 0:
-                    lines.append(_db_line('non_sa_toll', f'{c} road charges ({"~" if approx else ""}{int(km_d)} km)',
+                    lines.append(_db_line('non_sa_toll', f'{c} road charges ({"~" if approx else ""}{bs.km_text(km_d)})',
                                           float(km_d) * float(r.toll_rate_per_km), 'admin rate per km'))
 
     border = sum(ln['amount'] for ln in lines if ln['type'] in ('border_crossing', 'sa_permit'))

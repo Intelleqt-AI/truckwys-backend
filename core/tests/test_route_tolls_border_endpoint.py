@@ -267,6 +267,18 @@ class PerOptionBorderTests(_Base):
         self.assertTrue(all(r['return_leg'] == data['return_leg'] for r in data['routes']))
         self.assertTrue(data['routes'][1]['return_leg']['available'])
 
+    def test_dbn_maputo_names_kosi_bay(self):
+        data = self.calc([tomtom('DBN-MAPUTO')], dest_country='MZ')
+        mz = next(b for b in data['cross_border_breakdown'] if b['code'] == 'mz_insurance_inspection')
+        self.assertIn('Kosi Bay / Ponta do Ouro', mz['description'])
+
+    def test_abnormal_load_flag_reaches_the_zimbabwe_toll(self):
+        legal = self.calc([tomtom('JHB-BEITBRIDGE-POST')], dest={'lat': -22.2235, 'lon': 29.99}, dest_country='ZW')
+        abn = self.calc([tomtom('JHB-BEITBRIDGE-POST')], dest={'lat': -22.2235, 'lon': 29.99}, dest_country='ZW',
+                        abnormal_load=True)
+        get = lambda d: next(b for b in d['cross_border_breakdown'] if b['code'] == 'zw_border_access_toll')
+        self.assertEqual((get(legal)['amount_foreign'], get(abn)['amount_foreign']), (221.0, 375.0))
+
     def test_clearing_agent_override_replaces_the_estimate(self):
         data = self.calc([tomtom('JHB-BEITBRIDGE-POST')], dest={'lat': -22.2235, 'lon': 29.99},
                          dest_country='ZW', clearing_agent_fee_zar=1500)
@@ -298,7 +310,8 @@ class NonVendorSummaryTests(_Base):
 class CostingPersistenceTests(TestCase):
     def test_both_legs_round_trip_through_costing_inputs(self):
         from core.services.quote_costing import COSTING_INPUT_KEYS
-        for k in ('toll_cost_return', 'border_cost_empty_return', 'border_estimate', 'clearing_agent_fee'):
+        for k in ('toll_cost_return', 'border_cost_empty_return', 'border_estimate', 'clearing_agent_fee',
+                  'border_estimate_empty_return', 'abnormal_load'):
             self.assertIn(k, COSTING_INPUT_KEYS)
 
     def test_saved_round_trip_prices_the_way_back_as_shown(self):
@@ -313,3 +326,13 @@ class CostingPersistenceTests(TestCase):
         p = quote_payload(q)
         self.assertEqual((p['toll_cost_one_way'], p['toll_cost_return']), (1494.78, 1177.39))
         self.assertEqual((p['cross_border_cost_empty_return'], p['cross_border_estimate_zar']), (1200.0, 2005.0))
+        self.assertFalse(p['abnormal_load'])
+        q.costing_inputs['abnormal_load'] = True
+        self.assertTrue(quote_payload(q)['abnormal_load'])
+
+    def test_cost_breakdown_accepts_abnormal_load(self):
+        from core.models import Company
+        from core.services.quote_costing import costing_for_payload
+        out = costing_for_payload({'trip_type': 'ONE_WAY', 'distance_km': 900, 'abnormal_load': True},
+                                  Company.objects.create(company_name='A'))
+        self.assertTrue(out['inputs']['abnormal_load'])

@@ -86,7 +86,7 @@ class ComponentsAreLabelledTests(TestCase):
         r = cb.calculate_cross_border_costs(['SA', 'ZW'], 1120, country_km={'ZW': 583}, **INTERLINK)
         toll = line(r, 'zw_border_access_toll')
         self.assertTrue(toll['verified'])
-        self.assertEqual((toll['currency'], toll['amount_foreign']), ('USD', 375.0))   # GCM 56 000 kg: Abnormal
+        self.assertEqual((toll['currency'], toll['amount_foreign']), ('USD', 221.0))   # legal 56 t interlink: Goods vehicle
         agent = line(r, 'zw_clearing_agent')
         self.assertFalse(agent['verified'])
         self.assertEqual(agent['amount'], 2005.0)
@@ -97,9 +97,20 @@ class ComponentsAreLabelledTests(TestCase):
         self.assertFalse(gates['verified'])                                # the gate count is estimated
         self.assertEqual(gates['amount_foreign'], 80.0)                    # ~4 x US$20
 
-    def test_goods_vehicle_band_below_56_tonnes(self):
-        r = cb.calculate_cross_border_costs(['SA', 'ZW'], 1120, gross_mass_kg=34_000, axle_config='3+3')
-        self.assertEqual(line(r, 'zw_border_access_toll')['amount_foreign'], 221.0)
+    def test_abnormal_only_when_the_user_marks_the_load_abnormal(self):
+        legal = cb.calculate_cross_border_costs(['SA', 'ZW'], 1120, gross_mass_kg=56_000, axle_config='3+2+2')
+        self.assertEqual(line(legal, 'zw_border_access_toll')['amount_foreign'], 221.0)
+        abnormal = cb.calculate_cross_border_costs(['SA', 'ZW'], 1120, abnormal_load=True, **INTERLINK)
+        toll = line(abnormal, 'zw_border_access_toll')
+        self.assertEqual((toll['amount_foreign'], toll['verified']), (375.0, True))
+        self.assertIn('Abnormal load', toll['description'])
+
+    def test_access_toll_class_comes_from_the_axles_not_the_mass(self):
+        # The class is by vehicle type, so an assumed gross mass does not make it an estimate.
+        r = cb.calculate_cross_border_costs(['SA', 'ZW'], 1120, axle_config='3+2+2', sanral_class=4)
+        self.assertTrue(line(r, 'zw_border_access_toll')['verified'])
+        r = cb.calculate_cross_border_costs(['SA', 'ZW'], 1120, gross_mass_kg=16_000, axle_config='2')
+        self.assertEqual(line(r, 'zw_border_access_toll')['amount_foreign'], 125.0)   # 2-axle rigid: Heavy vehicle
 
     def test_unverified_countries_say_so(self):
         for country, code in (('LS', 'ls_toll_gate'), ('SZ', 'sz_entry_toll'), ('MZ', 'mz_insurance_inspection')):
@@ -177,7 +188,18 @@ class DirectionTests(TestCase):
         back = cb.calculate_cross_border_costs(['ZW', 'SA'], 1120, country_km={'ZW': 583}, **INTERLINK)
         self.assertEqual(lines(back, 'zw_border_access_toll'), [])
         self.assertEqual(len(lines(back, 'zw_clearing_agent')), 1)   # clearing is needed both ways
-        self.assertEqual(len(lines(back, 'zw_transit_fee')), 1)      # per km, every leg
+        # ZINARA's transit fee is collected on entry; charging it leaving is unverified.
+        self.assertEqual(lines(back, 'zw_transit_fee'), [])
+        self.assertIn('Transit fee charged on entry', line(back, 'zw_toll_gates')['detail'])
+
+    def test_entering_zimbabwe_from_botswana_is_unknown_not_complete(self):
+        # Zimbabwe's entry charges away from Beitbridge have no source:
+        # JHB -> Harare via Botswana must block, not look complete.
+        r = cb.calculate_cross_border_costs(['SA', 'BW', 'ZW'], 1300, **INTERLINK)
+        self.assertIn('BW-ZW', r['unknown_crossings'])
+        self.assertFalse(r['complete'])
+        self.assertFalse(cb.corridor_fee_known('BW', 'ZW'))
+        self.assertTrue(cb.corridor_fee_known('BW', 'NA'))
 
 
 class ExchangeRateTests(TestCase):
@@ -215,6 +237,24 @@ class ExchangeRateTests(TestCase):
         rate = line(r, 'zw_border_access_toll')['fx']
         self.assertEqual(rate['currency'], 'USD')
         self.assertTrue(rate['is_fallback'])
+
+    def test_rates_are_returned_at_the_precision_used(self):
+        self.assertEqual(fx.get_rate('MZN').as_dict()['zar_per_unit_text'], '0.25608')
+        self.assertEqual(fx.get_rate('USD').as_dict()['zar_per_unit_text'], '16.6391')
+
+
+class BorderPostTests(TestCase):
+    def test_mozambique_line_names_the_post_on_the_route(self):
+        lebombo = cb.calculate_cross_border_costs(['SA', 'MZ'], 450, crossings=[('SA', 'MZ', -25.4430, 31.9850)],
+                                                  **INTERLINK)
+        kosi = cb.calculate_cross_border_costs(['SA', 'MZ'], 545, crossings=[('SA', 'MZ', -26.8641, 32.8300)],
+                                               **INTERLINK)
+        self.assertIn('Lebombo / Ressano Garcia', line(lebombo, 'mz_insurance_inspection')['description'])
+        self.assertIn('Kosi Bay / Ponta do Ouro', line(kosi, 'mz_insurance_inspection')['description'])
+
+    def test_no_post_named_when_the_crossing_is_not_near_one(self):
+        r = cb.calculate_cross_border_costs(['SA', 'MZ'], 450, crossings=[('SA', 'MZ', -24.0, 32.0)], **INTERLINK)
+        self.assertNotIn(' — ', line(r, 'mz_insurance_inspection')['description'])
 
 
 class RouteCountryTests(TestCase):
@@ -261,7 +301,11 @@ class MeasuredCountryDistanceTests(TestCase):
 
     def test_measured_distance_is_used(self):
         r = cb.calculate_cross_border_costs(['SA', 'ZW'], 1120, country_km={'ZW': 600}, **INTERLINK)
-        self.assertIn('600 km', line(r, 'zw_transit_fee')['description'])
+        self.assertIn('600,0 km', line(r, 'zw_transit_fee')['description'])
+
+    def test_distances_in_labels_to_a_tenth_of_a_km(self):
+        r = cb.calculate_cross_border_costs(['SA', 'NA'], 1500, country_km={'NA': 805.7}, **INTERLINK)
+        self.assertIn('805,7 km', line(r, 'na_mass_distance_charge')['description'])
 
     def test_a_rough_split_says_so(self):
         r = cb.calculate_cross_border_costs(['SA', 'ZW'], 1120, **INTERLINK)

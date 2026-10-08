@@ -19,7 +19,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -91,7 +92,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -163,7 +165,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -235,7 +238,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -307,7 +311,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -379,7 +384,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -451,7 +457,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -523,7 +530,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -595,7 +603,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -667,7 +676,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -739,7 +749,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -811,7 +822,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -883,7 +895,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -955,7 +968,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -1027,7 +1041,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -1099,7 +1114,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -1171,7 +1187,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -1243,7 +1260,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -1315,7 +1333,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -1387,7 +1406,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -1459,7 +1479,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -1531,7 +1552,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -1603,7 +1625,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -1675,7 +1698,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -1747,7 +1771,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -1819,7 +1844,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -1891,7 +1917,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -1963,7 +1990,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -2035,7 +2063,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -2107,7 +2136,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -2179,7 +2209,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -2251,7 +2282,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -2323,7 +2355,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -2395,7 +2428,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -2467,7 +2501,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -2539,7 +2574,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -2611,7 +2647,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -2683,7 +2720,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -2755,7 +2793,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -2827,7 +2866,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -2899,7 +2939,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -2971,7 +3012,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -3043,7 +3085,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -3115,7 +3158,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -3187,7 +3231,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -3259,7 +3304,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -3331,7 +3377,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -3403,7 +3450,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -3475,7 +3523,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R1.1675 per BWP (ExchangeRate-API, 2026-10-08)",
         "source": "ExchangeRate-API",
-        "zar_per_unit": 1.1675
+        "zar_per_unit": 1.1675,
+        "zar_per_unit_text": "1.1675"
        },
        "label": "estimate",
        "source": "Botswana SI 48 of 2017, Table 4",
@@ -3547,7 +3596,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -3612,7 +3661,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -3677,7 +3726,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -3742,7 +3791,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -3807,7 +3856,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -3872,7 +3921,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -3937,7 +3986,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -4002,7 +4051,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -4067,7 +4116,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -4132,7 +4181,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -4197,7 +4246,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -4262,7 +4311,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -4327,7 +4376,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -4392,7 +4441,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -4457,7 +4506,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -4522,7 +4571,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -4587,7 +4636,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -4652,7 +4701,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -4717,7 +4766,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -4782,7 +4831,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -4847,7 +4896,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -4912,7 +4961,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -4977,7 +5026,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -5042,7 +5091,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -5107,7 +5156,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -5172,7 +5221,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -5237,7 +5286,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -5302,7 +5351,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -5367,7 +5416,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -5432,7 +5481,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -5497,7 +5546,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -5562,7 +5611,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -5627,7 +5676,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -5692,7 +5741,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -5757,7 +5806,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -5822,7 +5871,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -5887,7 +5936,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -5952,7 +6001,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -6017,7 +6066,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -6082,7 +6131,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -6147,7 +6196,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -6212,7 +6261,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -6277,7 +6326,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -6342,7 +6391,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -6407,7 +6456,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -6472,7 +6521,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -6537,7 +6586,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -6602,7 +6651,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -6667,7 +6716,7 @@
        "as_of": null,
        "code": "mz_insurance_inspection",
        "currency": "ZAR",
-       "description": "Mozambique third-party insurance (amortised) + inspection, Lebombo (estimate)",
+       "description": "Mozambique third-party insurance (amortised) + inspection (estimate)",
        "detail": "no primary source for Mozambique's foreign-truck charges; enter your own",
        "fx": null,
        "label": "estimate",
@@ -6741,14 +6790,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 28,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -6792,7 +6842,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 535 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 535,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; ~535 km is a rough split; the route had no country sections; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -6800,7 +6850,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -6822,7 +6873,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -6872,14 +6924,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 15,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -6923,7 +6976,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$8 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$8 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -6931,7 +6984,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -6953,7 +7007,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -7003,14 +7058,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 28,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -7054,7 +7110,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -7062,7 +7118,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -7084,7 +7141,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -7134,14 +7192,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 15,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -7185,7 +7244,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$8 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$8 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -7193,7 +7252,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -7215,7 +7275,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -7265,14 +7326,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 28,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -7316,7 +7378,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -7324,7 +7386,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -7346,7 +7409,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -7396,14 +7460,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 15,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -7447,7 +7512,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$8 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$8 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -7455,7 +7520,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -7477,7 +7543,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -7527,14 +7594,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 28,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -7578,7 +7646,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -7586,7 +7654,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -7608,7 +7677,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -7658,14 +7728,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 15,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -7709,7 +7780,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$8 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$8 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -7717,7 +7788,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -7739,7 +7811,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -7789,14 +7862,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 28,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -7840,7 +7914,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -7848,7 +7922,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -7870,7 +7945,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -7920,14 +7996,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 20,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -7971,7 +8048,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -7979,7 +8056,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -8001,7 +8079,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -8051,14 +8130,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 28,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -8102,7 +8182,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -8110,7 +8190,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -8132,7 +8213,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -8182,14 +8264,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 20,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -8233,7 +8316,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -8241,7 +8324,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -8263,7 +8347,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -8313,14 +8398,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 28,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -8364,7 +8450,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -8372,7 +8458,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -8394,7 +8481,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -8444,14 +8532,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 20,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -8495,7 +8584,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -8503,7 +8592,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -8525,7 +8615,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -8575,14 +8666,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 28,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -8626,7 +8718,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -8634,7 +8726,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -8656,7 +8749,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -8706,14 +8800,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 20,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -8757,7 +8852,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -8765,7 +8860,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -8787,7 +8883,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -8837,14 +8934,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 28,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -8888,7 +8986,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -8896,7 +8994,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -8918,7 +9017,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -8968,14 +9068,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 20,001 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -9019,7 +9120,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -9027,7 +9128,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -9049,7 +9151,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -9099,14 +9202,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 28,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -9150,7 +9254,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -9158,7 +9262,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -9180,7 +9285,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -9230,14 +9336,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 20,001 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -9281,7 +9388,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -9289,7 +9396,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -9311,7 +9419,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -9361,14 +9470,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 28,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -9412,7 +9522,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -9420,7 +9530,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -9442,7 +9553,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -9492,14 +9604,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 20,001 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -9543,7 +9656,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -9551,7 +9664,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -9573,7 +9687,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -9623,14 +9738,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 28,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -9674,7 +9790,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -9682,7 +9798,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -9704,7 +9821,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -9754,14 +9872,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 20,001 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -9805,7 +9924,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -9813,7 +9932,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -9835,7 +9955,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -9885,14 +10006,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 28,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -9936,7 +10058,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -9944,7 +10066,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -9966,7 +10089,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -10016,14 +10140,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 28,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -10067,7 +10192,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -10075,7 +10200,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -10097,7 +10223,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -10147,14 +10274,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 28,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -10198,7 +10326,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -10206,7 +10334,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -10228,7 +10357,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -10278,14 +10408,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 28,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -10329,7 +10460,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -10337,7 +10468,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -10359,7 +10491,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -10409,14 +10542,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 28,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -10460,7 +10594,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -10468,7 +10602,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -10490,7 +10625,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -10540,14 +10676,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 28,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -10591,7 +10728,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -10599,7 +10736,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -10621,7 +10759,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -10671,14 +10810,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 28,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -10722,7 +10862,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -10730,7 +10870,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -10752,7 +10893,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -10802,14 +10944,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 28,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -10853,7 +10996,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -10861,7 +11004,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -10883,7 +11027,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -10933,14 +11078,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 28,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -10984,7 +11130,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -10992,7 +11138,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -11014,7 +11161,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -11064,14 +11212,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 34,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -11115,7 +11264,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -11123,7 +11272,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -11145,7 +11295,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -11195,14 +11346,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 28,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -11246,7 +11398,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -11254,7 +11406,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -11276,7 +11429,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -11326,14 +11480,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 34,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -11377,7 +11532,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -11385,7 +11540,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -11407,7 +11563,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -11457,14 +11614,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 28,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -11508,7 +11666,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -11516,7 +11674,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -11538,7 +11697,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -11588,14 +11748,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 34,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -11639,7 +11800,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -11647,7 +11808,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -11669,7 +11831,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -11719,14 +11882,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 28,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -11770,7 +11934,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -11778,7 +11942,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -11800,7 +11965,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -11850,14 +12016,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 34,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -11901,7 +12068,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -11909,7 +12076,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -11931,7 +12099,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -11981,14 +12150,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 28,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -12032,7 +12202,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -12040,7 +12210,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -12062,7 +12233,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -12112,14 +12284,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Heavy vehicle (over 2 300 kg net) (estimate)",
-       "detail": "assumes 8,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -12163,7 +12336,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$8 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$8 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -12171,7 +12344,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -12193,7 +12367,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -12243,14 +12418,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 28,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -12294,7 +12470,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -12302,7 +12478,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -12324,7 +12501,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -12374,14 +12552,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Heavy vehicle (over 2 300 kg net) (estimate)",
-       "detail": "assumes 8,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -12425,7 +12604,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$8 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$8 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -12433,7 +12612,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -12455,7 +12635,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -12505,14 +12686,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 28,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -12556,7 +12738,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -12564,7 +12746,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -12586,7 +12769,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -12636,14 +12820,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Heavy vehicle (over 2 300 kg net) (estimate)",
-       "detail": "assumes 8,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -12687,7 +12872,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$8 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$8 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -12695,7 +12880,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -12717,7 +12903,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -12767,14 +12954,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 28,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -12818,7 +13006,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -12826,7 +13014,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -12848,7 +13037,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -12898,14 +13088,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Heavy vehicle (over 2 300 kg net) (estimate)",
-       "detail": "assumes 8,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -12949,7 +13140,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$8 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$8 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -12957,7 +13148,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -12979,7 +13171,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",
@@ -13029,14 +13222,15 @@
        "code": "zw_border_access_toll",
        "currency": "USD",
        "description": "Zimbabwe border access toll, Beitbridge — Goods vehicle (3+ axle rigid, or rigid towing a trailer) (estimate)",
-       "detail": "assumes 28,000 kg gross from the load/capacity — set the vehicle type's gross mass; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
+       "detail": "assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
         "currency": "USD",
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "Zimborders BBP toll fees 2026",
@@ -13080,7 +13274,7 @@
        "as_of": null,
        "code": "zw_transit_fee",
        "currency": "USD",
-       "description": "Zimbabwe transit fee, 582 km (US$10 per 100 km or part) (estimate)",
+       "description": "Zimbabwe transit fee, 582,9 km (US$10 per 100 km or part) (estimate)",
        "detail": "ZINARA gives no effective date; assumes a 3+2+2 axle layout — set the vehicle type's axle configuration; rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
        "fx": {
         "as_of": "2026-10-08",
@@ -13088,7 +13282,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA transit fees",
@@ -13110,7 +13305,8 @@
         "is_fallback": true,
         "label": "rate as of 2026-10-08: R16.6391 per USD (SARB EXCX135D, 2026-10-08)",
         "source": "SARB EXCX135D",
-        "zar_per_unit": 16.6391
+        "zar_per_unit": 16.6391,
+        "zar_per_unit_text": "16.6391"
        },
        "label": "estimate",
        "source": "ZINARA tolling (S.I. 32 of 2021)",

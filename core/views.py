@@ -3738,7 +3738,8 @@ class RouteCalculatorView(APIView):
 
     def post(self, request):
         from core.services.cross_border import (detect_countries, calculate_cross_border_costs,
-                                                get_cross_border_warnings, country_distances_km)
+                                                get_cross_border_warnings, country_distances_km,
+                                                section_crossings)
         from decimal import Decimal
         from core.services.toll_calculator import (VAT_RATE, calculate_tolls_by_geometry, resolve_toll_class,
                                                    tariff_schedule_warning)
@@ -4028,6 +4029,9 @@ class RouteCalculatorView(APIView):
                 countries, distance_km, vehicle_type,
                 weight_kg=weight_kg, crossings_per_year=crossings_per_year,
                 country_km=measured_km, **vehicle_facts,
+                crossings=section_crossings(geometry, [x for x in ((routes_raw[0].get('sections') or [])
+                                                                   if routes_raw else [])
+                                                       if x.get('type') == 'COUNTRY']),
             )
             # Numbers only: this dict is summed with sum(.values()) below and
             # again further down, so anything non-numeric in here breaks the
@@ -4155,7 +4159,8 @@ class RouteCalculatorView(APIView):
                 return {'cross_border': False}
             cb = calculate_cross_border_costs(
                 opt, rt['distance_km'], vehicle_type, weight_kg=weight_kg, crossings_per_year=crossings_per_year,
-                country_km=country_distances_km(rt.get('geometry') or [], secs), **vehicle_facts)
+                country_km=country_distances_km(rt.get('geometry') or [], secs), **vehicle_facts,
+                crossings=section_crossings(rt.get('geometry') or [], secs))
             return {'cross_border': True, 'countries': opt,
                     'additional_costs': {'border_fees': cb['border_fees'], 'weighbridge_fees': 0,
                                          'non_sa_tolls': cb['non_sa_tolls']},
@@ -4257,7 +4262,8 @@ class RouteCalculatorView(APIView):
         agent = _num(data.get('clearing_agent_fee_zar') or data.get('clearing_agent_fee'))
         return {'gross_mass_kg': gross, 'axle_config': axles, 'sanral_class': sanral_class,
                 'vehicle_capacity_kg': cap,
-                'overrides': {'zw_clearing_agent': agent} if agent is not None and agent >= 0 else None}
+                'overrides': {'zw_clearing_agent': agent} if agent is not None and agent >= 0 else None,
+                'abnormal_load': _truthy_flag(data.get('abnormal_load'))}
 
     @staticmethod
     def _return_leg_needed(data, company, distance_km):
@@ -4309,7 +4315,7 @@ class RouteCalculatorView(APIView):
                     origin_iso, dest_iso, outbound_countries):
         """The trip home from the delivery point, on its own route."""
         from core.services.cross_border import (calculate_cross_border_costs, country_distances_km,
-                                                route_countries)
+                                                route_countries, section_crossings)
         if source != 'tomtom':
             return {'available': False, 'reason': 'routing_unavailable'}
         back = self._route_cached(d, o, weight_kg)
@@ -4335,7 +4341,8 @@ class RouteCalculatorView(APIView):
         if len(back_countries) > 1:
             cb = calculate_cross_border_costs(
                 back_countries, rt['distance_km'], crossings_per_year=crossings_per_year,
-                country_km=country_distances_km(rt.get('geometry') or [], secs), **vehicle_facts)
+                country_km=country_distances_km(rt.get('geometry') or [], secs), **vehicle_facts,
+                crossings=section_crossings(rt.get('geometry') or [], secs))
             out.update({
                 'countries': back_countries,
                 'additional_costs': {'border_fees': cb['border_fees'], 'weighbridge_fees': 0,

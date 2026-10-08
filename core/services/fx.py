@@ -59,7 +59,10 @@ class Rate:
         return f'rate as of {self.as_of.isoformat()}: {text}' if self.is_fallback else text
 
     def as_dict(self) -> dict:
+        # zar_per_unit_text: the rate exactly as used (e.g. '0.25608'), so a
+        # client never shows it rounded differently from the sum it drove.
         return {'currency': self.currency, 'zar_per_unit': float(self.zar_per_unit),
+                'zar_per_unit_text': format(self.zar_per_unit, 'f'),
                 'as_of': self.as_of.isoformat(), 'source': self.source, 'is_fallback': self.is_fallback,
                 'label': self.label}
 

@@ -59,6 +59,7 @@ class VehicleProfile:
     gross_source: str            # 'vehicle' | 'sanral_class' | 'load_weight'
     units: tuple                 # axles per unit: (3, 2, 2) = 3-axle horse + 2 + 2
     units_source: str            # 'vehicle' | 'sanral_class' | 'load_weight'
+    abnormal: bool = False       # the user marked the load abnormal (over-dimension / over-mass permit)
 
     @property
     def gross_known(self) -> bool:
@@ -120,7 +121,7 @@ def parse_axle_config(text):
 
 
 def vehicle_profile(*, gross_mass_kg=None, axle_config=None, sanral_class=None, weight_kg=0,
-                    vehicle_capacity_kg=0) -> VehicleProfile:
+                    vehicle_capacity_kg=0, abnormal_load=False) -> VehicleProfile:
     banding = float(vehicle_capacity_kg or 0) or float(weight_kg or 0)
     if gross_mass_kg:
         gross, g_src = int(gross_mass_kg), 'vehicle'
@@ -137,7 +138,7 @@ def vehicle_profile(*, gross_mass_kg=None, axle_config=None, sanral_class=None, 
         units = ((2,) if banding <= 8_000 else (3,) if banding <= 16_000
                  else (3, 2) if banding <= 20_000 else (3, 2, 2))
         u_src = 'load_weight'
-    return VehicleProfile(gross, g_src, tuple(units), u_src)
+    return VehicleProfile(gross, g_src, tuple(units), u_src, bool(abnormal_load))
 
 
 # ---------------------------------------------------------------------------
@@ -207,16 +208,26 @@ ZW_KM_PER_GATE = D('145')
 
 
 def _zw_entry(p: VehicleProfile, frm: str):
-    if p.gross_kg >= 56_000:
-        usd, cls = D('375'), 'Abnormal (GCM 56 000 kg or more)'
-    elif p.combination or p.axles >= 3:
+    # "Abnormal" (US$375) is for abnormal loads — the user says so on the
+    # quote (abnormal_load). A legal goods vehicle, a 56 t interlink
+    # included, is a Goods vehicle (US$221): no source puts a legal 56 t
+    # combination in the Abnormal class by mass.
+    if p.abnormal:
+        usd, cls = D('375'), 'Abnormal load'
+        return [
+            Charge('zw_border_access_toll', 'border_crossing', f'Zimbabwe border access toll, Beitbridge — {cls}',
+                   'USD', usd, True, 'Zimborders BBP toll fees 2026', ZB_URL, date(2026, 4, 28),
+                   notes=['load marked abnormal on the quote']),
+            _zw_agent(),
+        ]
+    if p.combination or p.axles >= 3:
         usd, cls = D('221'), 'Goods vehicle (3+ axle rigid, or rigid towing a trailer)'
     else:
         usd, cls = D('125'), 'Heavy vehicle (over 2 300 kg net)'
     return [
         Charge('zw_border_access_toll', 'border_crossing', f'Zimbabwe border access toll, Beitbridge — {cls}',
                'USD', usd, True, 'Zimborders BBP toll fees 2026', ZB_URL, date(2026, 4, 28),
-               depends_on=('gross', 'units')),
+               depends_on=('units',)),
         _zw_agent(),
     ]
 
@@ -227,22 +238,31 @@ def _zw_agent():
                   notes=['agent estimate — enter your agent\'s fee'])
 
 
-def _zw_per_km(p: VehicleProfile, km: Decimal):
+def km_text(km) -> str:
+    """'805,7 km' — distances in labels to 0.1 km, the app's number format."""
+    from core.formatting import format_number
+    return f'{format_number(km, 1)} km'
+
+
+def _zw_per_km(p: VehicleProfile, km: Decimal, homebound: bool = False):
     per100 = D('10') if p.combination else D('8')
     hundreds = D(ceil(km / 100)) if km > 0 else D('0')
     gates = int((km / ZW_KM_PER_GATE).quantize(D('1'), rounding=ROUND_HALF_UP)) if km > 0 else 0
     gate_usd = D('20') if p.combination else D('10')
-    out = [Charge('zw_transit_fee', 'non_sa_toll',
-                  f'Zimbabwe transit fee, {int(km)} km (US${per100} per 100 km or part)',
-                  'USD', per100 * hundreds, True, 'ZINARA transit fees', ZINARA_TRANSIT_URL,
-                  depends_on=('units',), notes=['ZINARA gives no effective date'])]
+    out = []
+    if not homebound:
+        out.append(Charge('zw_transit_fee', 'non_sa_toll',
+                          f'Zimbabwe transit fee, {km_text(km)} (US${per100} per 100 km or part)',
+                          'USD', per100 * hundreds, True, 'ZINARA transit fees', ZINARA_TRANSIT_URL,
+                          depends_on=('units',), notes=['ZINARA gives no effective date']))
     if gates:
         out.append(Charge('zw_toll_gates', 'non_sa_toll',
                           f'Zimbabwe toll gates, about {gates} (US${gate_usd} each on premium roads)',
                           'USD', gate_usd * gates, False, 'ZINARA tolling (S.I. 32 of 2021)', ZINARA_TOLL_URL,
                           date(2024, 10, 28),
                           notes=[f'gate count is an estimate: 1 per ~{ZW_KM_PER_GATE} km '
-                                 '(ZINARA calculator: 4 on Beitbridge–Harare)']))
+                                 '(ZINARA calculator: 4 on Beitbridge–Harare)']
+                          + (['Transit fee charged on entry'] if homebound else [])))
     return out
 
 
@@ -320,12 +340,12 @@ def _na_entry(p: VehicleProfile, frm: str):
                    depends_on=('units',))]
 
 
-def _na_per_km(p: VehicleProfile, km: Decimal):
+def _na_per_km(p: VehicleProfile, km: Decimal, homebound: bool = False):
     if p.gross_kg < 3_500 or km <= 0:
         return []
     rate = next(r for upper, r in NA_MDC if p.gross_kg < upper)
     return [Charge('na_mass_distance_charge', 'non_sa_toll',
-                   f'Namibia Mass Distance Charge, {int(km)} km at N${rate}/100 km',
+                   f'Namibia Mass Distance Charge, {km_text(km)} at N${rate}/100 km',
                    'NAD', (rate * km / 100).quantize(D('0.01')), True, 'Namibia RFA fees & tariffs', NA_URL,
                    date(2026, 8, 1), depends_on=('gross',))]
 
@@ -353,7 +373,7 @@ def _sz_entry(p: VehicleProfile, frm: str):
 
 def _mz_entry(p: VehicleProfile, frm: str):
     return [Charge('mz_insurance_inspection', 'border_crossing',
-                   'Mozambique third-party insurance (amortised) + inspection, Lebombo',
+                   'Mozambique third-party insurance (amortised) + inspection',
                    'ZAR', D('473.29'), False, 'Not verified — no primary source',
                    notes=['no primary source for Mozambique\'s foreign-truck charges; enter your own'])]
 
@@ -365,19 +385,19 @@ def _zm_entry(p: VehicleProfile, frm: str):
                    depends_on=('units',), notes=['official portal, but undated'])]
 
 
-def _zm_per_km(p: VehicleProfile, km: Decimal):
+def _zm_per_km(p: VehicleProfile, km: Decimal, homebound: bool = False):
     if km <= 0:
         return []
-    return [Charge('zm_road_user_charge', 'non_sa_toll', f'Zambia road user charge, {int(km)} km',
+    return [Charge('zm_road_user_charge', 'non_sa_toll', f'Zambia road user charge, {km_text(km)}',
                    'USD', (D('10') * D(ceil(km / 100))), False, 'Press reports (US$10–16 per 100 km)',
                    notes=['rate not verified from a primary source'])]
 
 
-def _mw_per_km(p: VehicleProfile, km: Decimal):
+def _mw_per_km(p: VehicleProfile, km: Decimal, homebound: bool = False):
     if km <= 0:
         return []
     per100 = D('15') if p.combination else D('8')
-    return [Charge('mw_transit_fee', 'non_sa_toll', f'Malawi international transit fee, {int(km)} km',
+    return [Charge('mw_transit_fee', 'non_sa_toll', f'Malawi international transit fee, {km_text(km)}',
                    'USD', per100 * D(ceil(km / 100)), False, 'Malawi RFA international transit fees (2023)', MW_URL,
                    date(2023, 8, 18), depends_on=('units',),
                    notes=['COMESA rate; whether SA trucks pay it is not confirmed'])]

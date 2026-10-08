@@ -111,7 +111,7 @@ AUDIT_2026_10 = {
     's05_jhb_maputo_semi': [                          # unverified Mozambique figure, unchanged
         ('mz_insurance_inspection', 473.29), ('sa_cbrta_permit', PERMIT_C2)],
     's10_jhb_harare_beitbridge_semi': [
-        ('zw_border_access_toll', round(375 * USD, 2)),   # Zimborders "Abnormal" (GCM >= 56 000 kg)
+        ('zw_border_access_toll', round(221 * USD, 2)),   # Zimborders Goods vehicle (legal load; Abnormal only when marked)
         ('zw_clearing_agent', 2005.0),                    # agent estimate
         ('sa_cbrta_permit', PERMIT_C2),
         ('zw_transit_fee', round(10 * 6 * USD, 2)),       # US$10 per 100 km or part: 6 x 100 km
