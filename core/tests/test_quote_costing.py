@@ -31,6 +31,9 @@ RULES = {
     'nights': 'nights(h) = max(ceil(h / hours_per_day) - 1, 0), h = duration_minutes / 60; '
               'loaded = nights(h) one-way, nights(2h) round trip; return extra = nights(2h) - nights(h)',
     'driver': 'driver.amount if given, else cents(nights * allowance_per_night) (0 when nights = 0)',
+    'border': 'border_costs_unknown {countries, crossings, known} non-empty and not border_cost_is_override -> '
+              'border (and border_return) null + block border_costs_missing, title "Border costs for <countries> '
+              'not known", detail "Known: <label> R x + ...; missing: <crossings>"; else cents(border_cost)',
     'floor': 'cents(sum of line amounts); null when any line is unknown',
     'target_price': 'max(cents(floor / (1 - target_margin_pct / 100)), minimum_charge)',
     'margin': 'cents(price - floor); margin_pct = (price - floor) / price * 100 (unrounded)',

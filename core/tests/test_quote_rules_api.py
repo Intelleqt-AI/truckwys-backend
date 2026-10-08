@@ -1459,3 +1459,53 @@ class BrowserCheckFixTests(_Base):
         self.assertFalse(any('AO' in b['description'] for b in out['breakdown']))
         self.assertIn('Border costs for Angola not known: add them to the quote by hand.',
                       get_cross_border_warnings(countries))
+
+
+class BorderUnknownTests(_Base):
+    ROUTE_UNKNOWN = {'cross_border': True, 'border_costs_unknown': {'countries': ['AO'], 'crossings': ['NA-AO']},
+                     'cross_border_breakdown': [
+                         {'type': 'border_crossing', 'description': 'SA → NA border crossing', 'amount': 4463.29},
+                         {'type': 'sa_permit', 'description': 'SA C-BRTA Class 2 permit (R 9 041/yr over 24 crossings)',
+                          'amount': 376.71}]}
+
+    def payload(self, **over):
+        p = {'distance_km': 2900, 'duration_minutes': 2400, 'vehicle_type': 'Superlink', 'weight': 28000,
+             'toll_cost': 500, 'is_international': True, 'cross_border_cost': 4840, 'route': self.ROUTE_UNKNOWN,
+             'include_empty_return': False}
+        p.update(over)
+        return p
+
+    def test_route_unknown_country_blocks_until_the_user_enters_costs(self):
+        from core.services.quote_costing import costing_for_payload
+        c = costing_for_payload(self.payload(), self.company)
+        self.assertIsNone(c['floor'])
+        w = next(w for w in c['warnings'] if w['code'] == 'border_costs_missing')
+        self.assertEqual(w['title'], 'Border costs for Angola not known')
+        self.assertEqual(w['detail'], 'Known: SA→NA R 4 463,29 + permit R 376,71; missing: Namibia→Angola')
+        self.assertEqual(w['actions'], [{'id': 'enter_border_costs', 'label': 'Enter border costs'}])
+        c = costing_for_payload(self.payload(cross_border_cost=9800, border_cost_is_override=True), self.company)
+        self.assertNotIn('border_costs_missing', c['blocking'])
+        self.assertIsNotNone(c['floor'])
+
+    def test_saved_quote_and_send_guard_follow(self):
+        q = self.create(is_international=True, costing_inputs={
+            'border_cost': 4840, 'border_costs_unknown': {'countries': ['AO'], 'crossings': ['NA-AO']},
+            'include_empty_return': False})
+        self.assertEqual(q.costing_inputs['border_costs_unknown']['countries'], ['Angola'])
+        r = self.api.patch(f'/api/v1/quotes/{q.id}/', {'status': 'SENT'}, format='json')
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertIn('border_costs_missing', r.json()['blocking'])
+        body = self.api.get(f'/api/v1/quotes/{q.id}/').json()
+        self.assertFalse(body['pricing_complete'])
+        r = self.api.patch(f'/api/v1/quotes/{q.id}/', {'costing_inputs': {
+            **q.costing_inputs, 'border_cost': 9800, 'border_cost_is_override': True}}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        r = self.api.patch(f'/api/v1/quotes/{q.id}/', {'status': 'SENT'}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+
+    def test_board_and_list_totals_leave_out_incomplete_quotes(self):
+        self.create(total_amount='30000')
+        self.create(total_amount='24800', costing_inputs={'tolls_unknown': True})
+        body = self.api.get('/api/v1/quotes/?status=DRAFT').json()
+        self.assertEqual(float(body['total_amount']), 30000.0)
+        self.assertEqual(body['incomplete_count'], 1)

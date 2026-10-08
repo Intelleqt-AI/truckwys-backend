@@ -348,6 +348,11 @@ def compute(inputs):
       hours_per_day        driving hours per day (9)
       border_cost
       international        cross-border trip: no border cost -> incomplete floor (block)
+      border_costs_unknown {countries: [names], crossings: ['Namibia→Angola'], known: [{label, amount}]}:
+                           parts of the route whose border costs are not on file; unless
+                           border_cost_is_override (the user entered the border costs), the border
+                           lines are null -> block border_costs_missing
+      border_cost_is_override  the border figure is the user's own (covers every crossing)
       include_empty_return null = company default rule; false = return load booked
       settings             {include_empty_return_default (true), empty_return_min_km (300)}
       minimum_charge
@@ -520,7 +525,24 @@ def compute(inputs):
 
     # --- border ---
     border = _num(inputs.get('border_cost'))
-    if border is not None and border > 0:
+    bu = inputs.get('border_costs_unknown') or {}
+    unknown_names = [str(c) for c in (bu.get('countries') or []) if c]
+    unknown_crossings = [str(c) for c in (bu.get('crossings') or []) if c]
+    border_unknown = bool(unknown_names or unknown_crossings) and not inputs.get('border_cost_is_override')
+    if border_unknown:
+        # Part of the route has no border figures on file (e.g. Namibia ->
+        # Angola): the route's border total leaves it out, so the floor is
+        # incomplete until the user enters the border costs.
+        names = unknown_names or [c.split('→')[-1] for c in unknown_crossings]
+        known = [k for k in (bu.get('known') or []) if isinstance(k, dict) and _num(k.get('amount')) is not None]
+        missing = ', '.join(unknown_crossings or names)
+        detail = ((f'Known: ' + ' + '.join(f'{k.get("label")} {fmt_rand(k["amount"], 2)}' for k in known)
+                   + f'; missing: {missing}') if known else f'Missing: {missing}')
+        add('border', 'loaded', None, f'Not known for {" and ".join(names)}', status='needs_input')
+        warnings.append(warning('border_costs_missing', 'block',
+                                f'Border costs for {" and ".join(names)} not known', detail,
+                                actions=('enter_border_costs',)))
+    elif border is not None and border > 0:
         add('border', 'loaded', cents(border), 'Border, permit and non-SA toll costs')
     elif inputs.get('international'):
         # An international trip always has border costs (often R 5 000+):
@@ -565,7 +587,9 @@ def compute(inputs):
             warnings.append(warning('driver_nights_unknown', 'block', 'Driving time is unknown',
                                     'Enter the driver cost, or recalculate the route.',
                                     actions=('enter_driver_cost', 'recalculate_route')))
-        if inputs.get('international') and border is not None and border > 0:
+        if inputs.get('international') and border_unknown:
+            add('border_return', 'empty_return', None, 'Not known crossing back', status='needs_input')
+        elif inputs.get('international') and border is not None and border > 0:
             # The empty truck crosses the border(s) back: the same border,
             # permit and non-SA toll costs per crossing as the loaded leg.
             add('border_return', 'empty_return', cents(border), 'Border costs crossing back, empty')
@@ -951,6 +975,8 @@ def build_inputs(payload, company, now=None, *, diesel_override=None):
                    'amount': driver_amount},
         'hours_per_day': float(getattr(dj_settings, 'DRIVER_DRIVING_HOURS_PER_DAY', DEFAULT_HOURS_PER_DAY)),
         'border_cost': _num(payload.get('cross_border_cost')) or 0.0,
+        'border_costs_unknown': border_costs_unknown_input(payload),
+        'border_cost_is_override': bool(_truthy(payload.get('border_cost_is_override'))),
         'international': international,
         'include_empty_return': include,
         'settings': {
@@ -1023,7 +1049,48 @@ COSTING_INPUT_KEYS = {
     'tolls_empty_return': float, 'fuel_price_override': float, 'vehicle_type_id': int,
     'driver_nights': int, 'duration_minutes': float, 'toll_cost_one_way': float,
     'driver_cost_is_override': bool, 'border_cost': float,
+    'border_cost_is_override': bool, 'border_costs_unknown': dict,
 }
+
+
+def _crossing_name(code):
+    from core.services.cross_border import COUNTRY_NAMES
+    parts = str(code).split('-')
+    if len(parts) == 2:
+        return '→'.join(COUNTRY_NAMES.get(p, p) for p in parts)
+    return str(code)
+
+
+def _known_label(item):
+    kind, desc = item.get('type'), str(item.get('description') or '')
+    if kind == 'border_crossing':
+        return desc.replace(' border crossing', '').replace(' → ', '→').split(' (')[0]
+    if kind == 'sa_permit':
+        return 'permit'
+    return desc.split(' (')[0]
+
+
+def border_costs_unknown_input(payload):
+    """compute()'s border_costs_unknown from the builder payload: its own
+    `border_costs_unknown`, else the route data it passes through
+    (route.border_costs_unknown + route.cross_border_breakdown). Country codes
+    are turned into names; None when everything is known."""
+    from core.services.cross_border import COUNTRY_NAMES
+    route = payload.get('route') if isinstance(payload.get('route'), dict) else {}
+    raw = payload.get('border_costs_unknown') or route.get('border_costs_unknown') or {}
+    if not isinstance(raw, dict):
+        return None
+    countries = [COUNTRY_NAMES.get(str(c).upper(), str(c)) for c in (raw.get('countries') or []) if c][:10]
+    crossings = [c if '→' in str(c) else _crossing_name(c) for c in (raw.get('crossings') or []) if c][:10]
+    if not countries and not crossings:
+        return None
+    known = raw.get('known')
+    if not isinstance(known, list):
+        known = [{'label': _known_label(b), 'amount': _num(b.get('amount'))}
+                 for b in (route.get('cross_border_breakdown') or []) if isinstance(b, dict)]
+    known = [{'label': str(k.get('label') or '')[:60], 'amount': _num(k.get('amount'))}
+             for k in known[:12] if isinstance(k, dict) and _num(k.get('amount')) is not None]
+    return {'countries': countries, 'crossings': crossings, 'known': known}
 
 
 def quote_payload(quote):
@@ -1071,6 +1138,8 @@ def quote_payload(quote):
         # additional_charges also carries empty return / top-ups, so it can't
         # be read back as the border line).
         'cross_border_cost': ci.get('border_cost') or 0.0,
+        'border_costs_unknown': ci.get('border_costs_unknown'),
+        'border_cost_is_override': bool(ci.get('border_cost_is_override')),
         'is_international': bool(getattr(quote, 'is_international', False)),
         'include_empty_return': ci.get('include_empty_return'),
         'distance_estimated': ci.get('distance_estimated'),

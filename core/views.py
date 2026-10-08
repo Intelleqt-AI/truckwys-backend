@@ -1951,7 +1951,9 @@ class QuotesPipelineOverviewView(APIView):
         for status_key in statuses:
             status_quotes = quotes.filter(status=status_key)
             count = status_quotes.count()
-            total_value = status_quotes.aggregate(total=Sum('total_amount'))['total'] or 0
+            from core.services.quote_snapshot import exclude_incomplete
+            total_value = (exclude_incomplete(status_quotes)
+                           .aggregate(total=Sum('total_amount'))['total'] or 0)
             
             pipeline_stats[status_key.lower()] = {
                 'label': status_labels[status_key],
@@ -2812,18 +2814,23 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         # client-side from whatever page happens to be loaded so far.
         queryset = self.filter_queryset(self.get_queryset())
         page = self.paginate_queryset(queryset)
-        total_amount = queryset.aggregate(total=Sum('total_amount'))['total'] or 0
+        # Totals leave out incomplete quotes (tolls / border costs unknown):
+        # their price isn't one to count as pipeline value.
+        from core.services.quote_snapshot import exclude_incomplete, incomplete_quote_q
+        countable = exclude_incomplete(queryset)
+        total_amount = countable.aggregate(total=Sum('total_amount'))['total'] or 0
         # The same total incl. VAT the cards show (15%, 0% international).
         from core.services.quote_vat import sum_incl_vat
-        total_incl_vat = sum_incl_vat(queryset)
+        total_incl_vat = sum_incl_vat(countable)
+        incomplete_count = queryset.filter(incomplete_quote_q()).count()
+        extra = {'total_amount': total_amount, 'total_incl_vat': total_incl_vat, 'incomplete_count': incomplete_count}
         if page is not None:
             serializer = self.get_serializer(page, many=True)
             response = self.get_paginated_response(serializer.data)
-            response.data['total_amount'] = total_amount
-            response.data['total_incl_vat'] = total_incl_vat
+            response.data.update(extra)
             return response
         serializer = self.get_serializer(queryset, many=True)
-        return Response({'results': serializer.data, 'total_amount': total_amount, 'total_incl_vat': total_incl_vat})
+        return Response({'results': serializer.data, **extra})
 
     def update(self, request, *args, **kwargs):
         # Unlike Loads (status-change only), every PATCH/PUT to a quote is
@@ -4527,10 +4534,11 @@ class DashboardOverviewView(APIView):
         ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0')
 
         # Quote pipeline value (DRAFT + SENT)
-        pipeline = Quote.objects.filter(
+        from core.services.quote_snapshot import exclude_incomplete
+        pipeline = exclude_incomplete(Quote.objects.filter(
             status__in=['DRAFT', 'SENT'],
             company=request.user.company
-        ).aggregate(total=Sum('total_amount'))['total'] or Decimal('0')
+        )).aggregate(total=Sum('total_amount'))['total'] or Decimal('0')
         
         return Response({
             'revenue_mtd': float(revenue_mtd),

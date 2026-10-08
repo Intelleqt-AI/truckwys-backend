@@ -400,3 +400,16 @@ Copy the file into each client repo's test fixtures (keep identical).
   - Merge of origin/development (Maruf's e295449 SENT-create email only after the send guard; 34cfb7d VAT
     registered): no conflicts, no incoming migrations. Migration 0159: `location_search_history.country_code`
     (nullable), stored and returned by /location/recent/.
+- **Border costs not on file (8 Oct 2026).** compute() input `border_costs_unknown {countries: [names],
+  crossings: ['Namibia→Angola'], known: [{label, amount}]}` (the DB layer fills it from the payload's own key or
+  the route data passed through: `route.border_costs_unknown` + `route.cross_border_breakdown`; saved in
+  `costing_inputs.border_costs_unknown`) and `border_cost_is_override` (the user entered the border costs). When
+  unknown parts exist and the border figure isn't the user's: the border line (and `border_return` on an empty
+  return) is null → floor null → block `border_costs_missing`, title "Border costs for Angola not known", detail
+  "Known: SA→NA R 4 463,29 + permit R 376,71; missing: Namibia→Angola", action "Enter border costs". The send
+  guard and snapshot follow. Golden: new cases `international_border_unknown_country` (blocked) and
+  `international_border_unknown_country_user_cost` (border_cost_is_override, complete); rules gain `border`;
+  no existing case changed.
+- Quote list (`total_amount`, `total_incl_vat`, new `incomplete_count`), board pipeline totals and the
+  dashboard pipeline value leave out incomplete quotes (snapshot blocking, or tolls unknown).
+

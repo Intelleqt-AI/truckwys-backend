@@ -739,6 +739,14 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
             if v is None or v == '':
                 continue
             try:
+                if kind is dict:
+                    from core.services.quote_costing import border_costs_unknown_input
+                    if not isinstance(v, dict):
+                        raise serializers.ValidationError(f'costing_inputs.{key} must be a JSON object.')
+                    norm = border_costs_unknown_input({'border_costs_unknown': v})
+                    if norm:
+                        out[key] = norm
+                    continue
                 if kind is bool:
                     if not isinstance(v, bool):
                         raise ValueError

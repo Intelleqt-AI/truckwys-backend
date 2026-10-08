@@ -16,6 +16,7 @@
     "tolls": "cents(tolls.one_way * legs_loaded); tolls_return = cents(tolls.empty_return ?? tolls.one_way); unknown (null / lookup_failed) -> null + tolls_unknown unless confirmed_none (then 0); one_way 0 from a working lookup = R 0 known, basis \"No toll plazas on this route\", no warning",
     "nights": "nights(h) = max(ceil(h / hours_per_day) - 1, 0), h = duration_minutes / 60; loaded = nights(h) one-way, nights(2h) round trip; return extra = nights(2h) - nights(h)",
     "driver": "driver.amount if given, else cents(nights * allowance_per_night) (0 when nights = 0)",
+    "border": "border_costs_unknown {countries, crossings, known} non-empty and not border_cost_is_override -> border (and border_return) null + block border_costs_missing, title \"Border costs for <countries> not known\", detail \"Known: <label> R x + ...; missing: <crossings>\"; else cents(border_cost)",
     "floor": "cents(sum of line amounts); null when any line is unknown",
     "target_price": "max(cents(floor / (1 - target_margin_pct / 100)), minimum_charge)",
     "margin": "cents(price - floor); margin_pct = (price - floor) / price * 100 (unrounded)",
@@ -7138,6 +7139,494 @@
           "diesel_missing"
         ],
         "can_send": false
+      }
+    },
+    {
+      "name": "international_border_unknown_country",
+      "description": "SA -> Namibia -> Angola: the Namibia->Angola crossing has no figures on file; the route border total leaves it out, so the border lines are null and border_costs_missing blocks.",
+      "inputs": {
+        "trip_type": "ONE_WAY",
+        "distance_km": 568.4,
+        "distance_estimated": false,
+        "distance_confirmed": false,
+        "duration_minutes": 440,
+        "load_kg": 28000,
+        "vehicle": {
+          "id": 11,
+          "name": "Superlink",
+          "capacity": 34,
+          "rated_burn_l_per_100km": 42
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "official_price": 32.7989,
+          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_stale": false,
+          "use_official": false,
+          "override_price": null
+        },
+        "operating_cost_per_km": 16.0,
+        "operating_cost_source": "vehicle_default",
+        "tolls": {
+          "one_way": 1043.48,
+          "empty_return": 812.61,
+          "lookup_failed": false,
+          "confirmed_none": false
+        },
+        "driver": {
+          "allowance_per_night": 450.0,
+          "nights": null,
+          "amount": null
+        },
+        "hours_per_day": 9.0,
+        "border_cost": 4840.0,
+        "international": true,
+        "include_empty_return": null,
+        "settings": {
+          "include_empty_return_default": true,
+          "empty_return_min_km": 300.0
+        },
+        "minimum_charge": null,
+        "default_price_per_km": null,
+        "target_margin_pct": 10.0,
+        "price": 31500.0,
+        "border_costs_unknown": {
+          "countries": [
+            "Angola"
+          ],
+          "crossings": [
+            "Namibia→Angola"
+          ],
+          "known": [
+            {
+              "label": "SA→NA",
+              "amount": 4463.29
+            },
+            {
+              "label": "permit",
+              "amount": 376.71
+            }
+          ]
+        }
+      },
+      "expected": {
+        "version": "qc-1",
+        "trip": {
+          "type": "ONE_WAY",
+          "legs_loaded": 1,
+          "distance_km": 568.4,
+          "empty_return_included": true,
+          "empty_return_default": true,
+          "km_loaded": 568.4,
+          "km_empty": 568.4,
+          "km_driven": 1136.8,
+          "hours_one_way": 7.333333333333333,
+          "return_nights": 1
+        },
+        "vehicle": {
+          "id": 11,
+          "name": "Superlink",
+          "capacity_t": 34.0,
+          "load_t": 28.0,
+          "load_ratio": 0.8235294117647058,
+          "rated_burn_l_per_100km": 42.0,
+          "burn_loaded_l_per_100km": 39.77647058823529,
+          "burn_empty_l_per_100km": 29.4
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "fuel_type": "Diesel",
+          "official_price": 32.7989,
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
+          "official_stale": false,
+          "price": 32.7989,
+          "source": "official"
+        },
+        "litres": {
+          "loaded": 226.08945882352938,
+          "empty_return": 167.1096,
+          "total": 393.1990588235294
+        },
+        "lines": [
+          {
+            "key": "fuel",
+            "label": "Fuel",
+            "leg": "loaded",
+            "amount": 7415.49,
+            "basis": "568 km at 39,8 L/100km × R 32,80/L",
+            "litres": 226.08945882352938,
+            "burn_l_per_100km": 39.77647058823529,
+            "price_per_litre": 32.7989,
+            "km": 568.4
+          },
+          {
+            "key": "operating",
+            "label": "Operating costs",
+            "leg": "loaded",
+            "amount": 9094.4,
+            "basis": "568 km × R 16,00/km",
+            "rate_per_km": 16.0,
+            "km": 568.4,
+            "source": "vehicle_default"
+          },
+          {
+            "key": "tolls",
+            "label": "Tolls",
+            "leg": "loaded",
+            "amount": 1043.48,
+            "basis": "R 1 043,48 one way",
+            "one_way": 1043.48,
+            "legs": 1
+          },
+          {
+            "key": "driver",
+            "label": "Driver nights out",
+            "leg": "loaded",
+            "amount": 0.0,
+            "basis": "No night away",
+            "nights": 0,
+            "suggested_nights": 0,
+            "rate_per_night": 450.0,
+            "suggested": 0.0,
+            "source": "suggested"
+          },
+          {
+            "key": "border",
+            "label": "Border fees",
+            "leg": "loaded",
+            "amount": null,
+            "basis": "Not known for Angola",
+            "status": "needs_input"
+          },
+          {
+            "key": "fuel_return",
+            "label": "Fuel, empty return",
+            "leg": "empty_return",
+            "amount": 5481.01,
+            "basis": "568 km empty at 29,4 L/100km × R 32,80/L",
+            "litres": 167.1096,
+            "burn_l_per_100km": 29.4,
+            "price_per_litre": 32.7989,
+            "km": 568.4
+          },
+          {
+            "key": "operating_return",
+            "label": "Operating costs, empty return",
+            "leg": "empty_return",
+            "amount": 9094.4,
+            "basis": "568 km × R 16,00/km",
+            "rate_per_km": 16.0,
+            "km": 568.4,
+            "source": "vehicle_default"
+          },
+          {
+            "key": "tolls_return",
+            "label": "Tolls, empty return",
+            "leg": "empty_return",
+            "amount": 812.61,
+            "basis": "R 812,61 home empty",
+            "one_way": 812.61
+          },
+          {
+            "key": "driver_return",
+            "label": "Driver nights, empty return",
+            "leg": "empty_return",
+            "amount": 450.0,
+            "basis": "1 extra night × R 450,00",
+            "nights": 1,
+            "rate_per_night": 450.0
+          },
+          {
+            "key": "border_return",
+            "label": "Border fees, empty return",
+            "leg": "empty_return",
+            "amount": null,
+            "basis": "Not known crossing back",
+            "status": "needs_input"
+          }
+        ],
+        "floor": null,
+        "floor_known": 33391.39,
+        "floor_complete": false,
+        "target_margin_pct": 10.0,
+        "target_price": null,
+        "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": null,
+        "alternative_with_return_load": {
+          "floor": null,
+          "target_price": null,
+          "default_price": null
+        },
+        "price": 31500.0,
+        "margin": null,
+        "margin_pct": null,
+        "warnings": [
+          {
+            "code": "border_costs_missing",
+            "severity": "block",
+            "title": "Border costs for Angola not known",
+            "detail": "Known: SA→NA R 4 463,29 + permit R 376,71; missing: Namibia→Angola",
+            "impact_zar": null,
+            "actions": [
+              {
+                "id": "enter_border_costs",
+                "label": "Enter border costs"
+              }
+            ]
+          }
+        ],
+        "blocking": [
+          "border_costs_missing"
+        ],
+        "can_send": false
+      }
+    },
+    {
+      "name": "international_border_unknown_country_user_cost",
+      "description": "The same trip with the border costs entered by the user (border_cost_is_override): complete.",
+      "inputs": {
+        "trip_type": "ONE_WAY",
+        "distance_km": 568.4,
+        "distance_estimated": false,
+        "distance_confirmed": false,
+        "duration_minutes": 440,
+        "load_kg": 28000,
+        "vehicle": {
+          "id": 11,
+          "name": "Superlink",
+          "capacity": 34,
+          "rated_burn_l_per_100km": 42
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "official_price": 32.7989,
+          "official_effective_from": "2026-10-06T22:01:00Z",
+          "official_stale": false,
+          "use_official": false,
+          "override_price": null
+        },
+        "operating_cost_per_km": 16.0,
+        "operating_cost_source": "vehicle_default",
+        "tolls": {
+          "one_way": 1043.48,
+          "empty_return": 812.61,
+          "lookup_failed": false,
+          "confirmed_none": false
+        },
+        "driver": {
+          "allowance_per_night": 450.0,
+          "nights": null,
+          "amount": null
+        },
+        "hours_per_day": 9.0,
+        "border_cost": 9800.0,
+        "international": true,
+        "include_empty_return": null,
+        "settings": {
+          "include_empty_return_default": true,
+          "empty_return_min_km": 300.0
+        },
+        "minimum_charge": null,
+        "default_price_per_km": null,
+        "target_margin_pct": 10.0,
+        "price": 31500.0,
+        "border_cost_is_override": true,
+        "border_costs_unknown": {
+          "countries": [
+            "Angola"
+          ],
+          "crossings": [
+            "Namibia→Angola"
+          ],
+          "known": [
+            {
+              "label": "SA→NA",
+              "amount": 4463.29
+            },
+            {
+              "label": "permit",
+              "amount": 376.71
+            }
+          ]
+        }
+      },
+      "expected": {
+        "version": "qc-1",
+        "trip": {
+          "type": "ONE_WAY",
+          "legs_loaded": 1,
+          "distance_km": 568.4,
+          "empty_return_included": true,
+          "empty_return_default": true,
+          "km_loaded": 568.4,
+          "km_empty": 568.4,
+          "km_driven": 1136.8,
+          "hours_one_way": 7.333333333333333,
+          "return_nights": 1
+        },
+        "vehicle": {
+          "id": 11,
+          "name": "Superlink",
+          "capacity_t": 34.0,
+          "load_t": 28.0,
+          "load_ratio": 0.8235294117647058,
+          "rated_burn_l_per_100km": 42.0,
+          "burn_loaded_l_per_100km": 39.77647058823529,
+          "burn_empty_l_per_100km": 29.4
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "fuel_type": "Diesel",
+          "official_price": 32.7989,
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
+          "official_stale": false,
+          "price": 32.7989,
+          "source": "official"
+        },
+        "litres": {
+          "loaded": 226.08945882352938,
+          "empty_return": 167.1096,
+          "total": 393.1990588235294
+        },
+        "lines": [
+          {
+            "key": "fuel",
+            "label": "Fuel",
+            "leg": "loaded",
+            "amount": 7415.49,
+            "basis": "568 km at 39,8 L/100km × R 32,80/L",
+            "litres": 226.08945882352938,
+            "burn_l_per_100km": 39.77647058823529,
+            "price_per_litre": 32.7989,
+            "km": 568.4
+          },
+          {
+            "key": "operating",
+            "label": "Operating costs",
+            "leg": "loaded",
+            "amount": 9094.4,
+            "basis": "568 km × R 16,00/km",
+            "rate_per_km": 16.0,
+            "km": 568.4,
+            "source": "vehicle_default"
+          },
+          {
+            "key": "tolls",
+            "label": "Tolls",
+            "leg": "loaded",
+            "amount": 1043.48,
+            "basis": "R 1 043,48 one way",
+            "one_way": 1043.48,
+            "legs": 1
+          },
+          {
+            "key": "driver",
+            "label": "Driver nights out",
+            "leg": "loaded",
+            "amount": 0.0,
+            "basis": "No night away",
+            "nights": 0,
+            "suggested_nights": 0,
+            "rate_per_night": 450.0,
+            "suggested": 0.0,
+            "source": "suggested"
+          },
+          {
+            "key": "border",
+            "label": "Border fees",
+            "leg": "loaded",
+            "amount": 9800.0,
+            "basis": "Border, permit and non-SA toll costs"
+          },
+          {
+            "key": "fuel_return",
+            "label": "Fuel, empty return",
+            "leg": "empty_return",
+            "amount": 5481.01,
+            "basis": "568 km empty at 29,4 L/100km × R 32,80/L",
+            "litres": 167.1096,
+            "burn_l_per_100km": 29.4,
+            "price_per_litre": 32.7989,
+            "km": 568.4
+          },
+          {
+            "key": "operating_return",
+            "label": "Operating costs, empty return",
+            "leg": "empty_return",
+            "amount": 9094.4,
+            "basis": "568 km × R 16,00/km",
+            "rate_per_km": 16.0,
+            "km": 568.4,
+            "source": "vehicle_default"
+          },
+          {
+            "key": "tolls_return",
+            "label": "Tolls, empty return",
+            "leg": "empty_return",
+            "amount": 812.61,
+            "basis": "R 812,61 home empty",
+            "one_way": 812.61
+          },
+          {
+            "key": "driver_return",
+            "label": "Driver nights, empty return",
+            "leg": "empty_return",
+            "amount": 450.0,
+            "basis": "1 extra night × R 450,00",
+            "nights": 1,
+            "rate_per_night": 450.0
+          },
+          {
+            "key": "border_return",
+            "label": "Border fees, empty return",
+            "leg": "empty_return",
+            "amount": 9800.0,
+            "basis": "Border costs crossing back, empty"
+          }
+        ],
+        "floor": 52991.39,
+        "floor_known": 52991.39,
+        "floor_complete": true,
+        "target_margin_pct": 10.0,
+        "target_price": 58879.32,
+        "minimum_charge": null,
+        "default_price_per_km": null,
+        "rate_price": null,
+        "default_price": 58900.0,
+        "alternative_with_return_load": {
+          "floor": 27353.37,
+          "target_price": 30392.63,
+          "default_price": 30400.0
+        },
+        "price": 31500.0,
+        "margin": -21491.39,
+        "margin_pct": -68.22663492063492,
+        "warnings": [
+          {
+            "code": "below_floor",
+            "severity": "warn",
+            "title": "Price is below your costs",
+            "detail": "This trip loses R 21 491.",
+            "impact_zar": -21491.39,
+            "actions": []
+          }
+        ],
+        "blocking": [],
+        "can_send": true
       }
     }
   ],
