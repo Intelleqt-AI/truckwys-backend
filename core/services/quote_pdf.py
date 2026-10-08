@@ -269,8 +269,10 @@ def generate_quote_pdf_bytes(quote) -> bytes:
 
     # QUOTE-RULES §11: one line naming the diesel price the quote was priced on.
     diesel_line = diesel_reference_line(quote)
-    if diesel_line:
-        story.append(Paragraph(diesel_line, ParagraphStyle('diesel', fontSize=8, textColor=mid, spaceAfter=2)))
+    clause = fuel_clause_line(quote)
+    if diesel_line or clause:
+        story.append(Paragraph(' '.join(p for p in (diesel_line, clause) if p),
+                               ParagraphStyle('diesel', fontSize=8, textColor=mid, spaceAfter=2)))
 
     # T&C
     story.append(Spacer(1, 4*mm))
@@ -301,6 +303,18 @@ def _terms_days(quote) -> int:
         return terms_days_for(customer_terms(quote.customer))
     except Exception:
         return 30
+
+
+def fuel_clause_line(quote):
+    """The fuel price clause sentence (core.services.fuel_surcharge): the one
+    the quote was sent with, or for a draft the one it would carry. None when
+    the company has the clause off. Never raises."""
+    try:
+        from core.services.fuel_surcharge import clause_terms
+        terms = clause_terms(quote)
+        return terms.get('text') if terms else None
+    except Exception:
+        return None
 
 
 def diesel_reference_line(quote):

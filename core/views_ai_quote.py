@@ -232,6 +232,11 @@ class FuelPriceCurrentView(APIView):
         from core.services.fuel_price import official_row_in_force
         in_force_row = official_row_in_force(now)
         in_force = in_force_row is not None and in_force_row.pk == manual.pk
+        if in_force:
+            # A new price is pricing quotes now: the fuel change alert
+            # (idempotent per company per period, core.services.fuel_change_alerts).
+            from core.tasks import queue_fuel_change_alerts
+            queue_fuel_change_alerts()
         return Response({'success': True, 'date': today.isoformat(), 'source': 'MANUAL',
                          'in_force': in_force,
                          'message': (None if in_force else

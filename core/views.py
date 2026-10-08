@@ -948,6 +948,8 @@ NOTIFICATION_DEFAULTS = {
         "payments": True,
         "fleet_alerts": True,
         "weekly_reports": False,
+        "fuel_alerts": True,
+        "margin_report": True,
     },
     "push": {
         "new_bookings": True,
@@ -955,6 +957,7 @@ NOTIFICATION_DEFAULTS = {
         "maintenance_due": True,
         "driver_updates": False,
         "product_news": False,
+        "quote_reminders": True,
     },
     "sms": {"critical_alerts": False, "payment_confirmations": False},
 }
@@ -3278,8 +3281,12 @@ class PublicQuoteView(APIView):
             # NOTE: Cost breakdown (base rate, fuel, tolls, driver allowance,
             # margin) and driver details are intentionally NOT returned — the
             # customer only ever sees route, cargo, dates and the final price.
+            from core.services.quote_pdf import diesel_reference_line, fuel_clause_line
             return Response({
                 'quote_number': quote.quote_number,
+                # Fuel price reference + clause, as on the PDF (null when none).
+                'fuel_reference': diesel_reference_line(quote),
+                'fuel_clause': fuel_clause_line(quote),
                 'customer_name': quote.customer.name if quote.customer else '',
                 'company_name': company.company_name if company else '',
                 'company_logo_url': company_logo_url,

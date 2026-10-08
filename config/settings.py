@@ -729,6 +729,29 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'core.tasks.send_weekly_summaries',
         'schedule': crontab(day_of_week='mon', hour='7', minute='15'),
     },
+    # Quote follow-ups. Fuel change alert: 00:10 (just after the first-
+    # Wednesday 00:01 change) and 06:20 (after the 06:00 refresh); also queued
+    # after every successful refresh. Idempotent per company per period.
+    'send-fuel-change-alerts-midnight': {
+        'task': 'core.tasks.send_fuel_change_alerts',
+        'schedule': crontab(hour='0', minute='10'),
+    },
+    'send-fuel-change-alerts-morning': {
+        'task': 'core.tasks.send_fuel_change_alerts',
+        'schedule': crontab(hour='6', minute='20'),
+    },
+    # Expiry and no-answer nudges for sent quotes, 08:00 SAST daily (after
+    # the 07:10 expiry sweep, so an expired quote is never nudged).
+    'sweep-quote-nudges': {
+        'task': 'core.tasks.sweep_quote_nudges',
+        'schedule': crontab(hour='8', minute='0'),
+    },
+    # Weekly margin email to admins, Mondays 07:00 SAST. Idempotent per
+    # company per week (WeeklyMarginReport).
+    'send-weekly-margin-emails': {
+        'task': 'core.tasks.send_weekly_margin_emails',
+        'schedule': crontab(day_of_week='mon', hour='7', minute='0'),
+    },
     # Dead-man's-switch for everything above: emails the superusers when a
     # tracked task has gone quiet or is failing every run. 09:00 SAST, i.e.
     # after the 07:00-07:50 sweep window, so a missed sweep is caught the same

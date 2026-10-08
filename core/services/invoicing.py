@@ -75,7 +75,7 @@ def create_invoice_for_load(load, *, company=None, mark_sent: bool = False):
         )
         from core.services.invoice_lines import terms_days_for
         invoice.terms_days = terms_days_for(terms)
-        apply_lines(invoice, [{
+        lines = [{
             'description': _load_line_description(load),
             'quantity': 1,
             'unit_price': Decimal(str(subtotal)),
@@ -84,7 +84,14 @@ def create_invoice_for_load(load, *, company=None, mark_sent: bool = False):
             # matching the VAT 0% its quote showed the customer.
             'tax_code': load_tax_code(load, company),
             'load': load.pk,
-        }])
+        }]
+        # Fuel price clause (core.services.fuel_surcharge): when the load's
+        # quote went out with the clause and the official price on the trip
+        # date moved past the threshold, add "Fuel price adjustment (diesel
+        # R 32,80 → R 34,10/L)" (up) or discount the freight line (down).
+        from core.services.fuel_surcharge import apply_to_invoice_lines
+        apply_to_invoice_lines(load, lines)
+        apply_lines(invoice, lines)
         if mark_sent:
             invoice.status = 'SENT'
             invoice.sent_at = timezone.now()
