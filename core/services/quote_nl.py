@@ -180,6 +180,13 @@ _AF_CARGO = {
 }
 
 
+# Afrikaans display names in replies only — the fields themselves keep the
+# geocoder-friendly English/official name.
+_AF_PLACE = {"Cape Town": "Kaapstad", "East London": "Oos-Londen", "Richards Bay": "Richardsbaai",
+             "Mossel Bay": "Mosselbaai", "Walvis Bay": "Walvisbaai", "Namibia": "Namibië", "Zambia": "Zambië",
+             "Mozambique": "Mosambiek"}
+
+
 def _summary(f: Dict[str, Any], lang: str) -> List[str]:
     af = lang == "af"
     bits = []
@@ -190,9 +197,10 @@ def _summary(f: Dict[str, Any], lang: str) -> List[str]:
         w = f"{_num(f['weight'] / 1000)} t" if f.get("weight") else ""
         bits.append(" ".join(x for x in (w, cargo) if x))
     if f.get("pickup_location") or f.get("delivery_location"):
-        route = f"{f.get('pickup_location') or '?'} → {f.get('delivery_location') or '?'}"
+        loc = (lambda x: _AF_PLACE.get(x, x)) if af else (lambda x: x)
+        route = f"{loc(f.get('pickup_location') or '?')} → {loc(f.get('delivery_location') or '?')}"
         if f.get("stops"):
-            route += (" oor " if af else " via ") + ", ".join(f["stops"])
+            route += (" oor " if af else " via ") + ", ".join(loc(x) for x in f["stops"])
         bits.append(route)
     if f.get("trip_type") == "ROUND_TRIP":
         bits.append("heen en terug, gelaai" if af else "round trip, loaded both ways")
@@ -256,6 +264,10 @@ def localise_note(note: str, lang: Optional[str]) -> str:
     return note
 
 
+def _end(text: str) -> str:
+    return text if text.endswith(("?", ".", "!")) else text + "."
+
+
 def compose_reply(merged: Dict[str, Any], extracted: Dict[str, Any], not_understood: List[str],
                   lang: Optional[str]) -> str:
     """Short confirmation of what was filled, what's still needed and what
@@ -270,7 +282,7 @@ def compose_reply(merged: Dict[str, Any], extracted: Dict[str, Any], not_underst
                if not (merged.get(k) or (k == "weight" and merged.get("weight_kg")))]
     if not_understood:
         parts.append(("Nie verstaan nie: " if L == "af" else "Didn't catch: ")
-                     + "; ".join(not_understood[:3]) + ".")
+                     + _end("; ".join(not_understood[:3])))
     if missing and extracted:
         parts.append(("Nog nodig: " if L == "af" else "Still need: ") + ", ".join(missing) + ".")
     elif not missing and extracted:

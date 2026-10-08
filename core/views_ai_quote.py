@@ -666,7 +666,8 @@ class AIChatQuoteView(APIView):
         r'\b(how (can|do) you help|what can you (do|help)|what do you do|'
         r'how does this (work|help)|who are you|what are you|can you help)\b', re.IGNORECASE)
     _GREETING_RE = re.compile(
-        r'(hi|hey|hello|howzit|hiya|yo|good\s*(morning|afternoon|evening))\b', re.IGNORECASE)
+        r'(hi|hey|hello|howzit|hiya|yo|good\s*(morning|afternoon|evening)|hallo|haai|'
+        r'goeie\s*(m[oô]re|middag|naand|dag))\b', re.IGNORECASE)
 
     @classmethod
     def _is_help_question(cls, message):
