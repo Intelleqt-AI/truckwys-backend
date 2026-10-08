@@ -163,6 +163,14 @@ class TonnageApiTests(_Base):
         self.assertEqual(r['pricing_basis'], 'per_tonne')
         self.assertFalse(r['changes_since_priced']['changed'])
 
+    def test_copilot_itemise_keeps_lane_inputs(self):
+        from core.services.quote_snapshot import itemise_quote
+        q = self.create(**self.tonnage_payload(total_tonnes='600', tonnes_per_load=None))
+        before = (q.toll_charges, q.driver_allowance, q.total_amount)
+        itemise_quote(q)
+        q.refresh_from_db()
+        self.assertEqual((q.toll_charges, q.driver_allowance, q.total_amount), before)
+
     def test_send_guard_blocks_rate_below_cost(self):
         q = self.create(**self.tonnage_payload(rate_per_tonne='500'))
         r = self.api.patch(f'/api/v1/quotes/{q.id}/', {'status': 'SENT'}, format='json')

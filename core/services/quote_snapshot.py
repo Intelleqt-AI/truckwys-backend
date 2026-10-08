@@ -94,6 +94,11 @@ def itemise_quote(quote, now=None):
     from core.models import Quote
     from core.services.quote_costing import cents, costing_for_quote
     now = now or timezone.now()
+    if getattr(quote, 'pricing_basis', 'per_load') == 'per_tonne':
+        # A tonnage quote is not itemised per load: its tolls / driver /
+        # distance fields are the lane's per-load inputs (the plan's totals
+        # would corrupt them). The snapshot re-prices it and sets the total.
+        return snapshot_quote(quote, now)
     try:
         costing = costing_for_quote(quote, now)
     except Exception:
