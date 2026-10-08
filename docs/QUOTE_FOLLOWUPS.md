@@ -103,7 +103,9 @@ Celery workers load the same settings, so the same switch applies to the schedul
 - `0178_quote_followups`: five new tables (`quote_automation_settings`, `quote_follow_ups`,
   `quote_fuel_clauses`, `fuel_change_alerts`, `weekly_margin_reports`). No new columns on existing tables.
   Every NOT NULL column with a default also has a `db_default`, so an older image can still insert rows.
-  Depends on `0177_quote_load_tonnage`.
+  PostgreSQL only: the foreign keys are rewritten to `ON DELETE CASCADE` (company and quote) and `ON DELETE SET
+  NULL` (`reminder_last_by`) in the database, as 0176 does for loads, so an older image can still delete quotes,
+  companies, users and reset the demo company. Depends on `0177_quote_load_tonnage`.
 - `0179_quote_followups_backfill`: non-atomic, walks companies and SENT quotes in primary-key order in
   1 000-row batches, each batch its own transaction, safe to re-run. Existing companies get the clause **off**
   with the one-time prompt; pricing basics they had clearly set are marked `inferred`; SENT quotes get a follow-up
@@ -124,7 +126,12 @@ Celery workers load the same settings, so the same switch applies to the schedul
    print(sweep_quote_nudges())"` returns a summary and is safe to run again.
 6. Ship the app as an OTA update only if the release owner says so (no native changes on this branch).
 
-Rollback: deploy the previous image (the new tables are ignored), then `migrate core 0177` if the tables must go.
+Rollback: deploying the previous image on its own is safe. The new tables stay, and their foreign keys are
+`ON DELETE CASCADE` (the reminder sender `SET NULL`) in PostgreSQL, so the old image's `Quote.delete()`,
+`Company.delete()`, user deletes and `reset_demo_company` never hit an IntegrityError on them (0178 rewrites the
+constraints; checked with the tonnage image on Postgres at 0179). To drop the tables, run `migrate core 0177`
+**with this image, before** deploying the previous one: the previous image has no 0178/0179 files and cannot
+unapply them.
 
 ## Tests
 

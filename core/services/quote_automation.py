@@ -78,6 +78,8 @@ def update_settings(company, data):
                 raise ValueError
             v = Decimal(str(raw)) if isinstance(lo, Decimal) else int(str(raw))
             if isinstance(lo, Decimal):
+                if not v.is_finite():
+                    raise ValueError      # 'NaN', '-NaN', 'sNaN', 'Infinity': never compare or save these
                 v = v.quantize(Decimal('0.01'))
         except (InvalidOperation, ValueError, TypeError):
             errors[f] = msg

@@ -6,6 +6,49 @@ from django.conf import settings
 from django.db import migrations, models
 
 
+# ON DELETE in the database (PostgreSQL only, production; SQLite keeps
+# Django's own handling), as 0176 does for loads: an older app image that
+# doesn't know these tables can still delete a quote, a company or a user
+# (Quote.delete(), Company.delete(), demo_seed.reset_demo_company) without an
+# IntegrityError from the new rows pointing at them.
+DB_ON_DELETE = (
+    ('quote_automation_settings', 'company_id', 'CASCADE'),
+    ('quote_follow_ups', 'quote_id', 'CASCADE'),
+    ('quote_follow_ups', 'reminder_last_by_id', 'SET NULL'),
+    ('quote_fuel_clauses', 'quote_id', 'CASCADE'),
+    ('fuel_change_alerts', 'company_id', 'CASCADE'),
+    ('weekly_margin_reports', 'company_id', 'CASCADE'),
+)
+
+
+_REWRITE = """
+DO $$
+DECLARE r record;
+BEGIN
+  FOR r IN SELECT con.conname, pg_get_constraintdef(con.oid) AS def
+             FROM pg_constraint con
+             JOIN pg_class rel ON rel.oid = con.conrelid
+             JOIN pg_attribute att ON att.attrelid = rel.oid AND att.attnum = ANY (con.conkey)
+            WHERE rel.relname = '{table}' AND con.contype = 'f' AND att.attname = '{column}'
+  LOOP
+    EXECUTE format('ALTER TABLE {table} DROP CONSTRAINT %I', r.conname);
+    EXECUTE format('ALTER TABLE {table} ADD CONSTRAINT %I %s ON DELETE {action} DEFERRABLE INITIALLY DEFERRED',
+                   r.conname, split_part(split_part(r.def, ' ON DELETE ', 1), ' DEFERRABLE', 1));
+  END LOOP;
+END $$;
+"""
+
+
+def db_on_delete(apps, schema_editor):
+    """Queued after the foreign keys themselves: CreateModel adds them as
+    deferred SQL at the end of this migration, so the rewrite is queued there
+    too (runs last, in the same transaction)."""
+    if schema_editor.connection.vendor != 'postgresql':
+        return
+    for table, column, action in DB_ON_DELETE:
+        schema_editor.deferred_sql.append(_REWRITE.format(table=table, column=column, action=action))
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -118,4 +161,6 @@ class Migration(migrations.Migration):
                 'constraints': [models.UniqueConstraint(fields=('company', 'week_start'), name='uniq_weekly_margin_report_company_week')],
             },
         ),
+        # Last: the tables exist. Reverse is a no-op (the tables go with this migration).
+        migrations.RunPython(db_on_delete, migrations.RunPython.noop),
     ]

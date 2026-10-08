@@ -149,7 +149,11 @@ def _quotes(company, start_d, end_d, target):
     priced = [(float(p), float(f)) for p, f in won if p and f is not None and float(p) > 0]
     avg = round(sum((p - f) / p * 100 for p, f in priced) / len(priced), 1) if priced else None
     decided = len(won) + lost
+    # Quotes made in the window (any status): "quoted but nothing decided yet"
+    # is not the same as "nothing quoted".
+    created = Quote.objects.filter(company=company, created_at__gte=s, created_at__lt=e).count()
     return {
+        'created': created,
         'won': len(won), 'lost': lost,
         'won_value_zar': round(sum(float(p or 0) for p, _ in won), 2),
         'win_rate_pct': round(len(won) / decided * 100, 1) if decided else None,
@@ -310,8 +314,8 @@ def build_email(company, fig):
     add(fe.h2('Quotes won and lost') + fe.para(fe.esc(ql)), 'QUOTES WON AND LOST\n' + ql)
 
     base = fe.frontend_url()
-    add(fe.button(f'{base}/finance/reports?tab=margin', 'Open margin report'),
-        f'Open margin report: {base}/finance/reports?tab=margin')
+    add(fe.button(f'{base}/finance/reports?report=weekly', 'Open margin report'),
+        f'Open margin report: {base}/finance/reports?report=weekly')
     footer = (f'{fig["notes"]["actual_cost"]} {fig["notes"]["revenue"]} Quoted margin is the quote price less its '
               'cost floor. A figure in brackets is the number of loads with recorded costs. '
               'Turn this email off in Settings → Notifications.')

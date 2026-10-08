@@ -2,7 +2,7 @@
 Wednesday 00:01 SAST) or a new official price is stored, tell each company
 how its open quotes are affected.
 
-    "Diesel up R 3,24/L today. 6 open quotes are now under your 10% target.
+    "Diesel up R 3,24/L on Wed 7 Oct. 6 open quotes are now under your 10% target.
      Re-price them?"
 
 Open quotes = DRAFT or SENT, valid_until today or later (SAST), priced before
@@ -71,9 +71,10 @@ def _quote_product(quote):
 
 
 def _day_phrase(effective_from, now):
+    """'on Wed 7 Oct': always the change's own date, never 'today'. The
+    message is stored (bell row, alert, email) and read days later, when
+    'today' would be wrong."""
     d = effective_from.astimezone(SAST).date()
-    if d == now.astimezone(SAST).date():
-        return 'today'
     return f'on {_DAYS[d.weekday()]} {d.day} {_MONTHS[d.month - 1]}'
 
 

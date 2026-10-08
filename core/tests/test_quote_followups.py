@@ -162,6 +162,15 @@ class AutomationSettingsTests(_Base):
         self.assertEqual(body['follow_up_after_days'], 4)
         self.assertIsNotNone(body['fuel_surcharge_decided_at'])
 
+    def test_patch_non_finite_threshold_is_400(self):
+        for raw in ('NaN', 'nan', '-NaN', 'sNaN', 'Infinity', '-inf', '1e400'):
+            r = self.api.patch(self.URL, {'fuel_surcharge_threshold_pct': raw}, format='json')
+            self.assertEqual(r.status_code, 400, (raw, r.content))
+            self.assertEqual(r.json()['errors']['fuel_surcharge_threshold_pct'],
+                             'Enter a fuel price change between 1% and 25%.')
+        r = self.api.patch(self.URL, {'follow_up_after_days': 'NaN'}, format='json')
+        self.assertEqual(r.status_code, 400)
+
     def test_patch_admin_only(self):
         viewer = User.objects.create_user(username='v', password='x', company=self.company, role='VIEWER')
         api = APIClient()
@@ -297,6 +306,20 @@ class FuelClauseDownTests(_Base):
         self.assertEqual(float(lines[0].discount_amount), -expected)
         self.assertIn('less fuel price adjustment (diesel R 32,80 → R 30,00/L)', lines[0].description)
         self.assertEqual(float(inv.subtotal), round(float(q.total_amount) + expected, 2))
+        self.assertNotIn('cancels the freight line', inv.notes)
+
+    def test_down_to_zero_is_invoiced_with_a_note(self):
+        q = self.send(self.create(pickup_date='2026-11-10', valid_until='2026-11-30'))
+        self.at(sast(2026, 11, 11, 9, 0))
+        # A tiny freight price (the load's own total) so the drop exceeds it.
+        load = self.make_load(q, sast(2026, 11, 10, 7, 0), total_amount=Decimal('100.00'), rate=Decimal('100.00'))
+        from core.services.invoicing import create_invoice_for_load
+        inv, created = create_invoice_for_load(load, mark_sent=True)
+        self.assertTrue(created)
+        inv.refresh_from_db()
+        self.assertEqual(inv.subtotal, Decimal('0.00'))
+        self.assertEqual(inv.status, 'DRAFT')
+        self.assertIn('cancels the freight line', inv.notes)
 
 
 class PetrolClauseTests(_Base):
@@ -392,10 +415,13 @@ class TonnageFuelClauseTests(_Base):
         q = self.tonnage()
         self.at(sast(2026, 10, 9, 9, 0))
         load = self.book(q)
+        # Neither the load nor the quote shows an adjustment the invoice won't carry.
+        for url in (f'/api/v1/loads/{load.id}/fuel-adjustment/', f'/api/v1/quotes/{q.id}/fuel-adjustment/'):
+            body = self.api.get(url).json()
+            self.assertEqual((body['applies'], body['reason'], body['stamped']), (False, 'no_clause', False), url)
         load.status = 'DELIVERED'
         load.save()
         self.assertEqual(Invoice.objects.get(load=load).lines.count(), 1)
-
 
     def test_costed_call_off_still_gets_exactly_its_share(self):
         """Call-offs are costed at booking (tonnage verifier fixes): the
@@ -490,7 +516,7 @@ class FuelChangeAlertTests(_Base):
         self.assertEqual(ids[0], self.tight.id)          # under target first
         self.assertEqual(alert.quotes_under_target, 1)
         n = Notification.objects.get(user=self.user, title='Diesel price up')
-        self.assertEqual(n.message, 'Diesel up R 3,24/L today. 1 open quote is now under your 10% target. '
+        self.assertEqual(n.message, 'Diesel up R 3,24/L on Wed 7 Oct. 1 open quote is now under your 10% target. '
                                     'Re-price it?')
         self.assertEqual(n.link, f'/bookings/quotes?fuel_alert={alert.id}')
         row = next(r for r in alert.quotes if r['quote_id'] == self.tight.id)
@@ -750,6 +776,23 @@ class WeeklyMarginTests(_Base):
         body = self.api.get('/api/v1/reports/weekly-margin/').json()
         self.assertFalse(body['last_week']['enough_data'])
         self.assertEqual(body['worst_lanes'], [])
+        self.assertEqual(body['quotes']['last_4_weeks']['created'], 0)
+
+    def test_demo_company_reminder_cannot_send(self):
+        q = self.send(self.create())
+        Company.objects.filter(pk=self.company.pk).update(is_demo=True)
+        body = self.api.get(f'/api/v1/quotes/{q.id}/follow-up/').json()
+        self.assertEqual((body['reminder']['can_send'], body['reminder']['reason']), (False, 'demo'))
+        self.assertEqual(body['reminder']['reason_text'], 'The demo account never emails customers.')
+
+    def test_quoted_but_undecided_is_counted(self):
+        self.at(sast(2026, 10, 7, 9, 0))
+        self.create()
+        self.at(sast(2026, 10, 12, 7, 0))
+        body = self.api.get('/api/v1/reports/weekly-margin/').json()
+        self.assertFalse(body['has_activity'])
+        self.assertEqual(body['quotes']['last_week']['created'], 1)
+        self.assertEqual(body['quotes']['last_week']['won'] + body['quotes']['last_week']['lost'], 0)
 
     def test_company_opt_out(self):
         QuoteAutomationSettings.objects.filter(company=self.company).update(weekly_margin_email_enabled=False)
