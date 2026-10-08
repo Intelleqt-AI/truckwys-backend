@@ -24,27 +24,11 @@ from rest_framework.permissions import IsAuthenticated
 
 
 def _is_safe_webhook_url(url: str) -> bool:
-    """Reject non-HTTPS and any URL whose host resolves to a private/loopback/
-    link-local/metadata address — basic SSRF protection for partner-supplied URLs."""
-    try:
-        parsed = urlparse(url)
-    except Exception:
-        return False
-    if parsed.scheme != 'https' or not parsed.hostname:
-        return False
-    try:
-        infos = socket.getaddrinfo(parsed.hostname, None)
-    except socket.gaierror:
-        return False
-    for info in infos:
-        addr = info[4][0]
-        try:
-            ip = ipaddress.ip_address(addr)
-        except ValueError:
-            return False
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
-            return False
-    return True
+    """https only, public host after DNS resolution (core/services/webhook_url)."""
+    from core.services.webhook_url import is_safe_webhook_url
+    return is_safe_webhook_url(url)
+
+
 from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiExample
 from drf_spectacular.types import OpenApiTypes
 from django.db.models import Count, Avg, Sum, Q

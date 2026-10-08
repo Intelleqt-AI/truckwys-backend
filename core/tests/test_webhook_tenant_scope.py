@@ -66,6 +66,14 @@ class _Base(TestCase):
             partner_name='Unknown Partner', webhook_url='https://evil.example.com/hook',
             events=ALL_EVENTS, company=None)
 
+    def setUp(self):
+        super().setUp()
+        # No real DNS in tests: every host resolves to a public address
+        # unless a test says otherwise.
+        p = mock.patch('core.services.webhook_url.resolve_ips', return_value=['93.184.216.34'])
+        self.resolve = p.start()
+        self.addCleanup(p.stop)
+
     def queued(self, enqueue):
         """(kind, target_id, event_type, company_id) for every apply_async call."""
         out = []
@@ -136,6 +144,20 @@ class TenantScopeTests(_Base):
             ld.status = 'ASSIGNED'
             ld.save()
         self.assertEqual([q[2] for q in self.queued(enqueue)], ['load.status_changed'])
+
+    def test_load_delivered_once_with_auto_invoice(self, enqueue, _post):
+        # Auto-invoice moves the row to INVOICED; re-saving the same object
+        # must not write DELIVERED back or re-fire load.delivered.
+        with self.captureOnCommitCallbacks(execute=True):
+            ld = _load(self.a)
+            ld.status = 'DELIVERED'
+            ld.save()
+            ld.cargo_description = 'edited after delivery'
+            ld.save()
+        events = [q[2] for q in self.queued(enqueue)]
+        self.assertEqual(events.count('load.delivered'), 1)
+        self.assertEqual(Load.objects.get(pk=ld.pk).status, 'INVOICED')
+        self.assertEqual(ld.status, 'INVOICED')
 
     @override_settings(AUTO_INVOICE_ON_DELIVERY=False)  # it moves the row to INVOICED behind the instance
     def test_load_delivered_once(self, enqueue, _post):
@@ -300,3 +322,97 @@ class AuditCommandTests(_Base):
         self.assertEqual(rows[self.sub_a.id]['company_id'], self.a.id)
         after = list(WebhookSubscription.objects.values_list('id', 'company_id', 'is_active', 'updated_at'))
         self.assertEqual(before, after)
+
+
+class SsrfTests(_Base):
+    """Every place a webhook URL is accepted, and send time, use one rule."""
+
+    BAD_IPS = ['10.0.0.5', '127.0.0.1', '169.254.169.254', '192.168.1.1', '172.16.0.1',
+               '100.64.0.1', '0.0.0.0', '::1', 'fe80::1', '::ffff:127.0.0.1', 'fd00::1']
+
+    def test_check_rejects_scheme_and_private_ips(self):
+        from core.services.webhook_url import BLOCKED, UNRESOLVED, check_webhook_url
+        self.assertIsNone(check_webhook_url('https://ok.example.com/h'))
+        self.assertEqual(check_webhook_url('http://ok.example.com/h'), BLOCKED)
+        self.assertEqual(check_webhook_url('https://user:pw@ok.example.com/h'), BLOCKED)
+        self.assertEqual(check_webhook_url('ftp://ok.example.com'), BLOCKED)
+        for ip in self.BAD_IPS:
+            self.resolve.return_value = [ip]
+            self.assertEqual(check_webhook_url('https://rebind.example.com/h'), BLOCKED, ip)
+        self.resolve.return_value = ['93.184.216.34', '10.0.0.1']   # any private answer blocks
+        self.assertEqual(check_webhook_url('https://mixed.example.com/h'), BLOCKED)
+        import socket
+        self.resolve.side_effect = socket.gaierror('nx')
+        self.assertEqual(check_webhook_url('https://nx.example.com/h'), UNRESOLVED)
+
+    def test_send_time_dns_rebinding_is_blocked(self):
+        self.resolve.return_value = ['169.254.169.254']
+        with mock.patch('core.services.webhook_delivery._post') as post:
+            outcome = wd.attempt(wd.SUBSCRIPTION, self.sub_a.id, 'load.created', '{}', self.a.id, final=False)
+        self.assertEqual(outcome, wd.FAILED)
+        post.assert_not_called()
+        self.sub_a.refresh_from_db()
+        self.assertEqual(self.sub_a.failure_count, 1)
+
+    def test_send_time_dns_failure_retries_without_posting(self):
+        import socket
+        self.resolve.side_effect = socket.gaierror('nx')
+        with mock.patch('core.services.webhook_delivery._post') as post:
+            self.assertEqual(wd.attempt(wd.SUBSCRIPTION, self.sub_a.id, 'e', '{}', self.a.id, final=False), wd.RETRY)
+        post.assert_not_called()
+
+    def _admin(self):
+        u = User.objects.create_user(username='wh_ssrf', email='ssrf@wh.test', password='x')
+        u.company, u.role = self.a, 'ADMIN'
+        u.save()
+        c = APIClient()
+        c.force_authenticate(u)
+        return c
+
+    def test_legacy_webhook_api_rejects_unsafe_urls(self):
+        c = self._admin()
+        r = c.post('/api/v1/webhooks/', {'url': 'http://ok.example.com/h', 'events': ['load.created']}, format='json')
+        self.assertEqual(r.status_code, 400, r.content)
+        self.resolve.return_value = ['127.0.0.1']
+        r = c.post('/api/v1/webhooks/', {'url': 'https://internal.example.com/h', 'events': []}, format='json')
+        self.assertEqual(r.status_code, 400, r.content)
+        self.resolve.return_value = ['93.184.216.34']
+        r = c.post('/api/v1/webhooks/', {'url': 'https://ok.example.com/h', 'events': []}, format='json')
+        self.assertEqual(r.status_code, 201, r.content)
+        hook_id = r.data['id']
+        self.resolve.return_value = ['10.1.2.3']
+        r = c.patch(f'/api/v1/webhooks/{hook_id}/', {'url': 'https://moved.example.com/h'}, format='json')
+        self.assertEqual(r.status_code, 400, r.content)
+
+    def test_integration_key_serializer_rejects_unsafe_webhook_url(self):
+        from core.serializers import IntegrationAPIKeySerializer
+        self.resolve.return_value = ['169.254.169.254']
+        s = IntegrationAPIKeySerializer(data={'name': 'k', 'webhook_url': 'https://meta.example.com/h'})
+        self.assertFalse(s.is_valid())
+        self.assertIn('webhook_url', s.errors)
+        self.resolve.return_value = ['93.184.216.34']
+        s = IntegrationAPIKeySerializer(data={'name': 'k', 'webhook_url': 'https://ok.example.com/h'})
+        s.is_valid()
+        self.assertNotIn('webhook_url', s.errors)
+
+    def test_partner_api_uses_same_rule(self):
+        c = APIClient()
+        c.credentials(HTTP_X_API_KEY=self.sub_a.api_key)
+        self.resolve.return_value = ['192.168.0.10']
+        r = c.post('/api/v1/partners/webhooks/', {'webhook_url': 'https://lan.example.com/h',
+                                                  'events': ['load.created']}, format='json')
+        self.assertEqual(r.status_code, 400)
+
+    def test_admin_form_rejects_unsafe_url(self):
+        from django.contrib.admin.sites import site
+        from django.test import RequestFactory
+        admin_obj = site._registry[WebhookSubscription]
+        su = User.objects.create_superuser(username='wh_su', email='su@wh.test', password='x')
+        req = RequestFactory().get('/')
+        req.user = su
+        Form = admin_obj.get_form(req)
+        self.resolve.return_value = ['127.0.0.1']
+        f = Form(data={'partner_name': 'X', 'webhook_url': 'https://lo.example.com/h', 'events': '[]',
+                       'is_active': True, 'company': self.a.id})
+        self.assertFalse(f.is_valid())
+        self.assertIn('webhook_url', f.errors)

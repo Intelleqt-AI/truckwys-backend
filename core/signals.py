@@ -190,6 +190,18 @@ def load_saved(sender, instance, created, **kwargs):
         except Exception:
             pass
 
+        # _auto_invoice_on_delivery moves the row to INVOICED with a queryset
+        # update. Bring this instance along, so a later save of the same
+        # object can't write DELIVERED back over INVOICED (and re-fire
+        # load.delivered). Done last: the code above still sees DELIVERED.
+        if instance.status == 'DELIVERED':
+            try:
+                fresh = sender.objects.filter(pk=instance.pk).values_list('status', flat=True).first()
+                if fresh == 'INVOICED':
+                    instance.status = 'INVOICED'
+            except Exception:
+                pass
+
 
 def _deliver_auto_invoice(load, invoice):
     """Email an auto-raised invoice when the company has auto_email_invoices

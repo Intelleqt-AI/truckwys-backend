@@ -176,9 +176,19 @@ def attempt(kind: str, target_id: int, event_type: str, body: str, company_id: O
             'User-Agent': 'Truckwys-Webhook/1.0',
         }
 
+    # SSRF, re-checked at send time: DNS may now point somewhere private.
+    from core.services.webhook_url import BLOCKED, check_webhook_url
+    problem = check_webhook_url(url)
+    if problem == BLOCKED:
+        logger.warning('webhook %s to %s %s blocked: unsafe URL', event_type, kind, target_id)
+        _record(kind, target, success=False)
+        return FAILED
+
+    code = None
     try:
-        response = _post(url, body, headers)
-        code = response.status_code
+        if problem is None:
+            response = _post(url, body, headers)
+            code = response.status_code
     except Exception as exc:
         logger.warning('webhook %s to %s %s failed: %s', event_type, kind, target_id, exc)
         code = None

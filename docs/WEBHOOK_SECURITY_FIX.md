@@ -47,7 +47,16 @@ load save, not only on status changes.
    worker) sends one inline attempt after commit instead.
 4. `load.status_changed` and `load.delivered` fire only on a real status
    transition. Payloads are serialised only when the company has a subscriber.
-5. `python manage.py audit_webhook_subscriptions [--json]` (read-only) lists
+5. SSRF: one rule (`core/services/webhook_url.py`) for every accepted webhook
+   URL — partner API, legacy `Webhook` API, `IntegrationAPIKey.webhook_url`,
+   and the Django admin forms. https only, no credentials in the URL, and every
+   DNS answer must be a public address (no private, loopback, link-local or
+   metadata, CGNAT, reserved or IPv4-mapped-private). It is checked again at
+   send time, so a host re-pointed at an internal IP is blocked; redirects
+   are never followed.
+6. A stale re-save of a delivered load no longer writes DELIVERED back over
+   the auto-invoice's INVOICED (and so no second `load.delivered`).
+7. `python manage.py audit_webhook_subscriptions [--json]` (read-only) lists
    every subscription and legacy webhook with URL, events, company (or NONE),
    last delivery and failures, and flags `NO_COMPANY`, `NOT_HTTPS` and
    `UNKNOWN_PARTNER`.

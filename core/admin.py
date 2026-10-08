@@ -1,3 +1,4 @@
+from django import forms
 from django.contrib import admin
 from .models import (
     User, Vehicle, VehicleType, VehicleLog, Load, Quote, Driver,
@@ -168,8 +169,23 @@ class AdvanceRequestAdmin(admin.ModelAdmin):
                        'settlement_reference', 'settlement_payment', 'settled_by']
 
 
+class _SafeWebhookURLForm(forms.ModelForm):
+    """Applies the webhook SSRF rule to whichever URL field the model has."""
+    _url_field = 'webhook_url'
+
+    def clean(self):
+        cleaned = super().clean()
+        url = cleaned.get(self._url_field)
+        if url:
+            from core.services.webhook_url import is_safe_webhook_url, MESSAGE
+            if not is_safe_webhook_url(url):
+                self.add_error(self._url_field, MESSAGE)
+        return cleaned
+
+
 @admin.register(IntegrationAPIKey)
 class IntegrationAPIKeyAdmin(admin.ModelAdmin):
+    form = _SafeWebhookURLForm
     """Where platform staff bind a LENDER key to the transporters it funds."""
     list_display = ['id', 'name', 'key_type', 'operator', 'active', 'last_used_at']
     list_filter = ['key_type', 'active']
@@ -342,6 +358,7 @@ class WebhookSubscriptionAdmin(admin.ModelAdmin):
     list_display = ['id', 'partner_name', 'company', 'webhook_url', 'is_active', 'last_delivery_at', 'failure_count']
     list_filter = ['is_active']
     search_fields = ['partner_name', 'webhook_url', 'company__company_name']
+    form = _SafeWebhookURLForm
     readonly_fields = ['api_key', 'secret', 'created_at', 'updated_at', 'last_delivery_at', 'failure_count']
 
     def get_queryset(self, request):
