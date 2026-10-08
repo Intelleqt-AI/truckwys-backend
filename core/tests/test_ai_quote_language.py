@@ -10,7 +10,7 @@ detection is uncertain/unavailable (existing default behavior applies)."""
 from unittest import mock
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from core.models import Company
@@ -126,6 +126,9 @@ class SystemPromptLanguageDirectiveTests(TestCase):
             self.assertIn(f"'{code}'", prompt)
 
 
+# These tests are about what reaches the LLM, so the rules-first cost guard
+# (which skips the model for fully-explained messages) is switched off.
+@override_settings(QUOTE_NL_SKIP_LLM_WHEN_RULES_SUFFICE=False)
 @mock.patch('core.services.llm_quote.is_enabled', return_value=True)
 class ChatQuoteDetectedLanguagePlumbingTests(TestCase):
     """End-to-end through AIChatQuoteView: confirms detected_language from the

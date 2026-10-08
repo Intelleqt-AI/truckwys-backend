@@ -13,7 +13,7 @@ import logging
 import os
 import re
 from collections import Counter
-from datetime import date
+from datetime import date, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from django.conf import settings
@@ -85,7 +85,38 @@ SYSTEM_PROMPT_BASE = (
     "phrases ('today', 'tomorrow', 'in 5 days', '5 days from now', 'next Monday') against TODAY'S DATE "
     "given below — do the arithmetic yourself, don't guess. If a date isn't mentioned, return \"\".\n"
     "- trip_type is \"ONE_WAY\" or \"ROUND_TRIP\" — infer from phrases like 'one way'/'one-way' -> "
-    "ONE_WAY, 'round trip'/'return trip'/'there and back' -> ROUND_TRIP. If not mentioned, return \"\".\n"
+    "ONE_WAY, 'round trip'/'return trip'/'there and back' -> ROUND_TRIP (both legs loaded). If not "
+    "mentioned, return \"\".\n"
+    "- return_load_booked: \"yes\" when the user says a load for the way back is already arranged "
+    "('return load booked', 'backload', Afrikaans 'retoervrag'/'terugvrag'); \"no\" when the truck comes "
+    "back empty ('empty back', 'leeg terug'); otherwise \"\". Either one implies trip_type ONE_WAY.\n"
+    "- international: \"yes\" when the trip crosses a border (a pickup/delivery outside South Africa, a "
+    "border post such as Beitbridge/Lebombo/Kopfontein/Vioolsdrif, or 'cross-border'/'oorgrens'); \"no\" "
+    "only when the user says it's local; otherwise \"\". border_post: the border post named, else \"\".\n"
+    "- stops: intermediate places between pickup and delivery ('via X', 'oor X', 'stop in X'), in order; "
+    "[] when none.\n"
+    "- driver_nights: nights the driver sleeps out, only if stated (else 0). fuel_price_override: a diesel "
+    "price per litre the user states for this quote, in rand (else 0).\n"
+    "- AFRIKAANS and mixed Afrikaans-English (very common among SA transporters, often mid-sentence) must be "
+    "understood exactly like English. Numbers: 'agt-en-twintig' = 28, 'vier-en-dertig' = 34, 'twintig' = 20, "
+    "'honderd' = 100, 'duisend' = 1000, decimal comma '12,5' = 12.5. Units: 'ton' = tonnes, 'kilo' = kg. "
+    "Words: 'van X na Y' = from X to Y, 'X toe' = to X, 'vrag' = load, 'trok' = truck, 'sleepwa' = trailer, "
+    "'koelwa' = refrigerated truck, 'gordynkant' = tautliner, 'wipbak' = tipper, 'platbak' = flatbed, "
+    "'superlink' = interlink, 'heen en terug' = ROUND_TRIP, 'retoervrag' = return load booked, 'leeg terug' "
+    "= empty back, 'môre' = tomorrow, 'oormôre' = day after tomorrow, Maandag/Dinsdag/Woensdag/Donderdag/"
+    "Vrydag/Saterdag/Sondag = Monday..Sunday, 'aflewer' = deliver, 'oplaai'/'laai' = load/pick up. Cargo "
+    "words go out in English (staalrolle = steel coils, mielies = maize, sement = cement, hout = timber).\n"
+    "- Place names: return the common English/official city name — Kaapstad -> Cape Town, Tshwane -> "
+    "Pretoria, Jozi/Joburg/JHB -> Johannesburg, eThekwini/DBN -> Durban, Mangaung/Bloem -> Bloemfontein, "
+    "PE/Port Elizabeth -> Gqeberha, Oos-Londen -> East London, Pietersburg -> Polokwane, Nelspruit -> "
+    "Mbombela, Richardsbaai -> Richards Bay. isiZulu/Sesotho/Setswana names are real places — keep them.\n"
+    "- A tonnage directly describing the truck ('8 ton truck', 'n 34 ton superlink') is the truck size, not "
+    "the load weight — only set weight_kg for the load.\n"
+    "- The message may be a speech-to-text transcript with mis-heard words ('steal coils' = steel coils, "
+    "'Johannesberg'); correct obvious mis-hearings, but if a word stays unclear add a short note to "
+    "not_understood (max 5 short items, in the user's language) instead of guessing.\n"
+    "- field_confidence: for every field you filled, your confidence 0-1 that it is exactly what the user "
+    "meant; omit fields you left empty.\n"
     "- For any field you cannot determine from the conversation, return an empty string \"\" "
     "(or 0 for weight_kg). Do NOT guess or invent values.\n"
     "- 'reply' is one short, friendly sentence that RESPONDS TO WHAT THE USER ACTUALLY SAID:\n"
@@ -159,17 +190,38 @@ EXTRACTION_SCHEMA = {
         "pickup_date": {"type": "string"},
         "delivery_date": {"type": "string"},
         "valid_until": {"type": "string"},
-        "trip_type": {"type": "string"},
+        "trip_type": {"type": "string", "enum": ["", "ONE_WAY", "ROUND_TRIP"]},
+        "return_load_booked": {"type": "string", "enum": ["", "yes", "no"]},
+        "international": {"type": "string", "enum": ["", "yes", "no"]},
+        "border_post": {"type": "string"},
+        "stops": {"type": "array", "items": {"type": "string"}},
+        "driver_nights": {"type": "number"},
+        "fuel_price_override": {"type": "number"},
+        "not_understood": {"type": "array", "items": {"type": "string"}},
+        "field_confidence": {
+            "type": "object",
+            "properties": {k: {"type": "number"} for k in (
+                "pickup_location", "delivery_location", "weight_kg", "vehicle_type", "customer_name",
+                "cargo_description", "pickup_date", "delivery_date", "valid_until", "trip_type",
+                "return_load_booked", "international", "border_post", "stops", "driver_nights",
+                "fuel_price_override")},
+            "additionalProperties": False,
+        },
         "reply": {"type": "string"},
     },
     "required": [
         "pickup_location", "delivery_location", "weight_kg",
         "vehicle_type", "customer_name", "cargo_description",
         "pickup_date", "delivery_date", "valid_until", "trip_type",
+        "return_load_booked", "international", "border_post", "stops", "driver_nights",
+        "fuel_price_override", "not_understood", "field_confidence",
         "reply",
     ],
     "additionalProperties": False,
 }
+
+# Output-field name for each schema key, where they differ.
+_CONF_KEY = {"weight_kg": "weight"}
 
 
 # Words generic enough that sharing one is meaningless for matching — every
@@ -387,7 +439,10 @@ def _build_messages(message: str, history: Optional[List[Dict[str, Any]]],
         if role in ("user", "assistant") and isinstance(content, str) and content.strip():
             messages.append({"role": role, "content": content})
 
-    known = {k: v for k, v in (current_fields or {}).items() if v not in (None, "", 0)}
+    # Privacy: the client/customer the form already has selected is never sent
+    # to the model — customer matching happens locally (see extract()).
+    known = {k: v for k, v in (current_fields or {}).items()
+             if v not in (None, "", 0) and k not in ("customer_name", "customer_id")}
     prefix = ""
     if known:
         prefix = f"Already captured so far: {json.dumps(known)}\n\n"
@@ -404,7 +459,8 @@ def extract(message: str, history: Optional[List[Dict[str, Any]]] = None,
             vehicle_types: Optional[List[Any]] = None,
             customers: Optional[List[Dict[str, Any]]] = None,
             detected_language: Optional[str] = None,
-            ) -> Tuple[Dict[str, Any], str, Dict[str, Optional[str]]]:
+            return_meta: bool = False,
+            ):
     """Return (extracted_fields, reply, unmatched). Raises on SDK/API error so the
     caller can fall back.
 
@@ -432,6 +488,11 @@ def extract(message: str, history: Optional[List[Dict[str, Any]]] = None,
     opposed to not being mentioned at all). Lets the view offer to create it
     instead of silently dropping it — a real name that doesn't exist must never
     be presented to the user as if it had been captured.
+
+    return_meta: when True, a 4th element is returned: {'field_confidence':
+    {field: 0-1}, 'not_understood': [str]} — the model's own per-field
+    confidence and the short list of things it could not resolve, both
+    validated (see validate_extraction).
 
     detected_language: an authoritative language code from the transcription
     pipeline (Whisper for voice) or a dedicated text-language detector (typed),
@@ -461,24 +522,26 @@ def extract(message: str, history: Optional[List[Dict[str, Any]]] = None,
         client = anthropic.Anthropic(timeout=LLM_TIMEOUT_SECONDS, max_retries=0)
         response = client.messages.create(
             model=QUOTE_MODEL,
-            max_tokens=600,
+            max_tokens=900,
             temperature=0,
             system=_system_prompt(_candidate_labels(vt_records), None, detected_language),
             messages=msgs,
             output_config={"format": {"type": "json_schema", "schema": EXTRACTION_SCHEMA}},
         )
+        if getattr(response, "stop_reason", None) in ("refusal", "max_tokens"):
+            # Output may not match the schema — let the caller use the rules instead.
+            raise RuntimeError(f"LLM extraction stopped early: {response.stop_reason}")
         text = next((b.text for b in response.content if b.type == "text"), "")
         data = json.loads(text)
     elif provider == "openai":
         client = OpenAI(api_key=_openai_key(), timeout=LLM_TIMEOUT_SECONDS, max_retries=0)
         sys = _system_prompt(_candidate_labels(vt_records), None, detected_language) + (
-            "\n\nRespond ONLY with a JSON object with exactly these keys: pickup_location, "
-            "delivery_location, weight_kg, vehicle_type, customer_name, cargo_description, "
-            "pickup_date, delivery_date, valid_until, trip_type, reply."
+            "\n\nRespond ONLY with a JSON object with exactly these keys: "
+            + ", ".join(EXTRACTION_SCHEMA["required"]) + "."
         )
         response = client.chat.completions.create(
             model=OPENAI_QUOTE_MODEL,
-            max_tokens=600,
+            max_tokens=900,
             temperature=0,
             response_format={"type": "json_object"},
             messages=[{"role": "system", "content": sys}, *msgs],
@@ -487,8 +550,12 @@ def extract(message: str, history: Optional[List[Dict[str, Any]]] = None,
     else:
         raise RuntimeError("No LLM provider configured for quote extraction")
 
+    if not isinstance(data, dict):
+        raise ValueError("LLM returned a non-object")
     extracted: Dict[str, Any] = {}
     unmatched: Dict[str, Optional[str]] = {"customer_name": None, "vehicle_type": None}
+    extra, meta = validate_extraction(data)
+    data = {k: (v.strip()[:_MAX_TEXT] if isinstance(v, str) else v) for k, v in data.items()}
     if data.get("pickup_location"):
         extracted["pickup_location"] = data["pickup_location"].strip()
     if data.get("delivery_location"):
@@ -504,12 +571,8 @@ def extract(message: str, history: Optional[List[Dict[str, Any]]] = None,
             unmatched["customer_name"] = raw_customer_name
     if data.get("cargo_description"):
         extracted["cargo_description"] = data["cargo_description"].strip()
-    try:
-        weight = float(data.get("weight_kg") or 0)
-    except (TypeError, ValueError):
-        weight = 0
-    if weight > 0:
-        extracted["weight"] = weight
+    if extra.get("weight"):
+        extracted["weight"] = extra["weight"]
 
     # Vehicle type is resolved after weight so a stated tonnage can be
     # cross-checked against the matched type's real capacity — see
@@ -523,22 +586,115 @@ def extract(message: str, history: Optional[List[Dict[str, Any]]] = None,
     if unmatched_vt:
         unmatched["vehicle_type"] = unmatched_vt
 
-    for date_field in ("pickup_date", "delivery_date", "valid_until"):
-        raw = (data.get(date_field) or "").strip()
-        if raw:
-            try:
-                date.fromisoformat(raw[:10])  # validate shape; reject anything malformed
-                extracted[date_field] = raw[:10]
-            except ValueError:
-                logger.debug("llm_quote: ignoring unparseable %s %r", date_field, raw)
-
-    trip_type = (data.get("trip_type") or "").strip().upper()
-    if trip_type in ("ONE_WAY", "ROUND_TRIP"):
-        extracted["trip_type"] = trip_type
+    for k in ("pickup_date", "delivery_date", "valid_until", "trip_type", "return_load_booked",
+              "international", "border_post", "stops", "driver_nights", "fuel_price_override"):
+        if k in extra:
+            extracted[k] = extra[k]
+    if extracted.get("return_load_booked") is not None and "trip_type" not in extracted:
+        extracted["trip_type"] = "ONE_WAY"
 
     reply = (data.get("reply") or "").strip()
     if note:
         from core.services import language_detect
         reply = f"{reply} {language_detect.translate_template(note, detected_language)}".strip()
 
+    meta["field_confidence"] = {k: v for k, v in meta["field_confidence"].items() if k in extracted}
+    if return_meta:
+        return extracted, reply, unmatched, meta
     return extracted, reply, unmatched
+
+
+_MAX_TEXT = 200
+_MAX_NOTES = 5
+
+
+def _sast_today() -> date:
+    from core.services.quote_preparse import _sast_today as t
+    return t()
+
+
+def validate_extraction(data: Dict[str, Any], today: Optional[date] = None,
+                        ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Strict validation of the model's JSON for the typed / ranged fields.
+
+    Returns (fields, meta). Anything malformed, out of range or not in an
+    enum is dropped (never coerced into a guess); a dropped numeric value the
+    user evidently gave is surfaced in meta['not_understood'] instead. Text
+    fields (locations, cargo, names) are handled by extract() itself.
+    """
+    from core.services import quote_preparse as qp
+    today = today or _sast_today()
+    out: Dict[str, Any] = {}
+    notes: List[str] = []
+
+    def num(key):
+        v = data.get(key)
+        if isinstance(v, bool):
+            return None
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return None
+        return f if f == f and f not in (float("inf"), float("-inf")) else None
+
+    w = num("weight_kg")
+    if w and w > 0:
+        if qp.MIN_WEIGHT_KG <= w <= qp.MAX_WEIGHT_KG:
+            out["weight"] = w
+        else:
+            notes.append(f"weight {w / 1000:g} t looks wrong")
+    for key in ("pickup_date", "delivery_date", "valid_until"):
+        raw = data.get(key)
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        try:
+            d = date.fromisoformat(raw.strip()[:10])
+        except ValueError:
+            logger.debug("llm_quote: ignoring unparseable %s %r", key, raw)
+            continue
+        if today - timedelta(days=1) <= d <= today + timedelta(days=qp.MAX_DATE_AHEAD_DAYS):
+            out[key] = d.isoformat()
+        else:
+            notes.append(f"date {d.isoformat()} is out of range")
+    tt = data.get("trip_type")
+    if isinstance(tt, str) and tt.strip().upper() in ("ONE_WAY", "ROUND_TRIP"):
+        out["trip_type"] = tt.strip().upper()
+    for key in ("return_load_booked", "international"):
+        v = data.get(key)
+        if isinstance(v, bool):
+            out[key] = v
+        elif isinstance(v, str) and v.strip().lower() in ("yes", "no", "true", "false"):
+            out[key] = v.strip().lower() in ("yes", "true")
+    bp = data.get("border_post")
+    if isinstance(bp, str) and bp.strip():
+        out["border_post"] = bp.strip()[:80]
+    stops = data.get("stops")
+    if isinstance(stops, list):
+        clean = [s.strip()[:120] for s in stops if isinstance(s, str) and s.strip()][:8]
+        if clean:
+            out["stops"] = clean
+    n = num("driver_nights")
+    if n:
+        if 0 < n <= qp.MAX_DRIVER_NIGHTS and float(n).is_integer():
+            out["driver_nights"] = int(n)
+        else:
+            notes.append(f"{n:g} driver nights looks wrong")
+    fp = num("fuel_price_override")
+    if fp:
+        if qp.FUEL_PRICE_RANGE[0] <= fp <= qp.FUEL_PRICE_RANGE[1]:
+            out["fuel_price_override"] = round(fp, 2)
+        else:
+            notes.append(f"fuel price R {fp:g}/L looks wrong")
+    if out.get("international") is None and out.get("border_post"):
+        out["international"] = True
+
+    conf: Dict[str, float] = {}
+    fc = data.get("field_confidence")
+    if isinstance(fc, dict):
+        for k, v in fc.items():
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v <= 1:
+                conf[_CONF_KEY.get(k, k)] = round(float(v), 2)
+    nu = data.get("not_understood")
+    if isinstance(nu, list):
+        notes.extend(s.strip()[:120] for s in nu if isinstance(s, str) and s.strip())
+    return out, {"field_confidence": conf, "not_understood": notes[:_MAX_NOTES]}

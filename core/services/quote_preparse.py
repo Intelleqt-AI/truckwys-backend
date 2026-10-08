@@ -38,10 +38,10 @@ MAX_DATE_AHEAD_DAYS = 366
 # official names, trucker shorthand and common STT spellings.
 _PLACES: List[Tuple[str, str, Sequence[str]]] = [
     ("Johannesburg", "ZA", ["johannesburg", "joburg", "jo burg", "jozi", "jhb", "joeys", "egoli", "e goli",
-                            "johannesberg", "johannes burg", "jo'burg"]),
-    ("Cape Town", "ZA", ["cape town", "capetown", "kaapstad", "kaap stad", "cpt", "ikapa", "the cape", "die kaap"]),
-    ("Durban", "ZA", ["durban", "dbn", "ethekwini", "e thekwini", "thekwini", "durbs", "theku"]),
-    ("Pretoria", "ZA", ["pretoria", "pta", "tshwane", "pitori", "pitoli"]),
+                            "johannesberg", "johannes burg", "jo'burg", "j h b"]),
+    ("Cape Town", "ZA", ["cape town", "capetown", "kaapstad", "kaap stad", "cpt", "c p t", "ikapa", "the cape", "die kaap"]),
+    ("Durban", "ZA", ["durban", "dbn", "d b n", "ethekwini", "e thekwini", "thekwini", "durbs", "theku"]),
+    ("Pretoria", "ZA", ["pretoria", "pta", "p t a", "tshwane", "pitori", "pitoli"]),
     ("Bloemfontein", "ZA", ["bloemfontein", "bloem", "bfn", "mangaung", "bloemfontain", "bloemfontien"]),
     ("Gqeberha", "ZA", ["gqeberha", "port elizabeth", "pe", "p e", "the bay", "nelson mandela bay", "ibhayi",
                         "port elisabeth", "kebera", "gqebera"]),
@@ -179,7 +179,7 @@ _AMBIGUOUS_ALIASES = {"george", "el", "pe", "p e", "the cape", "die kaap", "vaal
 # ── Cargo lexicon (Afrikaans/English/STT spellings → canonical English) ──────
 _CARGO: List[Tuple[str, Sequence[str]]] = [
     ("steel coils", ["staalrolle", "staal rolle", "staalrol", "steel coils", "steel coil", "coils of steel",
-                     "rolle staal", "coils", "staalspoele"]),
+                     "rolle staal", "coils", "staalspoele", "steal coils", "steal coil"]),
     ("steel pipes", ["staalpype", "steel pipes", "steel pipe"]),
     ("steel beams", ["staalbalke", "steel beams", "i beams", "ibeams"]),
     ("steel", ["staal", "steel", "rebar", "wapeningstaal"]),
@@ -218,7 +218,7 @@ _CARGO: List[Tuple[str, Sequence[str]]] = [
     ("beverages", ["koeldrank", "cooldrinks", "cool drinks", "drinks", "beverages", "drank", "cold drinks",
                    "soft drinks"]),
     ("bottled water", ["bottelwater", "bottled water"]),
-    ("fuel", ["brandstof", "fuel", "diesel fuel", "paraffien", "paraffin"]),
+    ("fuel", ["brandstof", "fuel", "diesel fuel", "diesel", "petrol", "paraffien", "paraffin"]),
     ("lubricants", ["olie", "oil", "lubricants", "smeermiddels"]),
     ("chemicals", ["chemikaliee", "chemikalie", "chemicals", "chemical"]),
     ("LPG", ["lpg", "gas bottles", "gasbottels"]),
@@ -329,6 +329,7 @@ _AF_WORDS = {
     "nagte", "brandstof", "klient", "grens", "oorgrens", "mielies", "sement", "hout", "vrugte", "palette",
     "aflewer", "afgelewer", "is", "en", "goeiemore", "goeiemiddag", "dankie", "tagtig",
     "twintig", "dertig", "veertig", "agt", "twee", "drie", "vier", "vyf", "ses", "sewe", "nege", "tien",
+    "oggend", "middag", "aand", "soek", "vat", "wees", "bevrore", "steenkool", "suiker", "druiwe",
 }
 _EN_WORDS = {
     "from", "to", "the", "and", "of", "for", "with", "tomorrow", "please", "need", "quote", "empty", "back",
@@ -359,6 +360,8 @@ the-client also nog still more nogal sommer gou quick quickly vinnig asap urgent
 pick picked picking pickup up collect collection collected deliver delivery delivering drop off
 dropoff offload aflaai oplaai laai loaded loading aflewer aflewering afgelewer
 do doen does want please per each elke all alles
+soek look looking af haal kom come wee sien see plek place
+through thru ve ll re d teen vat stop port hawe harbour depot
 """.split())
 
 _DELIVERY_MARKERS = (r"to|2|na|naar|tot|into|till|toward|towards|destination|bestemming|"
@@ -379,6 +382,9 @@ class PreParse:
     fields: Dict[str, Any] = field(default_factory=dict)
     confidence: Dict[str, float] = field(default_factory=dict)
     not_understood: List[str] = field(default_factory=list)
+    # parallel to not_understood: the field each note is about ("weight_missing"
+    # = a weight-ish thing was said but no weight could be set), or None
+    not_understood_fields: List[Optional[str]] = field(default_factory=list)
     language_hint: Optional[str] = None
     mixed_language: bool = False
     residue: List[str] = field(default_factory=list)
@@ -394,6 +400,11 @@ class PreParse:
         """True when every content word in the message was explained by a rule
         and nothing was left unresolved — an LLM could add nothing."""
         return bool(self.fields) and not self.residue and not self.not_understood
+
+    def flag(self, text: str, about: Optional[str] = None) -> None:
+        if text not in self.not_understood:
+            self.not_understood.append(text)
+            self.not_understood_fields.append(about)
 
     def set(self, key: str, value: Any, conf: float) -> None:
         if value in (None, "", []):
@@ -479,6 +490,30 @@ def _words_to_numbers(text: str) -> str:
     return " ".join(out)
 
 
+_ORDINALS = {
+    "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6, "seventh": 7, "eighth": 8,
+    "ninth": 9, "tenth": 10, "eleventh": 11, "twelfth": 12, "thirteenth": 13, "fourteenth": 14,
+    "fifteenth": 15, "sixteenth": 16, "seventeenth": 17, "eighteenth": 18, "nineteenth": 19, "twentieth": 20,
+    "thirtieth": 30,
+    "eerste": 1, "tweede": 2, "derde": 3, "vierde": 4, "vyfde": 5, "sesde": 6, "sewende": 7, "agste": 8,
+    "negende": 9, "tiende": 10, "elfde": 11, "twaalfde": 12, "dertiende": 13, "veertiende": 14,
+    "vyftiende": 15, "sestiende": 16, "sewentiende": 17, "agtiende": 18, "agttiende": 18, "negentiende": 19,
+    "twintigste": 20, "dertigste": 30,
+}
+
+
+def _ordinals_to_digits(text: str) -> str:
+    """"fourteenth" → "14th", "twenty first" → "21st", "een en twintigste" → "21ste"."""
+    def comp_en(m):
+        return f"{_TENS[m.group(1)] + _ORDINALS[m.group(2)]}th"
+    text = re.sub(r"\b(twenty|thirty)\s+(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth)\b", comp_en, text)
+    def comp_af(m):
+        u = _UNITS.get(m.group(1), 8)
+        return f"{u + {'twintigste': 20, 'dertigste': 30}[m.group(2)]}ste"
+    text = re.sub(rf"\b({_AF_UNIT_RE})\s*en\s*(twintigste|dertigste)\b", comp_af, text)
+    return re.sub(r"\b(" + "|".join(_ORDINALS) + r")\b", lambda m: f"{_ORDINALS[m.group(1)]}th", text)
+
+
 def _fmt_num(v: float) -> str:
     return str(int(v)) if float(v).is_integer() else f"{v:g}"
 
@@ -508,10 +543,20 @@ def normalise(text: str) -> str:
     s = re.sub(r"(\d)\s*k\b(?!g)", lambda m: m.group(1) + "000", s)  # "28k kg" rare; "28k" → 28000
     s = s.replace("'", " ")
     s = re.sub(r"[-_]", " ", s)
-    s = re.sub(r"[^a-z0-9./\s]", " ", s)
-    s = re.sub(r"(?<!\d)\.|\.(?!\d)", " ", s)  # keep decimal points only
+    # Sentence punctuation is a hard boundary (",") so "32 ton, superlink" is a
+    # load weight and a truck, not "a 32 ton superlink".
+    s = re.sub(r"(?<!\d)\.|\.(?!\d)", " , ", s)  # keep decimal points only
+    s = re.sub(r"[,;:!?()\[\]]", " , ", s)
+    s = re.sub(r"[^a-z0-9./,\s]", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
-    return _words_to_numbers(s)
+    return _words_to_numbers(_ordinals_to_digits(s))
+
+
+def _pre_number_text(text: str) -> str:
+    """Normalised but with number words kept — the language hint counts them."""
+    s = _strip_accents((text or "").lower().replace("’", "'"))
+    s = re.sub(r"[-_']", " ", s)
+    return re.sub(r"[^a-z0-9\s]", " ", s)
 
 
 # ── Compiled alias tables ────────────────────────────────────────────────────
@@ -618,7 +663,7 @@ def preparse(message: str, *, today: Optional[date] = None,
     if not text:
         return out
 
-    _language_hint(raw, text, out)
+    _language_hint(raw, _pre_number_text(raw), out)
     _weights(ctx, out)
     _trip_shape(ctx, out)
     _border_and_international_keywords(ctx, out)
@@ -629,7 +674,7 @@ def preparse(message: str, *, today: Optional[date] = None,
     _places(ctx, out)
     _cargo(ctx, out)
     _international_from_places(out)
-    _distance_mentions(ctx)
+    _distance_mentions(ctx, out)
     _residue(ctx, out)
     return out
 
@@ -651,6 +696,10 @@ def _language_hint(raw: str, text: str, out: PreParse) -> None:
 def _weights(ctx: _Ctx, out: PreParse) -> None:
     rx = re.compile(r"(?<![\d./])(\d+(?:\.\d+)?)\s*(t|ton|tons|tonne|tonnes|tone|tonnage|tonner|"
                     r"kg|kgs|kilo|kilos|kilogram|kilograms|kilogramme|kilogrammes)\b(?:\s+(\w+))?")
+    for m in re.finditer(r"\b\d{1,4}\s+(?=(?:pallets?|palette|palet|bags|sakke|units|crates|kratte|boxes|"
+                         r"bokse|containers?|houers|loads|vragte|trucks|trokke|cars|motors|karre|drums|vate|"
+                         r"bales|baale)\b)", ctx.t):
+        ctx.consume(m.start(), m.end())
     found: List[Tuple[float, int, int]] = []
     for m in rx.finditer(ctx.t):
         val = float(m.group(1))
@@ -675,11 +724,11 @@ def _weights(ctx: _Ctx, out: PreParse) -> None:
     kgs = {round(f[0], 1) for f in found}
     kg = found[0][0]
     if not (MIN_WEIGHT_KG <= kg <= MAX_WEIGHT_KG):
-        out.not_understood.append(f"weight {_fmt_num(kg / 1000)} t looks wrong")
+        out.flag(f"weight {_fmt_num(kg / 1000)} t looks wrong", "weight_missing")
         return
     conf = 0.95 if len(kgs) == 1 else 0.5
     if len(kgs) > 1:
-        out.not_understood.append("more than one weight mentioned")
+        out.flag("more than one weight mentioned")
     out.set("weight", kg, conf)
 
 
@@ -731,11 +780,11 @@ def _trip_shape(ctx: _Ctx, out: PreParse) -> None:
         if m_r.group(0).startswith("loaded"):
             out.set("trip_type", "ROUND_TRIP", 0.7)
         else:
-            out.not_understood.append("round trip and a return-load note both mentioned")
+            out.flag("round trip and a return-load note both mentioned")
     if m_o:
         ctx.consume(m_o.start(), m_o.end())
         if out.fields.get("trip_type") == "ROUND_TRIP":
-            out.not_understood.append("one-way and round trip both mentioned")
+            out.flag("one-way and round trip both mentioned")
             out.fields.pop("trip_type", None)
             out.confidence.pop("trip_type", None)
         else:
@@ -819,7 +868,14 @@ def _resolve_weekday(today: date, wd: int, prefix: str) -> Tuple[date, float]:
     return today + timedelta(days=delta), conf
 
 
-def _date_role(ctx: _Ctx, start: int) -> Optional[str]:
+def _date_role(ctx: _Ctx, start: int, end: Optional[int] = None) -> Optional[str]:
+    # Afrikaans puts the verb last: "Vrydag aflewer", "Saterdag oplaai".
+    if end is not None:
+        m = re.match(r"\s+(aflewer|afgelewer|aflaai|deliver|delivery|oplaai|laai|optel|haal|afhaal|pickup|vertrek)\b",
+                     ctx.t[end:end + 16])
+        if m:
+            return "delivery_date" if m.group(1) in ("aflewer", "afgelewer", "aflaai", "deliver", "delivery") \
+                else "pickup_date"
     before = ctx.before(start, 45)
     best, best_pos = None, -1
     for role, rx in (
@@ -845,12 +901,17 @@ def _dates(ctx: _Ctx, out: PreParse, today: date) -> None:
         if ctx.consumed(a, b):
             return
         if d < today - timedelta(days=1) or d > today + timedelta(days=MAX_DATE_AHEAD_DAYS):
-            out.not_understood.append(f"date {d.isoformat()} is out of range")
+            out.flag(f"date {d.isoformat()} is out of range")
             ctx.consume(a, b)
             return
         ctx.consume(a, b)
         hits.append((a, b, d, conf))
 
+    # "valid for 7 days" / "geldig vir 7 dae" is a duration, resolved against today
+    m = re.search(r"\b(?:valid|geldig)\s+(?:for|vir)\s+(\d{1,3})\s+(?:days?|dae)\b", t)
+    if m and "valid_until" not in out.fields:
+        ctx.consume(m.start(), m.end())
+        out.set("valid_until", (today + timedelta(days=int(m.group(1)))).isoformat(), 0.9)
     for m in re.finditer(r"\b(today|vandag|tonight|vanaand)\b", t):
         add(m, today, 0.95)
     for m in re.finditer(r"\b(overmorrow|day after tomorrow|oor\s*more)\b", t):
@@ -859,6 +920,8 @@ def _dates(ctx: _Ctx, out: PreParse, today: date) -> None:
         add(m, today + timedelta(days=1), 0.95)
     # Afrikaans "more" typed without the circumflex: only when the message is
     # Afrikaans and it isn't the English comparative ("more than", "no more").
+    for m in re.finditer(r"\bmore\s+(?:oggend|middag|aand|vroeg)\b", t):
+        add(m, today + timedelta(days=1), 0.9)
     if out.language_hint == "af":
         for m in re.finditer(r"(?<!\bno )(?<!\bany )(?<!\bsome )(?<!\bmuch )\bmore\b(?!\s+(?:than|as|dan|then|of))", t):
             add(m, today + timedelta(days=1), 0.8)
@@ -895,6 +958,15 @@ def _dates(ctx: _Ctx, out: PreParse, today: date) -> None:
             next_occurrence(_MONTHS[m.group(1)], int(m.group(2)))
         if d:
             add(m, d, 0.9)
+    for m in re.finditer(r"\b(?:on\s+)?(?:the|die|op\s+die)\s+(\d{1,2})(?:st|nd|rd|th|ste|de)\b(?!\s+(?:of\s+)?(?:"
+                         + month_rx + r"))", t):
+        dd = int(m.group(1))
+        cand = ymd(today.year, today.month, dd) if dd <= 31 else None
+        if cand and cand < today:
+            nm, ny = (today.month % 12) + 1, today.year + (1 if today.month == 12 else 0)
+            cand = ymd(ny, nm, dd)
+        if cand:
+            add(m, cand, 0.8)
     for m in re.finditer(r"\b(\d{4})/(\d{1,2})/(\d{1,2})\b", t):
         d = ymd(int(m.group(1)), int(m.group(2)), int(m.group(3)))
         if d:
@@ -916,21 +988,21 @@ def _dates(ctx: _Ctx, out: PreParse, today: date) -> None:
         if not ctx.consumed(m.start(), m.end()):
             ctx.consume(m.start(), m.end())
             if m.group(0) not in ("asap", "soon", "gou"):
-                out.not_understood.append(f"“{m.group(0)}” — which day?")
+                out.flag(f"“{m.group(0)}” — which day?")
 
     if not hits:
         return
     hits.sort(key=lambda h: h[0])
     unassigned = []
     for a, b, d, conf in hits:
-        role = _date_role(ctx, a)
+        role = _date_role(ctx, a, b)
         if role and role not in out.fields:
             out.set(role, d.isoformat(), conf)
             # the marker word itself is understood
             for mm in re.finditer(r"\b\w+\b", ctx.before(a, 20)):
                 pass
         elif role and out.fields.get(role) != d.isoformat():
-            out.not_understood.append(f"two {role.replace('_', ' ')}s mentioned")
+            out.flag(f"two {role.replace('_', ' ')}s mentioned")
         else:
             unassigned.append((d, conf))
     for d, conf in unassigned:
@@ -940,13 +1012,8 @@ def _dates(ctx: _Ctx, out: PreParse, today: date) -> None:
                 break
     pd, dd = out.fields.get("pickup_date"), out.fields.get("delivery_date")
     if pd and dd and dd < pd:
-        out.not_understood.append("delivery date is before pickup date")
+        out.flag("delivery date is before pickup date")
         out.confidence["delivery_date"] = min(out.confidence.get("delivery_date", 0.5), 0.4)
-    # "valid for 7 days" / "geldig vir 7 dae" is a duration, resolved against today
-    m = re.search(r"\b(?:valid|geldig)\s+(?:for|vir)\s+(\d{1,3})\s+(?:days?|dae)\b", t)
-    if m and "valid_until" not in out.fields:
-        ctx.consume(m.start(), m.end())
-        out.set("valid_until", (today + timedelta(days=int(m.group(1)))).isoformat(), 0.9)
 
 
 def _driver_and_fuel(ctx: _Ctx, out: PreParse) -> None:
@@ -958,7 +1025,7 @@ def _driver_and_fuel(ctx: _Ctx, out: PreParse) -> None:
         if 0 <= n <= MAX_DRIVER_NIGHTS:
             out.set("driver_nights", n, 0.9)
         else:
-            out.not_understood.append(f"{n} driver nights looks wrong")
+            out.flag(f"{n} driver nights looks wrong")
     m = re.search(r"\b(?:diesel|fuel|brandstof|petrol)\b(?:\s+(?:price|prys))?\s*(?:at|@|is|teen|for|vir|of|van|=)?\s*"
                   r"(?:r\s*)?(\d{1,3}(?:\.\d{1,2})?)\s*(?:rand)?\s*(?:/\s*l|per\s+(?:litre|liter|l)|a\s+litre|n\s+liter|l)?\b", t)
     if m:
@@ -967,7 +1034,7 @@ def _driver_and_fuel(ctx: _Ctx, out: PreParse) -> None:
         if FUEL_PRICE_RANGE[0] <= v <= FUEL_PRICE_RANGE[1]:
             out.set("fuel_price_override", v, 0.85)
         else:
-            out.not_understood.append(f"fuel price R {_fmt_num(v)}/L looks wrong")
+            out.flag(f"fuel price R {_fmt_num(v)}/L looks wrong")
 
 
 def _significant(name: str) -> List[str]:
@@ -981,11 +1048,11 @@ def _customers(ctx: _Ctx, out: PreParse, customers) -> None:
     t = ctx.t
     explicit = re.search(r"\b(?:client|customer|klient|klant)\s*(?:is|will\s+be|=|:|name\s+is|se\s+naam\s+is)?\s+"
                          r"([a-z][a-z0-9&]*(?:\s+[a-z0-9&]+){0,3}?)(?=\s+(?:from|van|to|na|for|vir|with|met|on|op|"
-                         r"\d)|\s*$|\s+(?:and|en)\b)", t)
+                         r"\d)|\s*$|\s*,|\s+(?:and|en)\b)", t)
     loose = None
     if not explicit:
         loose = re.search(r"\b(?:for|vir|quote\s+for|kwotasie\s+vir)\s+([a-z][a-z0-9&]*(?:\s+[a-z0-9&]+){0,3}?)"
-                          r"(?=\s+(?:from|van|to|na|with|met|on|op|\d)|\s*$|\s+(?:and|en)\b)", t)
+                          r"(?=\s+(?:from|van|to|na|with|met|on|op|\d)|\s*$|\s*,|\s+(?:and|en)\b)", t)
     m = explicit or loose
     names = [c["name"] for c in (customers or [])]
     if m:
@@ -1038,7 +1105,7 @@ def _places(ctx: _Ctx, out: PreParse) -> None:
         mentions.append({"start": m.start(), "end": m.end(), "name": _PLACE_LOOKUP[alias], "alias": alias,
                          "conf": 0.95})
     # Unknown places / STT misspellings right after a route marker.
-    marker_rx = re.compile(rf"\b({_PICKUP_MARKERS}|{_DELIVERY_MARKERS}|{_STOP_MARKERS})\s+((?:[a-z][a-z]+\s*){{1,3}})")
+    marker_rx = re.compile(rf"\b({_PICKUP_MARKERS}|{_DELIVERY_MARKERS}|{_STOP_MARKERS})\s+(?=([a-z][a-z ]*))")
     for m in marker_rx.finditer(t):
         a = m.start(2)
         if any(mm["start"] <= a < mm["end"] for mm in mentions) or ctx.consumed(a, a + 1):
@@ -1046,7 +1113,7 @@ def _places(ctx: _Ctx, out: PreParse) -> None:
         if _NOT_PLACE_PRECEDERS.search(t[:m.start()]):
             continue
         words = []
-        for w in m.group(2).split():
+        for w in m.group(2).split()[:3]:
             if w in _KNOWN_VOCAB or w in _PLACE_LOOKUP or len(w) < 3:
                 break
             words.append(w)
@@ -1087,6 +1154,9 @@ def _places(ctx: _Ctx, out: PreParse) -> None:
             role = "pickup"
         elif deliv_rx.search(before) or re.match(r"\s+toe\b", after):
             role = "delivery"
+        if mm["alias"] in _AMBIGUOUS_ALIASES and role is None and re.match(r"\s+(?:to|na|2)\s+\w", after + t[mm["end"] + 5:mm["end"] + 8]) \
+                and len(mentions) >= 2:
+            role = "pickup"
         if mm["alias"] in _AMBIGUOUS_ALIASES and role is None and mm["conf"] >= 0.95:
             # e.g. "George" the person, "el" the article — need a route marker
             if not (len(mentions) >= 2 and mm["alias"] in ("bloem", "potch", "pe", "joeys", "durbs", "gabs", "zim", "moz")):
@@ -1126,10 +1196,10 @@ def _places(ctx: _Ctx, out: PreParse) -> None:
     if names:
         out.set("stops", names[:8], min(s["conf"] for s in stops) - 0.1)
     if pickup and delivery and pickup["name"] == delivery["name"] and pickup["name"] not in _COUNTRY_NAMES:
-        out.not_understood.append("pickup and delivery are the same place")
+        out.flag("pickup and delivery are the same place")
     for mm in kept:
         if mm.get("unknown"):
-            out.not_understood.append(f"place “{mm['name']}” not recognised — check it on the map")
+            out.flag(f"place “{mm['name']}” not recognised — check it on the map")
     out._places_meta = kept  # type: ignore[attr-defined]
 
 
@@ -1147,7 +1217,7 @@ def _cargo(ctx: _Ctx, out: PreParse) -> None:
         out.set("cargo_description", name, 0.9)
         return
     m = re.search(r"\b(?:of|load\s+of|loads\s+of)\s+([a-z][a-z ]{2,30}?)(?=\s+(?:from|van|to|na|on|op|for|vir|by|"
-                  r"via|with|met|\d)|\s*$)", t)
+                  r"via|with|met|\d)|\s*$|\s*,)", t)
     if m:
         words = [w for w in m.group(1).split() if w not in ("tons", "ton", "tonnes", "kg", "kilos", "pallets",
                                                           "units", "loads", "crates")]
@@ -1175,7 +1245,12 @@ def _international_from_places(out: PreParse) -> None:
             out.set("international", False, 0.85)
 
 
-def _distance_mentions(ctx: _Ctx) -> None:
+def _distance_mentions(ctx: _Ctx, out: Optional[PreParse] = None) -> None:
+    for m in re.finditer(r"\b(\d+(?:\.\d+)?)\s*(?:litres?|liters?|l|kl|kilolitres?)\b", ctx.t):
+        if not ctx.consumed(m.start(), m.end()):
+            ctx.consume(m.start(), m.end())
+            if out is not None and "weight" not in out.fields:
+                out.flag(f"volume {m.group(1)} L given \u2014 what does it weigh?", "weight_missing")
     for m in re.finditer(r"\b\d+(?:\.\d+)?\s*(?:km|kms|kilometres?|kilometers?|kilometer)\b", ctx.t):
         ctx.consume(m.start(), m.end())
 
@@ -1198,4 +1273,4 @@ def _residue(ctx: _Ctx, out: PreParse) -> None:
     out.residue = left
     nums = [w for w in left if re.fullmatch(r"\d+(?:\.\d+)?", w)]
     if nums and "weight" not in out.fields:
-        out.not_understood.append(f"number {nums[0]} — tons or kg?")
+        out.flag(f"number {nums[0]} — tons or kg?")

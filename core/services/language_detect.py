@@ -145,3 +145,14 @@ def translate_template(text: str, target_lang: Optional[str]) -> str:
     except Exception:
         logger.warning("translate_template: failed to translate into %r, using English", target_lang, exc_info=True)
         return text
+
+
+# Display names for the languages the quote assistant speaks natively. Other
+# codes get their English name from Whisper's list (title-cased), else None.
+_LABELS = {"en": "English", "af": "Afrikaans"}
+
+
+def language_label(code: Optional[str]) -> Optional[str]:
+    if not code:
+        return None
+    return _LABELS.get(code) or (_WHISPER_CODE_TO_NAME.get(code) or "").title() or None
