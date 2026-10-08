@@ -241,7 +241,8 @@ def _record_changes(rec, *, origin_keys=('pickup_location', 'origin'), dest_keys
 
 
 PRICING_FIELDS = {'distance', 'weight', 'trip_type', 'vehicle', 'costing_inputs', 'route_geometry', 'pickup_date',
-                  'pickup_location', 'delivery_location'}
+                  'pickup_location', 'delivery_location', 'pickup_city', 'delivery_city', 'stops',
+                  'pickup_lat', 'pickup_lng', 'delivery_lat', 'delivery_lng'}
 AUDITED_FIELDS = ('total_amount', 'rate', 'distance', 'weight', 'pickup_location', 'pickup_city', 'pickup_date',
                   'delivery_location', 'delivery_city', 'delivery_date', 'status', 'vehicle', 'driver', 'stops',
                   'trip_type', 'cargo_description', 'costing_inputs', 'notes')
@@ -312,6 +313,8 @@ def apply_record(company, load, rec, *, source, user=None, origin_keys=None, des
         # priced on that truck type already).
         from core.services.trip_costing import cost_load
         cost_load(load, rec=rec)
+        from core.services.tms_routing import queue_routing
+        queue_routing(load)
     if 'total_amount' in changes:
         check_invoice_mismatch(load, source=source)
     return changes
@@ -431,6 +434,10 @@ def _create_load(company, rec, *, load_number, external_id, source, origin_keys,
         **fields)
     from core.services.trip_costing import cost_load
     cost_load(load, rec=rec)
+    # No road line and no toll figure: work the tolls out with TomTom after
+    # commit (never in this request); the job shows "Working out tolls…".
+    from core.services.tms_routing import queue_routing
+    queue_routing(load)
     return load
 
 

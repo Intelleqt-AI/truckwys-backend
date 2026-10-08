@@ -501,6 +501,9 @@ PAYSTACK_SECRET_KEY = config('PAYSTACK_SECRET_KEY', default='')
 # for this ONE company; unset = demo keys are refused. Never used when DEBUG
 # is off.
 FLEET_DEMO_COMPANY_ID = config('FLEET_DEMO_COMPANY_ID', default=None)
+# TomTom routing of TMS jobs with no route / tolls (core.services.tms_routing):
+# at most this many jobs routed per company per day; the rest wait a day.
+TMS_ROUTING_DAILY_CAP = config('TMS_ROUTING_DAILY_CAP', default=200, cast=int)
 
 # CtrlFleet Integration Configuration
 CTRLFLEET_WEBHOOK_KEY = config('CTRLFLEET_WEBHOOK_KEY', default='')

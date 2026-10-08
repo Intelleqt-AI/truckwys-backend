@@ -224,7 +224,9 @@ class RouteEngineTests(_Base):
         load = Load.objects.get(pk=self.trips([rec])['load_ids'][0])
         self.assertEqual(load.costing_source, 'unknown')
         from core.services.trip_costing import missing_inputs
-        self.assertIn('tolls_unknown', [m['code'] for m in missing_inputs(load)])
+        # Not a prompt to enter them: the job is queued for routing.
+        self.assertEqual([m['code'] for m in missing_inputs(load)], ['tolls_pending'])
+        self.assertEqual(load.costing_inputs['route_job']['state'], 'pending')
 
     def test_round_trip_way_back_on_its_own_route(self):
         plaza = self._plaza()

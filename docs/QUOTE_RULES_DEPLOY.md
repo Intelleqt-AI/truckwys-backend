@@ -236,3 +236,14 @@ CtrlFleet's documented API is pull-only, so no live caller is expected.
 ### Behaviour change
 `POST /quotes/{id}/convert_to_load/` on an already-converted quote now answers 200 with the existing job (was 400
 "Quote already converted").
+
+### TMS jobs with no route: tolls worked out by TomTom (no user prompt)
+A TMS job synced with no `route_geometry` and no toll figure is queued (after commit, never in the sync request)
+for Celery task `core.tasks.route_tms_load`: TomTom truck routing of its own collection / stops / delivery
+(geocoded when there are no coordinates), the way back too when the empty return applies (or a round trip); it
+stores `route_geometry` (+ duration / distance when missing) and re-costs on the pickup-date tariffs. Until done the
+job's `missing` says `{code: "tolls_pending", prompt: "Working out tolls…", pending: true}`; if routing fails it
+is `tolls_unknown` with the prompt. Deduped per job + locations; re-routed only when locations / stops change;
+per-company daily cap `TMS_ROUTING_DAILY_CAP` (default 200, the rest wait until tomorrow). State in
+`load.costing_inputs.route_job {state: pending|deferred|done|failed, reason}`. Needs a Celery worker and
+`TOMTOM_API_KEY` in production.

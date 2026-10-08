@@ -39,6 +39,8 @@ LOAD_COSTING_INPUT_KEYS = {
     'clearing_agent_fee': float, 'abnormal_load': bool,
     # What load_route_costs filled (and on which trip date / toll class).
     'route_costs': dict,
+    # TomTom routing of a TMS job (core.services.tms_routing).
+    'route_job': dict,
 }
 
 
@@ -204,12 +206,28 @@ def missing_inputs(load):
         codes = ['no_vehicle']
     if snap.get('lines') and any(ln.get('amount') is None for ln in snap['lines']) and not codes:
         codes = ['costing_incomplete']
+    job = (load.costing_inputs or {}).get('route_job') or {}
+    routing = job.get('state') in ('pending', 'deferred')
     seen, out = set(), []
     for c in codes:
         if c in seen:
             continue
         seen.add(c)
+        if routing and c in ('tolls_unknown', 'distance_missing', 'driver_nights_unknown'):
+            # Being routed: nothing to ask the user yet.
+            from core.services.tms_routing import PENDING_PROMPT
+            out.append({'code': 'tolls_pending', 'prompt': PENDING_PROMPT, 'pending': True, 'blocks': c})
+            continue
         out.append({'code': c, 'prompt': MISSING_PROMPTS.get(c, 'Complete the costing inputs for this job')})
+    if routing:
+        dedup, have = [], False
+        for m in out:
+            if m['code'] == 'tolls_pending':
+                if have:
+                    continue
+                have = True
+            dedup.append(m)
+        out = dedup
     return out
 
 
