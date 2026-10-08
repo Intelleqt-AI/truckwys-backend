@@ -25,7 +25,7 @@ from .activity_event import ActivityEvent
 from .user_activity_log import UserActivityLog
 from .copilot_message import CopilotMessage, CopilotConversation, CopilotUserMemory
 from .copilot_proposal import CopilotProposal
-from .webhook_subscription import WebhookSubscription
+from .webhook_subscription import UsedWebhookSignature, WebhookSubscription
 from .billing import BillingTransaction
 from .delivery_fee_charge import DeliveryFeeCharge
 from .invite_token import InviteToken
@@ -92,6 +92,7 @@ __all__ = [
     'ActivityEvent',
     'UserActivityLog',
     'WebhookSubscription',
+    'UsedWebhookSignature',
     'BillingTransaction',
     'DeliveryFeeCharge',
     'InviteToken',

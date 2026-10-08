@@ -161,3 +161,16 @@ class RoutingFixTests(_Base):
         load.refresh_from_db()
         self.assertNotIn('tolls_pending', [m['code'] for m in missing_inputs(load)])
         self.assertTrue(tms_routing.needs_routing(load))
+
+
+class RoundThreeRoutingTests(_Base):
+    def test_bad_stops_not_requeued_until_they_change(self):
+        load, _ = self.sync(external_id='RT-B3')
+        Load.objects.filter(pk=load.pk).update(stops=[{'lat': 'x', 'lon': 1}])
+        tms_routing.route_load(load.pk)
+        load.refresh_from_db()
+        ci = dict(load.costing_inputs)
+        ci['route_job'] = {**ci['route_job'], 'at': '2020-01-01T00:00:00+00:00'}      # long ago
+        Load.objects.filter(pk=load.pk).update(costing_inputs=ci)
+        load.refresh_from_db()
+        self.assertFalse(tms_routing.needs_routing(load))

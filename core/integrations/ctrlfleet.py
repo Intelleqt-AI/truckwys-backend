@@ -198,14 +198,19 @@ class CtrlFleetAdapter:
         except Load.DoesNotExist:
             return {'status': 'error', 'message': f'Load not found: {load_id or load_number}'}
 
-        # Update load based on event type
+        # Update load based on event type (status through the TMS rules:
+        # a cancelled job stays cancelled, an invoiced one never moves back).
+        from core.services.tms_sync import allowed_status_move
+        wanted = None
+        if 'pod' in data and data['pod'] is not None and not isinstance(data['pod'], dict):
+            return {'status': 'error', 'message': 'pod must be an object'}
         if event_type == 'started':
-            load.status = 'IN_TRANSIT'
+            wanted = 'IN_TRANSIT'
         elif event_type == 'completed':
-            load.status = 'DELIVERED'
+            wanted = 'DELIVERED'
             # Handle proof of delivery
-            if 'pod' in data:
-                pod = data['pod']
+            if 'pod' in data and load.status not in ('CANCELLED',):
+                pod = data['pod'] or {}
                 load.pod_received_by = pod.get('received_by', '')
                 load.pod_signature = pod.get('signature', '')
             if 'delivered_at' in data:
@@ -224,7 +229,12 @@ class CtrlFleetAdapter:
                 'DELAYED': 'IN_TRANSIT',  # Keep in transit but flagged
             }
             if cf_status in status_map:
-                load.status = status_map[cf_status]
+                wanted = status_map[cf_status]
+        refused = None
+        if wanted:
+            new_status, refused = allowed_status_move(load, wanted)
+            if new_status:
+                load.status = new_status
 
         # Update distance if provided
         if 'distance_covered_km' in data:
@@ -245,11 +255,14 @@ class CtrlFleetAdapter:
             metadata=data
         )
 
-        return {
+        out = {
             'status': 'success',
             'message': f'Trip update processed for {load.load_number}',
             'load_id': load.id
         }
+        if refused:
+            out['status_refused'] = refused
+        return out
 
     def handle_vehicle_event(self, data: Dict[str, Any], company=None) -> Dict[str, Any]:
         """

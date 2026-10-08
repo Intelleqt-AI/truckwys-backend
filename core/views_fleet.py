@@ -16,6 +16,9 @@ from drf_spectacular.types import OpenApiTypes
 from django.utils import timezone
 import hmac
 import hashlib
+import logging
+
+logger = logging.getLogger(__name__)
 
 from core.models import Load, Vehicle, Driver, ActivityEvent
 from core.serializers import LoadSerializer
@@ -72,6 +75,14 @@ LEGACY_REPLAY_TTL_SECONDS = 30 * 86400
 
 
 def verify_fleet_signature(request, *, allow_legacy=False):
+    try:
+        return _verify_fleet_signature(request, allow_legacy=allow_legacy)
+    except SignatureStoreUnavailable:
+        logger.exception('fleet webhook signature store unavailable')
+        return False, STORE_UNAVAILABLE
+
+
+def _verify_fleet_signature(request, *, allow_legacy=False):
     """HMAC check for fleet webhooks, with the subscription's own secret.
 
     Scheme (required on vehicle/driver events, preferred everywhere):
@@ -85,7 +96,6 @@ def verify_fleet_signature(request, *, allow_legacy=False):
     replay cache; an identical body re-sent is refused).
     Returns (ok, reason)."""
     import time
-    from django.core.cache import cache
     sub = getattr(request, 'auth', None)
     signature = request.META.get('HTTP_X_FLEET_SIGNATURE') or ''
     if sub is None or not getattr(sub, 'secret', None) or not signature:
@@ -99,8 +109,8 @@ def verify_fleet_signature(request, *, allow_legacy=False):
         expected = 'sha256=' + hmac.new(sub.secret.encode(), request.body, hashlib.sha256).hexdigest()
         if not hmac.compare_digest(signature, expected):
             return False, 'Invalid signature'
-        replay_key = f'fleet-sig-legacy:{sub.pk}:{hashlib.sha256(signature.encode()).hexdigest()}'
-        if not cache.add(replay_key, 1, timeout=LEGACY_REPLAY_TTL_SECONDS):
+        if not claim_signature(f'legacy:{sub.pk}:{hashlib.sha256(signature.encode()).hexdigest()}',
+                               LEGACY_REPLAY_TTL_SECONDS):
             return False, 'Signature already used'
         return True, None
     try:
@@ -113,14 +123,50 @@ def verify_fleet_signature(request, *, allow_legacy=False):
                                     hashlib.sha256).hexdigest()
     if not hmac.compare_digest(signature, expected):
         return False, 'Invalid signature'
-    replay_key = f'fleet-sig:{sub.pk}:{hashlib.sha256(signature.encode()).hexdigest()}'
-    if not cache.add(replay_key, 1, timeout=SIGNATURE_WINDOW_SECONDS * 2):
+    if not claim_signature(f'ts:{sub.pk}:{hashlib.sha256(signature.encode()).hexdigest()}',
+                           SIGNATURE_WINDOW_SECONDS * 2):
         return False, 'Signature already used'
     return True, None
 
 
+class SignatureStoreUnavailable(Exception):
+    pass
+
+
+def claim_signature(key, ttl_seconds):
+    """True the first time `key` is seen (within its TTL), else False.
+    Raises SignatureStoreUnavailable when the store can't be used: callers
+    answer 503 (never accept an unchecked signature, never a 500)."""
+    import random
+    from datetime import timedelta
+    from django.db import DatabaseError, IntegrityError, transaction
+    from core.models import UsedWebhookSignature
+    now = timezone.now()
+    try:
+        if random.random() < 0.02:
+            UsedWebhookSignature.objects.filter(expires_at__lt=now).delete()
+        try:
+            with transaction.atomic():
+                UsedWebhookSignature.objects.create(key=key[:100], expires_at=now + timedelta(seconds=ttl_seconds))
+            return True
+        except IntegrityError:
+            with transaction.atomic():
+                # An expired claim of the same key may be re-used.
+                n = UsedWebhookSignature.objects.filter(key=key[:100], expires_at__lt=now).update(
+                    expires_at=now + timedelta(seconds=ttl_seconds))
+            return n == 1
+    except DatabaseError as exc:
+        raise SignatureStoreUnavailable(str(exc))
+
+
 def _signature_refusal(reason):
+    if reason == STORE_UNAVAILABLE:
+        return Response({'error': 'Signature check unavailable; try again shortly.'},
+                        status=status.HTTP_503_SERVICE_UNAVAILABLE)
     return Response({'error': reason}, status=status.HTTP_401_UNAUTHORIZED)
+
+
+STORE_UNAVAILABLE = 'signature_store_unavailable'
 
 
 def _no_company_response():
@@ -455,6 +501,8 @@ class FleetWebhookTripUpdateView(APIView):
             return _no_company_response()
         data = dict(request.data) if isinstance(request.data, dict) else {}
         err = bad_webhook_input(data, ints=('load_id',))
+        if not err and 'pod_data' in data and data['pod_data'] is not None and not isinstance(data['pod_data'], dict):
+            err = 'pod_data must be an object'
         if err:
             return Response({'error': err}, status=status.HTTP_400_BAD_REQUEST)
         load_id = data.get('load_id')
@@ -495,19 +543,29 @@ class FleetWebhookTripUpdateView(APIView):
             metadata={k: (v.isoformat() if hasattr(v, 'isoformat') else v) for k, v in data.items()}
         )
 
-        # Handle delivery confirmation
+        # Handle delivery confirmation — through the same status rules as a
+        # TMS sync (core.services.tms_sync.allowed_status_move): a cancelled
+        # job stays cancelled, an invoiced one is never moved back.
+        refused = None
         if event_type == 'delivery_confirmed':
-            load.status = 'DELIVERED'
-            if 'pod_data' in data:
+            from core.services.tms_sync import allowed_status_move
+            fields = []
+            new_status, refused = allowed_status_move(load, 'DELIVERED')
+            if new_status:
+                load.status = new_status
+                fields.append('status')
+            if refused is None and data.get('pod_data') is not None:
                 pod = data['pod_data']
-                load.pod_received_by = pod.get('received_by', '')
+                load.pod_received_by = str(pod.get('received_by') or '')[:200]
+                fields.append('pod_received_by')
                 # TODO: Store signature/document
-            load.save(update_fields=['status', 'pod_received_by', 'updated_at'])
+            if fields:
+                load.save(update_fields=fields + ['updated_at'])
 
-        return Response({
-            'status': 'success',
-            'message': f'Trip update processed for {load.load_number}'
-        })
+        body = {'status': 'success', 'message': f'Trip update processed for {load.load_number}'}
+        if refused:
+            body['status_refused'] = refused
+        return Response(body)
 
 
 class FleetWebhookVehicleEventView(APIView):
@@ -567,7 +625,8 @@ class FleetWebhookVehicleEventView(APIView):
         if company is None:
             return _no_company_response()
         data = dict(request.data) if isinstance(request.data, dict) else {}
-        err = bad_webhook_input(data, ints=('vehicle_id',), dates=('maintenance_due', 'last_inspection'))
+        err = bad_webhook_input(data, ints=('vehicle_id',), dates=('maintenance_due', 'last_inspection'),
+                                numbers=('mileage',))
         if err:
             return Response({'error': err}, status=status.HTTP_400_BAD_REQUEST)
         vehicle_id = data.get('vehicle_id')
@@ -598,6 +657,9 @@ class FleetWebhookVehicleEventView(APIView):
             vehicle.last_maintenance_date = data['last_inspection']
         if 'status' in data:
             vehicle.status = str(data['status'])[:50]
+        if data.get('mileage') not in (None, ''):
+            from decimal import Decimal as _D
+            vehicle.mileage = _D(str(data['mileage']))
 
         vehicle.save()
 

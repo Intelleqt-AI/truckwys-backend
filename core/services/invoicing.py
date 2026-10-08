@@ -85,6 +85,7 @@ def create_invoice_for_load(load, *, company=None, mark_sent: bool = False):
     # (we may be called from inside that very signal — avoid re-entrancy).
     from core.models import Load
     Load.objects.filter(pk=load.pk).update(status='INVOICED')
+    load.status = 'INVOICED'      # the caller's instance (and its API response) shows the truth
 
     return invoice, True
 

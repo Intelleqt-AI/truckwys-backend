@@ -625,6 +625,11 @@ from datetime import timedelta  # noqa: E402
 # actually gets picked up promptly instead of waiting for tomorrow's cron.
 _BILLING_SWEEP_SCHEDULE = crontab(minute='*') if SUBSCRIPTION_TEST_MODE else None
 CELERY_BEAT_SCHEDULE = {
+    # Expired fleet-webhook replay-protection rows (core.models.UsedWebhookSignature).
+    'purge-used-webhook-signatures': {
+        'task': 'core.tasks.purge_used_webhook_signatures',
+        'schedule': timedelta(hours=1),
+    },
     # Checks every 15 min whether the shared public demo company has gone
     # idle (no quote/order activity for an hour) and only then wipes and
     # reseeds its fleet/quote/order data — see

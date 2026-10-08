@@ -154,28 +154,44 @@ empty values back to 10.00 first.
 
 ## Trip economics (branch truckwys/trip-economics, 8 Oct 2026)
 
-### Migrations (all reversible; checked forward + back on PostgreSQL 8091 scratch and a SQLite copy)
+### Migrations (all reversible; forward, back to 0165 and forward again checked on PostgreSQL and SQLite)
 | # | What | Notes |
 |---|------|-------|
-| 0166 | `WebhookSubscription.company` (nullable FK) | Fleet webhooks refuse a subscription without one (403). Right after migrate run `python manage.py bind_webhook_subscriptions` (dry run: lists every unbound subscription and the company it would get), then `--apply`. It binds only when exactly one company fits (an IntegrationAPIKey with the same name as partner_name whose operators share one company, else exactly one company with that name); bind the rest in Django admin or with `--bind SUB_ID=COMPANY_ID --apply`. |
-| 0167 | Load costing fields + back-fill from each converted load's quote snapshot | Adds columns with defaults (fast on PG 11+), then a batched data update (500 rows). |
-| 0168 | `Load.return_of` (one-to-one self), link source / time / user, `expecting_return` | Unique index on `return_of_id`. |
-| 0169 | Cached `estimated_cost` / `estimate_basis` / `economics_updated_at` | Fill with `python manage.py recompute_trip_economics` after migrate (idempotent, safe to re-run). |
-| 0170 | `external_id`, `external_source`, `return_of_external_ref`, `invoice_mismatch` + move trips/sync's `ext_id:` notes onto `external_id` | First load per (company, id) wins; duplicates keep only the note. |
-| 0171 | Unique (company, external_id) where external_id ≠ '' | Own migration so PostgreSQL never ALTERs after 0170's data update in one transaction. Builds a unique index (locks `loads` writes briefly). |
-| 0172 | QuoteOutcome actuals (`actual_revenue`, `actual_cost`, `actual_margin_pct`, `actual_cost_basis`, `backhaul_found`, `actuals_recorded_at`) | Labels only. |
-| 0173 | Database defaults (`db_default`) on every new NOT NULL column; `Load.costs_closed`; `QuoteOutcome.estimated_cost` / `estimated_margin_pct`; `WebhookSubscription.allow_legacy_signature` | With 0173 applied an OLDER app image can still insert loads (it doesn't name the new columns). Between 0167 and 0172 alone it could not: always migrate through 0173. |
+| 0166 | `WebhookSubscription.company` (nullable FK) | Isolated: if PR #130 (same field) merges first, delete this file and point 0167 at the latest migration. After migrate run `python manage.py bind_webhook_subscriptions` (dry run), then `--apply`; bind the rest in admin or `--bind SUB_ID=COMPANY_ID --apply`. |
+| 0167 | Load costing columns, each with a database default | No data step: adding columns with constant defaults is metadata-only on PostgreSQL 11+ (no table rewrite, no long lock). |
+| 0168 | Back-fill converted loads from their quote | `atomic = False`: batches of 1 000 rows (`bulk_update`), each in its own short transaction; loads are never locked for the whole run. |
+| 0169 | `Load.return_of` (one-to-one self), link source / time / user, `expecting_return`, `costs_closed` | Database defaults on the NOT NULL columns. |
+| 0170 | Cached `estimated_cost` / `estimate_basis` / `economics_updated_at` | Fill with `python manage.py recompute_trip_economics` after migrate (idempotent). |
+| 0171 | `external_id`, `external_source`, `return_of_external_ref`, `invoice_mismatch` (database defaults) | Columns only. |
+| 0172 | Move trips/sync's `ext_id:` notes onto `external_id` | `atomic = False`, batches of 1 000. The id runs to the end of its line; first load per (company, id) wins; > 100 characters stay in the note; other `ext_id` lines stay findable through the notes. |
+| 0173 | Unique (company, external_id) where external_id ≠ '' | Builds a unique index (brief write lock on `loads`). |
+| 0174 | QuoteOutcome actuals + estimate so far | Labels only. |
+| 0175 | `UsedWebhookSignature` table (replay protection) + `WebhookSubscription.allow_legacy_signature` | Purged hourly by `core.tasks.purge_used_webhook_signatures` (beat). |
+| 0176 | `ON DELETE SET NULL` in the database for `loads.return_of_id`, `priced_vehicle_type_id`, `return_linked_by_id` (PostgreSQL) | So an older image can delete a linked load, a vehicle type or a user. A later Django AlterField on these fields would recreate the constraint without it: re-run this migration's SQL then. |
+
+Old-image writes during migrate are SAFE on PostgreSQL: every new NOT NULL column has a database default (inserts
+by the old image succeed), the new foreign keys null themselves in the database (its deletes succeed), and the
+data steps run in short batches. Jobs the old image books after 0168 ran have no costing yet: run
+`python manage.py backfill_load_costing` (dry run, counts) then `--apply` once the new image serves traffic
+(re-runnable, only touches converted loads with an empty `costing_source`).
+
+Deploy steps:
+1. Pre-deploy SQL counts (below).
+2. `migrate` (new image).
+3. `python manage.py bind_webhook_subscriptions` → `--apply`.
+4. `python manage.py backfill_load_costing --apply`, then `python manage.py recompute_trip_economics`.
 
 Rollback (order matters):
-1. Image-only rollback (keep the schema): fine at 0173 — the old image inserts loads thanks to the database
-   defaults; the new columns are simply left alone.
+1. Image-only rollback (keep the schema at 0176) is safe on PostgreSQL: the old image inserts and deletes loads,
+   vehicle types and users (database defaults + ON DELETE SET NULL) and simply ignores the new columns. (Not on
+   SQLite, which has no ON DELETE on these keys; production is PostgreSQL.)
 2. Full rollback: run `python manage.py migrate core 0165` with the NEW image still deployed (only it has the
-   reverse migrations 0166–0173), THEN redeploy the old image. Doing it the other way round leaves the old image
-   on a schema it can't migrate back. Drops the new columns; no data outside them is changed.
+   reverse migrations), THEN redeploy the old image. Drops the new columns and the signature table; nothing else
+   changes.
 
 Pre-deploy checks (PostgreSQL), run and note the numbers:
 ```sql
--- loads whose TMS id is only in notes (0170 moves it onto external_id)
+-- loads whose TMS id is only in notes (0172 moves it onto external_id)
 SELECT count(*) FROM loads WHERE notes LIKE 'ext_id:%';
 -- ids longer than 100 characters (left in the note, not moved)
 SELECT count(*) FROM loads WHERE notes LIKE 'ext_id:%' AND length(split_part(substr(notes, 8), E'\n', 1)) > 100;
@@ -186,7 +202,6 @@ SELECT company_id, split_part(substr(notes, 8), E'\n', 1) AS ext, count(*) FROM 
 SELECT count(*) FROM webhook_subscriptions;
 ```
 
-After migrate: `python manage.py recompute_trip_economics` (or `--company ID`).
 
 ### Security note (read before deploy)
 - Every fleet / TMS endpoint now works ONLY on the API key's company (`IntegrationAPIKey.operator.company`):
@@ -319,3 +334,18 @@ per-company daily cap `TMS_ROUTING_DAILY_CAP` (default 200, the rest wait until 
 - **Merge note:** `WebhookSubscription.company` is added ONLY in 0166 (nothing else in that migration). If
   truckwys/webhook-tenant-scope (its 0158 adds the same field + the same admin class) merges first, delete 0166,
   point 0167's dependency at the latest migration, keep their admin class and add `allow_legacy_signature` to it.
+
+### Round-3 security fixes (8 Oct)
+- Trip-update `delivery_confirmed` (and CtrlFleet `completed` / status) go through the TMS status rules: a
+  CANCELLED job stays cancelled (`status_refused.code = cancelled_in_truckwys`, no invoice), an INVOICED job is
+  never moved back (re-sent DELIVERED is a quiet no-op). A non-object `pod_data` / `pod` = 400.
+- TMS updates merge only the costing-input keys they sent into the current row under a lock (routing's
+  `route_job` / tolls are never wiped by a stale read); `cost_load` re-reads costing inputs under the same lock.
+- Replay protection lives in the `used_webhook_signatures` table (not the culled cache); if it can't be used the
+  webhook answers 503 (never accepts unchecked, never 500).
+- A full `Load.save()` never moves an INVOICED job back (only CANCELLED may follow) and never clears a delivered
+  job's `actual_delivered_at`; the auto-invoice updates the caller's instance, so a PATCH to DELIVERED answers
+  `INVOICED`.
+- `external_id` / `return_of_external_id` / `return_of_load_number`: strings or numbers only, one line, ≤ 100
+  characters (per-record 400). `mileage` on vehicle events validated. A `bad_stop_coordinates` routing failure is
+  retried only when the stops change.

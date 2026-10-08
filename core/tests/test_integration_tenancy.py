@@ -369,3 +369,61 @@ class LegacySignatureTests(_Tenants):
             r = APIClient().post('/api/v1/fleet/webhooks/ctrlfleet/', {'event_category': 'vehicle', 'vehicle_id': 'abc'},
                                  format='json', HTTP_X_API_KEY='KEY-A')
             self.assertEqual(r.status_code, 400)
+
+
+@override_settings(CTRLFLEET_WEBHOOK_KEY='')
+class RoundThreeWebhookTests(_Tenants):
+    URL = '/api/v1/fleet/webhooks/trip-update/'
+
+    def setUp(self):
+        self.sub = WebhookSubscription.objects.create(partner_name='Fleet A', webhook_url='https://a.example',
+                                                      company=self.co_a)
+
+    def test_delivery_confirmed_never_revives_a_cancelled_job(self):
+        from core.models import Invoice
+        Load.objects.filter(pk=self.load_a.pk).update(status='CANCELLED')
+        r = signed_post(self.URL, {'load_id': self.load_a.id, 'event_type': 'delivery_confirmed'}, self.sub)
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json()['status_refused']['code'], 'cancelled_in_truckwys')
+        self.load_a.refresh_from_db()
+        self.assertEqual(self.load_a.status, 'CANCELLED')
+        self.assertFalse(Invoice.objects.filter(load=self.load_a).exists())
+
+    def test_delivery_confirmed_on_invoiced_is_a_no_op(self):
+        Load.objects.filter(pk=self.load_a.pk).update(status='INVOICED')
+        r = signed_post(self.URL, {'load_id': self.load_a.id, 'event_type': 'delivery_confirmed'}, self.sub)
+        self.assertEqual(r.status_code, 200)
+        self.assertNotIn('status_refused', r.json())
+        self.load_a.refresh_from_db()
+        self.assertEqual(self.load_a.status, 'INVOICED')
+
+    def test_string_pod_data_is_400(self):
+        r = signed_post(self.URL, {'load_id': self.load_a.id, 'event_type': 'delivery_confirmed',
+                                   'pod_data': 'signed'}, self.sub)
+        self.assertEqual(r.status_code, 400)
+
+    def test_vehicle_mileage_validated(self):
+        r = signed_post('/api/v1/fleet/webhooks/vehicle-event/', {'vehicle_id': self.vehicle_a.id,
+                        'mileage': 'lots'}, self.sub)
+        self.assertEqual(r.status_code, 400)
+
+    def test_replay_store_survives_cache_culling_and_503_when_down(self):
+        from django.core.cache import cache
+        from unittest import mock as _m
+        body = {'load_number': 'TEN-A-1', 'event_type': 'gps_update'}
+        import time as _t
+        ts = int(_t.time())
+        self.assertEqual(signed_post(self.URL, body, self.sub, ts=ts).status_code, 200)
+        cache.clear()                                   # the cache culled / churned
+        self.assertEqual(signed_post(self.URL, body, self.sub, ts=ts).status_code, 401)
+        from django.db import DatabaseError
+        with _m.patch('core.models.UsedWebhookSignature.objects.create', side_effect=DatabaseError('down')):
+            self.assertEqual(signed_post(self.URL, body, self.sub).status_code, 503)
+
+    def test_ctrlfleet_completed_never_revives_cancelled(self):
+        Load.objects.filter(pk=self.load_a.pk).update(status='CANCELLED')
+        r = APIClient().post('/api/v1/fleet/webhooks/ctrlfleet/', {'event_type': 'completed',
+                             'load_number': 'TEN-A-1'}, format='json', HTTP_X_API_KEY='KEY-A')
+        self.assertEqual(r.status_code, 200, r.content)
+        self.load_a.refresh_from_db()
+        self.assertEqual(self.load_a.status, 'CANCELLED')

@@ -82,3 +82,20 @@ class WebhookSubscription(models.Model):
             if self.failure_count >= 10:
                 self.is_active = False
         self.save(update_fields=['last_delivery_at', 'failure_count', 'is_active'])
+
+
+class UsedWebhookSignature(models.Model):
+    """A fleet webhook signature already accepted (replay protection).
+
+    A database table rather than the shared cache: the cache is culled (300
+    entries, throttle keys churn it), which let replays through again. Rows
+    expire (expires_at) and are deleted by core.tasks.purge_used_webhook_signatures
+    (hourly) and opportunistically on use."""
+    key = models.CharField(max_length=100, unique=True)
+    expires_at = models.DateTimeField(db_index=True)
+
+    class Meta:
+        db_table = 'used_webhook_signatures'
+
+    def __str__(self):
+        return self.key

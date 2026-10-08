@@ -139,7 +139,7 @@ class MigrationAndDefaultsTests(_Base):
         import importlib
         from django.apps import apps as global_apps
         from core.models import Load
-        mig = importlib.import_module('core.migrations.0167_load_costing_assumptions')
+        mig = importlib.import_module('core.migrations.0168_load_costing_backfill')
         q = priced_quote(self.company, self.customer, 'LC-MIG', vt=self.vt, trip_type='ROUND_TRIP',
                          return_location='Johannesburg')
         load = make_load(self.company, self.customer, 'LC-MIG-L', quote=q)
@@ -160,3 +160,41 @@ class MigrationAndDefaultsTests(_Base):
                           'expecting_return', 'costs_closed', 'external_id', 'external_source',
                           'return_of_external_ref', 'invoice_mismatch', 'estimate_basis'):
                 self.assertIsNot(f.db_default, NOT_PROVIDED, f.name)
+
+
+class BackfillCommandTests(_Base):
+    def test_dry_run_then_apply_is_rerunnable(self):
+        from io import StringIO
+        from django.core.management import call_command
+        from core.models import Load
+        q = priced_quote(self.company, self.customer, 'LC-BF', vt=self.vt)
+        load = make_load(self.company, self.customer, 'LC-BF-L', quote=q)     # booked by an old image
+        out = StringIO()
+        call_command('backfill_load_costing', stdout=out)
+        self.assertIn('1 converted loads have no costing', out.getvalue())
+        load.refresh_from_db()
+        self.assertEqual(load.costing_source, '')
+        call_command('backfill_load_costing', '--apply', stdout=StringIO())
+        load.refresh_from_db()
+        self.assertEqual((load.costing_source, load.cost_floor, load.quoted_price), ('quote', q.cost_floor,
+                                                                                    q.total_amount))
+        out = StringIO()
+        call_command('backfill_load_costing', '--apply', stdout=out)
+        self.assertIn('0 loads back-filled', out.getvalue())
+
+    def test_migration_backfill_unpriced_quote_copies_quoted_fields_and_cleans_types(self):
+        import importlib
+        from django.apps import apps as global_apps
+        from core.models import Quote
+        mig = importlib.import_module('core.migrations.0168_load_costing_backfill')
+        q = priced_quote(self.company, self.customer, 'LC-UP', vt=self.vt)
+        Quote.objects.filter(pk=q.pk).update(costing_snapshot={}, costing_inputs={
+            'vehicle_type_id': self.vt.id, 'include_empty_return': 'false', 'border_cost': 'lots'})
+        load = make_load(self.company, self.customer, 'LC-UP-L', quote=q)
+        mig.copy_from_quotes(global_apps, None)
+        load.refresh_from_db()
+        self.assertEqual(load.costing_source, '')
+        self.assertEqual(load.quoted_price, q.total_amount)
+        self.assertEqual(load.fuel_price_used, q.fuel_price_used)
+        self.assertIs(load.costing_inputs['include_empty_return'], False)
+        self.assertNotIn('border_cost', load.costing_inputs)

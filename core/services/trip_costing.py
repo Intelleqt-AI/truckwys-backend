@@ -267,17 +267,23 @@ def cost_load(load, now=None, rec=None):
     from core.models import Load
     now = now or timezone.now()
     try:
+        from django.db import transaction
         from core.services.load_route_costs import merge_route_costs
-        ci, international = merge_route_costs(load, rec)
-        updates = {}
-        if ci != (load.costing_inputs or {}):
-            updates['costing_inputs'] = ci
-        if international and not load.is_international:
-            updates['is_international'] = True
-        if updates:
-            Load.objects.filter(pk=load.pk).update(**updates)
-            for k, v in updates.items():
-                setattr(load, k, v)
+        with transaction.atomic():
+            # The CURRENT costing inputs, locked: an instance read earlier
+            # must never write back stale keys (e.g. routing's route_job).
+            row = Load.objects.select_for_update().only('id', 'costing_inputs').get(pk=load.pk)
+            load.costing_inputs = row.costing_inputs or {}
+            ci, international = merge_route_costs(load, rec)
+            updates = {}
+            if ci != (load.costing_inputs or {}):
+                updates['costing_inputs'] = ci
+            if international and not load.is_international:
+                updates['is_international'] = True
+            if updates:
+                Load.objects.filter(pk=load.pk).update(**updates)
+                for k, v in updates.items():
+                    setattr(load, k, v)
     except Exception:
         logger.exception('load %s: route costs merge failed', load.pk)
     try:

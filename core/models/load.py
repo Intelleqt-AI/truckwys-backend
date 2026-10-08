@@ -162,7 +162,7 @@ class Load(models.Model):
     external_source = models.CharField(max_length=50, blank=True, default='', db_default='')
     # A TMS named an outbound (return_of_external_id) not synced yet: linked
     # as soon as it arrives. 'number:<load_number>' for return_of_load_number.
-    return_of_external_ref = models.CharField(max_length=100, blank=True, default='', db_default='')
+    return_of_external_ref = models.CharField(max_length=120, blank=True, default='', db_default='')
     # Set when the TMS changed the rate after the load was invoiced: the
     # invoice is never changed, this says it differs (code, invoice, amounts).
     invoice_mismatch = models.JSONField(default=dict, db_default=JSON_EMPTY, blank=True)
@@ -209,7 +209,22 @@ class Load(models.Model):
                 and not kwargs.get('force_insert')):
             kwargs['update_fields'] = [f.name for f in self._meta.concrete_fields
                                        if not f.primary_key and f.name not in self.SERVER_ONLY_FIELDS]
+            self._guard_stale_progress()
         return super().save(*args, **kwargs)
+
+    def _guard_stale_progress(self):
+        """A full save never undoes progress made since this instance was read:
+        an INVOICED job is never moved back (only CANCELLED may follow), and a
+        delivered job keeps its delivery time. The instance takes the stored
+        values, so the caller's response shows the truth."""
+        row = type(self).objects.filter(pk=self.pk).values('status', 'actual_delivered_at').first()
+        if row is None:
+            return
+        if row['status'] == 'INVOICED' and self.status not in ('INVOICED', 'CANCELLED'):
+            self.status = 'INVOICED'
+        if (self.actual_delivered_at is None and row['actual_delivered_at'] is not None
+                and self.status in ('DELIVERED', 'INVOICED')):
+            self.actual_delivered_at = row['actual_delivered_at']
 
     def __str__(self):
         return f"Load {self.load_number} - {self.status}"

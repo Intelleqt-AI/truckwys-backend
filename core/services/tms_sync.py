@@ -151,10 +151,17 @@ def trip_type_from(rec):
 MAX_EXTERNAL_ID = 100
 
 
-def clean_external_id(value):
-    ext = str(value or '').strip()
+def clean_external_id(value, field='external_id'):
+    """A TMS id: a string or number, one line, at most 100 characters."""
+    if value is None:
+        return ''
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise SyncError(f'{field} must be a string')
+    ext = str(value).strip()
+    if any(c in ext for c in '\t\r\n'):
+        raise SyncError(f'{field} must not contain tabs or line breaks')
     if len(ext) > MAX_EXTERNAL_ID:
-        raise SyncError(f'external_id is longer than {MAX_EXTERNAL_ID} characters')
+        raise SyncError(f'{field} is longer than {MAX_EXTERNAL_ID} characters')
     return ext
 
 
@@ -168,6 +175,13 @@ def allowed_status_move(load, new):
     cur = load.status
     if new == cur:
         return None, None
+    if cur == 'CANCELLED':
+        # Cancelled in TruckWys is final for a TMS (un-cancelling would raise
+        # an invoice for a job nobody runs).
+        return None, {'code': 'cancelled_in_truckwys',
+                      'detail': 'The job is cancelled in TruckWys; status left as is.'}
+    if cur == 'INVOICED' and new == 'DELIVERED':
+        return None, None          # delivered and already invoiced: nothing to do
     if new == 'INVOICED':
         return None, {'code': 'invoiced_by_truckwys', 'detail': 'Invoicing sets INVOICED; status left as is.'}
     if new == 'CANCELLED':
@@ -193,12 +207,15 @@ def find_by_external_id(company, external_id):
     load = Load.objects.filter(company=company, external_id=ext).first()
     if load is not None:
         return load
-    legacy = [l for l in Load.objects.filter(company=company, external_id='', notes__icontains=f'ext_id:{ext}')
+    # Legacy: the id only in an 'ext_id:' note line (a note may hold several:
+    # the first was moved onto external_id, the others stay findable here).
+    legacy = [l for l in Load.objects.filter(company=company, notes__icontains=f'ext_id:{ext}').order_by('pk')
               if any(line.strip() == f'ext_id:{ext}' for line in (l.notes or '').splitlines())]
     if legacy:
         load = legacy[0]
-        Load.objects.filter(pk=load.pk).update(external_id=ext)
-        load.external_id = ext
+        if not load.external_id:
+            Load.objects.filter(pk=load.pk).update(external_id=ext, external_source='tms_api')
+            load.external_id, load.external_source = ext, 'tms_api'
         return load
     return None
 
@@ -315,11 +332,12 @@ def apply_record(company, load, rec, *, source, user=None, origin_keys=None, des
             new['driver'] = driver
     if rec.get('notes'):
         new['notes'] = rec['notes']
+    # Costing inputs are merged into the CURRENT row under a lock (only the
+    # keys this record sent): a stale read never wipes what routing wrote.
     ci_new = costing_inputs_from(company, rec)
-    if ci_new:
-        merged = {**(load.costing_inputs or {}), **ci_new}
-        if merged != (load.costing_inputs or {}):
-            new['costing_inputs'] = merged
+    from core.models import Load as _Load
+    current_ci = _Load.objects.filter(pk=load.pk).values_list('costing_inputs', flat=True).first() or {}
+    ci_changed = {k: v for k, v in ci_new.items() if current_ci.get(k) != v}
 
     refused = None
     if 'status' in new:
@@ -336,10 +354,16 @@ def apply_record(company, load, rec, *, source, user=None, origin_keys=None, des
         if not same:
             changes[field] = [_jsonable(old), _jsonable(value)]
             setattr(load, field, value)
+    if ci_changed:
+        from core.services.tms_routing import merge_costing_inputs
+        merge_costing_inputs(load, ci_changed)
+        changes['costing_inputs'] = [{k: current_ci.get(k) for k in ci_changed}, ci_changed]
     if not changes:
         return {}
     load._notify_actor_id = None
-    load.save(update_fields=[f for f in changes] + ['updated_at'])
+    fields = [f for f in changes if f != 'costing_inputs']
+    if fields:
+        load.save(update_fields=fields + ['updated_at'])
 
     from core.models import ActivityEvent
     ActivityEvent.objects.create(
@@ -425,8 +449,8 @@ def link_from_record(company, load, rec, *, source='tms'):
     keys = ('return_of_external_id', 'return_of_load_number')
     if not any(k in rec for k in keys):
         return None
-    ext = rec.get('return_of_external_id')
-    number = rec.get('return_of_load_number')
+    ext = clean_external_id(rec.get('return_of_external_id'), 'return_of_external_id')
+    number = clean_external_id(rec.get('return_of_load_number'), 'return_of_load_number')
     if not ext and not number:
         if load.return_of_id:
             unlink_return(load, source=source)
@@ -434,7 +458,7 @@ def link_from_record(company, load, rec, *, source='tms'):
         return {'linked': False, 'pending': False, 'unlinked': True}
     outbound = find_by_external_id(company, ext) if ext else find_load(company, load_number=number)
     if outbound is None:
-        ref = str(ext or f'number:{number}')[:100]
+        ref = ext or f'number:{number}'          # <= 107 characters; the field holds 120
         Load.objects.filter(pk=load.pk).update(return_of_external_ref=ref)
         return {'linked': False, 'pending': True, 'waiting_for': ext or number}
     try:

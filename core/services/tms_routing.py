@@ -66,6 +66,8 @@ def needs_routing(load):
     if job.get('key') != key:
         return True           # new places / stops: route again
     if job.get('state') == 'failed':
+        if job.get('reason') == 'bad_stop_coordinates':
+            return False          # only new stops (a new key) can fix it
         return _age_seconds(job) >= RETRY_FAILED_AFTER_S     # failed: may be re-queued later
     if job.get('state') == 'pending':
         return _age_seconds(job) >= STALE_PENDING_S          # a lost task: queue it again

@@ -142,7 +142,9 @@ def load_saved(sender, instance, created, **kwargs):
                 try:
                     from django.utils import timezone
                     from core.models import Load
-                    Load.objects.filter(pk=instance.pk).update(actual_delivered_at=timezone.now())
+                    now = timezone.now()
+                    Load.objects.filter(pk=instance.pk).update(actual_delivered_at=now)
+                    instance.actual_delivered_at = now
                 except Exception:
                     pass
 

@@ -303,7 +303,7 @@ class VerificationFixTests(_Base):
     def test_migration_0170_parses_to_end_of_line_and_skips_long_ids(self):
         import importlib
         from django.apps import apps as global_apps
-        mig = importlib.import_module('core.migrations.0170_load_external_id')
+        mig = importlib.import_module('core.migrations.0172_load_external_id_backfill')
         a = make_load(self.co, self.cust, 'MIG-1', notes='ext_id:ORDER 12 A')
         b = make_load(self.co, self.cust, 'MIG-2', notes='ext_id:' + 'Y' * 120)
         mig.external_ids_from_notes(global_apps, None)
@@ -324,3 +324,59 @@ class VerificationFixTests(_Base):
         self.assertEqual(load.costing_source, 'computed')
         from core.services.trip_costing import missing_inputs
         self.assertEqual(missing_inputs(load), [])
+
+
+class RoundThreeTmsTests(_Base):
+    def test_cancelled_is_terminal_for_the_tms(self):
+        from core.models import Invoice
+        load = Load.objects.get(pk=self.trips([self.rec(external_id='R3-C')])['load_ids'][0])
+        Load.objects.filter(pk=load.pk).update(status='CANCELLED')
+        out = self.trips([self.rec(external_id='R3-C', status='DELIVERED')])
+        load.refresh_from_db()
+        self.assertEqual(load.status, 'CANCELLED')
+        self.assertEqual(out['results'][0]['status_refused']['code'], 'cancelled_in_truckwys')
+        self.assertFalse(Invoice.objects.filter(load=load).exists())
+
+    def test_redelivered_on_invoiced_is_quiet(self):
+        load = Load.objects.get(pk=self.trips([self.rec(external_id='R3-I')])['load_ids'][0])
+        Load.objects.filter(pk=load.pk).update(status='INVOICED')
+        out = self.trips([self.rec(external_id='R3-I', status='DELIVERED')])
+        self.assertNotIn('status_refused', out['results'][0])
+
+    def test_stale_apply_never_wipes_routing_keys(self):
+        from core.services.tms_sync import apply_record
+        load = Load.objects.get(pk=self.trips([self.rec(external_id='R3-S')])['load_ids'][0])
+        stale = Load.objects.get(pk=load.pk)
+        ci = dict(load.costing_inputs)
+        ci['route_job'] = {'state': 'done', 'key': 'k'}
+        ci['toll_cost_one_way'] = 555.0
+        Load.objects.filter(pk=load.pk).update(costing_inputs=ci)       # routing finished meanwhile
+        apply_record(self.co, stale, {'driver_cost': 900}, source='trips_sync')
+        load.refresh_from_db()
+        self.assertEqual(load.costing_inputs['route_job'], {'state': 'done', 'key': 'k'})
+        self.assertEqual(load.costing_inputs['driver_cost'], 900.0)
+
+    def test_bad_external_ids_rejected(self):
+        out = self.trips([self.rec(external_id={'id': 1}), self.rec(external_id='A\tB'),
+                          self.rec(external_id='R3-X', return_of_external_id='Z' * 101)])
+        self.assertEqual(len(out['errors']), 3)
+        self.assertFalse(Load.objects.filter(company=self.co, external_id='R3-X').exists())
+        r = APIClient().post(SYNC, {'action': 'create', 'load_number': 'R3-N', 'return_of_external_id': 'Z' * 101},
+                             format='json', HTTP_X_API_KEY='TMS-KEY')
+        self.assertEqual(r.status_code, 400)
+
+    def test_stale_full_save_never_moves_invoiced_back(self):
+        api = APIClient()
+        api.force_authenticate(self.user)
+        load = Load.objects.get(pk=self.trips([self.rec(external_id='R3-F')])['load_ids'][0])
+        r = api.patch(f'/api/v1/loads/{load.id}/', {'status': 'DELIVERED'}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json()['status'], 'INVOICED')          # the auto-invoice, shown truthfully
+        stale = Load.objects.get(pk=load.pk)
+        stale.status = 'DELIVERED'
+        stale.actual_delivered_at = None
+        stale.notes = 'n'
+        stale.save()
+        load.refresh_from_db()
+        self.assertEqual(load.status, 'INVOICED')
+        self.assertIsNotNone(load.actual_delivered_at)

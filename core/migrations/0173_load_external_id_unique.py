@@ -1,12 +1,14 @@
-# Separate migration (own transaction): on PostgreSQL an ALTER TABLE right
-# after the data update in 0170 could fail with "pending trigger events".
+"""Unique (company, external_id) where set — its own migration (PostgreSQL:
+no ALTER after a data update in the same transaction)."""
+import django.db.models.deletion
+from django.conf import settings
 from django.db import migrations, models
 
 
-class Migration(migrations.Migration):
 
+class Migration(migrations.Migration):
     dependencies = [
-        ('core', '0170_load_external_id'),
+        ('core', '0172_load_external_id_backfill'),
     ]
 
     operations = [
