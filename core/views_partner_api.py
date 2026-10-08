@@ -5,6 +5,9 @@
 # Views: PartnerRiskAssessmentView, PartnerPortfolioSummaryView, PartnerEligibleInvoicesView,
 #        PartnerWebhookSubscriptionViewSet
 # Status: EXEMPT from single-company filtering (partner-facing API) ✓
+# EXCEPTION (webhook security fix, 2026-10): PartnerWebhookSubscriptionViewSet
+# IS company-scoped — a subscription receives its own company's events only,
+# so the caller can only create/list/delete subscriptions of its own company.
 
 """Partner/Capital API endpoints for external lender and partner integration."""
 
@@ -381,6 +384,14 @@ class PartnerEligibleInvoicesView(APIView):
         return Response({'invoices': invoices})
 
 
+def _caller_company_id(request):
+    """Company of the WebhookSubscription whose API key authenticated this call."""
+    caller = getattr(request, 'auth', None)
+    if isinstance(caller, WebhookSubscription):
+        return caller.company_id
+    return None
+
+
 class PartnerWebhookSubscriptionViewSet(viewsets.ViewSet):
     """Manage webhook subscriptions for partners."""
 
@@ -438,6 +449,22 @@ class PartnerWebhookSubscriptionViewSet(viewsets.ViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        if not isinstance(events, list) or not all(isinstance(e, str) for e in events):
+            return Response(
+                {'error': 'events must be a list of event names'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # A new subscription belongs to the caller's company — never a
+        # company of its choosing, and never none (it would receive nothing
+        # and only be a stray credential).
+        company_id = _caller_company_id(request)
+        if not company_id:
+            return Response(
+                {'error': 'This API key is not bound to a company; ask TruckWys support to bind it.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
         # Get partner name from authenticated user
         partner_name = request.user.partner_name if hasattr(request.user, 'partner_name') else 'Unknown Partner'
 
@@ -446,6 +473,7 @@ class PartnerWebhookSubscriptionViewSet(viewsets.ViewSet):
             partner_name=partner_name,
             webhook_url=webhook_url,
             events=events,
+            company_id=company_id,
             is_active=True
         )
 
@@ -475,9 +503,12 @@ class PartnerWebhookSubscriptionViewSet(viewsets.ViewSet):
                 {'error': 'Subscription not found'},
                 status=status.HTTP_404_NOT_FOUND
             )
-        # Ownership: request.auth is the WebhookSubscription tied to the API key.
+        # Ownership: the caller's own subscription, or one of its company's.
         caller = getattr(request, 'auth', None)
-        if caller is None or getattr(caller, 'id', None) != subscription.id:
+        company_id = _caller_company_id(request)
+        own = caller is not None and getattr(caller, 'id', None) == subscription.id
+        same_company = bool(company_id) and subscription.company_id == company_id
+        if not (own or same_company):
             return Response(
                 {'error': 'Subscription not found'},
                 status=status.HTTP_404_NOT_FOUND
@@ -512,13 +543,15 @@ class PartnerWebhookSubscriptionViewSet(viewsets.ViewSet):
     )
     def list(self, request):
         """List all webhook subscriptions."""
-        # Get subscriptions for this API key
-        if hasattr(request, 'auth') and request.auth:
-            subscriptions = WebhookSubscription.objects.filter(
-                api_key=request.auth.api_key
-            )
+        # The caller's company's subscriptions; an unbound key sees only itself.
+        caller = getattr(request, 'auth', None)
+        company_id = _caller_company_id(request)
+        if company_id:
+            subscriptions = WebhookSubscription.objects.filter(company_id=company_id)
+        elif isinstance(caller, WebhookSubscription):
+            subscriptions = WebhookSubscription.objects.filter(pk=caller.pk)
         else:
-            subscriptions = WebhookSubscription.objects.all()
+            subscriptions = WebhookSubscription.objects.none()
 
         data = []
         for sub in subscriptions:

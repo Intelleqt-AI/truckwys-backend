@@ -1,79 +1,33 @@
-"""Webhook dispatcher service for outbound event notifications."""
+"""Outbound event notifications — the single entry point for firing webhooks.
 
-import json
-import requests
-from datetime import datetime
-from typing import Dict, Any
+Every event is scoped to the company that owns the object. Delivery goes only
+to that company's own WebhookSubscriptions and legacy Webhooks, after the
+transaction commits, from a Celery task (see core/services/webhook_delivery.py).
+An event without a company is delivered to nobody.
+"""
+
+from typing import Optional
+
+from core.services.webhook_delivery import LEGACY, Payload, build_body, dispatch, schedule
 
 
-def dispatch_webhook(event_type: str, data: Dict[str, Any]) -> None:
-    """
-    Dispatch webhook notifications for the given event type.
+def dispatch_webhook(event_type: str, data: Payload, company_id: Optional[int] = None) -> int:
+    """Queue ``event_type`` for the event company's own subscribers.
 
-    Args:
-        event_type: Event type string (e.g., 'load.created', 'invoice.created')
-        data: Event data dictionary to send in payload
-    """
-    from core.models import Webhook
-
-    # Partner WebhookSubscriptions are the productised outbound path (HMAC-signed,
-    # retried). Deliver to those first — this is what external integrators register.
+    ``company_id`` is the company that owns the event's object. None means
+    nobody receives it (fail closed) — callers must always pass it.
+    Never raises and never performs HTTP in the caller's thread."""
     try:
-        from core.services.webhook_delivery import WebhookDeliveryService
-        WebhookDeliveryService.deliver_to_all(event_type, data)
-    except Exception as exc:
-        print(f"Partner webhook delivery error for {event_type}: {exc}")
-
-    # Legacy Webhook model (best-effort; JSONField __contains is unsupported on SQLite).
-    try:
-        hooks = Webhook.objects.filter(active=True, events__contains=event_type)
-        if not hooks.exists():
-            return
+        return dispatch(event_type, data, company_id)
     except Exception:
+        import logging
+        logging.getLogger(__name__).exception('webhook dispatch failed for %s', event_type)
+        return 0
+
+
+def dispatch_to_legacy_webhook(webhook, event_type: str, data: dict) -> None:
+    """Queue one event to ONE legacy Webhook (used by its "test ping")."""
+    company_id = getattr(webhook.operator, 'company_id', None)
+    if not company_id:
         return
-
-    # Prepare payload
-    payload = {
-        'event': event_type,
-        'timestamp': datetime.utcnow().isoformat() + 'Z',
-        'data': data,
-    }
-    payload_json = json.dumps(payload)
-
-    # Fire webhooks
-    for hook in hooks:
-        try:
-            # Generate signature
-            signature = hook.sign_payload(payload_json)
-
-            # Send POST request
-            response = requests.post(
-                hook.url,
-                data=payload_json,
-                headers={
-                    'Content-Type': 'application/json',
-                    'X-Truckwys-Signature': signature,
-                    'X-Truckwys-Event': event_type,
-                    'User-Agent': 'Truckwys-Webhook/1.0',
-                },
-                timeout=10
-            )
-
-            # Update webhook state based on response
-            if response.status_code < 400:
-                hook.failure_count = 0
-                hook.last_fired_at = datetime.utcnow()
-            else:
-                hook.failure_count += 1
-                if hook.failure_count >= 10:
-                    hook.active = False
-
-            hook.save(update_fields=['failure_count', 'last_fired_at', 'active'])
-
-        except Exception as e:
-            # Handle connection errors, timeouts, etc.
-            hook.failure_count += 1
-            if hook.failure_count >= 10:
-                hook.active = False
-            hook.save(update_fields=['failure_count', 'active'])
-            print(f"Webhook dispatch error for {hook.url}: {str(e)}")
+    schedule(event_type, company_id, [(LEGACY, webhook.id)], build_body(event_type, data))

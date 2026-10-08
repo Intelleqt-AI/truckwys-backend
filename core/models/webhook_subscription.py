@@ -35,6 +35,15 @@ class WebhookSubscription(models.Model):
         help_text="Secret key used for HMAC signature verification"
     )
     is_active = models.BooleanField(default=True)
+    # The transporter (tenant) that owns this subscription. Outbound events
+    # are delivered ONLY to subscriptions of the event's own company; a
+    # subscription with no company receives nothing (fail closed). Nullable
+    # only so pre-existing rows survive the migration — bind them in Django
+    # admin after reviewing them (manage.py audit_webhook_subscriptions).
+    company = models.ForeignKey(
+        'Company', on_delete=models.CASCADE, null=True, blank=True, related_name='webhook_subscriptions',
+        help_text="Transporter that owns this subscription. Empty = receives no events.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     last_delivery_at = models.DateTimeField(

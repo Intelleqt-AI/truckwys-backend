@@ -328,3 +328,35 @@ class AccountingWebhookEventAdmin(admin.ModelAdmin):
 @admin.register(ReconciliationRun)
 class ReconciliationRunAdmin(admin.ModelAdmin):
     list_display = ['ran_at', 'company', 'status', 'difference_count']
+
+
+from .models.webhook_subscription import WebhookSubscription as _WebhookSubscription
+
+
+@admin.register(_WebhookSubscription)
+class WebhookSubscriptionAdmin(admin.ModelAdmin):
+    """Where platform staff review partner webhook subscriptions and bind each
+    to ONE company. Outbound events go only to the event company's own
+    subscriptions; an unbound subscription receives nothing. Non-superuser
+    staff only see and assign their own company."""
+    list_display = ['id', 'partner_name', 'company', 'webhook_url', 'is_active', 'last_delivery_at', 'failure_count']
+    list_filter = ['is_active']
+    search_fields = ['partner_name', 'webhook_url', 'company__company_name']
+    readonly_fields = ['api_key', 'secret', 'created_at', 'updated_at', 'last_delivery_at', 'failure_count']
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request).select_related('company')
+        if request.user.is_superuser:
+            return qs
+        return qs.filter(company_id=getattr(request.user, 'company_id', None) or -1)
+
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        if db_field.name == 'company' and not request.user.is_superuser:
+            from .models import Company
+            kwargs['queryset'] = Company.objects.filter(pk=getattr(request.user, 'company_id', None) or -1)
+        return super().formfield_for_foreignkey(db_field, request, **kwargs)
+
+    def save_model(self, request, obj, form, change):
+        if not request.user.is_superuser:
+            obj.company_id = getattr(request.user, 'company_id', None)
+        super().save_model(request, obj, form, change)

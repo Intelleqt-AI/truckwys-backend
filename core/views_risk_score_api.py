@@ -243,17 +243,11 @@ class RiskUnderwriteView(APIView):
                 'quota_used': api_key.quota_used,
             }
 
-        # Webhook dispatch — fire-and-forget, never block the response
+        # Webhook dispatch: queued after commit, only to the key owner's own
+        # company subscriptions (never blocks the response).
         if api_key is not None and api_key.webhook_url:
-            try:
-                import threading
-                from core.services.webhook_dispatcher import dispatch_webhook
-                threading.Thread(
-                    target=dispatch_webhook,
-                    args=('risk.scored', {'api_key': api_key.name, **payload}),
-                    daemon=True,
-                ).start()
-            except Exception:
-                pass
+            from core.services.webhook_dispatcher import dispatch_webhook
+            dispatch_webhook('risk.scored', {'api_key': api_key.name, **payload},
+                             company_id=getattr(api_key.operator, 'company_id', None))
 
         return Response(payload, status=status.HTTP_200_OK)

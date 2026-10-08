@@ -4989,14 +4989,16 @@ class WebhookViewSet(viewsets.ModelViewSet):
         """Fire a test ping to this webhook."""
         webhook = self.get_object()
         
-        from core.services.webhook_dispatcher import dispatch_webhook
-        dispatch_webhook('webhook.test', {
+        # Ping THIS webhook only (it used to fan out to every active webhook
+        # on the platform), queued for delivery after the response commits.
+        from core.services.webhook_dispatcher import dispatch_to_legacy_webhook
+        dispatch_to_legacy_webhook(webhook, 'webhook.test', {
             'message': 'Test ping from Truckwys',
             'webhook_id': webhook.id,
             'timestamp': timezone.now().isoformat(),
         })
-        
-        return Response({'message': 'Test ping sent successfully'})
+
+        return Response({'message': 'Test ping queued'})
 
 
 class IntegrationAPIKeyViewSet(viewsets.ModelViewSet):
