@@ -686,6 +686,8 @@ class TruckSuggestionTests(_Base):
 
 class SavedQuoteInputsTests(_Base):
     def test_saved_zero_driver_keeps_allowance_rules_and_border_counts(self):
+        from core.models import VerifiedRate
+        VerifiedRate.objects.filter(proposed_by='migration_0158').delete()   # tests own their allowance rows
         from core.services.quote_costing import costing_for_quote
         self.company.driver_allowance_per_night = None
         self.company.save()
@@ -1316,3 +1318,49 @@ class SettingsPlainMessagesTests(_Base):
                 text = ' '.join(msgs) if isinstance(msgs, list) else str(msgs)
                 self.assertNotIn('Ensure', text, (field, v))
                 self.assertIn(SETTINGS_MESSAGES[field], text, (field, v, text))
+
+
+class NbcrfliAllowanceTests(_Base):
+    """Item 5: the NBCRFLI minimum is seeded (migration 0158) and used when a
+    company has no own rate; international trips use the cross-border rate."""
+
+    def test_seeded_rates_in_force_by_date(self):
+        from core.services.quote_costing import driver_rate
+        self.company.driver_allowance_per_night = None
+        self.company.save()
+        self.assertEqual(driver_rate(self.company, date(2026, 10, 7)), (243.63, 'approved_allowance'))
+        self.assertEqual(driver_rate(self.company, date(2025, 10, 7)), (229.83, 'approved_allowance'))
+        self.assertEqual(driver_rate(self.company, date(2026, 10, 7), True), (487.05, 'approved_allowance'))
+        self.assertEqual(driver_rate(self.company, date(2025, 10, 7), True), (459.48, 'approved_allowance'))
+        self.company.driver_allowance_per_night = Decimal('450')
+        self.company.save()
+        self.assertEqual(driver_rate(self.company, date(2026, 10, 7), True), (450.0, 'company_setting'))
+
+    def test_line_detail_and_no_missing_warning(self):
+        from core.services.pricing_analysis import analyze_pricing
+        from core.tests.test_pricing_analysis import base_payload
+        self.company.driver_allowance_per_night = None
+        self.company.save()
+        r = analyze_pricing(base_payload(duration_minutes=1200, include_return=False, vehicle_type='Superlink'),
+                            company=self.company, user=self.user)
+        self.assertNotIn('driver_allowance_missing', {w['code'] for w in r['warnings']})
+        line = next(ln for ln in r['cost_floor']['lines'] if ln['key'] == 'driver_allowance')
+        rate = next(d['value'] for d in line['details'] if d['label'] == 'Rate').replace(' ', ' ')
+        self.assertEqual(rate, 'NBCRFLI minimum R 243,63/night (from 1 Mar 2026)')
+        r = analyze_pricing(base_payload(duration_minutes=1200, include_return=False, vehicle_type='Superlink',
+                                         is_international=True, cross_border_cost=900),
+                            company=self.company, user=self.user)
+        line = next(ln for ln in r['cost_floor']['lines'] if ln['key'] == 'driver_allowance')
+        rate = next(d['value'] for d in line['details'] if d['label'] == 'Rate').replace(' ', ' ')
+        self.assertTrue(rate.startswith('NBCRFLI cross-border minimum R 487,05/night (from 1 Mar 2026)'), rate)
+
+    def test_migration_does_not_duplicate_an_approved_row(self):
+        import importlib
+        from django.apps import apps as django_apps
+        from core.models import VerifiedRate
+        mod = importlib.import_module('core.migrations.0158_seed_nbcrfli_driver_allowance')
+        before = VerifiedRate.objects.filter(kind='driver_allowance').count()
+        mod.seed(django_apps, None)
+        self.assertEqual(VerifiedRate.objects.filter(kind='driver_allowance').count(), before)
+        mod.unseed(django_apps, None)
+        self.assertFalse(VerifiedRate.objects.filter(proposed_by='migration_0158').exists())

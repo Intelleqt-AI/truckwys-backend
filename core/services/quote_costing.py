@@ -171,6 +171,14 @@ def fmt_num(v, dp=0):
     return ('−' if float(v) < 0 and txt.strip('0, ') else '') + txt
 
 
+def round_price_up(price):
+    """Offered prices in whole amounts: UP to the next R 50 below R 20 000,
+    else the next R 100 (never below the price it was built from)."""
+    p = float(price or 0)
+    unit = 50 if p < 20000 else 100
+    return int(math.ceil(p / unit - 1e-9) * unit)
+
+
 def fmt_rand(v, dp=0):
     """'R 32,80' / 'R 1 050' (whole rand half-up when dp=0)."""
     v = float(v)
@@ -459,16 +467,12 @@ def compute(inputs):
         warnings.append(warning('tolls_unknown', 'block', 'Tolls could not be worked out',
                                 'Enter the tolls, or confirm there are none on this route.',
                                 actions=('enter_tolls', 'confirm_no_tolls')))
-    if toll_one_way == 0 and not tolls.get('confirmed_none'):
-        # R 0 from the route means no plazas were FOUND, not that the road has
-        # none: say so and ask to check (a warning: tolls are small).
-        warnings.append(warning('tolls_none_found', 'warn', 'No tolls found on this route',
-                                'Check it if the trip uses toll roads.',
-                                actions=('enter_tolls', 'confirm_no_tolls')))
+    # R 0 from a toll lookup that worked is a known R 0: the route has no
+    # plazas (owner rule: we know every toll; no "check / add your own").
     toll_amt = cents(toll_one_way * legs_loaded) if toll_one_way is not None else None
     add('tolls', 'loaded', toll_amt,
-        'Unknown' if toll_amt is None else (f'{fmt_rand(toll_one_way, 2)} × 2 legs' if round_trip
-                                             else f'{fmt_rand(toll_one_way, 2)} one way'),
+        'Unknown' if toll_amt is None else 'No toll plazas on this route' if toll_one_way == 0
+        else (f'{fmt_rand(toll_one_way, 2)} × 2 legs' if round_trip else f'{fmt_rand(toll_one_way, 2)} one way'),
         one_way=toll_one_way, legs=legs_loaded)
 
     # --- driver nights (§6) ---
@@ -599,7 +603,10 @@ def compute(inputs):
     rate_price = cents(rate_per_km * km_loaded) if rate_per_km is not None and km_loaded is not None else None
     default_price = None
     if target_price is not None:
-        default_price = float(math.ceil(max(rate_price or 0.0, target_price) - 1e-9))
+        # The same rounding as the pricing analysis' choices (round UP to the
+        # next R 50 below R 20 000, else R 100): with no market the suggested
+        # price IS the Safe choice.
+        default_price = float(round_price_up(max(rate_price or 0.0, target_price)))
 
     # The same quote with a return load booked (one-way, empty return included).
     alternative = None
@@ -804,18 +811,38 @@ def operating_cost_for(company, vt):
     return out
 
 
-def driver_rate(company, today):
+def driver_rate(company, today, international=False, *, with_info=False):
     """(rate per night | None, source): company setting first (what the fleet
-    pays), else the approved allowance in force."""
+    pays), else the approved allowance in force on `today` — the NBCRFLI
+    night-out minimum (clause 36A), or for an INTERNATIONAL trip the
+    cross-border minimum (clause 36B). Nights cannot be split by country from
+    the route, so every night of an international trip uses the cross-border
+    rate (said so in the line detail). with_info adds the allowance record."""
     from core.services.quote_ai_pricing import DRIVER_RATE_MAX_PER_DAY, stored_allowance
     own = _pos(getattr(company, 'driver_allowance_per_night', None))
     if own is not None and own <= DRIVER_RATE_MAX_PER_DAY:
-        return own, 'company_setting'
-    allowance = stored_allowance(today)
+        return (own, 'company_setting', None) if with_info else (own, 'company_setting')
+    allowance = stored_allowance(today, cross_border=international)
     rate = _pos((allowance or {}).get('rate_per_night'))
     if rate is not None and rate <= DRIVER_RATE_MAX_PER_DAY:
-        return rate, 'approved_allowance'
-    return None, None
+        return (rate, 'approved_allowance', allowance) if with_info else (rate, 'approved_allowance')
+    return (None, None, None) if with_info else (None, None)
+
+
+def allowance_detail(allowance, international=False):
+    """'NBCRFLI minimum R 243,63/night (from 1 Mar 2026)' for an approved
+    allowance record, or None."""
+    if not allowance:
+        return None
+    eff = allowance.get('effective_from')
+    when = f' (from {eff.day} {eff:%b} {eff.year})' if eff else ''
+    kind = allowance.get('allowance_type')
+    name = {'nbcrfli': 'NBCRFLI minimum', 'nbcrfli_cross_border': 'NBCRFLI cross-border minimum',
+            'sars_subsistence': 'SARS subsistence allowance'}.get(kind, allowance.get('label') or 'Approved allowance')
+    text = f'{name} {fmt_rand(allowance["rate_per_night"], 2)}/night{when}'
+    if international and kind == 'nbcrfli_cross_border':
+        text += '; every night of an international trip at the cross-border rate'
+    return text
 
 
 def target_margin(company):
@@ -873,7 +900,9 @@ def build_inputs(payload, company, now=None, *, diesel_override=None):
                                       use_official=bool(_truthy(payload.get('use_official_fuel'))),
                                       override_price=_pos(payload.get('fuel_price_override')))
     op = operating_cost_for(company, vt) if vt is not None else None
-    rate, rate_source = driver_rate(company, today)
+    international = bool(_truthy(payload.get('is_international'))
+                         or (isinstance(payload.get('route'), dict) and payload['route'].get('cross_border')))
+    rate, rate_source, allowance = driver_rate(company, today, international, with_info=True)
 
     toll_one_way = _num(payload.get('toll_cost_one_way'))
     if toll_one_way is None:
@@ -918,8 +947,7 @@ def build_inputs(payload, company, now=None, *, diesel_override=None):
                    'amount': driver_amount},
         'hours_per_day': float(getattr(dj_settings, 'DRIVER_DRIVING_HOURS_PER_DAY', DEFAULT_HOURS_PER_DAY)),
         'border_cost': _num(payload.get('cross_border_cost')) or 0.0,
-        'international': bool(_truthy(payload.get('is_international'))
-                              or (isinstance(payload.get('route'), dict) and payload['route'].get('cross_border'))),
+        'international': international,
         'include_empty_return': include,
         'settings': {
             'include_empty_return_default': bool(getattr(company, 'include_empty_return_default', True)),
@@ -938,7 +966,8 @@ def build_inputs(payload, company, now=None, *, diesel_override=None):
     context = {'vehicle_type': vt, 'vehicle_how': how, 'suggested': suggested, 'operating_cost': op,
                'inputs': {'load_kg': load_kg},
                'diesel': diesel,
-               'driver_rate_source': rate_source, 'now': now}
+               'driver_rate_source': rate_source, 'now': now,
+               'driver_rate_detail': allowance_detail(allowance, international)}
     return inputs, context
 
 
@@ -955,6 +984,7 @@ def _context_out(context):
                                   else 'load_missing' if not (_num((context.get('inputs') or {}).get('load_kg')) or 0) > 0
                                   else 'no_truck_carries_the_load'),
             'operating_cost': context['operating_cost'],
+            'driver_rate_detail': context.get('driver_rate_detail'),
             'driver_rate_source': context['driver_rate_source'], 'diesel_resolution': d}
 
 
