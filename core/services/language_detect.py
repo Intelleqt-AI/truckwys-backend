@@ -105,7 +105,48 @@ def detect_text_language(text: str, threshold: Optional[float] = None) -> Option
     top = candidates[0]
     if top.prob < (threshold if threshold is not None else _confidence_threshold()):
         return None
+    if top.lang in ("af", "nl"):
+        # langdetect calls short English load descriptions Afrikaans because SA
+        # place names ("Joburg", "Durban", "Kaapstad") dominate the character
+        # n-grams. Afrikaans has to show in its own function words/morphology;
+        # otherwise it's English (the safe default for SA freight text).
+        af, en = afrikaans_evidence(text)
+        return "af" if af >= 2 and af > en else "en"
     return top.lang
+
+
+# Afrikaans words that don't occur in English text (function words, common
+# freight verbs/nouns, spelling only Afrikaans has), and English counterparts.
+_AF_MARKERS = {
+    "die", "van", "vanaf", "na", "toe", "nie", "het", "vir", "ek", "ons", "jy", "hulle", "met", "en", "of",
+    "is", "wat", "hoe", "hoeveel", "moet", "kan", "sal", "wil", "gaan", "asseblief", "dankie", "baie", "nog",
+    "ook", "maar", "dit", "daar", "hier", "uit", "oor", "tot", "teen", "voor", "agter", "n", "trok", "trokke",
+    "vrag", "vragte", "leeg", "terug", "heen", "laai", "aflaai", "oplaai", "aflewer", "goedere", "staal",
+    "staalrolle", "palette", "sement", "mielies", "hout", "vrugte", "druiwe", "koelwa", "sleepwa", "wipbak",
+    "gordynkant", "platbak", "retoervrag", "terugvrag", "more", "oormore", "vandag", "maandag", "dinsdag",
+    "woensdag", "donderdag", "vrydag", "saterdag", "sondag", "volgende", "dae", "nagte", "kwotasie", "prys",
+    "twee", "drie", "vier", "vyf", "ses", "sewe", "agt", "nege", "tien", "twintig", "dertig", "veertig",
+    "kaapstad", "oos", "londen", "richardsbaai",
+}
+_EN_MARKERS = {
+    "the", "from", "to", "of", "for", "and", "with", "a", "an", "is", "are", "we", "i", "you", "need", "please",
+    "tomorrow", "today", "tons", "tonnes", "steel", "load", "truck", "empty", "back", "return", "deliver",
+    "delivery", "pickup", "pick", "up", "one", "way", "round", "trip", "next", "on", "at", "by", "via", "quote",
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "coils", "pallets",
+}
+_SHARED_MARKERS = {"is", "of"}  # spelled the same in both
+
+
+def afrikaans_evidence(text: str):
+    """(afrikaans_marker_count, english_marker_count) for a message."""
+    import re
+    import unicodedata
+    t = "".join(c for c in unicodedata.normalize("NFKD", (text or "").lower()) if not unicodedata.combining(c))
+    words = re.findall(r"[a-z]+", t.replace("'n", " n "))
+    af = sum(1 for w in words if w in _AF_MARKERS and w not in _SHARED_MARKERS)
+    af += len(re.findall(r"(?i)\b(?:m[ôòó]re|oorm[ôòó]re|kli[ëe]nt|n[ée] )", text or ""))
+    en = sum(1 for w in words if w in _EN_MARKERS and w not in _SHARED_MARKERS)
+    return af, en
 
 
 def _cache_key(text: str, target_lang: str) -> str:

@@ -46,7 +46,9 @@ class DetectTextLanguageTests(TestCase):
     @mock.patch('core.services.language_detect.detect_langs')
     def test_confident_result_returned(self, mock_detect):
         mock_detect.return_value = [self._candidate('af', 0.999)]
-        text = 'x' * 25  # past the minimum-length guard
+        # Afrikaans now also needs its own words in the text (short English
+        # with SA place names was misread as 'af'), so use a real sentence.
+        text = 'twintig ton staal van Kaapstad na Durban'
         self.assertEqual(ld.detect_text_language(text), 'af')
 
     @mock.patch('core.services.language_detect.detect_langs')

@@ -57,6 +57,7 @@ class NLResult:
     llm_error: Optional[str] = None
     vehicle_hint: Optional[str] = None
     conflicts: List[str] = field(default_factory=list)
+    said: Dict[str, str] = field(default_factory=dict)  # field -> user's own wording (display only)
 
 
 def _skip_llm_when_sufficient() -> bool:
@@ -177,33 +178,15 @@ def _short_date(iso: str, lang: str) -> str:
     return f"{d.day} {(months_af if lang == 'af' else months_en)[d.month - 1]}"
 
 
-_AF_CARGO = {
-    "steel coils": "staalrolle", "steel": "staal", "maize": "mielies", "cement": "sement", "timber": "hout",
-    "sugar": "suiker", "coal": "steenkool", "grapes": "druiwe", "fruit": "vrugte", "pallets": "palette",
-    "beer": "bier", "wine": "wyn", "furniture": "meubels", "machinery": "masjinerie", "wheat": "koring",
-    "fertiliser": "kunsmis", "frozen chicken": "bevrore hoender", "meat": "vleis", "flour": "meel",
-    "sand": "sand", "chemicals": "chemikalieë", "parcels": "pakkies", "groceries": "kruideniersware",
-}
-
-
-# Afrikaans display names in replies only — the fields themselves keep the
-# geocoder-friendly English/official name.
-_AF_PLACE = {"Cape Town": "Kaapstad", "East London": "Oos-Londen", "Richards Bay": "Richardsbaai",
-             "Mossel Bay": "Mosselbaai", "Walvis Bay": "Walvisbaai", "Namibia": "Namibië", "Zambia": "Zambië",
-             "Mozambique": "Mosambiek"}
-
-
 def _summary(f: Dict[str, Any], lang: str) -> List[str]:
     af = lang == "af"
     bits = []
     if f.get("weight") or f.get("cargo_description"):
         cargo = f.get("cargo_description") or ""
-        if af:
-            cargo = _AF_CARGO.get(cargo, cargo)
         w = f"{_num(f['weight'] / 1000)} t" if f.get("weight") else ""
         bits.append(" ".join(x for x in (w, cargo) if x))
     if f.get("pickup_location") or f.get("delivery_location"):
-        loc = (lambda x: _AF_PLACE.get(x, x)) if af else (lambda x: x)
+        loc = (lambda x: x)  # the filled value, exactly as it appears in the field
         route = f"{loc(f.get('pickup_location') or '?')} → {loc(f.get('delivery_location') or '?')}"
         if f.get("stops"):
             route += (" oor " if af else " via ") + ", ".join(loc(x) for x in f["stops"])
@@ -401,6 +384,9 @@ def understand(message: str, *, history: Optional[List[Dict[str, Any]]] = None,
             notes.append(n)
     res.not_understood = notes[:5]
     res.extracted = extracted
+    # The user's own wording ("Kaapstad") for display beside the geocodable
+    # value ("Cape Town"), only where the final value is the one the rules read.
+    res.said = {k: v for k, v in rules.said.items() if extracted.get(k) == rules.fields.get(k)}
     res.field_confidence = {k: conf[k] for k in extracted if k in conf}
 
     if res.llm_used and llm_reply:

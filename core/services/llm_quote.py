@@ -571,10 +571,13 @@ def extract(message: str, history: Optional[List[Dict[str, Any]]] = None,
     unmatched: Dict[str, Optional[str]] = {"customer_name": None, "vehicle_type": None}
     extra, meta = validate_extraction(data)
     data = {k: (v.strip()[:_MAX_TEXT] if isinstance(v, str) else v) for k, v in data.items()}
+    from core.services.quote_preparse import geocodable_place
+    # Geocodable English/official names for known aliases the model passed
+    # through as said ("Kaapstad" -> "Cape Town"); addresses stay whole.
     if data.get("pickup_location"):
-        extracted["pickup_location"] = data["pickup_location"].strip()
+        extracted["pickup_location"] = geocodable_place(data["pickup_location"])
     if data.get("delivery_location"):
-        extracted["delivery_location"] = data["delivery_location"].strip()
+        extracted["delivery_location"] = geocodable_place(data["delivery_location"])
     raw_customer_name = (data.get("customer_name") or "").strip()
     if customers:
         matched_name = _fuzzy_match(raw_customer_name, customer_names)
@@ -689,7 +692,8 @@ def validate_extraction(data: Dict[str, Any], today: Optional[date] = None,
         out["border_post"] = canonical_border_post(bp) or bp.strip()[:80]
     stops = data.get("stops")
     if isinstance(stops, list):
-        clean = [s.strip()[:120] for s in stops if isinstance(s, str) and s.strip()][:8]
+        from core.services.quote_preparse import geocodable_place
+        clean = [geocodable_place(s.strip()[:120]) for s in stops if isinstance(s, str) and s.strip()][:8]
         if clean:
             out["stops"] = clean
     n = num("driver_nights")

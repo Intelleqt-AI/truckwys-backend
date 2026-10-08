@@ -466,3 +466,96 @@ class QuoteModelParamsTests(SimpleTestCase):
                        "Groblersbrug", "Vioolsdrif", "Nakop", "Ariamsvlei", "Kosi Bay", "Mamuno"):
             with self.subTest(spoken=spoken):
                 self.assertIn(qp.canonical_border_post(spoken), names)
+
+
+class LanguageDetectionFixTests(SimpleTestCase):
+    """langdetect reads short English with SA place names as Afrikaans; the
+    detector must need Afrikaans words to say 'af' and default to English."""
+
+    def test_short_english_with_sa_places_is_english(self):
+        from core.services.language_detect import detect_text_language
+        for t in ("Joburg to Durban 28 steel", "Kaapstad to Durban, 28 tons steel",
+                  "Pretoria to Polokwane 20 ton cement", "Bloemfontein to Durban tomorrow 30t"):
+            with self.subTest(t=t):
+                self.assertIn(detect_text_language(t), ("en", None))
+
+    def test_real_afrikaans_and_mixed_still_afrikaans(self):
+        from core.services.language_detect import detect_text_language
+        for t in ("agt ton staal van Joburg na Durban môre", "20 ton staal vanaf Kaapstad na Durban",
+                  "Ons moet 25 ton maize van Joburg af haal en deliver"):
+            with self.subTest(t=t):
+                self.assertEqual(detect_text_language(t), "af")
+
+    @mock.patch("core.services.language_detect.detect_langs")
+    def test_detector_saying_af_without_evidence_becomes_english(self, mock_detect):
+        from core.services.language_detect import detect_text_language
+        mock_detect.return_value = [mock.Mock(lang="af", prob=0.9999)]
+        self.assertEqual(detect_text_language("Durban to Richards Bay 34 tons"), "en")
+        mock_detect.return_value = [mock.Mock(lang="nl", prob=0.9999)]
+        self.assertEqual(detect_text_language("van Durban na Richards Bay, 34 ton vrag"), "af")
+
+    def test_preparse_hint_agrees(self):
+        self.assertEqual(qp.preparse("Joburg to Durban 28 steel", today=TODAY).language_hint, "en")
+
+
+class GeocodablePlaceTests(SimpleTestCase):
+    def test_rules_return_geocodable_names_and_keep_what_was_said(self):
+        p = qp.preparse("van Kaapstad na Oos-Londen, 20 ton", today=TODAY)
+        self.assertEqual((p.fields["pickup_location"], p.fields["delivery_location"]), ("Cape Town", "East London"))
+        self.assertEqual(p.said, {"pickup_location": "Kaapstad", "delivery_location": "Oos-Londen"})
+        p = qp.preparse("Richardsbaai na Tshwane", today=TODAY)
+        self.assertEqual((p.fields["pickup_location"], p.fields["delivery_location"]), ("Richards Bay", "Pretoria"))
+        p = qp.preparse("eThekwini to PE", today=TODAY)
+        self.assertEqual((p.fields["pickup_location"], p.fields["delivery_location"]), ("Durban", "Gqeberha"))
+        self.assertEqual(p.said["delivery_location"], "PE")
+        p = qp.preparse("Gqeberha to Durban", today=TODAY)
+        self.assertNotIn("pickup_location", p.said)  # already the field value
+
+    def test_llm_aliases_canonicalised_addresses_kept(self):
+        self.assertEqual(qp.geocodable_place("Kaapstad"), "Cape Town")
+        self.assertEqual(qp.geocodable_place("Oos-Londen"), "East London")
+        self.assertEqual(qp.geocodable_place("eThekwini"), "Durban")
+        self.assertEqual(qp.geocodable_place("Gqeberha"), "Gqeberha")
+        self.assertEqual(qp.geocodable_place("12 Kaapstad Road, Isando"), "12 Kaapstad Road, Isando")
+        self.assertEqual(qp.geocodable_place("Cape Town CBD"), "Cape Town CBD")
+        fields, _, _ = _extract_with_payload(llm_payload(pickup_location="Kaapstad", delivery_location="Richardsbaai",
+                                                         stops=["Oos-Londen"]))
+        self.assertEqual((fields["pickup_location"], fields["delivery_location"], fields["stops"]),
+                         ("Cape Town", "Richards Bay", ["East London"]))
+
+
+def _extract_with_payload(payload):
+    client = _llm_returning(payload)
+    with mock.patch("core.services.llm_quote._provider", return_value="anthropic"), \
+            mock.patch("core.services.llm_quote.anthropic", create=True) as anth:
+        anth.Anthropic.return_value = client
+        return llm_quote.extract("x")
+
+
+class ReplyMatchesFieldsTests(SimpleTestCase):
+    @mock.patch("core.services.llm_quote.is_enabled", return_value=False)
+    def test_reply_uses_the_filled_values(self, _):
+        res = quote_nl.understand("28 ton staalrolle van Kaapstad na Oos-Londen môre", today=TODAY)
+        self.assertEqual(res.extracted["cargo_description"], "steel coils")
+        self.assertIn("steel coils", res.reply)
+        self.assertIn("Cape Town → East London", res.reply)
+        self.assertNotIn("staalrolle", res.reply)
+        self.assertEqual(res.said["pickup_location"], "Kaapstad")
+
+
+@mock.patch("core.services.llm_quote.is_enabled", return_value=False)
+class ChatQuoteSaidTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(username="said", email="said@example.com", password="x")
+        self.client.force_authenticate(user=self.user)
+
+    def test_said_and_english_detection_on_endpoint(self, _):
+        r = self.client.post("/api/v1/ai/chat-quote/", {"message": "Joburg to Durban 28 steel", "history": [],
+                                                         "current_fields": {}}, format="json")
+        self.assertEqual(r.data["language"], "en")
+        self.assertIn("Didn't catch", r.data["reply"])
+        r = self.client.post("/api/v1/ai/chat-quote/", {"message": "28 ton staal van Kaapstad na Oos-Londen",
+                                                         "history": [], "current_fields": {}}, format="json")
+        self.assertEqual(r.data["extracted_fields"]["pickup_location"], "Cape Town")
+        self.assertEqual(r.data["said"], {"pickup_location": "Kaapstad", "delivery_location": "Oos-Londen"})

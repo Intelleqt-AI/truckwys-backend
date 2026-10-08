@@ -409,6 +409,7 @@ class PreParse:
     vehicle_hint_label: Optional[str] = None    # English label, e.g. "Superlink"
     vehicle_capacity_t: Optional[float] = None  # "8 ton truck" → 8
     customer_span_text: Optional[str] = None    # raw text of the customer mention (for redaction)
+    said: Dict[str, str] = field(default_factory=dict)  # field -> the user's own wording, when it differs
     unmatched: Dict[str, Optional[str]] = field(default_factory=lambda: {"customer_name": None,
                                                                           "vehicle_type": None})
 
@@ -644,13 +645,37 @@ def canonical_border_post(text: str) -> Optional[str]:
     return _BORDER_LOOKUP[m.group(1)] if m else None
 
 
+def geocodable_place(text: str) -> str:
+    """The English/official, geocodable name when `text` is exactly a known
+    alias ("Kaapstad", "Oos-Londen", "eThekwini", "PE"); anything else
+    (a street address, "Cape Town CBD", an unknown town) is returned as given."""
+    t = (text or "").strip()
+    if not t or re.search(r"\d", t):
+        return t
+    return _PLACE_LOOKUP.get(norm_phrase(t)) or t
+
+
+def said_text(raw: str, alias: str) -> Optional[str]:
+    """The user's own spelling of a matched alias, as it appears in `raw`."""
+    parts = [re.escape(p) for p in alias.split()]
+    if not parts:
+        return None
+    m = re.search(r"(?i)\b" + r"[\W_]*".join(parts) + r"\b", _strip_accents(raw or ""))
+    if not m:
+        return None
+    # same span in the original (accents kept) when lengths line up
+    orig = (raw or "")[m.start():m.end()]
+    return orig if _strip_accents(orig).lower() == m.group(0).lower() else m.group(0)
+
+
 def place_country(canonical: Optional[str]) -> Optional[str]:
     return _PLACE_COUNTRY.get(canonical or "")
 
 
 # ── The parser ───────────────────────────────────────────────────────────────
 class _Ctx:
-    def __init__(self, text: str):
+    def __init__(self, text: str, raw: str = ""):
+        self.raw = raw
         self.t = text
         self.spans: List[Tuple[int, int]] = []
 
@@ -683,7 +708,7 @@ def preparse(message: str, *, today: Optional[date] = None,
     out = PreParse()
     raw = message or ""
     text = normalise(raw)
-    ctx = _Ctx(text)
+    ctx = _Ctx(text, raw)
     if not text:
         return out
 
@@ -1227,12 +1252,22 @@ def _places(ctx: _Ctx, out: PreParse) -> None:
     stops += free  # anything left in the middle of a route is a stop
     stops.sort(key=lambda x: x["start"])
 
+    def said(mm):
+        if mm.get("unknown"):
+            return None
+        s_ = said_text(ctx.raw, mm["alias"])
+        return s_ if s_ and norm_phrase(s_) != norm_phrase(mm["name"]) else None
+
     if pickup:
         c = pickup["conf"] - (pos_conf_penalty if pickup["role"] is None else 0)
         out.set("pickup_location", pickup["name"], c)
+        if said(pickup):
+            out.said["pickup_location"] = said(pickup)
     if delivery:
         c = delivery["conf"] - (0.15 if delivery["role"] is None else 0)
         out.set("delivery_location", delivery["name"], c)
+        if said(delivery):
+            out.said["delivery_location"] = said(delivery)
     names = [s["name"] for s in stops if s["name"] not in (out.fields.get("pickup_location"),
                                                             out.fields.get("delivery_location"))]
     if names:
