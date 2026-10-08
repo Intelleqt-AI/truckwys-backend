@@ -147,6 +147,17 @@ class Load(models.Model):
     # Cached estimate (core.services.trip_economics.recompute, signals): the
     # pair-aware estimated cost and how it was worked out. Reports compute
     # live from the same function; this is for lists and the app.
+    # --- TMS identity (trip economics) ---------------------------------------
+    # The id the company's TMS knows this job by (unique per company when
+    # set) and which system sent it. Sync endpoints upsert on it.
+    external_id = models.CharField(max_length=100, blank=True, default='')
+    external_source = models.CharField(max_length=50, blank=True, default='')
+    # A TMS named an outbound (return_of_external_id) not synced yet: linked
+    # as soon as it arrives. 'number:<load_number>' for return_of_load_number.
+    return_of_external_ref = models.CharField(max_length=100, blank=True, default='')
+    # Set when the TMS changed the rate after the load was invoiced: the
+    # invoice is never changed, this says it differs (code, invoice, amounts).
+    invoice_mismatch = models.JSONField(default=dict, blank=True)
     estimated_cost = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     estimate_basis = models.CharField(max_length=30, blank=True, default='')
     economics_updated_at = models.DateTimeField(null=True, blank=True)
@@ -162,6 +173,10 @@ class Load(models.Model):
             models.Index(fields=['load_number']),
             models.Index(fields=['status']),
             models.Index(fields=['pickup_date']),
+        ]
+        constraints = [
+            models.UniqueConstraint(fields=['company', 'external_id'], condition=~models.Q(external_id=''),
+                                    name='uniq_load_external_id_per_company'),
         ]
     
     def __str__(self):

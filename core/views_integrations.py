@@ -751,6 +751,17 @@ def _no_key_response():
                     status=status.HTTP_401_UNAUTHORIZED)
 
 
+def _sync_detail(load, created):
+    out = {'load_id': load.pk, 'load_number': load.load_number, 'external_id': load.external_id or None,
+           'created': created, 'changed': sorted(getattr(load, '_sync_changes', {}) or {})}
+    link = getattr(load, '_sync_link', None)
+    if link is not None:
+        out['return_link'] = link
+    if load.invoice_mismatch:
+        out['invoice_mismatch'] = load.invoice_mismatch
+    return out
+
+
 class FleetTripSyncView(APIView):
     """
     POST /api/v1/integrations/fleet/sync/
@@ -779,12 +790,16 @@ class FleetTripSyncView(APIView):
         company = integration_company(request)
         if company is None:
             return _no_key_response()
+        if not isinstance(request.data, dict):
+            return Response({'error': 'Send one trip object'}, status=status.HTTP_400_BAD_REQUEST)
         try:
             with transaction.atomic():
                 load, created = apply_fleet_trip(company, request.data)
         except SyncError as e:
             return Response({'error': e.message}, status=e.http_status)
-        return Response(LoadSerializer(load).data, status=status.HTTP_200_OK)
+        body = LoadSerializer(load).data
+        body['sync'] = _sync_detail(load, created)
+        return Response(body, status=status.HTTP_200_OK)
 
 
 class FleetTripBulkSyncView(APIView):
@@ -853,6 +868,7 @@ class FleetTripBulkSyncView(APIView):
                 with transaction.atomic():
                     load, created = apply_fleet_trip(company, trip_data)
                 results['created' if created else 'updated'] += 1
+                results.setdefault('results', []).append({'index': idx, **_sync_detail(load, created)})
             except SyncError as e:
                 results['errors'].append({
                     'index': idx, 'load_number': trip_data.get('load_number'), 'error': e.message,
@@ -908,19 +924,21 @@ class TripSyncView(APIView):
         if len(records) > 500:
             return Response({'error': 'Max 500 records per request'}, status=400)
 
-        created, skipped, errors, created_ids = 0, 0, [], []
+        counts = {'created': 0, 'updated': 0, 'unchanged': 0}
+        errors, created_ids, updated_ids, results = [], [], [], []
         for i, rec in enumerate(records):
             if not isinstance(rec, dict):
                 errors.append({'index': i, 'error': 'Not an object'})
                 continue
             try:
                 with transaction.atomic():
-                    outcome, load = sync_trip_record(company, rec)
+                    outcome, load, detail = sync_trip_record(company, rec)
+                counts[outcome] += 1
                 if outcome == 'created':
-                    created += 1
                     created_ids.append(load.id)
-                else:
-                    skipped += 1
+                elif outcome == 'updated':
+                    updated_ids.append(load.id)
+                results.append({'index': i, **detail})
             except SyncError as e:
                 errors.append({'index': i, 'error': e.message})
             except Exception:
@@ -928,6 +946,10 @@ class TripSyncView(APIView):
                 errors.append({'index': i, 'error': 'Could not process this record'})
 
         return Response({
-            'created': created, 'skipped': skipped, 'errors': errors,
-            'total': len(records), 'load_ids': created_ids,
+            'created': counts['created'], 'updated': counts['updated'], 'unchanged': counts['unchanged'],
+            # Old clients read `skipped` (records already known): now the
+            # records that matched an existing load and changed nothing.
+            'skipped': counts['unchanged'],
+            'errors': errors, 'total': len(records), 'load_ids': created_ids, 'updated_ids': updated_ids,
+            'results': results,
         })

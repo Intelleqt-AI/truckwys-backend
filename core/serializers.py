@@ -545,6 +545,7 @@ LOAD_ECONOMICS_READ_ONLY = (
     # Linked only through POST loads/{id}/link-return/ (validated) or the TMS.
     'return_of', 'return_link_source', 'return_linked_at', 'return_linked_by',
     'estimated_cost', 'estimate_basis', 'economics_updated_at',
+    'external_id', 'external_source', 'return_of_external_ref', 'invoice_mismatch',
 )
 
 

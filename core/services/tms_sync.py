@@ -148,119 +148,362 @@ def trip_type_from(rec):
     return 'ROUND_TRIP' if t == 'ROUND_TRIP' else 'ONE_WAY'
 
 
-def apply_fleet_trip(company, data):
+def find_by_external_id(company, external_id):
+    """A load of THIS company by its TMS id (the field, else the legacy
+    'ext_id:' note written by trips/sync before external_id existed, which is
+    then moved onto the field)."""
+    from core.models import Load
+    ext = str(external_id or '').strip()
+    if not ext:
+        return None
+    load = Load.objects.filter(company=company, external_id=ext).first()
+    if load is not None:
+        return load
+    legacy = [l for l in Load.objects.filter(company=company, external_id='', notes__icontains=f'ext_id:{ext}')
+              if f'ext_id:{ext}' in (l.notes or '').split()]
+    if legacy:
+        load = legacy[0]
+        Load.objects.filter(pk=load.pk).update(external_id=ext)
+        load.external_id = ext
+        return load
+    return None
+
+
+# --- field mapping ----------------------------------------------------------
+
+def _money(v):
+    return None if v is None else _dec(v).quantize(Decimal('0.01'))
+
+
+def _record_changes(rec, *, origin_keys=('pickup_location', 'origin'), dest_keys=('delivery_location', 'destination')):
+    """{load_field: new value} for every field the record carries."""
+    def first(*keys):
+        for k in keys:
+            if k in rec and rec[k] not in (None, ''):
+                return rec[k]
+        return None
+
+    out = {}
+    total = first('total_amount')
+    rate = first('rate', 'amount')
+    if total is not None:
+        out['total_amount'] = _money(total)
+        if rate is not None:
+            out['rate'] = _money(rate)
+    elif rate is not None:
+        out['rate'] = out['total_amount'] = _money(rate)
+    for key in ('distance', 'weight'):
+        v = first(key)
+        if v is not None:
+            out[key] = _dec(v).quantize(Decimal('0.01'))
+    pickup = first(*origin_keys)
+    if pickup is not None:
+        out['pickup_location'] = str(pickup)[:500]
+        out['pickup_city'] = str(first('pickup_city') or pickup)[:100]
+    elif first('pickup_city') is not None:
+        out['pickup_city'] = str(first('pickup_city'))[:100]
+    delivery = first(*dest_keys)
+    if delivery is not None:
+        out['delivery_location'] = str(delivery)[:500]
+        out['delivery_city'] = str(first('delivery_city') or delivery)[:100]
+    elif first('delivery_city') is not None:
+        out['delivery_city'] = str(first('delivery_city'))[:100]
+    for key in ('pickup_state', 'delivery_state', 'pickup_zip', 'delivery_zip'):
+        v = first(key)
+        if v is not None:
+            out[key] = str(v)[:50 if key.endswith('state') else 20]
+    for key in ('pickup_lat', 'pickup_lng', 'delivery_lat', 'delivery_lng'):
+        v = first(key)
+        if v is not None:
+            out[key] = _dec(v).quantize(Decimal('0.0000001'))
+    for key in ('pickup_date', 'delivery_date'):
+        v = first(key)
+        if v is not None:
+            dt = parse_dt(v)
+            if dt is None:
+                raise SyncError(f'{key} is not a date')
+            out[key] = dt
+    if first('cargo_description') is not None:
+        out['cargo_description'] = str(first('cargo_description'))
+    if 'stops' in rec and isinstance(rec.get('stops'), list):
+        out['stops'] = rec['stops']
+    if first('trip_type') is not None:
+        out['trip_type'] = trip_type_from(rec)
+    st = first('status')
+    if st is not None:
+        st = str(st).upper()
+        if st not in LOAD_STATUSES:
+            raise SyncError(f'Unknown status {st}')
+        out['status'] = st
+    return out
+
+
+PRICING_FIELDS = {'distance', 'weight', 'trip_type', 'vehicle', 'costing_inputs'}
+AUDITED_FIELDS = ('total_amount', 'rate', 'distance', 'weight', 'pickup_location', 'pickup_city', 'pickup_date',
+                  'delivery_location', 'delivery_city', 'delivery_date', 'status', 'vehicle', 'driver', 'stops',
+                  'trip_type', 'cargo_description', 'costing_inputs', 'notes')
+
+
+def _jsonable(v):
+    if isinstance(v, Decimal):
+        return float(v)
+    if hasattr(v, 'isoformat'):
+        return v.isoformat()
+    if hasattr(v, 'pk'):
+        return v.pk
+    return v
+
+
+def apply_record(company, load, rec, *, source, user=None, origin_keys=None, dest_keys=None):
+    """Update an existing load from a TMS record: rate / total, distance,
+    weight, dates, locations, status, vehicle, driver, stops, trip type and
+    costing inputs. Audited (ActivityEvent with old -> new per field),
+    re-costed when a pricing input changed. Issued or draft invoices are
+    NEVER changed: a new total that differs from the invoice is flagged on
+    the load (invoice_mismatch). Returns the {field: [old, new]} changes."""
+    kwargs = {}
+    if origin_keys:
+        kwargs['origin_keys'] = origin_keys
+    if dest_keys:
+        kwargs['dest_keys'] = dest_keys
+    new = _record_changes(rec, **kwargs)
+    if rec.get('vehicle_plate'):
+        vehicle = company_vehicle(company, rec['vehicle_plate'])
+        if vehicle is not None:
+            new['vehicle'] = vehicle
+    if rec.get('driver_id'):
+        driver = company_driver(company, rec['driver_id'])
+        if driver is not None:
+            new['driver'] = driver
+    if rec.get('notes'):
+        new['notes'] = rec['notes']
+    ci_new = costing_inputs_from(company, rec)
+    if ci_new:
+        merged = {**(load.costing_inputs or {}), **ci_new}
+        if merged != (load.costing_inputs or {}):
+            new['costing_inputs'] = merged
+
+    changes = {}
+    for field, value in new.items():
+        old = getattr(load, field)
+        same = (old == value) if not hasattr(value, 'pk') else (getattr(old, 'pk', None) == value.pk)
+        if not same:
+            changes[field] = [_jsonable(old), _jsonable(value)]
+            setattr(load, field, value)
+    if not changes:
+        return {}
+    load._notify_actor_id = None
+    load.save()
+
+    from core.models import ActivityEvent
+    ActivityEvent.objects.create(
+        event_type='load', title=f'{source.upper()} update: {load.load_number}'[:200],
+        description=', '.join(sorted(changes)), entity_id=load.pk, entity_type='Load', company=company,
+        metadata={'source': source, 'external_id': load.external_id or None,
+                  'changes': {k: changes[k] for k in AUDITED_FIELDS if k in changes}})
+    recost = PRICING_FIELDS if load.costing_source != 'quote' else PRICING_FIELDS - {'vehicle'}
+    if recost & set(changes):
+        # A quote-costed job keeps its as-quoted figures (quoted_*); its
+        # estimate moves to the new data (costing_source becomes computed).
+        # Assigning a truck alone doesn't re-cost a quoted job (it was
+        # priced on that truck type already).
+        from core.services.trip_costing import cost_load
+        cost_load(load)
+    if 'total_amount' in changes:
+        check_invoice_mismatch(load, source=source)
+    return changes
+
+
+def check_invoice_mismatch(load, *, source='tms'):
+    """Flag (never fix) a load whose invoice no longer matches its total."""
+    from core.models import ActivityEvent, Invoice, Load
+    inv = (Invoice.objects.filter(load=load).exclude(status__in=('VOID', 'CANCELLED'))
+           .order_by('-id').first())
+    if inv is None:
+        if load.invoice_mismatch:
+            Load.objects.filter(pk=load.pk).update(invoice_mismatch={})
+            load.invoice_mismatch = {}
+        return None
+    if inv.status in Invoice.ISSUED_STATUSES:
+        from core.services.report_figures import invoice_revenue_excl_vat
+        invoiced = invoice_revenue_excl_vat(inv)       # net of credit notes
+    else:
+        invoiced = (inv.total_amount or Decimal('0')) - (inv.vat_amount or Decimal('0'))
+    total = load.total_amount or Decimal('0')
+    if abs(invoiced - total) < Decimal('0.01'):
+        if load.invoice_mismatch:
+            Load.objects.filter(pk=load.pk).update(invoice_mismatch={})
+            load.invoice_mismatch = {}
+        return None
+    flag = {
+        'code': 'invoice_differs_from_rate', 'invoice_id': inv.pk, 'invoice_number': inv.invoice_number,
+        'invoice_status': inv.status, 'invoice_excl_vat': float(invoiced), 'load_total_excl_vat': float(total),
+        'difference': float(total - invoiced), 'source': source, 'detected_at': timezone.now().isoformat(),
+        'title': 'Invoice differs from the updated rate',
+        'detail': 'The TMS changed the rate after invoicing; issue a credit note or a new invoice.',
+    }
+    Load.objects.filter(pk=load.pk).update(invoice_mismatch=flag)
+    load.invoice_mismatch = flag
+    ActivityEvent.objects.create(event_type='load', title=f'Invoice differs from updated rate: {load.load_number}',
+                                 entity_id=load.pk, entity_type='Load', company=load.company, metadata=flag)
+    return flag
+
+
+# --- return links by external id -------------------------------------------
+
+def link_from_record(company, load, rec, *, source='tms'):
+    """`return_of_external_id` / `return_of_load_number` on a record links
+    this load as the return of that outbound (same company only). An
+    outbound not synced yet is remembered and linked when it arrives.
+    `return_of_external_id: null` (explicitly) unlinks. Returns
+    {linked, pending, warnings, error}."""
+    from core.models import Load
+    from core.services.return_loads import LinkError, link_return, unlink_return
+    keys = ('return_of_external_id', 'return_of_load_number')
+    if not any(k in rec for k in keys):
+        return None
+    ext = rec.get('return_of_external_id')
+    number = rec.get('return_of_load_number')
+    if not ext and not number:
+        if load.return_of_id:
+            unlink_return(load, source=source)
+        Load.objects.filter(pk=load.pk).update(return_of_external_ref='')
+        return {'linked': False, 'pending': False, 'unlinked': True}
+    outbound = find_by_external_id(company, ext) if ext else find_load(company, load_number=number)
+    if outbound is None:
+        ref = str(ext or f'number:{number}')[:100]
+        Load.objects.filter(pk=load.pk).update(return_of_external_ref=ref)
+        return {'linked': False, 'pending': True, 'waiting_for': ext or number}
+    try:
+        if load.return_of_id and load.return_of_id != outbound.pk:
+            unlink_return(load, source=source)
+            load.refresh_from_db()
+        warnings = link_return(outbound, load, source='tms')
+    except LinkError as e:
+        return {'linked': False, 'pending': False, 'error': e.code, 'detail': e.message}
+    Load.objects.filter(pk=load.pk).update(return_of_external_ref='')
+    return {'linked': True, 'pending': False, 'outbound_id': outbound.pk, 'warnings': warnings}
+
+
+def resolve_waiting_returns(company, outbound):
+    """Link returns that named this load before it was synced."""
+    from core.models import Load
+    from core.services.return_loads import LinkError, link_return
+    refs = [r for r in (outbound.external_id, f'number:{outbound.load_number}') if r]
+    for ret in Load.objects.filter(company=company, return_of_external_ref__in=refs).exclude(pk=outbound.pk):
+        try:
+            link_return(outbound, ret, source='tms')
+            Load.objects.filter(pk=ret.pk).update(return_of_external_ref='')
+        except LinkError:
+            continue
+
+
+# --- endpoints ---------------------------------------------------------------
+
+def _create_load(company, rec, *, load_number, external_id, source, origin_keys, dest_keys, default_days=0):
+    from core.models import Load
+    fields = _record_changes(rec, origin_keys=origin_keys, dest_keys=dest_keys)
+    now = timezone.now()
+    fields.setdefault('pickup_location', '')
+    fields.setdefault('pickup_city', fields['pickup_location'][:100])
+    fields.setdefault('delivery_location', '')
+    fields.setdefault('delivery_city', fields['delivery_location'][:100])
+    fields.setdefault('pickup_date', now)
+    fields.setdefault('delivery_date', now + timedelta(days=default_days))
+    fields.setdefault('cargo_description', 'Freight' if source == 'fleet_sync' else '')
+    fields.setdefault('weight', Decimal('0'))
+    fields.setdefault('distance', Decimal('0'))
+    fields.setdefault('total_amount', Decimal('0'))
+    fields.setdefault('rate', fields['total_amount'])
+    fields['status'] = fields.get('status') if source == 'fleet_sync' and fields.get('status') else 'PENDING'
+    for key in ('pickup_state', 'delivery_state', 'pickup_zip', 'delivery_zip'):
+        fields.setdefault(key, '')
+    load = Load.objects.create(
+        company=company, load_number=load_number, customer=company_customer(company, rec),
+        external_id=external_id or '', external_source=str(rec.get('source') or source)[:50] if external_id else '',
+        notes=rec.get('notes') or ('' if source == 'fleet_sync' else 'imported via API'),
+        costing_inputs=costing_inputs_from(company, rec),
+        vehicle=company_vehicle(company, rec.get('vehicle_plate')),
+        driver=company_driver(company, rec.get('driver_id')),
+        **fields)
+    from core.services.trip_costing import cost_load
+    cost_load(load)
+    return load
+
+
+FLEET_ORIGIN = ('pickup_location', 'origin')
+FLEET_DEST = ('delivery_location', 'destination')
+TRIP_ORIGIN = ('origin', 'pickup_location')
+TRIP_DEST = ('destination', 'delivery_location')
+
+
+def apply_fleet_trip(company, data, *, user=None):
     """POST integrations/fleet/sync/ (and each bulk item). Returns
-    (load, created). Raises SyncError."""
+    (load, created). Raises SyncError. Finds the load by external_id (when
+    sent) else load_number, both within the key's company; 'create' makes it
+    when missing, any action updates the fields the record carries."""
     from core.models import Load
     action = data.get('action', 'status_update')
+    if action not in ('status_update', 'create', 'complete', 'update'):
+        raise SyncError(f'Unknown action {action}')
     load_number = data.get('load_number')
-    if not load_number:
-        raise SyncError('load_number is required')
-    load = find_load(company, load_number=load_number)
+    ext = str(data.get('external_id') or '').strip()
+    if not load_number and not ext:
+        raise SyncError('load_number or external_id is required')
+    load = find_by_external_id(company, ext) if ext else None
+    if load is None and load_number:
+        load = find_load(company, load_number=load_number)
     created = False
     if load is None:
         if action != 'create':
-            raise SyncError(f'Load {load_number} not found', 404)
-        if Load.objects.filter(load_number=load_number).exists():
+            raise SyncError(f'Load {load_number or ext} not found', 404)
+        if load_number and Load.objects.filter(load_number=load_number).exists():
             # The number is taken by another company: never reveal or touch it.
             raise SyncError(f'Load number {load_number} is not available; use another', 409)
-        now = timezone.now()
-        pickup = data.get('pickup_location', '') or ''
-        delivery = data.get('delivery_location', '') or ''
-        load = Load.objects.create(
-            company=company,
-            load_number=load_number,
-            customer=company_customer(company, data),
-            pickup_location=pickup,
-            pickup_city=data.get('pickup_city') or pickup[:100],
-            pickup_state=data.get('pickup_state', ''),
-            pickup_zip=data.get('pickup_zip', ''),
-            pickup_date=parse_dt(data.get('pickup_date')) or now,
-            delivery_location=delivery,
-            delivery_city=data.get('delivery_city') or delivery[:100],
-            delivery_state=data.get('delivery_state', ''),
-            delivery_zip=data.get('delivery_zip', ''),
-            delivery_date=parse_dt(data.get('delivery_date')) or now,
-            cargo_description=data.get('cargo_description', 'Freight'),
-            weight=_dec(data.get('weight'), Decimal('0')),
-            distance=_dec(data.get('distance'), Decimal('0')),
-            rate=_dec(data.get('rate'), Decimal('0')),
-            total_amount=_dec(data.get('total_amount'), Decimal('0')),
-            status='PENDING',
-            notes=data.get('notes', ''),
-            trip_type=trip_type_from(data),
-            costing_inputs=costing_inputs_from(company, data),
-        )
+        load = _create_load(company, data, load_number=load_number or new_load_number(), external_id=ext,
+                            source='fleet_sync', origin_keys=FLEET_ORIGIN, dest_keys=FLEET_DEST)
         created = True
-
-    if action in ('status_update', 'create'):
-        st = data.get('status')
-        if st:
-            st = str(st).upper()
-            if st not in LOAD_STATUSES:
-                raise SyncError(f'Unknown status {st}')
-            load.status = st
-        if data.get('driver_id'):
-            driver = company_driver(company, data['driver_id'])
-            if driver is not None:
-                load.driver = driver
-        if data.get('vehicle_plate'):
-            vehicle = company_vehicle(company, data['vehicle_plate'])
-            if vehicle is not None:
-                load.vehicle = vehicle
-        if data.get('notes'):
-            load.notes = data['notes']
-    elif action == 'complete':
-        load.status = 'DELIVERED'
-        if data.get('notes'):
-            load.notes = data['notes']
+        changes = {}
     else:
-        raise SyncError(f'Unknown action {action}')
-    load.save()
-    if created:
-        from core.services.trip_costing import cost_load
-        cost_load(load)
+        if ext and not load.external_id:
+            Load.objects.filter(pk=load.pk).update(external_id=ext, external_source='fleet_sync')
+            load.external_id = ext
+        rec = dict(data)
+        if action == 'complete':
+            rec['status'] = 'DELIVERED'
+        changes = apply_record(company, load, rec, source='fleet_sync', user=user,
+                               origin_keys=FLEET_ORIGIN, dest_keys=FLEET_DEST)
+    link = link_from_record(company, load, data)
+    if load.external_id or load.load_number:
+        resolve_waiting_returns(company, load)
+    load._sync_changes = changes
+    load._sync_link = link
+    load.refresh_from_db()
     return load, created
 
 
-def _create_load_from_record(company, rec, ext_id):
-    from core.models import Load
-    origin = rec.get('origin') or ''
-    dest = rec.get('destination') or ''
-    rate = _dec(rec.get('rate') if rec.get('rate') not in (None, '') else rec.get('amount'), Decimal('0'))
-    return Load.objects.create(
-        company=company,
-        load_number=new_load_number(),
-        customer=company_customer(company, rec),
-        pickup_location=origin, pickup_city=origin[:100], pickup_state='', pickup_zip='',
-        pickup_date=parse_dt(rec.get('pickup_date')) or timezone.now(),
-        delivery_location=dest, delivery_city=dest[:100], delivery_state='', delivery_zip='',
-        delivery_date=parse_dt(rec.get('delivery_date')) or (timezone.now() + timedelta(days=2)),
-        cargo_description=rec.get('cargo_description', ''),
-        weight=_dec(rec.get('weight'), Decimal('0')),
-        distance=_dec(rec.get('distance'), Decimal('0')),
-        rate=rate,
-        total_amount=rate,
-        status='PENDING',
-        notes=f'ext_id:{ext_id}' if ext_id else 'imported via API',
-        trip_type=trip_type_from(rec),
-        costing_inputs=costing_inputs_from(company, rec),
-        vehicle=company_vehicle(company, rec.get('vehicle_plate')),
-    )
-
-
 def sync_trip_record(company, rec):
-    """POST integrations/trips/sync/ record. Returns ('created'|'skipped', load)."""
-    from core.models import Load
-    ext_id = rec.get('external_id')
-    missing = [f for f in ('origin', 'destination') if not rec.get(f)]
-    if missing:
-        raise SyncError(f'Missing fields: {missing}')
-    if ext_id:
-        dup = Load.objects.filter(company=company, notes__icontains=f'ext_id:{ext_id}').first()
-        if dup is not None:
-            return 'skipped', dup
-    load = _create_load_from_record(company, rec, ext_id)
-    from core.services.trip_costing import cost_load
-    cost_load(load)
-    return 'created', load
+    """POST integrations/trips/sync/ record: upsert by external_id. Returns
+    (outcome, load, detail) with outcome 'created' | 'updated' | 'unchanged'."""
+    ext = str(rec.get('external_id') or '').strip()
+    load = find_by_external_id(company, ext) if ext else None
+    if load is None:
+        missing = [f for f in ('origin', 'destination') if not rec.get(f)]
+        if missing:
+            raise SyncError(f'Missing fields: {missing}')
+        load = _create_load(company, rec, load_number=new_load_number(), external_id=ext, source='trips_sync',
+                            origin_keys=TRIP_ORIGIN, dest_keys=TRIP_DEST, default_days=2)
+        outcome, changes = 'created', {}
+    else:
+        changes = apply_record(company, load, rec, source='trips_sync', origin_keys=TRIP_ORIGIN, dest_keys=TRIP_DEST)
+        outcome = 'updated' if changes else 'unchanged'
+    link = link_from_record(company, load, rec)
+    resolve_waiting_returns(company, load)
+    load.refresh_from_db()
+    detail = {'load_id': load.pk, 'external_id': load.external_id or None, 'outcome': outcome,
+              'changed': sorted(changes)}
+    if link is not None:
+        detail['return_link'] = link
+    if load.invoice_mismatch:
+        detail['invoice_mismatch'] = load.invoice_mismatch
+    return outcome, load, detail
