@@ -1826,6 +1826,17 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
                 'label': 'With a return load booked',
             }
 
+    # Trip economics: how often this company's trips on the lane found a
+    # return load (context only; the empty-return default never changes).
+    try:
+        from core.services.trip_learning import return_load_share
+        return_history = return_load_share(company, origin, destination)
+    except Exception:
+        logger.warning('return load share failed', exc_info=True)
+        return_history = None
+    if alternative is not None:
+        alternative['return_load_history'] = return_history
+
     return {
         'success': True, 'version': VERSION,
         'computed_ms': int((time.monotonic() - started) * 1000),
@@ -1842,6 +1853,7 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
         'reasoning': [it['text'] for it in reasoning_items],     # old clients
         'reasoning_items': reasoning_items,
         'alternative_with_return_load': alternative,
+        'return_load_history': return_history,
         'warnings': warnings,
         # QUOTE-RULES.md: the authoritative costing behind cost_floor (lines,
         # floor, target price, warnings) and whether the quote may be sent.

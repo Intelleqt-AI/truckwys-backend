@@ -69,6 +69,21 @@ class QuoteOutcome(models.Model):
     # the typed columns + live joins for those, same as it already does today.
     feature_snapshot = models.JSONField(default=dict, blank=True)
 
+    # --- Actuals (trip economics, 2026-10) -----------------------------------
+    # What the job really earned, written once the load is delivered and its
+    # costs are known (core.services.trip_learning). LABELS / analysis only:
+    # never a win-model feature (they exist only after the outcome date, so
+    # a feature built from them would leak the future into training).
+    actual_revenue = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    actual_cost = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    actual_margin_pct = models.DecimalField(max_digits=9, decimal_places=2, null=True, blank=True)
+    actual_cost_basis = models.CharField(max_length=10, blank=True, default='',
+                                         help_text='actual (expenses) | estimate')
+    # Outbound one-way job: did the truck find a return load? null = n/a
+    # (a return leg itself, a round trip) or not known yet.
+    backhaul_found = models.BooleanField(null=True, blank=True)
+    actuals_recorded_at = models.DateTimeField(null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
