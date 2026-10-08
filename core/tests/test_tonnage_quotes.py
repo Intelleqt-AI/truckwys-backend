@@ -177,6 +177,13 @@ class TonnageApiTests(_Base):
         q.refresh_from_db()
         self.assertEqual((q.toll_charges, q.driver_allowance, q.total_amount), before)
 
+    def test_saved_truck_is_the_priced_truck_unless_chosen(self):
+        q = self.create(**self.tonnage_payload(vehicle_type='Tautliner'))
+        self.assertIsNone(q.basis_vehicle_type_id)
+        self.assertEqual((q.vehicle_type, q.priced_vehicle_type_id), ('Superlink', self.vt.id))
+        q2 = self.create(**self.tonnage_payload(vehicle_type='Tautliner', basis_vehicle_type=self.taut.id))
+        self.assertEqual((q2.vehicle_type, q2.priced_vehicle_type_id), ('Tautliner', self.taut.id))
+
     def test_rate_below_cost_warns_but_sends(self):
         q = self.create(**self.tonnage_payload(rate_per_tonne='500'))
         r = self.api.patch(f'/api/v1/quotes/{q.id}/', {'status': 'SENT'}, format='json')
