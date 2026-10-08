@@ -1903,6 +1903,13 @@ class WebhookSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['id', 'secret', 'failure_count', 'last_fired_at', 'created_at', 'updated_at']
 
+    def validate_url(self, value):
+        # SSRF: https to a public host only (same rule as the partner API).
+        from core.services.webhook_url import is_safe_webhook_url, MESSAGE
+        if not is_safe_webhook_url(value):
+            raise serializers.ValidationError(MESSAGE)
+        return value
+
 
 class IntegrationAPIKeySerializer(serializers.ModelSerializer):
     """Serializer for IntegrationAPIKey model.
@@ -1925,6 +1932,13 @@ class IntegrationAPIKeySerializer(serializers.ModelSerializer):
             'allowed_ips', 'webhook_url',
         ]
         read_only_fields = ['id', 'key', 'created_at', 'last_used_at', 'usage_count', 'quota_used']
+
+    def validate_webhook_url(self, value):
+        # SSRF: https to a public host only (same rule as the partner API).
+        from core.services.webhook_url import is_safe_webhook_url, MESSAGE
+        if value and not is_safe_webhook_url(value):
+            raise serializers.ValidationError(MESSAGE)
+        return value
 
     def to_representation(self, instance):
         data = super().to_representation(instance)

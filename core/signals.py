@@ -79,12 +79,17 @@ def load_saved(sender, instance, created, **kwargs):
     from core.serializers import LoadSerializer
     from core.models import ActivityEvent, Notification, User
 
-    # Serialize the load data
-    data = LoadSerializer(instance).data
+    # Webhooks go only to this load's own company, after commit. Serialised
+    # lazily: nothing is built when the company has no subscribers.
+    company_id = getattr(instance, 'company_id', None)
+    old_status = getattr(instance, '_old_status', None)
+
+    def data():
+        return LoadSerializer(instance).data
 
     if created:
         # Fire load.created event
-        dispatch_webhook('load.created', data)
+        dispatch_webhook('load.created', data, company_id=company_id)
         # Create activity event
         ActivityEvent.objects.create(
             event_type='load',
@@ -118,8 +123,10 @@ def load_saved(sender, instance, created, **kwargs):
         except Exception:
             pass
     else:
-        # Fire load.status_changed event
-        dispatch_webhook('load.status_changed', data)
+        # load.status_changed only when the status actually changed — not on
+        # every save of the load (edits, bulk saves, timestamp stamps).
+        if old_status != instance.status:
+            dispatch_webhook('load.status_changed', data, company_id=company_id)
         try:
             ActivityEvent.objects.create(
                 event_type='load',
@@ -135,7 +142,8 @@ def load_saved(sender, instance, created, **kwargs):
 
         # Fire specific events for certain statuses
         if instance.status == 'DELIVERED':
-            dispatch_webhook('load.delivered', data)
+            if old_status != 'DELIVERED':
+                dispatch_webhook('load.delivered', data, company_id=company_id)
             _auto_invoice_on_delivery(instance)
             # Stamp actual delivery time (used for on-time rate computation)
             if not instance.actual_delivered_at:
@@ -181,6 +189,18 @@ def load_saved(sender, instance, created, **kwargs):
                                     exclude_user_id=getattr(instance, '_notify_actor_id', None))
         except Exception:
             pass
+
+        # _auto_invoice_on_delivery moves the row to INVOICED with a queryset
+        # update. Bring this instance along, so a later save of the same
+        # object can't write DELIVERED back over INVOICED (and re-fire
+        # load.delivered). Done last: the code above still sees DELIVERED.
+        if instance.status == 'DELIVERED':
+            try:
+                fresh = sender.objects.filter(pk=instance.pk).values_list('status', flat=True).first()
+                if fresh == 'INVOICED':
+                    instance.status = 'INVOICED'
+            except Exception:
+                pass
 
 
 def _deliver_auto_invoice(load, invoice):
@@ -265,8 +285,8 @@ def invoice_saved(sender, instance, created, **kwargs):
 
     if created:
         # Fire invoice.created event
-        data = InvoiceSerializer(instance).data
-        dispatch_webhook('invoice.created', data)
+        dispatch_webhook('invoice.created', lambda: InvoiceSerializer(instance).data,
+                         company_id=getattr(instance, 'company_id', None))
         # Create activity event
         amount = getattr(instance, 'total_amount', getattr(instance, 'amount', 0))
         ActivityEvent.objects.create(
@@ -282,8 +302,8 @@ def invoice_saved(sender, instance, created, **kwargs):
         # Fire invoice.paid event (on status update to PAID) — guarded so a
         # later unrelated save of an already-paid invoice doesn't re-dispatch
         # the webhook or log a second "Invoice paid" activity entry.
-        data = InvoiceSerializer(instance).data
-        dispatch_webhook('invoice.paid', data)
+        dispatch_webhook('invoice.paid', lambda: InvoiceSerializer(instance).data,
+                         company_id=getattr(instance, 'company_id', None))
         # Create activity event
         amount = getattr(instance, 'total_amount', getattr(instance, 'amount', 0))
         ActivityEvent.objects.create(
@@ -522,7 +542,7 @@ def quote_saved(sender, instance, created, **kwargs):
                 'customer_name': instance.customer_name if hasattr(instance, 'customer_name') else None,
                 'total_amount': str(instance.total_amount) if instance.total_amount else '0',
                 'status': instance.status,
-            })
+            }, company_id=getattr(instance, 'company_id', None))
         except Exception:
             pass
         try:
@@ -630,7 +650,7 @@ def advance_saved(sender, instance, created, **kwargs):
             'amount': str(instance.amount) if instance.amount else '0',
             'net_amount': str(instance.net_amount) if instance.net_amount else '0',
             'status': instance.status,
-        })
+        }, company_id=getattr(instance.invoice, 'company_id', None) if instance.invoice else None)
         # Create activity event
         ActivityEvent.objects.create(
             event_type='advance',
@@ -667,7 +687,7 @@ def advance_saved(sender, instance, created, **kwargs):
             'amount': str(instance.amount) if instance.amount else '0',
             'net_amount': str(instance.net_amount) if instance.net_amount else '0',
             'status': instance.status,
-        })
+        }, company_id=getattr(instance.invoice, 'company_id', None) if instance.invoice else None)
         # Create activity event
         ActivityEvent.objects.create(
             event_type='advance',
