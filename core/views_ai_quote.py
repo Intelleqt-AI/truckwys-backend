@@ -710,7 +710,8 @@ class AIChatQuoteView(APIView):
         r'\b(how (can|do) you help|what can you (do|help)|what do you do|'
         r'how does this (work|help)|who are you|what are you|can you help)\b', re.IGNORECASE)
     _GREETING_RE = re.compile(
-        r'(hi|hey|hello|howzit|hiya|yo|good\s*(morning|afternoon|evening))\b', re.IGNORECASE)
+        r'(hi|hey|hello|howzit|hiya|yo|good\s*(morning|afternoon|evening)|hallo|haai|'
+        r'goeie\s*(m[oô]re|middag|naand|dag))\b', re.IGNORECASE)
 
     @classmethod
     def _is_help_question(cls, message):
@@ -788,6 +789,212 @@ class AIChatQuoteView(APIView):
             return cls._conversational_reply(message, merged, lang)
         return (llm_reply or '').strip() or cls._fallback_reply(merged, lang)
 
+    @staticmethod
+    def _regex_extract(message, current_fields, vehicle_types, customers):
+        """The original regex extractor, kept as a last-resort gap filler behind
+        the deterministic pre-parser (quote_preparse) when no LLM ran. Returns
+        (extracted, unmatched)."""
+        # Extract fields using regex patterns
+        extracted = {}
+        msg_lower = message.lower()
+
+        # Origin/Destination
+        import re
+        # SA cities list for reliable extraction
+        SA_CITIES = [
+            'Johannesburg', 'JHB', 'Joburg', 'Cape Town', 'CPT',
+            'Durban', 'DBN', 'Pretoria', 'PTA', 'Port Elizabeth', 'PE',
+            'Bloemfontein', 'BFN', 'East London', 'Nelspruit', 'Polokwane',
+            'Kimberley', 'Pietermaritzburg', 'Richards Bay', 'Beit Bridge',
+            'Maputo', 'Harare', 'Lusaka', 'Windhoek', 'Gaborone',
+        ]
+        city_pattern = '|'.join(re.escape(c) for c in SA_CITIES)
+        # "from X to Y" pattern with city names
+        route_match = re.search(
+            rf'from\s+({city_pattern})\s+to\s+({city_pattern})',
+            message, re.IGNORECASE
+        )
+        if route_match:
+            extracted['pickup_location'] = route_match.group(1).strip()
+            extracted['delivery_location'] = route_match.group(2).strip()
+        else:
+            # Fallback: generic from/to
+            from_match = re.search(r'from\s+([A-Za-z][A-Za-z\s]{1,25}?)\s+to\s+', message, re.IGNORECASE)
+            to_match = re.search(r'\s+to\s+([A-Za-z][A-Za-z\s]{1,25}?)(?:\s*[,\.]|\s+(?:on|next|flatbed|tautliner|refrigerated|tanker|\d)|$)', message, re.IGNORECASE)
+            if from_match:
+                extracted['pickup_location'] = from_match.group(1).strip()
+            if to_match:
+                extracted['delivery_location'] = to_match.group(1).strip()
+
+            # Dictated "label: value" style ("Collection location: Cape Town
+            # - Delivery: Durban") has no "from ... to ..." at all — catch
+            # it as a second attempt.
+            if 'pickup_location' not in extracted:
+                m = re.search(r'(?:collection|pickup)(?:\s+location)?\s*[:\-]\s*([A-Za-z][A-Za-z\s]{1,25}?)(?:\s*[-,.]|\s+(?:total|weight|pickup|delivery|valid)\b|$)', message, re.IGNORECASE)
+                if m:
+                    extracted['pickup_location'] = m.group(1).strip()
+            if 'delivery_location' not in extracted:
+                m = re.search(r'delivery(?:\s+location)?\s*[:\-]\s*([A-Za-z][A-Za-z\s]{1,25}?)(?:\s*[-,.]|\s+(?:total|weight|pickup|delivery|valid|will)\b|$)', message, re.IGNORECASE)
+                if m:
+                    extracted['delivery_location'] = m.group(1).strip()
+
+        # Dates — pickup_date, delivery_date, valid_until, each resolved
+        # against TODAY so relative phrases ("today", "tomorrow", "in 5
+        # days", "5 days from now") become real ISO dates, matching what
+        # the LLM path (llm_quote.py) does when it's configured.
+        from datetime import date as _date, timedelta as _timedelta
+        try:
+            from dateutil import parser as _date_parser
+        except ImportError:
+            _date_parser = None
+        today = _date.today()
+
+        _MONTH_OR_WEEKDAY_WORDS = {
+            'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august',
+            'september', 'october', 'november', 'december',
+            'jan', 'feb', 'mar', 'apr', 'jun', 'jul', 'aug', 'sep', 'sept', 'oct', 'nov', 'dec',
+            'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
+        }
+
+        def _resolve_date_phrase(phrase: str):
+            p = (phrase or '').strip().lower()
+            if not p:
+                return None
+            if 'today' in p:
+                return today
+            if 'tomorrow' in p:
+                return today + _timedelta(days=1)
+            if 'yesterday' in p:
+                return today - _timedelta(days=1)
+            dm = re.search(r'(\d+)\s*days?\s*(?:from now|later|from today|out)', p)
+            if not dm:
+                dm = re.search(r'in\s+(\d+)\s*days?', p)
+            if dm:
+                return today + _timedelta(days=int(dm.group(1)))
+            # Only hand ambiguous text (e.g. a city name that happened to be
+            # captured, like "Durban") to dateutil's fuzzy parser when it
+            # actually looks date-shaped — fuzzy mode otherwise silently
+            # falls back to `default` (today) for plain non-date text,
+            # which would misfire as a false date match.
+            has_digit = bool(re.search(r'\d', p))
+            has_date_word = any(w in p for w in _MONTH_OR_WEEKDAY_WORDS)
+            if not _date_parser or not (has_digit or has_date_word):
+                return None
+            try:
+                from datetime import datetime as _dt
+                return _date_parser.parse(phrase, fuzzy=True, default=_dt.combine(today, _dt.min.time())).date()
+            except (ValueError, OverflowError, TypeError):
+                return None
+
+        def _extract_date_field(labels: str):
+            pattern = rf'(?:{labels})(?:\s+date)?\s*(?:is|will be|[:\-])?\s*([A-Za-z0-9][A-Za-z0-9\s]{{1,30}}?)(?:\s*[-,.]|$)'
+            # Try every match, not just the first — a label can legitimately
+            # appear twice (e.g. "Delivery: Durban" is the location, a later
+            # "Delivery will be 5 days from now" is the date); skip whichever
+            # match doesn't actually resolve to a date.
+            for m in re.finditer(pattern, message, re.IGNORECASE):
+                resolved = _resolve_date_phrase(m.group(1))
+                if resolved:
+                    return resolved
+            return None
+
+        d = _extract_date_field(r'pickup|collection')
+        if d:
+            extracted['pickup_date'] = d.isoformat()
+        d = _extract_date_field(r'delivery(?:\s+will\s+be)?')
+        if d:
+            extracted['delivery_date'] = d.isoformat()
+        d = _extract_date_field(r'valid(?:ate)?(?:\s+until)?')
+        if d:
+            extracted['valid_until'] = d.isoformat()
+
+        # Trip type
+        if re.search(r'\bone[\s-]way\b|\bsingle\s+trip\b', message, re.IGNORECASE):
+            extracted['trip_type'] = 'ONE_WAY'
+        elif re.search(r'\bround[\s-]trip\b|\breturn\s+trip\b|\bthere\s+and\s+back\b', message, re.IGNORECASE):
+            extracted['trip_type'] = 'ROUND_TRIP'
+
+        # Weight — with unit suffix
+        weight_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:ton|t\b|tons|tonne|tonnes|kg|kgs|kilogram)', message, re.IGNORECASE)
+        if weight_match:
+            val = float(weight_match.group(1))
+            unit = weight_match.group(0).lower()
+            if 'kg' in unit:
+                extracted['weight'] = val
+            else:
+                extracted['weight'] = val * 1000  # convert tons to kg
+        elif not (current_fields.get('weight') or current_fields.get('weight_kg')):
+            # Bare number fallback — if weight is still missing and user sends just a number, treat as kg
+            bare_number_match = re.search(r'^\s*(\d+(?:\.\d+)?)\s*$', message.strip())
+            if bare_number_match:
+                val = float(bare_number_match.group(1))
+                # Heuristic: if < 100, likely tons; if >= 100, likely kg
+                extracted['weight'] = val * 1000 if val < 100 else val
+
+        unmatched = {'customer_name': None, 'vehicle_type': None}
+
+        # Vehicle type — only ever set from the fleet's actual configured
+        # names (e.g. "Rigid Truck", "Semi-Trailer Truck"). A generic keyword
+        # ("flatbed") that doesn't match any real company VehicleType must
+        # NOT be silently written in as if it existed — surface it as
+        # unmatched instead so the caller can offer to create it.
+        matched_vt = None
+        for vt in (vehicle_types or []):
+            vt_name = vt['name'] if isinstance(vt, dict) else vt
+            vt_lc = vt_name.lower()
+            significant = [w for w in vt_lc.split() if w not in ('truck', 'vehicle')]
+            if vt_lc in msg_lower or any(w in msg_lower for w in significant):
+                matched_vt = vt_name
+                break
+        if matched_vt:
+            extracted['vehicle_type'] = matched_vt
+        else:
+            _VEHICLE_KEYWORDS = [
+                'flatbed', 'tautliner', 'curtainsider', 'refrigerated', 'reefer', 'fridge',
+                'tanker', 'box truck', 'danger load', 'cargo truck', 'rigid truck',
+                'semi-trailer truck', 'semi trailer', 'interlink',
+            ]
+            for kw in _VEHICLE_KEYWORDS:
+                if kw in msg_lower:
+                    unmatched['vehicle_type'] = kw.title()
+                    break
+
+        # Client / customer — "client is X", "customer will be X", etc.,
+        # fuzzy-matched against this company's real customer records. A name
+        # that's mentioned but doesn't match anything real is surfaced as
+        # unmatched rather than silently dropped.
+        if customers:
+            m = re.search(r'(?:client|customer)(?:\s+will\s+be|\s+is)?\s*[:\-]?\s*([A-Za-z][A-Za-z\s]{1,40}?)(?:\s*[-,.]|$)', message, re.IGNORECASE)
+            if m:
+                from core.services.llm_quote import _fuzzy_match
+                raw_name = m.group(1).strip()
+                names = [c['name'] for c in customers]
+                matched_name = _fuzzy_match(raw_name, names)
+                if matched_name:
+                    match = next(c for c in customers if c['name'] == matched_name)
+                    extracted['customer_id'] = match['id']
+                    extracted['customer_name'] = matched_name
+                elif raw_name:
+                    unmatched['customer_name'] = raw_name
+
+        # Cargo description — the noun AFTER "of" (e.g. "20 tons of steel from JHB"
+        # -> "steel"; "of palletised goods to ..." -> "palletised goods").
+        cargo_match = (
+            re.search(r'\bof\s+([a-zA-Z][a-zA-Z\s]*?)\s+(?:from|to|on|for|by|via)\b', message, re.IGNORECASE)
+            or re.search(r'\bof\s+([a-zA-Z][a-zA-Z\s]*?)\s*[,.]', message, re.IGNORECASE)
+            or re.search(r'\bof\s+([a-zA-Z][a-zA-Z\s]*?)$', message.strip(), re.IGNORECASE)
+        )
+        if cargo_match:
+            desc = cargo_match.group(1).strip()
+            # Drop a leading unit word if it slipped in ("tonnes of frozen fish").
+            desc = re.sub(r'^(tons?|tonnes?|kgs?|kilograms?|pallets?|units?|loads?|crates?)\s+',
+                          '', desc, flags=re.IGNORECASE).strip()
+            stop = {'move', 'transport', 'ship', 'send', 'deliver', 'take', 'need', 'i'}
+            if len(desc) > 2 and desc.lower() not in stop:
+                extracted['cargo_description'] = desc
+
+        return extracted, unmatched
+
     def post(self, request):
         """
         Extract quote fields from natural language message.
@@ -822,11 +1029,18 @@ class AIChatQuoteView(APIView):
             # assistant must never be able to select an option the dropdown
             # doesn't also offer.
             company = getattr(request.user, 'company', None)
-            vehicle_types = customers = None
+            vehicle_types = customers = all_vehicle_types = None
             if company is not None:
                 from core.models import Customer
                 from core.services.vehicle_types import available_vehicle_types
                 vehicle_types = available_vehicle_types(company)  # [] is meaningful — never replace it
+                from core.services.vehicle_types import capacity_tonnes, visible_vehicle_types_queryset
+                # Every type the company has (not only those with a vehicle free
+                # today): a spoken truck word is matched against these.
+                all_vehicle_types = [
+                    {'id': v['id'], 'name': v['name'], 'capacity_t': capacity_tonnes(v['capacity'])}
+                    for v in visible_vehicle_types_queryset(company).values('id', 'name', 'capacity')
+                ]
                 customers = list(
                     Customer.objects.filter(company=company).values('id', 'name')
                 )
@@ -855,255 +1069,49 @@ class AIChatQuoteView(APIView):
                     'declined_entity': declined_name,
                 })
 
-            # Primary path: Claude-backed natural-language extraction.
-            # Falls through to the regex extractor below when the LLM is
-            # not configured or the call fails, so the endpoint never breaks.
-            from core.services import llm_quote
-            if llm_quote.is_enabled():
-                try:
-                    extracted, reply, unmatched = llm_quote.extract(
-                        message, history, current_fields,
-                        vehicle_types=vehicle_types, customers=customers,
-                        detected_language=detected_language,
-                    )
-                    if company is not None:
-                        hit = quote_entity_chat.detect_unmatched(unmatched, declined_entities)
-                        if hit:
-                            table, raw_name = hit
-                            pending, ask_reply, link = quote_entity_chat.start_pending(
-                                table, raw_name, request.user, detected_language=detected_language)
-                            return Response({
-                                'success': True,
-                                'reply': ask_reply,
-                                'extracted_fields': extracted,
-                                'pending_entity': pending,
-                                'link': link,
-                                'declined_entity': None,
-                                'source': 'llm',
-                            })
-                    merged = {**current_fields, **extracted}
-                    # Deterministically answer a pure greeting / help question even
-                    # if the LLM returned a field-nag; otherwise keep the LLM reply
-                    # (already in `detected_language`, per the extraction prompt's
-                    # authoritative-language directive).
-                    reply = self._reply_for(message, merged, extracted, llm_reply=reply, lang=detected_language)
-                    return Response({
-                        'success': True,
-                        'reply': reply,
-                        'extracted_fields': extracted,
-                        'pending_entity': None,
-                        'link': None,
-                        'declined_entity': None,
-                        'source': 'llm',
-                    })
-                except Exception as exc:
-                    logger.warning('LLM quote extraction failed, using regex fallback: %s', exc)
-
-            # Extract fields using regex patterns
-            extracted = {}
-            msg_lower = message.lower()
-
-            # Origin/Destination
-            import re
-            # SA cities list for reliable extraction
-            SA_CITIES = [
-                'Johannesburg', 'JHB', 'Joburg', 'Cape Town', 'CPT',
-                'Durban', 'DBN', 'Pretoria', 'PTA', 'Port Elizabeth', 'PE',
-                'Bloemfontein', 'BFN', 'East London', 'Nelspruit', 'Polokwane',
-                'Kimberley', 'Pietermaritzburg', 'Richards Bay', 'Beit Bridge',
-                'Maputo', 'Harare', 'Lusaka', 'Windhoek', 'Gaborone',
-            ]
-            city_pattern = '|'.join(re.escape(c) for c in SA_CITIES)
-            # "from X to Y" pattern with city names
-            route_match = re.search(
-                rf'from\s+({city_pattern})\s+to\s+({city_pattern})',
-                message, re.IGNORECASE
+            # Rules first (quote_preparse: EN/AF/mixed, works with no LLM), the
+            # LLM only when it can add something, then a strict merge — see
+            # quote_nl.understand. The old regex extractor fills any gaps when
+            # no LLM ran, so the endpoint never breaks.
+            from core.services import quote_nl
+            alternate_text = request.data.get('alternate_text') or None
+            if not isinstance(alternate_text, str):
+                alternate_text = None
+            result = quote_nl.understand(
+                message, history=history, current_fields=current_fields,
+                vehicle_types=vehicle_types, customers=customers,
+                detected_language=detected_language, alternate_text=alternate_text,
+                legacy_extract=lambda: self._regex_extract(message, current_fields, vehicle_types, customers),
+                all_vehicle_types=all_vehicle_types,
             )
-            if route_match:
-                extracted['pickup_location'] = route_match.group(1).strip()
-                extracted['delivery_location'] = route_match.group(2).strip()
-            else:
-                # Fallback: generic from/to
-                from_match = re.search(r'from\s+([A-Za-z][A-Za-z\s]{1,25}?)\s+to\s+', message, re.IGNORECASE)
-                to_match = re.search(r'\s+to\s+([A-Za-z][A-Za-z\s]{1,25}?)(?:\s*[,\.]|\s+(?:on|next|flatbed|tautliner|refrigerated|tanker|\d)|$)', message, re.IGNORECASE)
-                if from_match:
-                    extracted['pickup_location'] = from_match.group(1).strip()
-                if to_match:
-                    extracted['delivery_location'] = to_match.group(1).strip()
-
-                # Dictated "label: value" style ("Collection location: Cape Town
-                # - Delivery: Durban") has no "from ... to ..." at all — catch
-                # it as a second attempt.
-                if 'pickup_location' not in extracted:
-                    m = re.search(r'(?:collection|pickup)(?:\s+location)?\s*[:\-]\s*([A-Za-z][A-Za-z\s]{1,25}?)(?:\s*[-,.]|\s+(?:total|weight|pickup|delivery|valid)\b|$)', message, re.IGNORECASE)
-                    if m:
-                        extracted['pickup_location'] = m.group(1).strip()
-                if 'delivery_location' not in extracted:
-                    m = re.search(r'delivery(?:\s+location)?\s*[:\-]\s*([A-Za-z][A-Za-z\s]{1,25}?)(?:\s*[-,.]|\s+(?:total|weight|pickup|delivery|valid|will)\b|$)', message, re.IGNORECASE)
-                    if m:
-                        extracted['delivery_location'] = m.group(1).strip()
-
-            # Dates — pickup_date, delivery_date, valid_until, each resolved
-            # against TODAY so relative phrases ("today", "tomorrow", "in 5
-            # days", "5 days from now") become real ISO dates, matching what
-            # the LLM path (llm_quote.py) does when it's configured.
-            from datetime import date as _date, timedelta as _timedelta
-            try:
-                from dateutil import parser as _date_parser
-            except ImportError:
-                _date_parser = None
-            today = _date.today()
-
-            _MONTH_OR_WEEKDAY_WORDS = {
-                'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august',
-                'september', 'october', 'november', 'december',
-                'jan', 'feb', 'mar', 'apr', 'jun', 'jul', 'aug', 'sep', 'sept', 'oct', 'nov', 'dec',
-                'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
+            extracted = result.extracted
+            lang = result.language
+            meta = {
+                'field_confidence': result.field_confidence,
+                'not_understood': result.not_understood,
+                'language': lang,
+                'language_label': language_detect.language_label(lang),
+                'mixed_language': result.mixed_language,
+                # A truck word that matched no fleet type: the client shows
+                # "Superlink? Pick a truck" (no add-a-type dialog from here).
+                'vehicle_hint': result.vehicle_hint,
+                'vehicle_hint_label': result.vehicle_hint_label,
+                # The user's own wording for each filled place ("Kaapstad"), shown
+                # beside the geocodable name in extracted_fields ("Cape Town").
+                'spoken_places': result.spoken_places(),
+                'source': 'llm' if result.llm_used else 'rules',
             }
 
-            def _resolve_date_phrase(phrase: str):
-                p = (phrase or '').strip().lower()
-                if not p:
-                    return None
-                if 'today' in p:
-                    return today
-                if 'tomorrow' in p:
-                    return today + _timedelta(days=1)
-                if 'yesterday' in p:
-                    return today - _timedelta(days=1)
-                dm = re.search(r'(\d+)\s*days?\s*(?:from now|later|from today|out)', p)
-                if not dm:
-                    dm = re.search(r'in\s+(\d+)\s*days?', p)
-                if dm:
-                    return today + _timedelta(days=int(dm.group(1)))
-                # Only hand ambiguous text (e.g. a city name that happened to be
-                # captured, like "Durban") to dateutil's fuzzy parser when it
-                # actually looks date-shaped — fuzzy mode otherwise silently
-                # falls back to `default` (today) for plain non-date text,
-                # which would misfire as a false date match.
-                has_digit = bool(re.search(r'\d', p))
-                has_date_word = any(w in p for w in _MONTH_OR_WEEKDAY_WORDS)
-                if not _date_parser or not (has_digit or has_date_word):
-                    return None
-                try:
-                    from datetime import datetime as _dt
-                    return _date_parser.parse(phrase, fuzzy=True, default=_dt.combine(today, _dt.min.time())).date()
-                except (ValueError, OverflowError, TypeError):
-                    return None
-
-            def _extract_date_field(labels: str):
-                pattern = rf'(?:{labels})(?:\s+date)?\s*(?:is|will be|[:\-])?\s*([A-Za-z0-9][A-Za-z0-9\s]{{1,30}}?)(?:\s*[-,.]|$)'
-                # Try every match, not just the first — a label can legitimately
-                # appear twice (e.g. "Delivery: Durban" is the location, a later
-                # "Delivery will be 5 days from now" is the date); skip whichever
-                # match doesn't actually resolve to a date.
-                for m in re.finditer(pattern, message, re.IGNORECASE):
-                    resolved = _resolve_date_phrase(m.group(1))
-                    if resolved:
-                        return resolved
-                return None
-
-            d = _extract_date_field(r'pickup|collection')
-            if d:
-                extracted['pickup_date'] = d.isoformat()
-            d = _extract_date_field(r'delivery(?:\s+will\s+be)?')
-            if d:
-                extracted['delivery_date'] = d.isoformat()
-            d = _extract_date_field(r'valid(?:ate)?(?:\s+until)?')
-            if d:
-                extracted['valid_until'] = d.isoformat()
-
-            # Trip type
-            if re.search(r'\bone[\s-]way\b|\bsingle\s+trip\b', message, re.IGNORECASE):
-                extracted['trip_type'] = 'ONE_WAY'
-            elif re.search(r'\bround[\s-]trip\b|\breturn\s+trip\b|\bthere\s+and\s+back\b', message, re.IGNORECASE):
-                extracted['trip_type'] = 'ROUND_TRIP'
-
-            # Weight — with unit suffix
-            weight_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:ton|t\b|tons|tonne|tonnes|kg|kgs|kilogram)', message, re.IGNORECASE)
-            if weight_match:
-                val = float(weight_match.group(1))
-                unit = weight_match.group(0).lower()
-                if 'kg' in unit:
-                    extracted['weight'] = val
-                else:
-                    extracted['weight'] = val * 1000  # convert tons to kg
-            elif not (current_fields.get('weight') or current_fields.get('weight_kg')):
-                # Bare number fallback — if weight is still missing and user sends just a number, treat as kg
-                bare_number_match = re.search(r'^\s*(\d+(?:\.\d+)?)\s*$', message.strip())
-                if bare_number_match:
-                    val = float(bare_number_match.group(1))
-                    # Heuristic: if < 100, likely tons; if >= 100, likely kg
-                    extracted['weight'] = val * 1000 if val < 100 else val
-
-            unmatched = {'customer_name': None, 'vehicle_type': None}
-
-            # Vehicle type — only ever set from the fleet's actual configured
-            # names (e.g. "Rigid Truck", "Semi-Trailer Truck"). A generic keyword
-            # ("flatbed") that doesn't match any real company VehicleType must
-            # NOT be silently written in as if it existed — surface it as
-            # unmatched instead so the caller can offer to create it.
-            matched_vt = None
-            for vt in (vehicle_types or []):
-                vt_name = vt['name'] if isinstance(vt, dict) else vt
-                vt_lc = vt_name.lower()
-                significant = [w for w in vt_lc.split() if w not in ('truck', 'vehicle')]
-                if vt_lc in msg_lower or any(w in msg_lower for w in significant):
-                    matched_vt = vt_name
-                    break
-            if matched_vt:
-                extracted['vehicle_type'] = matched_vt
-            else:
-                _VEHICLE_KEYWORDS = [
-                    'flatbed', 'tautliner', 'curtainsider', 'refrigerated', 'reefer', 'fridge',
-                    'tanker', 'box truck', 'danger load', 'cargo truck', 'rigid truck',
-                    'semi-trailer truck', 'semi trailer', 'interlink',
-                ]
-                for kw in _VEHICLE_KEYWORDS:
-                    if kw in msg_lower:
-                        unmatched['vehicle_type'] = kw.title()
-                        break
-
-            # Client / customer — "client is X", "customer will be X", etc.,
-            # fuzzy-matched against this company's real customer records. A name
-            # that's mentioned but doesn't match anything real is surfaced as
-            # unmatched rather than silently dropped.
-            if customers:
-                m = re.search(r'(?:client|customer)(?:\s+will\s+be|\s+is)?\s*[:\-]?\s*([A-Za-z][A-Za-z\s]{1,40}?)(?:\s*[-,.]|$)', message, re.IGNORECASE)
-                if m:
-                    from core.services.llm_quote import _fuzzy_match
-                    raw_name = m.group(1).strip()
-                    names = [c['name'] for c in customers]
-                    matched_name = _fuzzy_match(raw_name, names)
-                    if matched_name:
-                        match = next(c for c in customers if c['name'] == matched_name)
-                        extracted['customer_id'] = match['id']
-                        extracted['customer_name'] = matched_name
-                    elif raw_name:
-                        unmatched['customer_name'] = raw_name
-
-            # Cargo description — the noun AFTER "of" (e.g. "20 tons of steel from JHB"
-            # -> "steel"; "of palletised goods to ..." -> "palletised goods").
-            cargo_match = (
-                re.search(r'\bof\s+([a-zA-Z][a-zA-Z\s]*?)\s+(?:from|to|on|for|by|via)\b', message, re.IGNORECASE)
-                or re.search(r'\bof\s+([a-zA-Z][a-zA-Z\s]*?)\s*[,.]', message, re.IGNORECASE)
-                or re.search(r'\bof\s+([a-zA-Z][a-zA-Z\s]*?)$', message.strip(), re.IGNORECASE)
-            )
-            if cargo_match:
-                desc = cargo_match.group(1).strip()
-                # Drop a leading unit word if it slipped in ("tonnes of frozen fish").
-                desc = re.sub(r'^(tons?|tonnes?|kgs?|kilograms?|pallets?|units?|loads?|crates?)\s+',
-                              '', desc, flags=re.IGNORECASE).strip()
-                stop = {'move', 'transport', 'ship', 'send', 'deliver', 'take', 'need', 'i'}
-                if len(desc) > 2 and desc.lower() not in stop:
-                    extracted['cargo_description'] = desc
-
             if company is not None:
-                hit = quote_entity_chat.detect_unmatched(unmatched, declined_entities)
+                # Only an unknown CLIENT opens the create dialog; vehicle types
+                # come back as vehicle_hint (see quote_nl.understand).
+                hit = quote_entity_chat.detect_unmatched(
+                    {'customer_name': result.unmatched.get('customer_name'), 'vehicle_type': None},
+                    declined_entities)
                 if hit:
                     table, raw_name = hit
                     pending, ask_reply, link = quote_entity_chat.start_pending(
-                        table, raw_name, request.user, detected_language=detected_language)
+                        table, raw_name, request.user, detected_language=lang)
                     return Response({
                         'success': True,
                         'reply': ask_reply,
@@ -1111,14 +1119,21 @@ class AIChatQuoteView(APIView):
                         'pending_entity': pending,
                         'link': link,
                         'declined_entity': None,
+                        **meta,
                     })
 
-            # Merge with current fields
             merged = {**current_fields, **extracted}
-
-            # Answer a greeting / "how can you help" instead of nagging for fields;
-            # otherwise report progress on the still-missing essentials.
-            reply = self._reply_for(message, merged, extracted, lang=detected_language)
+            if result.llm_used:
+                # Deterministically answer a pure greeting / help question even
+                # if the LLM returned a field-nag; otherwise keep the LLM reply
+                # (already in the detected language, per the prompt directive).
+                reply = self._reply_for(message, merged, extracted, llm_reply=result.reply, lang=lang)
+            elif extracted and result.reply:
+                reply = result.reply  # native English/Afrikaans summary
+                if lang and lang not in ('en', 'af'):
+                    reply = language_detect.translate_template(reply, lang)
+            else:
+                reply = self._reply_for(message, merged, extracted, lang=lang)
 
             return Response({
                 'success': True,
@@ -1127,6 +1142,7 @@ class AIChatQuoteView(APIView):
                 'pending_entity': None,
                 'link': None,
                 'declined_entity': None,
+                **meta,
             })
 
         except Exception as e:
@@ -1149,6 +1165,28 @@ class AIChatQuoteView(APIView):
 
 
 _LANGUAGE_CONFIDENCE_MARGIN = 0.10
+# Hard ceiling per transcription call, no retries — a slow provider must not
+# hold the mic UI hostage. Worst case (two passes) stays well under a minute.
+_STT_TIMEOUT_SECONDS = 20.0
+# ~8 MB is several minutes of the m4a/webm the apps record; anything bigger is
+# a mistake (or abuse) and is refused before any paid call.
+_MAX_AUDIO_BYTES = 8 * 1024 * 1024
+_NO_SPEECH_PROB = 0.6
+
+# Vocabulary hints (Whisper's `prompt`): SA places in both spellings and the
+# trucking words transporters mix into either language, so code-switched
+# speech ("superlink", "retoervrag", "Kaapstad") is spelled right. Kept short
+# — Whisper only reads the last ~224 tokens — and phrased as a plausible
+# utterance, since the prompt also sets style.
+_STT_PROMPTS = {
+    'en': ("Freight quote: 28 tons of steel coils from Johannesburg to Durban tomorrow, superlink, "
+           "tautliner, reefer, tipper, flatbed, return load booked, empty back, cross-border via Beitbridge. "
+           "Kaapstad, Gqeberha, eThekwini, Tshwane, Mangaung, Mbombela, Polokwane, Richards Bay, "
+           "Windhoek, Gaborone, Maseru."),
+    'af': ("Vragkwotasie: agt-en-twintig ton staalrolle van Johannesburg na Durban môre, superlink, "
+           "gordynkant, koelwa, wipbak, platbak, sleepwa, retoervrag, leeg terug, oor Beitbridge. "
+           "Kaapstad, Oos-Londen, Richardsbaai, Gqeberha, Bloemfontein, Pretoria, Vrydag, Maandag."),
+}
 
 
 def _mean_avg_logprob(transcript):
@@ -1165,15 +1203,57 @@ def _mean_avg_logprob(transcript):
     return sum(scores) / len(scores)
 
 
+# What Whisper famously produces from silence or noise (YouTube outro lines in
+# both languages), matched against the WHOLE transcript only — a real load
+# description that merely contains "thank you" is never rejected.
+_HALLUCINATION_RE = re.compile(
+    r'(?:(?:thank you|thanks)(?: (?:so|very) much)?(?: for watching| for listening)?|please subscribe|'
+    r'(?:like and )?subscribe(?: to (?:my|the|our) channel)?|bye(?: bye)?|you|the end|'
+    r'dankie(?: vir (?:kyk|luister))?|baie dankie|totsiens|subtitles? by .*|ondertitels? deur .*|'
+    r'transcribed by .*|music|applause|silence)(?: (?:thank you|thanks|bye|you))*')
+
+
+def _num_attr(obj, name):
+    v = getattr(obj, name, None)
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
+def _is_no_speech(transcript, prompt):
+    """True when Whisper heard nothing usable: blank text, every segment
+    flagged as probable silence, or the known failure where silence comes back
+    as (part of) the vocabulary prompt itself."""
+    text = (getattr(transcript, 'text', '') or '').strip()
+    if not text:
+        return True
+    segments = getattr(transcript, 'segments', None) or []
+    probs = [_num_attr(s, 'no_speech_prob') for s in segments]
+    probs = [p for p in probs if p is not None]
+    if probs and all(p > _NO_SPEECH_PROB for p in probs):
+        return True
+    words = re.findall(r'\w+', text.lower())
+    if _HALLUCINATION_RE.fullmatch(' '.join(words)):
+        return True
+    prompt_words = set(re.findall(r'\w+', (prompt or '').lower()))
+    return len(words) >= 4 and all(w in prompt_words for w in words)
+
+
 class AIVoiceQuoteView(APIView):
-    """POST /api/v1/ai/voice-quote/ — transcribe audio and return text."""
+    """POST /api/v1/ai/voice-quote/ — transcribe audio and return text.
+
+    Form fields: `audio` (file, required); `language` (optional: 'en' or 'af'
+    forces that language — one paid call; anything else / absent = automatic).
+
+    Automatic mode scores the clip in a CLOSED pair of candidates, English and
+    Afrikaans (open-ended Whisper detection mis-labelled clear English as
+    Bengali in real use). English runs first; Afrikaans must beat it by a
+    margin. The Afrikaans pass is skipped when it provably cannot win
+    (avg_logprob <= 0, so an English score above -margin is unbeatable). The
+    other pass's text is returned as `alternate` so code-switched speech can
+    be understood from both (chat-quote's `alternate_text`).
+    """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        """
-        Accepts audio file, returns transcription.
-        Uses OpenAI Whisper if available, otherwise returns error.
-        """
         try:
             audio_file = request.FILES.get('audio')
             if not audio_file:
@@ -1187,6 +1267,11 @@ class AIVoiceQuoteView(APIView):
                     'error': 'Voice transcription not configured (no OpenAI key)',
                 }, status=503)
 
+            if getattr(audio_file, 'size', 0) and audio_file.size > _MAX_AUDIO_BYTES:
+                return Response({
+                    'success': False,
+                    'error': 'Recording is too long — keep it under a minute.',
+                }, status=413)
             # Read the upload up front so we can reject empty/too-short clips with a
             # clear message instead of letting Whisper 400 (a common cause: the mic
             # button was tapped and released before any audio was captured).
@@ -1196,24 +1281,26 @@ class AIVoiceQuoteView(APIView):
                     'success': False,
                     'error': 'Recording was empty — hold the mic, speak, then stop.',
                 }, status=400)
+            if len(audio_bytes) > _MAX_AUDIO_BYTES:
+                return Response({
+                    'success': False,
+                    'error': 'Recording is too long — keep it under a minute.',
+                }, status=413)
 
             import openai
-            client = openai.OpenAI(api_key=openai_key)
+            client = openai.OpenAI(api_key=openai_key, timeout=_STT_TIMEOUT_SECONDS, max_retries=0)
             # Whisper keys off the filename's extension, not the multipart
             # content-type, to detect the format — so the name passed here must
             # match what the bytes actually are. Mobile sends real M4A/AAC;
             # Safari's MediaRecorder falls back to MP4/AAC (it doesn't support
-            # audio/webm); only Chrome-family browsers actually send WebM. A
-            # filename hardcoded to "recording.webm" made every non-WebM
-            # upload undecodable to Whisper regardless of the bytes being
-            # perfectly valid audio — derive the extension from the upload's
-            # own (reliable, browser/RN-set) content-type instead.
-            content_type = (getattr(audio_file, 'content_type', '') or '').lower()
+            # audio/webm); only Chrome-family browsers actually send WebM.
+            content_type = (getattr(audio_file, 'content_type', '') or '').lower().split(';')[0].strip()
             ext = {
                 'audio/webm': 'webm',
                 'audio/mp4': 'mp4',
                 'audio/m4a': 'm4a',
                 'audio/x-m4a': 'm4a',
+                'audio/aac': 'm4a',
                 'audio/mpeg': 'mp3',
                 'audio/mp3': 'mp3',
                 'audio/wav': 'wav',
@@ -1222,63 +1309,94 @@ class AIVoiceQuoteView(APIView):
                 'audio/ogg': 'ogg',
                 'audio/flac': 'flac',
             }.get(content_type, 'webm')
-            # Fully automatic, no picker — but scoped to a CLOSED pair of
-            # candidates (English, Afrikaans) rather than Whisper's own
-            # open-ended auto-detect. Open-ended detection is what caused
-            # repeated real-world failures (clear English speech confidently
-            # mis-identified as Bengali, with no confidence score from the
-            # hosted API to catch it) — by only ever forcing the audio through
-            # these two known-plausible languages and comparing decode
-            # confidence, an unrelated third language can never win by
-            # mistake, which is the actual failure mode this closes.
+
             def _transcribe(language):
                 return client.audio.transcriptions.create(
                     model='whisper-1',
                     file=(f'recording.{ext}', audio_bytes, content_type or 'audio/webm'),
                     language=language, response_format='verbose_json',
+                    prompt=_STT_PROMPTS[language], temperature=0,
                 )
 
+            requested = (request.data.get('language') or '').strip().lower()
+            forced = requested if requested in ('en', 'af') else None
+            first_lang = forced or 'en'
             try:
-                en_transcript = _transcribe('en')
+                first = _transcribe(first_lang)
             except openai.OpenAIError as oe:
                 # Whisper rejected the audio (too short, undecodable format, etc.).
-                # Surface its message and log the details for diagnosis.
+                # Log the details for diagnosis; give the user a plain message.
                 msg = getattr(oe, 'message', None) or str(oe)
                 logger.warning(
                     'Whisper rejected audio (%d bytes, upload content_type=%s): %s',
                     len(audio_bytes), getattr(audio_file, 'content_type', None), msg,
                 )
+                # The provider's own text (request IDs, internals) stays in the log.
                 return Response({
                     'success': False,
-                    'error': f'Could not transcribe the recording: {msg}',
+                    'error': "Couldn't read that recording — try again, or type the load instead.",
                 }, status=502)
 
-            text, detected_language = en_transcript.text, 'en'
-            try:
-                af_transcript = _transcribe('af')
-                en_score = _mean_avg_logprob(en_transcript)
-                af_score = _mean_avg_logprob(af_transcript)
-                # Afrikaans must clearly beat English (not just any amount)
-                # to be trusted — English wins every tie/near-tie, the safer
-                # default between exactly these two known options.
-                if af_score is not None and (en_score is None or af_score >= en_score + _LANGUAGE_CONFIDENCE_MARGIN):
-                    text, detected_language = af_transcript.text, 'af'
-            except openai.OpenAIError as oe:
-                # Best-effort second pass — if it fails, the English result
-                # already in hand is a perfectly good answer on its own.
-                logger.warning('Whisper Afrikaans comparison pass failed: %s', oe)
+            chosen, chosen_lang, other, other_lang = first, first_lang, None, None
+            confidence = 'chosen' if forced else 'high'
+            first_score = _mean_avg_logprob(first)
+            if _is_no_speech(first, _STT_PROMPTS[first_lang]):
+                # Silence (or a hallucination) on the first pass: no second paid call.
+                return Response({
+                    'success': False,
+                    'error': "Didn't catch any speech — try again a bit closer to the mic.",
+                }, status=422)
+            if not forced:
+                # avg_logprob is <= 0, so Afrikaans (which must reach en + margin)
+                # cannot win once English already scores above -margin: skip
+                # the second paid call — it could not change the answer.
+                af_cannot_win = first_score is not None and first_score > -_LANGUAGE_CONFIDENCE_MARGIN
+                if not af_cannot_win:
+                    try:
+                        af_transcript = _transcribe('af')
+                        af_score = _mean_avg_logprob(af_transcript)
+                        # Afrikaans must clearly beat English (not just any amount)
+                        # to be trusted — English wins every tie/near-tie.
+                        if af_score is not None and (first_score is None or
+                                                     af_score >= first_score + _LANGUAGE_CONFIDENCE_MARGIN):
+                            chosen, chosen_lang, other, other_lang = af_transcript, 'af', first, 'en'
+                        else:
+                            other, other_lang = af_transcript, 'af'
+                        if first_score is not None and af_score is not None and \
+                                abs(af_score - first_score) < 2 * _LANGUAGE_CONFIDENCE_MARGIN:
+                            confidence = 'low'  # close call: likely mixed Afrikaans-English
+                    except openai.OpenAIError as oe:
+                        # Best-effort second pass — the English result in hand
+                        # is a perfectly good answer on its own.
+                        logger.warning('Whisper Afrikaans comparison pass failed: %s', oe)
 
+            if _is_no_speech(chosen, _STT_PROMPTS[chosen_lang]):
+                return Response({
+                    'success': False,
+                    'error': "Didn't catch any speech — try again a bit closer to the mic.",
+                }, status=422)
+
+            from core.services import language_detect
+            alternate = None
+            if other is not None and not _is_no_speech(other, _STT_PROMPTS[other_lang]):
+                other_text = (other.text or '').strip()
+                if other_text and other_text != (chosen.text or '').strip():
+                    alternate = {'language': other_lang, 'text': other_text}
             return Response({
                 'success': True,
-                'text': text,
-                'detected_language': detected_language,
+                'text': (chosen.text or '').strip(),
+                'detected_language': chosen_lang,
+                'language_label': language_detect.language_label(chosen_lang),
+                'language_confidence': confidence,
+                'alternate': alternate,
+                'duration_seconds': _num_attr(chosen, 'duration'),
             })
 
-        except Exception as e:
+        except Exception:
             logger.exception('Voice transcription failed')
             return Response({
                 'success': False,
-                'error': str(e),
+                'error': "Couldn't transcribe that — try again.",
             }, status=500)
 
 
