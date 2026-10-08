@@ -38,6 +38,19 @@ logger = logging.getLogger(__name__)
 ZERO = Decimal('0.00')
 LEGACY_DEADHEAD = Decimal('1.3')
 
+# The same bases for a job costed from its OWN data (a TMS job never quoted).
+COMPUTED_LABELS = {
+    'snapshot': 'Job costing (from the job\'s own data)',
+    'snapshot_return_linked': 'Job costing, no empty return (return load linked)',
+}
+
+
+def basis_label(basis, load=None):
+    if load is not None and getattr(load, 'costing_source', '') == 'computed' and basis in COMPUTED_LABELS:
+        return COMPUTED_LABELS[basis]
+    return BASIS_LABELS[basis]
+
+
 BASIS_LABELS = {
     'snapshot': 'Quote costing',
     'snapshot_return_linked': 'Quote costing, no empty return (return load linked)',
@@ -112,7 +125,7 @@ def estimate(load, paired=None):
         if cost is None:
             from core.services.trip_costing import missing_inputs
             missing = missing_inputs(load)
-        return {'estimated_cost': cost, 'basis': basis, 'label': BASIS_LABELS[basis], 'lines': kept,
+        return {'estimated_cost': cost, 'basis': basis, 'label': basis_label(basis, load), 'lines': kept,
                 'removed_lines': removed, 'empty_return_removed': _q(saved) if removed else ZERO,
                 'missing': missing}
     if load.costing_source == 'unknown':

@@ -471,3 +471,9 @@ Accurate job margins when a return load is added after a quote, and TMS sync tha
   (`toll_cost_return`, `border_cost_empty_return`, `border_estimate`, `border_estimate_empty_return`,
   `border_costs_unknown`, `border_cost_is_override`, `clearing_agent_fee`, `abnormal_load`) from the quote.
   Trip-economics migrations are 0166–0176 (after the toll branch's 0160–0165). compute() unchanged by this branch.
+- **UI round 3 (8 Oct):** one cost label rule for the job card and the quote outcome (web `costLabel`, app
+  `costLabelFor`): actual + complete "Actual costs"; actual not complete "Actual so far · not final"; part actual
+  complete "Part actual · running cost estimated" / not complete "Part actual · not final"; estimate "Estimate ·
+  quote costing | job costing (never quoted) | standard …". QuoteOutcome.actual_cost_basis is the job card's
+  basis (part_actual while the running cost is estimated). Trip money shows to the cent. Return candidates never
+  offer DELIVERED / INVOICED jobs. `estimate_label` says "Job costing" for a job costed from its own data.

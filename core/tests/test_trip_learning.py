@@ -59,7 +59,11 @@ class ActualsTests(TestCase):
                                load=self.load, expense_date=date.today(), status='APPROVED')
         te.recompute([self.load.pk])
         outcome.refresh_from_db()
-        self.assertEqual(outcome.actual_cost_basis, 'actual')
+        # Complete (key costs recorded) but the running cost is still the
+        # estimate: the same 'part_actual' the job card shows.
+        self.assertEqual(outcome.actual_cost_basis, 'part_actual')
+        leg = te.economics_for_load_id(self.load.pk)['legs'][0]
+        self.assertEqual((leg['cost_basis'], leg['cost_complete']), ('part_actual', True))
         self.assertEqual(outcome.actual_revenue, Decimal('30000.00'))
         self.assertIsNotNone(outcome.actual_cost)
         self.assertIsNone(outcome.estimated_cost)

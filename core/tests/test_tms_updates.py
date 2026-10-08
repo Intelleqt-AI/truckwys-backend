@@ -380,3 +380,19 @@ class RoundThreeTmsTests(_Base):
         load.refresh_from_db()
         self.assertEqual(load.status, 'INVOICED')
         self.assertIsNotNone(load.actual_delivered_at)
+
+
+class LabelAndCandidateTests(_Base):
+    def test_never_quoted_job_is_labelled_job_costing(self):
+        from core.services.trip_economics import estimate
+        load = Load.objects.get(pk=self.trips([self.rec(external_id='LB-1')])['load_ids'][0])
+        self.assertEqual(load.costing_source, 'computed')
+        self.assertTrue(estimate(load)['label'].startswith('Job costing'))
+
+    def test_delivered_jobs_never_offered_as_return(self):
+        from core.services.return_loads import return_candidates
+        out = make_load(self.co, self.cust, 'LB-OUT', pickup='Johannesburg', delivery='Durban')
+        make_load(self.co, self.cust, 'LB-DONE', pickup='Durban', delivery='Johannesburg', pickup_in_days=3,
+                  status='DELIVERED')
+        open_ = make_load(self.co, self.cust, 'LB-OPEN', pickup='Durban', delivery='Johannesburg', pickup_in_days=3)
+        self.assertEqual([c['load_id'] for c in return_candidates(out)], [open_.id])

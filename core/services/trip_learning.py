@@ -51,8 +51,10 @@ def record_actuals(loads, rows):
                   if cost is not None and rev else None)
         if row.get('cost_complete') and cost is not None:
             # Complete: delivered and the key costs recorded (or closed).
+            # Basis as the job card shows it: 'actual' only when every group is
+            # actual (operating still estimated = part_actual, unless closed).
             fields.update({'actual_revenue': Decimal(str(rev)).quantize(Decimal('0.01')), 'actual_cost': cost_d,
-                           'actual_margin_pct': margin, 'actual_cost_basis': 'actual',
+                           'actual_margin_pct': margin, 'actual_cost_basis': row.get('cost_basis') or '',
                            'estimated_cost': None, 'estimated_margin_pct': None})
         else:
             # Not complete yet: no actual_* (labels must be real); the best

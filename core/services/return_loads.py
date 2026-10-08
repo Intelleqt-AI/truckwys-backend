@@ -251,7 +251,8 @@ def return_candidates(outbound, *, days=DEFAULT_CANDIDATE_DAYS, near_km=NEAR_KM,
     if outbound.return_of_id or outbound.trip_type == 'ROUND_TRIP' or get_return(outbound) is not None:
         return []
     days = max(1, min(int(days or DEFAULT_CANDIDATE_DAYS), MAX_CANDIDATE_DAYS))
-    qs = _free_loads(outbound.company, [outbound.pk])
+    # A job already delivered / invoiced can't bring this truck home.
+    qs = _free_loads(outbound.company, [outbound.pk]).exclude(status__in=('DELIVERED', 'INVOICED'))
     if outbound.delivery_date:
         qs = qs.filter(pickup_date__gte=outbound.delivery_date - timedelta(days=1),
                        pickup_date__lte=outbound.delivery_date + timedelta(days=days))

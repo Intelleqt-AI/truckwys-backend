@@ -2831,7 +2831,9 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
                 'actual_cost_basis': o.actual_cost_basis or None,
                 # Costs not complete yet: the estimate so far (actual where
                 # recorded), labelled by actual_cost_basis; actual_* null.
-                'complete': o.actual_cost_basis == 'actual',
+                # Costs final (delivered + key costs recorded, or closed);
+                # actual_cost_basis says actual / part_actual like the job card.
+                'complete': o.actual_cost is not None,
                 'estimated_cost': float(o.estimated_cost) if o.estimated_cost is not None else None,
                 'estimated_margin_pct': (float(o.estimated_margin_pct)
                                          if o.estimated_margin_pct is not None else None),
