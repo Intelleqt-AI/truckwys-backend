@@ -460,11 +460,12 @@ def stored_tolls(payload: dict, company=None) -> dict:
     return {'sanral_class': sanral_class, 'class_label': class_label, 'plazas': plazas}
 
 
-def stored_allowance(today: date):
-    """The approved driver allowance in force today, or None. Never raises."""
+def stored_allowance(today: date, cross_border: bool = False):
+    """The approved driver allowance in force today (the cross-border rate for
+    an international trip when one is approved), or None. Never raises."""
     try:
         from core.services.verified_rates import current_allowance
-        return current_allowance(today)
+        return current_allowance(today, cross_border=cross_border)
     except Exception as exc:
         logger.warning('AI price analysis: stored allowance lookup failed: %s', exc)
         return None
@@ -1180,4 +1181,6 @@ def analyze_quote_price(*, payload: dict, user=None, company=None, quote=None, t
         }),
         duration_ms=elapsed_ms(),
     )
-    return {'success': True, 'usage_log_id': row.id, **pricing}
+    from core.services.pricing_analysis import win_prediction_block
+    return {'success': True, 'usage_log_id': row.id, **pricing,
+            'win_prediction': win_prediction_block(user, company)}

@@ -364,10 +364,23 @@ class TollBreakdownItem:
     location_km: Decimal
     tariff: Decimal                         # published tariff, VAT INCLUSIVE
     tariff_excl_vat: Optional[Decimal] = None
+    plaza_type: str = 'mainline'
+    operator: str = ''
+    country: str = 'ZA'
+    tariff_effective_from: Optional[object] = None   # date the charged tariff took effect
+    route_sequence: int = 0                          # polyline segment where the route reaches it
+    currency: str = 'ZAR'                            # the plaza's own tariff currency
+    tariff_foreign: Optional[Decimal] = None         # the tariff in that currency (non-ZAR only)
+    fx: Optional[dict] = None                        # core.services.fx.Rate.as_dict() used
+    class_mapping_verified: bool = True              # False where SANRAL classes were mapped onto another scheme
 
     def __post_init__(self):
         if self.tariff_excl_vat is None:
-            self.tariff_excl_vat = tariff_excl_vat(self.tariff)
+            # SA input VAT is reclaimable on a SANRAL/concession toll slip; a
+            # foreign toll (Mozambique's IVA) is not, so there the whole
+            # amount is the carrier's cost.
+            self.tariff_excl_vat = (tariff_excl_vat(self.tariff) if (self.country or 'ZA') == 'ZA'
+                                    else Decimal(str(self.tariff)).quantize(_CENT))
 
 
 @dataclass
@@ -422,6 +435,7 @@ def calculate_tolls(
     origin: str,
     destination: str,
     truck_type: str,
+    trip_date=None,
 ) -> TollResult:
     """
     Calculate total SANRAL toll costs for a trip.
@@ -469,22 +483,29 @@ def calculate_tolls(
             warning=f"No known SANRAL route between {origin!r} and {destination!r}",
         )
 
+    # Mainline plazas only: a keyword corridor says nothing about which
+    # interchange the trip uses, and a through trip pays the mainline.
     plazas = (
         TollPlaza.objects
-        .filter(route__in=routes, is_active=True)
+        .filter(route__in=routes, is_active=True, plaza_type=TollPlaza.TYPE_MAINLINE)
         .order_by('route', 'location_km')
     )
+    on_date = trip_date or _today()
 
     breakdown: list[TollBreakdownItem] = []
     total = Decimal('0.00')
 
     for plaza in plazas:
-        tariff = plaza.get_tariff(vehicle_class)
+        tariff, effective_from = plaza.tariff_on(vehicle_class, on_date)
         breakdown.append(TollBreakdownItem(
             plaza_name=plaza.name,
             route=plaza.route,
             location_km=plaza.location_km,
             tariff=tariff,
+            plaza_type=plaza.plaza_type,
+            operator=plaza.operator,
+            country=plaza.country,
+            tariff_effective_from=effective_from,
         ))
         total += tariff
 
@@ -554,9 +575,101 @@ def _point_to_segment_m(plat, plng, alat, alng, blat, blng) -> float:
     return _haversine_m(plat, plng, foot_lat, foot_lng)
 
 
+def _route_index(route_points: list) -> list:
+    """Polyline segments with their bounding boxes, built once per route."""
+    pts = [(float(p['lat']), float(p['lon'])) for p in route_points]
+    return [
+        (min(a[0], b[0]), max(a[0], b[0]), min(a[1], b[1]), max(a[1], b[1]), a, b, i)
+        for i, (a, b) in enumerate(zip(pts, pts[1:]))
+    ]
+
+
+def _nearest_on_route(lat: float, lng: float, segment_boxes: list, first_point=None) -> tuple:
+    """(distance in m, index of the nearest segment) — the index orders plazas
+    in the sequence the route reaches them."""
+    best = (float('inf'), 0)
+    if not segment_boxes:
+        if first_point:
+            return _haversine_m(lat, lng, first_point[0], first_point[1]), 0
+        return best
+    for (lat_min, lat_max, lon_min, lon_max, a, b, i) in segment_boxes:
+        if (lat_min - _BBOX_PAD_DEG <= lat <= lat_max + _BBOX_PAD_DEG
+                and lon_min - _BBOX_PAD_DEG <= lng <= lon_max + _BBOX_PAD_DEG):
+            d = _point_to_segment_m(lat, lng, a[0], a[1], b[0], b[1])
+            if d < best[0]:
+                best = (d, i)
+    return best
+
+
+def _distance_to_route_m(lat: float, lng: float, segment_boxes: list, first_point=None) -> float:
+    """Shortest distance (m) from a point to the route polyline.
+
+    Bounding-box pre-filter first: a route has thousands of segments and only
+    the handful near the point can be within any buffer we use, so the trig
+    runs on those alone. _BBOX_PAD_DEG (~1.1km) is a superset of every
+    buffer, so the filter can never drop a real match.
+    """
+    return _nearest_on_route(lat, lng, segment_boxes, first_point)[0]
+
+
+# A ramp plaza is NOT charged when the route passes every one of its
+# through_points (on the mainline either side of the interchange) within this
+# distance: the route stayed on the mainline and only drove PAST the ramp booth.
+THROUGH_POINT_TOLERANCE_M = 50.0
+
+
+def _today():
+    try:
+        from django.utils import timezone
+        return timezone.localdate()
+    except Exception:  # pragma: no cover - outside Django
+        import datetime
+        return datetime.date.today()
+
+
+def parse_trip_date(value):
+    """'2026-03-01' / '2026-03-01T08:00:00Z' / date / None → date (today when absent or unparseable)."""
+    import datetime
+    if isinstance(value, datetime.datetime):
+        return value.date()
+    if isinstance(value, datetime.date):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            return datetime.date.fromisoformat(value.strip()[:10])
+        except ValueError:
+            logger.warning('Unparseable trip date %r for tolls; using today', value)
+    return _today()
+
+
+def tariff_schedule_warning(trip_date):
+    """A warning when the trip runs after the newest published SA schedule
+    ends (SANRAL years run 1 March to the end of February), e.g. a trip on
+    2 March 2027 while only 2026/27 is on file. None otherwise."""
+    import datetime
+    from django.db.models import Max
+    from core.models.toll_plaza import TollPlaza
+    latest = (TollPlaza.objects.filter(is_active=True, country='ZA')
+              .aggregate(m=Max('tariff_effective_from'))['m'])
+    if latest is None or trip_date is None:
+        return None
+    ends = datetime.date(latest.year + 1, 3, 1) - datetime.timedelta(days=1)
+    if trip_date <= ends:
+        return None
+    return {
+        'code': 'toll_tariffs_not_published',
+        'schedule': f'{latest.year}/{str(latest.year + 1)[-2:]}',
+        'schedule_ends': ends.isoformat(),
+        'message': (f'The trip is on {trip_date.isoformat()}, after the {latest.year}/{str(latest.year + 1)[-2:]} '
+                    f'toll tariffs end ({ends.isoformat()}). The next schedule is not on file yet, so tolls '
+                    f'are priced at the {latest.year}/{str(latest.year + 1)[-2:]} rates and will usually rise.'),
+    }
+
+
 def calculate_tolls_by_geometry(
     route_points: list,
     truck_type: str,
+    trip_date=None,
 ) -> TollResult:
     """Geofence-based toll calculation using TomTom route geometry.
 
@@ -566,19 +679,27 @@ def calculate_tolls_by_geometry(
         List of ``{"lat": float, "lon": float}`` dicts from TomTom's polyline.
     truck_type:
         Same values as :func:`calculate_tolls`.
+    trip_date:
+        The day the trip runs (``datetime.date``). Tariffs are the ones in
+        force on that day — a load quoted in February for a March trip pays
+        the new 1 March tariff. Defaults to today.
 
     Returns
     -------
-    :class:`TollResult` with every plaza whose geofence the route passes through.
-    Falls back to an empty result (R0, warning) when no points are provided or
-    no plaza has coordinates seeded yet.
+    :class:`TollResult` with every plaza the route drives through.
 
-    Notes
-    -----
-    A plaza is charged once, when its shortest distance to the route polyline is
-    within ``TOLL_MATCH_BUFFER_M``. Distance is measured plaza→nearest-segment
-    (point-to-line), so plazas on parallel/crossing roads near the route are NOT
-    charged, and only plazas the route actually passes count.
+    Matching
+    --------
+    * A plaza matches when its nearest booth (lat/lng or any of
+      ``match_points``) is within ``min(radius_meters, TOLL_MATCH_BUFFER_M)``
+      of the route LINE (point-to-segment), so plazas on parallel or crossing
+      roads are not charged.
+    * A ramp plaza with ``through_points`` is skipped when the route passes
+      all of them: it stayed on the mainline past the interchange.
+    * Plazas sharing a ``plaza_group`` (a mainline plaza and the ramps at its
+      interchange) are alternatives — a vehicle pays one of them. A matched
+      ramp wins over its mainline (it passed the stricter ramp tests); among
+      several, the nearest wins.
     """
     from core.models.toll_plaza import TollPlaza
 
@@ -589,6 +710,7 @@ def calculate_tolls_by_geometry(
             f"Valid options: {sorted(TRUCK_TYPE_TO_CLASS)}"
         )
     vehicle_class = TRUCK_TYPE_TO_CLASS[truck_type_lc]
+    on_date = trip_date or _today()
 
     if not route_points:
         return TollResult(
@@ -604,6 +726,7 @@ def calculate_tolls_by_geometry(
         .filter(is_active=True)
         .exclude(lat__isnull=True)
         .exclude(lng__isnull=True)
+        .prefetch_related('tariff_history')
     )
     if not plazas:
         return TollResult(
@@ -614,73 +737,79 @@ def calculate_tolls_by_geometry(
             unavailable_reason='no_toll_data',
         )
 
-    # Build the list of consecutive polyline segments once, with each one's
-    # bounding box precomputed up front — these don't depend on the plaza
-    # being tested, so computing them fresh inside the per-plaza loop below
-    # (as before) redundantly re-ran the same min/max over every segment for
-    # every plaza.
-    pts = [(float(p['lat']), float(p['lon'])) for p in route_points]
-    segments = list(zip(pts, pts[1:]))
-    segment_boxes = [
-        (min(a[0], b[0]), max(a[0], b[0]), min(a[1], b[1]), max(a[1], b[1]), a, b)
-        for a, b in segments
-    ]
+    segment_boxes = _route_index(route_points)
+    first = (float(route_points[0]['lat']), float(route_points[0]['lon']))
+
+    # (plaza, distance) for every plaza the route drives through.
+    candidates: list[tuple] = []
+    for plaza in plazas:
+        # Per-plaza radius allowed (ramps use a tight one), capped at the buffer
+        # so a stale 500 m radius can't re-introduce parallel-road false positives.
+        buffer_m = min(float(plaza.radius_meters or TOLL_MATCH_BUFFER_M), TOLL_MATCH_BUFFER_M)
+        dist, seq = min(_nearest_on_route(lat, lng, segment_boxes, first)
+                        for lat, lng in plaza.all_match_points())
+        if dist > buffer_m:
+            continue
+        through = plaza.through_points or []
+        if through and all(
+            _distance_to_route_m(float(tp[0]), float(tp[1]), segment_boxes, first) <= THROUGH_POINT_TOLERANCE_M
+            for tp in through
+        ):
+            continue
+        candidates.append((plaza, dist, seq))
+
+    chosen: dict = {}
+    for plaza, dist, seq in candidates:
+        key = plaza.plaza_group or f'#{plaza.pk}'
+        best = chosen.get(key)
+        rank = (0 if plaza.plaza_type == TollPlaza.TYPE_RAMP else 1, dist)
+        if best is None or rank < best[0]:
+            chosen[key] = (rank, plaza, seq)
 
     matched: list[TollBreakdownItem] = []
     routes_hit: set[str] = set()
     total = Decimal('0.00')
+    for _rank, plaza, seq in chosen.values():
+        history = sorted(plaza.tariff_history.all(), key=lambda r: r.effective_from, reverse=True)
+        tariff, effective_from = plaza.tariff_on(vehicle_class, on_date, history)
+        currency = (getattr(plaza, 'currency', '') or 'ZAR').upper()
+        foreign, fx = None, None
+        if currency != 'ZAR':
+            # Stored in the operator's own currency (TRAC / REVIMO publish in
+            # meticais); converted at the day's rate, which travels with it.
+            from core.services.fx import to_zar
+            foreign = tariff
+            tariff, rate = to_zar(foreign, currency)
+            fx = rate.as_dict()
+        matched.append(TollBreakdownItem(
+            plaza_name=plaza.name,
+            route=plaza.route,
+            location_km=plaza.location_km,
+            tariff=tariff,
+            plaza_type=plaza.plaza_type,
+            operator=plaza.operator,
+            country=plaza.country,
+            tariff_effective_from=effective_from,
+            route_sequence=seq,
+            currency=currency,
+            tariff_foreign=foreign,
+            fx=fx,
+            # Mozambique classes are defined by its own operators; matching
+            # SANRAL Class 1-4 to TRAC/REVIMO Class 1-4 is not confirmed.
+            class_mapping_verified=plaza.country == 'ZA',
+        ))
+        routes_hit.add(plaza.route)
+        total += tariff
 
-    for plaza in plazas:
-        plaza_lat = float(plaza.lat)
-        plaza_lng = float(plaza.lng)
-        # Per-plaza override allowed, but cap at the buffer so a stale 500 m radius
-        # can't re-introduce parallel-road false positives.
-        buffer_m = min(float(plaza.radius_meters or TOLL_MATCH_BUFFER_M), TOLL_MATCH_BUFFER_M)
-
-        # Distance from the plaza to the DRIVEN LINE (nearest segment), not just to a
-        # vertex. A plaza only charges when the route actually passes it — this both
-        # kills parallel/crossing-road false positives and windows the charge to the
-        # trip's own segment (no whole-route summing).
-        if segments:
-            # Cheap bounding-box pre-filter before the expensive trig-heavy
-            # point-to-segment math: a route can have thousands of polyline
-            # points, so checking every plaza against every segment directly
-            # (plazas × segments haversine calls) dominates request time on
-            # long routes. PAD_DEG (~1.1km) is a generous superset of the
-            # 300m buffer, so this only skips segments that are provably too
-            # far — it can never miss a real match, just cheaply reject the
-            # vast majority of segments before doing the real distance math.
-            candidates = [
-                (a, b) for (lat_min, lat_max, lon_min, lon_max, a, b) in segment_boxes
-                if (lat_min - _BBOX_PAD_DEG <= plaza_lat <= lat_max + _BBOX_PAD_DEG
-                    and lon_min - _BBOX_PAD_DEG <= plaza_lng <= lon_max + _BBOX_PAD_DEG)
-            ]
-            dist = min(
-                (_point_to_segment_m(plaza_lat, plaza_lng, a[0], a[1], b[0], b[1]) for a, b in candidates),
-                default=float('inf'),
-            )
-        else:
-            dist = _haversine_m(plaza_lat, plaza_lng, pts[0][0], pts[0][1])
-
-        if dist <= buffer_m:
-            tariff = plaza.get_tariff(vehicle_class)
-            matched.append(TollBreakdownItem(
-                plaza_name=plaza.name,
-                route=plaza.route,
-                location_km=plaza.location_km,
-                tariff=tariff,
-            ))
-            routes_hit.add(plaza.route)
-            total += tariff
-
-    matched.sort(key=lambda x: (x.route, x.location_km))
+    # In the order the route reaches them.
+    matched.sort(key=lambda x: x.route_sequence)
 
     logger.info(
-        'Geofence tolls (%s / class %d): R%.2f across %d plaza(s) on %s '
-        '(point-to-polyline, buffer %.0fm, %d segments vs %d plazas)',
-        truck_type, vehicle_class, total, len(matched),
-        ', '.join(sorted(routes_hit)) or 'no SANRAL routes',
-        TOLL_MATCH_BUFFER_M, len(segments), len(plazas),
+        'Geofence tolls (%s / class %d, %s): R%.2f across %d plaza(s) on %s '
+        '(point-to-polyline, %d segments vs %d plazas)',
+        truck_type, vehicle_class, on_date, total, len(matched),
+        ', '.join(sorted(routes_hit)) or 'no toll routes',
+        len(segment_boxes), len(plazas),
     )
 
     return TollResult(

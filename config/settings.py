@@ -367,6 +367,8 @@ else:
 #           Resend quota (100 emails a day on the free plan).
 import sys as _sys
 _RUNNING_TESTS = len(_sys.argv) > 1 and _sys.argv[1] == 'test'
+# Exchange rates for border charges (core/services/fx.py): live fetch, never in tests.
+FX_LIVE_FETCH = (not _RUNNING_TESTS) and config('FX_LIVE_FETCH', default=True, cast=bool)
 EMAIL_DELIVERY = 'off' if _RUNNING_TESTS else config('EMAIL_DELIVERY', default='resend').strip().lower()
 if EMAIL_DELIVERY not in ('resend', 'console', 'off'):
     EMAIL_DELIVERY = 'resend'
