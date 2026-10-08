@@ -51,9 +51,9 @@ TONNAGE_RULES = {
     'spec': 'QUOTE-RULES.md "Tonnage quotes" (8 Oct 2026)',
     'engine': 'every cost is compute() of {**lane, **truck overrides, vehicle, operating_cost_per_km, '
               'load_kg, price: null} for one load; nothing else is priced',
-    'eligible': 'trucks with capacity and rated burn; one consignment (no total_tonnes): only trucks with '
-                'payload >= tonnes_per_load, else all of them split into loads (tonnes_exceed_payload); the '
-                'chosen truck (vehicle_type_id) always',
+    'eligible': 'trucks with capacity and rated burn; with tonnes_per_load (one consignment or a contract\'s '
+                'planned load) only trucks with payload >= it, else all of them (one consignment: split into loads, '
+                'tonnes_exceed_payload); the chosen truck (vehicle_type_id) always',
     'load_t': 'min(tonnes_per_load, payload_t), payload_t when tonnes_per_load is null',
     'loads_needed': 'ceil(total / load_t - 1e-9), total = total_tonnes ?? tonnes_per_load; '
                     'last_load_t = total - (n - 1) * load_t; tonnes round(x, 6)',

@@ -799,14 +799,16 @@ def compute_tonnage(inputs):
                                 actions=('choose_vehicle',)))
     split = False
     eligible = list(usable)
-    if mode == 'single' and per_load_t is not None:
+    if per_load_t is not None:
+        # A truck that can't carry the planned load (one consignment, or a
+        # contract's tonnes per load) is not one that "can carry it".
         fits = [e for e in usable if capacity_tonnes(e['vehicle']['capacity']) >= per_load_t - _T_EPS]
         if fits:
             eligible = fits + ([chosen] if chosen is not None and chosen not in fits else [])
             excluded += [{'vehicle_type_id': e['vehicle'].get('id'), 'name': e['vehicle'].get('name'),
                           'reason': 'too_small'} for e in usable if e not in eligible]
         else:
-            split = True
+            split = mode == 'single'
 
     plans = []
     if total_t is not None:

@@ -385,8 +385,9 @@ min_tonnes_per_load, vehicle_type_id, rate_per_tonne}`.
 
 **Trucks (A).** Every truck type in the company's fleet that can carry it: the §3 suggestion rule (own visible
 types with an AVAILABLE vehicle; specialised bodies only when the cargo calls for them) plus capacity and rated
-burn known (else `excluded` with `capacity_missing` / `burn_missing`). One consignment: only trucks with payload ≥
-`tonnes_per_load` (others `too_small`); none → all of them, split into loads (`tonnes_exceed_payload`). The chosen
+burn known (else `excluded` with `capacity_missing` / `burn_missing`). With `tonnes_per_load` (one consignment, or a contract's
+planned load): only trucks with payload ≥ it (others `too_small`); none → all of them (one consignment: split into
+loads, `tonnes_exceed_payload`). The chosen
 truck is always priced. Per truck:
 - `load_t = min(tonnes_per_load, payload)`; `loads_needed = ceil(total / load_t)`; `last_load_t = total − (n−1)·load_t`
   (tonnes `round(x, 6)`).
