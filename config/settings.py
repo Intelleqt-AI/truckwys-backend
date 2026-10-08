@@ -495,6 +495,11 @@ SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 # is set here (sk_test_... vs sk_live_...), no separate host/flag needed.
 PAYSTACK_SECRET_KEY = config('PAYSTACK_SECRET_KEY', default='')
 
+# DEBUG-only fleet demo keys (core.views_integrations.FLEET_DEMO_API_KEYS) act
+# for this ONE company; unset = demo keys are refused. Never used when DEBUG
+# is off.
+FLEET_DEMO_COMPANY_ID = config('FLEET_DEMO_COMPANY_ID', default=None)
+
 # CtrlFleet Integration Configuration
 CTRLFLEET_WEBHOOK_KEY = config('CTRLFLEET_WEBHOOK_KEY', default='')
 CTRLFLEET_API_KEY = config('CTRLFLEET_API_KEY', default='')

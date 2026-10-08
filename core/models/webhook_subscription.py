@@ -35,6 +35,14 @@ class WebhookSubscription(models.Model):
         help_text="Secret key used for HMAC signature verification"
     )
     is_active = models.BooleanField(default=True)
+    # The transporter this subscription acts for on the fleet webhooks
+    # (/fleet/webhooks/*). Null = none: those webhooks refuse it (fail
+    # closed), so a partner key can never touch a company's loads. Bound by
+    # platform staff in Django admin.
+    company = models.ForeignKey(
+        'Company', on_delete=models.CASCADE, null=True, blank=True, related_name='webhook_subscriptions',
+        help_text="Transporter this subscription acts for on fleet webhooks. Empty = none.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     last_delivery_at = models.DateTimeField(

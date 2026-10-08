@@ -1,10 +1,8 @@
 # TENANCY AUDIT: 2026-03-15 — Fleet integration API endpoints
-# - FleetTripSyncAPIView: Uses authenticated requests, operates on specific Load IDs ✓
-# - FleetBookingSyncAPIView: Uses authenticated requests, operates on specific Load IDs ✓
-# - FleetVehicleStatusAPIView: Filters by company ✓
-# - FleetWebhookTripUpdateView: API key auth, operates on specific entities by ID ✓
-# - FleetWebhookVehicleEventView: API key auth, operates on specific entities by ID ✓
-# - FleetWebhookDriverEventView: API key auth, operates on specific entities by ID ✓
+# 2026-10 re-audit (trip economics): the "specific IDs" ticks above were wrong:
+# any id from any tenant was accepted. Now every lookup is scoped to the
+# caller's company (JWT user) or the webhook subscription's company
+# (WebhookSubscription.company; none = 403, fail closed).
 
 """Fleet Management API endpoints for external fleet system integration."""
 
@@ -22,6 +20,24 @@ import hashlib
 from core.models import Load, Vehicle, Driver, ActivityEvent
 from core.serializers import LoadSerializer
 from core.auth import APIKeyAuthentication
+
+
+def _user_company(request):
+    from core.views import resolve_user_company
+    return resolve_user_company(request.user)
+
+
+def _subscription_company(request):
+    """The transporter a fleet webhook subscription acts for. A subscription
+    with no company (e.g. a lender partner) can't touch any company's loads,
+    vehicles or drivers: fail closed."""
+    sub = getattr(request, 'auth', None)
+    return getattr(sub, 'company', None)
+
+
+def _no_company_response():
+    return Response({'error': 'This API key is not linked to a company.'},
+                    status=status.HTTP_403_FORBIDDEN)
 
 
 class FleetTripSyncAPIView(APIView):
@@ -72,10 +88,11 @@ class FleetTripSyncAPIView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        company = _user_company(request)
         results = []
         for load_id in load_ids:
             try:
-                load = Load.objects.get(id=load_id)
+                load = Load.objects.get(id=load_id, company=company)
 
                 # TODO: Implement actual external API call to fleet system
                 # For now, just mark as successful
@@ -92,6 +109,7 @@ class FleetTripSyncAPIView(APIView):
                     description=f'Successfully synced to external fleet management system',
                     entity_id=load.id,
                     entity_type='load',
+                    company=company,
                     metadata={'synced_at': timezone.now().isoformat()}
                 )
 
@@ -158,10 +176,11 @@ class FleetBookingSyncAPIView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        company = _user_company(request)
         results = []
         for booking_id in booking_ids:
             try:
-                load = Load.objects.get(id=booking_id)
+                load = Load.objects.get(id=booking_id, company=company)
 
                 # TODO: Implement actual external API call
                 results.append({
@@ -235,7 +254,7 @@ class FleetVehicleStatusAPIView(APIView):
         """Get vehicle status and availability."""
         vehicle_id = request.query_params.get('vehicle_id')
 
-        vehicles = Vehicle.objects.filter(company=request.user.company)
+        vehicles = Vehicle.objects.filter(company=_user_company(request))
         if vehicle_id:
             try:
                 vehicles = vehicles.filter(id=vehicle_id)
@@ -364,6 +383,9 @@ class FleetWebhookTripUpdateView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
+        company = _subscription_company(request)
+        if company is None:
+            return _no_company_response()
         data = request.data
         load_id = data.get('load_id')
         load_number = data.get('load_number')
@@ -378,9 +400,9 @@ class FleetWebhookTripUpdateView(APIView):
         # Find load
         try:
             if load_id:
-                load = Load.objects.get(id=load_id)
+                load = Load.objects.get(id=load_id, company=company)
             elif load_number:
-                load = Load.objects.get(load_number=load_number)
+                load = Load.objects.get(load_number=load_number, company=company)
             else:
                 return Response(
                     {'error': 'load_id or load_number is required'},
@@ -399,6 +421,7 @@ class FleetWebhookTripUpdateView(APIView):
             description=f'Received {event_type} from fleet system',
             entity_id=load.id,
             entity_type='load',
+            company=company,
             metadata=data
         )
 
@@ -467,6 +490,9 @@ class FleetWebhookVehicleEventView(APIView):
     )
     def post(self, request):
         """Process vehicle event webhook."""
+        company = _subscription_company(request)
+        if company is None:
+            return _no_company_response()
         data = request.data
         vehicle_id = data.get('vehicle_id')
         vin = data.get('vin')
@@ -474,9 +500,9 @@ class FleetWebhookVehicleEventView(APIView):
         # Find vehicle
         try:
             if vehicle_id:
-                vehicle = Vehicle.objects.get(id=vehicle_id)
+                vehicle = Vehicle.objects.get(id=vehicle_id, company=company)
             elif vin:
-                vehicle = Vehicle.objects.get(vin=vin)
+                vehicle = Vehicle.objects.get(vin=vin, company=company)
             else:
                 return Response(
                     {'error': 'vehicle_id or vin is required'},
@@ -506,6 +532,7 @@ class FleetWebhookVehicleEventView(APIView):
             description=f'Fleet system reported {event_type} event',
             entity_id=vehicle.id,
             entity_type='vehicle',
+            company=company,
             metadata=data
         )
 
@@ -565,6 +592,9 @@ class FleetWebhookDriverEventView(APIView):
     )
     def post(self, request):
         """Process driver event webhook."""
+        company = _subscription_company(request)
+        if company is None:
+            return _no_company_response()
         data = request.data
         driver_id = data.get('driver_id')
         license_number = data.get('license_number')
@@ -572,9 +602,9 @@ class FleetWebhookDriverEventView(APIView):
         # Find driver
         try:
             if driver_id:
-                driver = Driver.objects.get(id=driver_id)
+                driver = Driver.objects.get(id=driver_id, company=company)
             elif license_number:
-                driver = Driver.objects.get(license_number=license_number)
+                driver = Driver.objects.get(license_number=license_number, company=company)
             else:
                 return Response(
                     {'error': 'driver_id or license_number is required'},
@@ -602,6 +632,7 @@ class FleetWebhookDriverEventView(APIView):
             description=data.get('description', f'Fleet system reported {event_type} event'),
             entity_id=driver.id,
             entity_type='driver',
+            company=company,
             metadata=data
         )
 

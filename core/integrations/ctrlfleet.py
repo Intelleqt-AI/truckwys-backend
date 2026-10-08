@@ -119,22 +119,35 @@ class CtrlFleetAdapter:
 
     def verify_api_key(self, request) -> bool:
         """
-        Verify X-CtrlFleet-Key header against settings.CTRLFLEET_WEBHOOK_KEY.
-
-        Args:
-            request: Django request object
-
-        Returns:
-            True if API key is valid, False otherwise
+        Verify X-CtrlFleet-Key header against settings.CTRLFLEET_WEBHOOK_KEY
+        (constant-time). An unset setting never matches.
         """
+        import hmac
         webhook_key = request.META.get('HTTP_X_CTRLFLEET_KEY')
-        if not webhook_key:
-            return False
-
         expected_key = settings.CTRLFLEET_WEBHOOK_KEY
-        return webhook_key == expected_key
+        if not webhook_key or not expected_key:
+            return False
+        return hmac.compare_digest(str(webhook_key), str(expected_key))
 
-    def handle_trip_update(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def resolve_company(self, request):
+        """The company this call acts for: the company of the X-API-Key
+        IntegrationAPIKey (security 2026-10). The shared X-CtrlFleet-Key alone
+        names no company, so it can't touch any tenant's data; when it is
+        configured it is required IN ADDITION. Returns (company, error)."""
+        from rest_framework.exceptions import AuthenticationFailed
+        from core.views_integrations import resolve_fleet_key
+        key = request.META.get('HTTP_X_API_KEY')
+        if not key:
+            return None, 'Missing X-API-Key header (your TruckWys integration key)'
+        if settings.CTRLFLEET_WEBHOOK_KEY and not self.verify_api_key(request):
+            return None, 'Invalid or missing X-CtrlFleet-Key header'
+        try:
+            key_obj = resolve_fleet_key(request, key)
+        except AuthenticationFailed as exc:
+            return None, str(exc.detail)
+        return key_obj.operator.company, None
+
+    def handle_trip_update(self, data: Dict[str, Any], company=None) -> Dict[str, Any]:
         """
         Handle trip update event from CtrlFleet.
 
@@ -169,10 +182,12 @@ class CtrlFleetAdapter:
 
         # Find the load
         try:
+            if company is None:
+                return {'status': 'error', 'message': 'No company for this call'}
             if load_id:
-                load = Load.objects.get(id=load_id)
+                load = Load.objects.get(id=load_id, company=company)
             elif load_number:
-                load = Load.objects.get(load_number=load_number)
+                load = Load.objects.get(load_number=load_number, company=company)
             else:
                 return {'status': 'error', 'message': 'load_id or load_number is required'}
         except Load.DoesNotExist:
@@ -221,6 +236,7 @@ class CtrlFleetAdapter:
             description=f'Trip update from CtrlFleet fleet management system',
             entity_id=load.id,
             entity_type='load',
+            company=company,
             metadata=data
         )
 
@@ -230,7 +246,7 @@ class CtrlFleetAdapter:
             'load_id': load.id
         }
 
-    def handle_vehicle_event(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def handle_vehicle_event(self, data: Dict[str, Any], company=None) -> Dict[str, Any]:
         """
         Handle vehicle event from CtrlFleet.
 
@@ -258,10 +274,12 @@ class CtrlFleetAdapter:
 
         # Find the vehicle
         try:
+            if company is None:
+                return {'status': 'error', 'message': 'No company for this call'}
             if vehicle_id:
-                vehicle = Vehicle.objects.get(id=vehicle_id)
+                vehicle = Vehicle.objects.get(id=vehicle_id, company=company)
             elif vin:
-                vehicle = Vehicle.objects.get(vin=vin)
+                vehicle = Vehicle.objects.get(vin=vin, company=company)
             else:
                 return {'status': 'error', 'message': 'vehicle_id or vin is required'}
         except Vehicle.DoesNotExist:
@@ -290,6 +308,7 @@ class CtrlFleetAdapter:
             description=f'Vehicle event from CtrlFleet fleet management system',
             entity_id=vehicle.id,
             entity_type='vehicle',
+            company=company,
             metadata=data
         )
 
@@ -299,7 +318,7 @@ class CtrlFleetAdapter:
             'vehicle_id': vehicle.id
         }
 
-    def handle_driver_event(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def handle_driver_event(self, data: Dict[str, Any], company=None) -> Dict[str, Any]:
         """
         Handle driver event from CtrlFleet.
 
@@ -326,10 +345,12 @@ class CtrlFleetAdapter:
 
         # Find the driver
         try:
+            if company is None:
+                return {'status': 'error', 'message': 'No company for this call'}
             if driver_id:
-                driver = Driver.objects.get(id=driver_id)
+                driver = Driver.objects.get(id=driver_id, company=company)
             elif license_number:
-                driver = Driver.objects.get(license_number=license_number)
+                driver = Driver.objects.get(license_number=license_number, company=company)
             else:
                 return {'status': 'error', 'message': 'driver_id or license_number is required'}
         except Driver.DoesNotExist:
@@ -358,6 +379,7 @@ class CtrlFleetAdapter:
             description=data.get('description', f'Driver event from CtrlFleet fleet management system'),
             entity_id=driver.id,
             entity_type='driver',
+            company=company,
             metadata=data
         )
 
@@ -371,7 +393,8 @@ class CtrlFleetAdapter:
 class CtrlFleetWebhookView(APIView):
     """
     Public webhook endpoint for CtrlFleet inbound events.
-    Authentication via X-CtrlFleet-Key header (no JWT required).
+    Authentication: X-API-Key (company-scoped IntegrationAPIKey), plus
+    X-CtrlFleet-Key when CTRLFLEET_WEBHOOK_KEY is configured (no JWT).
     """
 
     authentication_classes = []  # No JWT auth
@@ -381,28 +404,26 @@ class CtrlFleetWebhookView(APIView):
         """
         Process CtrlFleet webhook events.
 
-        Expects X-CtrlFleet-Key header for authentication.
+        Expects X-API-Key (+ X-CtrlFleet-Key when configured).
         Routes to appropriate handler based on event_category.
         """
         adapter = CtrlFleetAdapter()
 
-        # Verify API key
-        if not adapter.verify_api_key(request):
-            return Response(
-                {'error': 'Invalid or missing X-CtrlFleet-Key header'},
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+        # Company-scoped key (X-API-Key) + the shared key when configured.
+        company, error = adapter.resolve_company(request)
+        if company is None:
+            return Response({'error': error}, status=status.HTTP_401_UNAUTHORIZED)
 
         data = request.data
         event_category = data.get('event_category', 'trip')  # Default to trip
 
         # Route to appropriate handler
         if event_category == 'trip':
-            result = adapter.handle_trip_update(data)
+            result = adapter.handle_trip_update(data, company=company)
         elif event_category == 'vehicle':
-            result = adapter.handle_vehicle_event(data)
+            result = adapter.handle_vehicle_event(data, company=company)
         elif event_category == 'driver':
-            result = adapter.handle_driver_event(data)
+            result = adapter.handle_driver_event(data, company=company)
         else:
             return Response(
                 {'error': f'Unknown event_category: {event_category}'},
