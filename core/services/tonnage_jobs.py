@@ -105,7 +105,7 @@ def invoice_line_for_load(load, description):
     if b['min_tonnes'] and b['billable_tonnes'] > b['tonnes']:
         text += f' (minimum {t(b["min_tonnes"])}; {t(b["tonnes"])} delivered)'
     if b['awaiting_weighbridge']:
-        text += f' — {AWAITING_WEIGHBRIDGE.lower()}, planned tonnes'
+        text += ' (planned tonnes, awaiting the weighbridge)'
     return {'description': text, 'quantity': Decimal(str(b['billable_tonnes'])),
             'unit_price': Decimal(str(b['rate_per_tonne']))}
 
