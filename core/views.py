@@ -4169,12 +4169,16 @@ class RouteCalculatorView(APIView):
         # The way back, priced on its OWN route (TomTom's best route from the
         # delivery point home can use different roads and plazas — e.g.
         # Lebombo→Pretoria). Only when asked: it costs a second routing call.
-        if any(_truthy_flag(data.get(k)) for k in ('include_return', 'include_empty_return', 'price_return')) \
-                or str(data.get('trip_type') or '').upper() == 'ROUND_TRIP':
+        need, why = self._return_leg_needed(data, getattr(request.user, 'company', None), distance_km)
+        if need:
             response_data['return_leg'] = self._return_leg(
                 o, d, weight_kg, source, _toll_for_route, vehicle_facts,
                 getattr(getattr(request.user, 'company', None), 'cross_border_crossings_per_year', None),
                 origin_iso, dest_iso, countries if cross_border else None)
+        elif why:
+            response_data['return_leg'] = None
+        if why:
+            response_data['return_leg_reason'] = why
         response_data['best_index'] = 0
         if request.headers.get('X-TW-Quote-Rules') != '1':
             _legacy_route_shape(response_data, extra_costs)
@@ -4209,6 +4213,52 @@ class RouteCalculatorView(APIView):
         return {'gross_mass_kg': gross, 'axle_config': axles, 'sanral_class': sanral_class,
                 'vehicle_capacity_kg': cap}
 
+    @staticmethod
+    def _return_leg_needed(data, company, distance_km):
+        """(compute?, reason). The way back costs a second routing call, so
+        it is priced only when the quote will use it (QUOTE-RULES §5):
+        a round trip; the user's own empty-return toggle; or a one-way trip
+        at least the company's empty_return_min_km long with the
+        empty-return default on. `include_return` alone (clients send it on
+        every one-way calculation) does not force it."""
+        from core.services.quote_costing import DEFAULT_EMPTY_RETURN_MIN_KM
+        asked = any(k in data for k in ('include_return', 'include_empty_return', 'price_return'))
+        if str(data.get('trip_type') or '').upper() == 'ROUND_TRIP':
+            return True, 'round_trip'
+        if 'include_empty_return' in data and data.get('include_empty_return') not in (None, ''):
+            return (True, 'requested') if _truthy_flag(data['include_empty_return']) else (False, 'return_load_booked')
+        if _truthy_flag(data.get('price_return')):
+            return True, 'requested'
+        if not asked:
+            return False, None
+        if not bool(getattr(company, 'include_empty_return_default', True)):
+            return False, 'empty_return_default_off'
+        raw = getattr(company, 'empty_return_min_km', None)
+        min_km = float(raw) if raw is not None else DEFAULT_EMPTY_RETURN_MIN_KM
+        if (distance_km or 0) < min_km:
+            return False, 'below_empty_return_min_km'
+        return True, 'empty_return_default'
+
+    def _route_cached(self, o, d, weight_kg):
+        """Best route only, cached 15 min per (from, to, weight): the same
+        way back is asked for on every recalculation of a quote."""
+        from django.core.cache import cache
+        key = ('route:back:%.4f,%.4f:%.4f,%.4f:%s'
+               % (o['lat'], o['lon'], d['lat'], d['lon'], int(weight_kg or 0)))
+        try:
+            hit = cache.get(key)
+        except Exception:
+            hit = None
+        if hit is not None:
+            return hit
+        routes = self._route(o, d, weight_kg) or []
+        if routes:
+            try:
+                cache.set(key, routes[:1], 15 * 60)
+            except Exception:
+                pass
+        return routes[:1]
+
     def _return_leg(self, o, d, weight_kg, source, toll_for_route, vehicle_facts, crossings_per_year,
                     origin_iso, dest_iso, outbound_countries):
         """The trip home from the delivery point, on its own route."""
@@ -4216,7 +4266,7 @@ class RouteCalculatorView(APIView):
                                                 route_countries)
         if source != 'tomtom':
             return {'available': False, 'reason': 'routing_unavailable'}
-        back = self._route(d, o, weight_kg) or []
+        back = self._route_cached(d, o, weight_kg)
         if not back:
             return {'available': False, 'reason': 'routing_unavailable'}
         rt = back[0]

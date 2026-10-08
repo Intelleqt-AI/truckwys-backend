@@ -133,6 +133,47 @@ class ReturnLegTests(_Base):
         self.calc([tomtom('PTA-LEBOMBO')])
         self.assertEqual(self.route_calls, 1)
 
+    def setUp(self):
+        super().setUp()
+        from django.core.cache import cache
+        cache.clear()
+
+    def test_short_one_way_does_not_route_home(self):
+        # Clients send include_return on every one-way calculation; a 46 km
+        # trip is under the 300 km empty-return minimum, so no second call.
+        data = self.calc([tomtom('RAMP-HAMMANSKRAAL-PTA')], include_return=True)
+        self.assertEqual(self.route_calls, 1)
+        self.assertIsNone(data['return_leg'])
+        self.assertEqual(data['return_leg_reason'], 'below_empty_return_min_km')
+
+    def test_company_default_off_does_not_route_home(self):
+        self.company.include_empty_return_default = False
+        self.company.save()
+        data = self.calc([tomtom('PTA-LEBOMBO')], include_return=True)
+        self.assertEqual((self.route_calls, data['return_leg'], data['return_leg_reason']),
+                         (1, None, 'empty_return_default_off'))
+
+    def test_user_toggle_and_round_trip_always_route_home(self):
+        short = tomtom('RAMP-HAMMANSKRAAL-PTA')
+        data = self.calc([short], side_effect=[[short], [short]], include_empty_return=True)
+        self.assertEqual((self.route_calls, data['return_leg_reason']), (2, 'requested'))
+        data = self.calc([short], side_effect=[[short], [short]], trip_type='ROUND_TRIP', dest={'lat': -25.75, 'lon': 28.2})
+        self.assertEqual(data['return_leg_reason'], 'round_trip')
+        self.assertTrue(data['return_leg']['available'])
+
+    def test_user_toggle_off_means_a_return_load(self):
+        data = self.calc([tomtom('PTA-LEBOMBO')], include_empty_return=False)
+        self.assertEqual((self.route_calls, data['return_leg'], data['return_leg_reason']),
+                         (1, None, 'return_load_booked'))
+
+    def test_identical_way_back_is_cached(self):
+        out, back = tomtom('PTA-LEBOMBO'), tomtom('LEBOMBO-PTA')
+        self.calc([out], side_effect=[[out], [back]], include_return=True)
+        self.assertEqual(self.route_calls, 2)
+        data = self.calc([out], side_effect=[[out]], include_return=True)
+        self.assertEqual(self.route_calls, 1)          # the way back came from the cache
+        self.assertEqual(data['return_leg']['toll_cost_incl_vat_zar'], 1719.0)
+
 
 class TariffYearTests(_Base):
     def test_trip_after_the_published_schedule_warns(self):
