@@ -885,6 +885,37 @@ class SentEvidenceTests(_Base):
         self.assertEqual(r.status_code, 400)
         send.assert_not_called()
 
+    def test_created_as_sent_outside_the_api_never_emails(self):
+        # The admin "add", a seed/test-data script or loaddata: no send guard
+        # ran on these inserts, so no customer is emailed.
+        from core.tests.test_price_analysis import make_quote
+        with patch('core.services.quote_share.send_quote_to_customer_email',
+                   return_value=(True, 'a@x.test')) as send, \
+                self.captureOnCommitCallbacks(execute=True):
+            q = make_quote(self.company, self.customer, number='ORM-SENT-1', status='SENT', created_by=self.user)
+        send.assert_not_called()
+        self.assertEqual(Quote.objects.get(id=q.id).status, 'SENT')
+
+    def test_fixture_load_of_a_sent_quote_never_emails(self):
+        from django.db.models.signals import post_save
+        q = self.create()
+        Quote.objects.filter(id=q.id).update(status='SENT')
+        q.refresh_from_db()
+        with patch('core.services.quote_share.send_quote_to_customer_email',
+                   return_value=(True, 'a@x.test')) as send, \
+                self.captureOnCommitCallbacks(execute=True):
+            post_save.send(sender=Quote, instance=q, created=True, raw=True, using='default', update_fields=None)
+        send.assert_not_called()
+
+    def test_saved_draft_moved_to_sent_still_emails(self):
+        q = self.create()
+        with patch('core.services.quote_share.send_quote_to_customer_email',
+                   return_value=(True, 'a@x.test')) as send, \
+                self.captureOnCommitCallbacks(execute=True):
+            r = self.api.patch(f'/api/v1/quotes/{q.id}/', {'status': 'SENT'}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(send.call_count, 1)
+
     def test_outcome_is_read_only_through_the_quote_api(self):
         q = self.create()
         r = self.api.patch(f'/api/v1/quotes/{q.id}/', {'outcome': 'accepted'}, format='json')

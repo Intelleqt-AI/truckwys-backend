@@ -816,6 +816,9 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
                 # raising rolls the whole create back.
                 from core.services.quote_snapshot import enforce_send_guard
                 enforce_send_guard(instance)
+                # Read at commit by the post_save email (core.signals): only a
+                # create that passed the guard emails the customer.
+                instance._send_guard_passed = True
         return instance
 
     def update(self, instance, validated_data):

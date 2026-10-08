@@ -463,7 +463,13 @@ def quote_saved(sender, instance, created, **kwargs):
     # a quote is never "Sent" in the UI without actually having been sent.
     # Created straight as SENT goes the same way (it was sent): the email is
     # queued on commit, so a create the send guard rolls back never emails.
-    if instance.status == 'SENT' and (created or getattr(instance, '_old_status', None) != 'SENT'):
+    # Created straight as SENT emails only when the send guard passed on it
+    # (QuoteSerializer.create sets _send_guard_passed after enforce_send_guard,
+    # inside the same transaction). An insert anywhere else (the admin "add",
+    # a seed or test-data script, loaddata) never runs the guard, so it never
+    # emails a customer. Fixture loads (raw) never email.
+    if instance.status == 'SENT' and not kwargs.get('raw') \
+            and (created or getattr(instance, '_old_status', None) != 'SENT'):
         try:
             from django.db import transaction
             from core.services.quote_share import ensure_quote_token, send_quote_to_customer_email
@@ -476,6 +482,8 @@ def quote_saved(sender, instance, created, **kwargs):
                 # still a draft, and the database isn't held open during SMTP.
                 # Outside a transaction this runs at once, so send_to_customer
                 # still reads the result straight after quote.save().
+                if created and not getattr(instance, '_send_guard_passed', False):
+                    return
                 try:
                     email_sent, recipient = send_quote_to_customer_email(instance)
                     instance._share_email_sent = email_sent
