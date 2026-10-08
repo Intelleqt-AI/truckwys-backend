@@ -413,3 +413,67 @@ Copy the file into each client repo's test fixtures (keep identical).
 - Quote list (`total_amount`, `total_incl_vat`, new `incomplete_count`), board pipeline totals and the
   dashboard pipeline value leave out incomplete quotes (snapshot blocking, or tolls unknown).
 
+
+## Trip economics (8 Oct 2026, branch truckwys/trip-economics)
+Accurate job margins when a return load is added after a quote, and TMS sync that updates instead of skipping.
+
+- **Costing on the job.** `convert_to_load` copies the quote's compute() snapshot onto the Load: `costing_snapshot`
+  (lines incl. the `empty_return` leg), `cost_floor`, `empty_return_assumed`, fuel snapshot (`fuel_price_used`,
+  `fuel_price_source`, `fuel_zone`, `fuel_effective_from`, `fuel_litres`), `priced_vehicle_type`, `trip_type` +
+  `return_*`, `costing_inputs`, and the as-quoted `quoted_price` / `quoted_cost_floor` / `quoted_margin_pct` (never
+  changed afterwards). `costing_source`: `quote` | `computed` (a TMS load costed by compute() from its own data:
+  distance, weight, its truck's vehicle type, the tolls / driving time / driver cost the TMS sent, company diesel)
+  | `unknown` (no truck, or an incomplete floor — never a guessed truck or a partial sum) | `''` legacy. All
+  server-written (read-only through the load API).
+- **Return-load link.** `Load.return_of` (one-to-one, self): the return points at its outbound; one return per
+  outbound; pairs only. Blocks: other company, self, cancelled, round trip, a leg already paired. Warns (links
+  anyway): different truck type / assigned truck, return not starting ≤ 100 km from the drop or not ending ≤ 100 km
+  from home (coordinates, else place names), collected before the drop or > 14 days after. Candidates: collected
+  near the drop from 1 day before to N days after delivery (default 7, max 30), lane reversal first.
+- **Estimate per load** (`core.services.trip_economics.estimate`): the load's own snapshot lines; while linked,
+  the `empty_return` lines are removed on BOTH legs (`snapshot_return_linked`); any unknown remaining line = no
+  estimate (`snapshot_incomplete`). The 1,3× dead-head standard model is used only for legacy loads with no
+  snapshot (`legacy_deadhead`, label "Standard estimate (distance × 1,3 for an empty return)"), × 1,0 when paired
+  (`legacy_paired`). Actual expenses (excl. VAT) always win for cost; issued invoices (excl. VAT, net of credit
+  notes) for revenue. Used by `/loads/{id}/economics/`, TripCostView, `load_economics` (lane reports, transport
+  route report, capital scoring) and the intelligence route-pricing alert (invoiced delivered loads, ≥ 3, 180 days).
+- **Pair P&L**: legs (revenue, actual vs estimated cost, estimate basis / label / lines, removed empty-return
+  lines, margin, quoted margin, margin vs quoted) and combined (revenue, cost, margin, quoted floor and margin of
+  both, `empty_return_removed`). Combined quoted margin = (Σ quoted price − Σ quoted floor) / Σ quoted price.
+- **Recompute**: signals (link / unlink, expense, invoice, credit note, load save / delete) refresh
+  `Load.estimated_cost` / `estimate_basis` after commit, idempotent; `manage.py recompute_trip_economics` back-fills.
+- **TMS**: `Load.external_id` unique per company; trips/sync upserts on it; fleet/sync finds by external_id or
+  load_number. Every change audited (ActivityEvent, old → new); re-costed when distance / weight / trip type /
+  costing inputs (or, for non-quote jobs, the truck) change; a quoted job keeps its quoted_* figures. Invoices are
+  never changed: `invoice_mismatch` {code `invoice_differs_from_rate`, invoice, amounts} flags a difference.
+- **Learning**: on delivery, the QuoteOutcome gets `actual_revenue`, `actual_cost`, `actual_margin_pct`,
+  `actual_cost_basis`, `backhaul_found` (labels only; never features; written without moving created_at /
+  updated_at). Pricing analysis returns `return_load_history` {trips, found, share_pct, enough, window_days 180,
+  min_sample 5, text} — "On this lane 60% of your trips found a return load (12 of 20)." Context only: the
+  empty-return default never changes automatically.
+- **One-tap booking**: `POST /quotes/{id}/convert_to_load/` is idempotent (200 + the existing job), refuses
+  DECLINED / EXPIRED (409 `quote_not_bookable`) and a blocked DRAFT (400 `quote_send_blocked`, same send guard),
+  takes `return_of_load_id` / `expect_return`, and adds `booking` {return_link, return / outbound candidates,
+  invoice_preview, costing, economics}. `invoicing.invoice_lines_for_load` is the single source of the delivery
+  invoice's lines (hook for per-tonne / weighbridge billing); the preview equals what delivery raises.
+- **Follow-ups (8 Oct, coordinator):** pairs only in v1; triangular routes (A→B, B→C, C→A) are future work. A job
+  whose costing is `unknown` / incomplete has NO estimate (no silent 1,3× fallback) and every economics / costing
+  response carries `missing: [{code, prompt}]`, e.g. `{code: "no_vehicle", prompt: "Add the truck to cost this
+  job"}` (codes: no_vehicle, distance_missing, distance_estimated, tolls_unknown, driver_nights_unknown,
+  diesel_missing, truck_burn_missing, border_costs_missing, overload). Quote detail (`GET /quotes/{id}/`) adds
+  read-only `actuals` {actual_margin_pct, backhaul_found, actual_revenue, actual_cost, actual_cost_basis,
+  recorded_at} or null. Fleet vehicle/driver webhooks require the timestamped HMAC (see the deploy doc).
+- **After merging toll-border-coverage (8 Oct):** a job with no quote is costed with the same toll/border engine:
+  tolls by point-to-polyline matching on its own `route_geometry` at the truck's SANRAL class on the pickup-date
+  tariffs (way back on `return_route_geometry` when sent), border costs per leg in travel order (out, and back as
+  its own leg) via `calculate_cross_border_costs`, unknown crossings -> `border_costs_missing`. TMS figures win;
+  `costing_inputs.route_costs` records what the engine filled. Load costing inputs carry the new keys
+  (`toll_cost_return`, `border_cost_empty_return`, `border_estimate`, `border_estimate_empty_return`,
+  `border_costs_unknown`, `border_cost_is_override`, `clearing_agent_fee`, `abnormal_load`) from the quote.
+  Trip-economics migrations are 0166–0176 (after the toll branch's 0160–0165). compute() unchanged by this branch.
+- **UI round 3 (8 Oct):** one cost label rule for the job card and the quote outcome (web `costLabel`, app
+  `costLabelFor`): actual + complete "Actual costs"; actual not complete "Actual so far · not final"; part actual
+  complete "Part actual · running cost estimated" / not complete "Part actual · not final"; estimate "Estimate ·
+  quote costing | job costing (never quoted) | standard …". QuoteOutcome.actual_cost_basis is the job card's
+  basis (part_actual while the running cost is estimated). Trip money shows to the cent. Return candidates never
+  offer DELIVERED / INVOICED jobs. `estimate_label` says "Job costing" for a job costed from its own data.

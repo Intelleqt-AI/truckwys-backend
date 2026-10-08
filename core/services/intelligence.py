@@ -303,88 +303,68 @@ class IntelligenceService:
 
         return alerts
 
+    ROUTE_MARGIN_WINDOW_DAYS = 180
+    ROUTE_MARGIN_MIN_LOADS = 3
+
     def _check_route_pricing(self) -> List[Dict[str, Any]]:
         """
-        PRICING_ALERT: Flag routes with average margin < 20%.
+        PRICING_ALERT: Flag lanes whose margin on INVOICED delivered loads in
+        the last 180 days is < 20% (at least 3 loads).
 
-        Returns:
-            List of pricing alerts
+        Trip economics (2026-10): per load, revenue = issued invoices (excl.
+        VAT, net of credit notes); cost = actual expenses where recorded,
+        else the load's own quote costing, without the empty return when a
+        return load is linked (so a backhaul lane is not charged an empty leg
+        twice). Was: Trip rows (never created in production) costed on fuel
+        and tolls only.
         """
+        from core.models import Load
+        from core.services.trip_economics import economics_rows
         alerts = []
-
-        # Group trips by route (origin -> destination)
-        trips = Trip.objects.filter(
-            load__company=self.company,
-            status='COMPLETED',
-            load__isnull=False
-        ).select_related('load', 'vehicle')
-
-        # Group by route
+        since = timezone.now() - timedelta(days=self.ROUTE_MARGIN_WINDOW_DAYS)
+        loads = list(Load.objects.filter(company=self.company, status__in=['DELIVERED', 'INVOICED'],
+                                         delivery_date__gte=since).select_related('company'))
+        if not loads:
+            return alerts
+        rows = economics_rows(self.company, loads)
         routes = {}
-        for trip in trips:
-            route_key = f"{trip.origin} → {trip.destination}"
+        for load in loads:
+            r = rows[load.pk]
+            if r['revenue_basis'] != 'actual' or r['cost'] is None:
+                continue
+            origin = (load.pickup_city or load.pickup_location or '').strip() or '—'
+            dest = (load.delivery_city or load.delivery_location or '').strip() or '—'
+            route = routes.setdefault((origin, dest), {'origin': origin, 'destination': dest, 'revenue': Decimal('0'),
+                                                       'cost': Decimal('0'), 'n': 0, 'actual_n': 0, 'paired_n': 0})
+            route['revenue'] += r['revenue']
+            route['cost'] += r['cost']
+            route['n'] += 1
+            route['actual_n'] += r['cost_basis'] == 'actual'
+            route['paired_n'] += bool(r['paired'])
 
-            if route_key not in routes:
-                routes[route_key] = {
-                    'origin': trip.origin,
-                    'destination': trip.destination,
-                    'trips': [],
-                }
-
-            routes[route_key]['trips'].append(trip)
-
-        # Calculate margin per route
-        for route_key, route_data in routes.items():
-            margin = self._calculate_route_margin(route_data['trips'])
-
-            if margin is not None and margin < 20:
+        for (origin, dest), route in routes.items():
+            if route['n'] < self.ROUTE_MARGIN_MIN_LOADS or route['revenue'] <= 0:
+                continue
+            margin = float((route['revenue'] - route['cost']) / route['revenue'] * 100)
+            if margin < 20:
+                route_key = f"{origin} → {dest}"
                 alerts.append({
                     'type': 'PRICING_ALERT',
                     'severity': 'MEDIUM',
                     'title': f'Low Route Margin: {route_key}',
                     'message': f'Route {route_key} has an average margin of {margin:.1f}%, below the 20% threshold. Consider increasing rates.',
                     'route': route_key,
-                    'origin': route_data['origin'],
-                    'destination': route_data['destination'],
+                    'origin': origin,
+                    'destination': dest,
                     'margin': margin,
-                    'trip_count': len(route_data['trips']),
+                    'trip_count': route['n'],
+                    'cost_basis': ('actual' if route['actual_n'] == route['n']
+                                   else 'estimate' if route['actual_n'] == 0 else 'mixed'),
+                    'loads_with_return_load': route['paired_n'],
                     'link': '/insights',
                 })
 
         return alerts
-
-    def _calculate_route_margin(self, trips: List[Trip]) -> float:
-        """
-        Calculate average margin for a route.
-
-        Args:
-            trips: List of Trip instances for the route
-
-        Returns:
-            Average margin percentage
-        """
-        total_revenue = Decimal('0')
-        total_costs = Decimal('0')
-
-        for trip in trips:
-            # Get invoice for revenue
-            for invoice in trip.invoices.filter(company=self.company,
-                                                status__in=Invoice.ISSUED_STATUSES):
-                total_revenue += invoice_revenue_excl_vat(invoice)
-
-            # Calculate costs
-            fuel_cost = Decimal('0')
-            if trip.actual_fuel_litres and self._diesel_price() is not None:
-                fuel_cost = trip.actual_fuel_litres * self._diesel_price()
-
-            toll_cost = trip.actual_toll_cost or Decimal('0')
-            total_costs += (fuel_cost + toll_cost)
-
-        if total_revenue <= 0:
-            return None
-
-        margin = ((total_revenue - total_costs) / total_revenue * 100)
-        return float(margin)
 
     def _check_fleet_efficiency(self) -> List[Dict[str, Any]]:
         """

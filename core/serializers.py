@@ -538,6 +538,17 @@ class VehicleLogSerializer(serializers.ModelSerializer):
 
 
 # Load Serializer
+LOAD_ECONOMICS_READ_ONLY = (
+    'costing_source', 'costing_inputs', 'costing_snapshot', 'cost_floor', 'empty_return_assumed',
+    'fuel_price_used', 'fuel_price_source', 'fuel_zone', 'fuel_effective_from', 'fuel_litres',
+    'priced_vehicle_type', 'costed_at', 'quoted_price', 'quoted_cost_floor', 'quoted_margin_pct',
+    # Linked only through POST loads/{id}/link-return/ (validated) or the TMS.
+    'return_of', 'return_link_source', 'return_linked_at', 'return_linked_by',
+    'estimated_cost', 'estimate_basis', 'economics_updated_at',
+    'external_id', 'external_source', 'return_of_external_ref', 'invoice_mismatch', 'costs_closed',
+)
+
+
 class LoadSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
     company_scoped_relations = {
         'customer': 'company_id', 'driver': 'company_id',
@@ -567,6 +578,9 @@ class LoadSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
             'pod_signature', 'pod_received_by', 'pod_document',
             'pod_captured_at', 'pod_latitude', 'pod_longitude', 'pod_device',
             'pod_source', 'pod_file_sha256',
+            # Trip economics: written by the server only (convert_to_load,
+            # trip_costing, return-load linking, TMS sync).
+            *LOAD_ECONOMICS_READ_ONLY,
         ]
 
     def get_customer_price(self, obj):

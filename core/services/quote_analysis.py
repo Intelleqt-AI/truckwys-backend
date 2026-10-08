@@ -880,4 +880,7 @@ def analyze_quote(payload, company=None, user=None):
         'suggested_price_rationale': rationale,
         'narrative': narrative,
         'narrative_source': narrative_source,
+        # Same shape as the pricing analysis (trip economics): how often this
+        # company's trips on the lane found a return load. Context only.
+        'return_load_history': analysis.get('return_load_history'),
     }

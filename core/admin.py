@@ -178,6 +178,19 @@ class IntegrationAPIKeyAdmin(admin.ModelAdmin):
     readonly_fields = ['key', 'created_at', 'last_used_at', 'usage_count', 'quota_used', 'quota_period']
 
 
+from .models.webhook_subscription import WebhookSubscription as _WebhookSubscription
+
+
+@admin.register(_WebhookSubscription)
+class WebhookSubscriptionAdmin(admin.ModelAdmin):
+    """Where platform staff bind a fleet webhook subscription to ONE
+    transporter (company); unbound subscriptions can't use /fleet/webhooks/."""
+    list_display = ['id', 'partner_name', 'company', 'is_active', 'allow_legacy_signature', 'last_delivery_at']
+    list_filter = ['is_active']
+    search_fields = ['partner_name', 'company__company_name']
+    readonly_fields = ['api_key', 'secret', 'created_at', 'updated_at', 'last_delivery_at', 'failure_count']
+
+
 @admin.register(AuditLog)
 class AuditLogAdmin(admin.ModelAdmin):
     list_display = ['id', 'user', 'action', 'resource_type', 'resource_id', 'ip_address', 'created_at']

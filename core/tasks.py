@@ -962,3 +962,18 @@ from core.accounting.tasks import (  # noqa: E402,F401
     poll_all_payments, poll_connection, process_webhooks, push_link, reconcile_all,
     reconcile_connection, retry_due, run_backfill,
 )
+
+
+@shared_task(name='core.tasks.route_tms_load', ignore_result=True)
+def route_tms_load(load_id):
+    """Route a TMS job once with TomTom and re-cost it (core.services.tms_routing)."""
+    from core.services.tms_routing import route_load
+    return route_load(load_id)
+
+
+@shared_task(name='core.tasks.purge_used_webhook_signatures', ignore_result=True)
+def purge_used_webhook_signatures():
+    """Delete expired replay-protection rows (fleet webhook signatures)."""
+    from django.utils import timezone
+    from core.models import UsedWebhookSignature
+    return UsedWebhookSignature.objects.filter(expires_at__lt=timezone.now()).delete()[0]
