@@ -296,6 +296,8 @@ class RefreshTests(_Base):
         row = self.type_row()
         self.assertEqual(row.vehicles_count, 2)                  # CA600GP left out as an outlier
         self.assertIn('differs_from_type', [r['reason'] for r in row.rejections])
+        out = next(r for r in row.rejections if r['reason'] == 'differs_from_type')
+        self.assertRegex(out['detail'], r'^\d+,\d vs \d+,\d L/100 km for the type$')   # SA format
         self.assertEqual(row.fuel_source, 'mixed')
         self.assertAlmostEqual(row.rated_burn_l_per_100km, 40.0, delta=0.1)
 

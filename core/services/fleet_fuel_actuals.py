@@ -252,6 +252,12 @@ def plausibility(rated, capacity_t):
     return None
 
 
+def _vs_median(value, med):
+    """SA format: '46,8 vs 33,2 L/100 km for the type'."""
+    from core.services.quote_costing import fmt_num
+    return f'{fmt_num(value, 1)} vs {fmt_num(med, 1)} L/100 km for the type'
+
+
 def pick_type_members(per_vehicle):
     """(members, left_out) for a type: trucks with enough km, minus outliers
     vs the type median when there are 3+."""
@@ -265,7 +271,7 @@ def pick_type_members(per_vehicle):
             if abs(v['figures']['l_per_100km'] - med) / med > TYPE_OUTLIER_PCT:
                 left_out.append({'vehicle_id': v['vehicle'].id, 'plate': v['vehicle'].plate,
                                  'reason': 'differs_from_type',
-                                 'detail': f'{v["figures"]["l_per_100km"]:.1f} vs type median {med:.1f} L/100km'})
+                                 'detail': _vs_median(v['figures']['l_per_100km'], med)})
             else:
                 keep.append(v)
         eligible = keep
