@@ -47,7 +47,9 @@ def create_invoice_for_load(load, *, company=None, mark_sent: bool = False):
         return None, False
     if not getattr(load, 'customer', None):
         return None, False
-    subtotal = load.total_amount or Decimal('0')
+    from core.services.tonnage_jobs import AWAITING_WEIGHBRIDGE, invoice_line_for_load, load_billing
+    billing = load_billing(load)
+    subtotal = Decimal(str(billing['amount'])) if billing else (load.total_amount or Decimal('0'))
     if subtotal <= 0:
         return None, False
 
@@ -75,6 +77,11 @@ def create_invoice_for_load(load, *, company=None, mark_sent: bool = False):
         )
         from core.services.invoice_lines import terms_days_for
         invoice.terms_days = terms_days_for(terms)
+        if billing and billing['awaiting_weighbridge']:
+            # Per tonne without the weighbridge figure: the planned tonnes,
+            # flagged (never silently), and never sent as it stands.
+            invoice.notes = f'{invoice.notes}\n{AWAITING_WEIGHBRIDGE}: invoiced on planned tonnes.'
+            mark_sent = False
         apply_lines(invoice, invoice_lines_for_load(load, company))
         if mark_sent:
             invoice.status = 'SENT'
@@ -95,11 +102,17 @@ def invoice_lines_for_load(load, company=None):
     delivery auto-invoice, the manual convert and the booking preview, so the
     preview is exactly what gets raised.
 
-    HOOK (per-tonne quotes, other branch): when the load is billed per tonne,
-    return quantity = weighbridge tonnes and unit_price = rate per tonne here;
+    Per-tonne loads: quantity = max(weighbridge tonnes, minimum) (planned
+    tonnes while awaiting the weighbridge) and unit_price = rate per tonne;
     everything downstream (VAT, totals, preview) follows."""
     from core.services.invoice_lines import load_tax_code
+    from core.services.tonnage_jobs import invoice_line_for_load, load_billing
     company = company or getattr(load, 'company', None)
+    if load_billing(load) is not None:
+        # Per tonne: quantity = max(weighbridge tonnes, minimum), else the
+        # planned tonnes (flagged "Awaiting weighbridge tonnes").
+        return [{**invoice_line_for_load(load, _load_line_description(load)),
+                 'tax_code': load_tax_code(load, company), 'load': load.pk}]
     return [{
         'description': _load_line_description(load),
         'quantity': 1,

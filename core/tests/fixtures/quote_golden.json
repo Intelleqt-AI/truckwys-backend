@@ -8847,5 +8847,5378 @@
         ]
       }
     }
+  ],
+  "tonnage_rules": {
+    "spec": "QUOTE-RULES.md \"Tonnage quotes\" (8 Oct 2026)",
+    "engine": "every cost is compute() of {**lane, **truck overrides, vehicle, operating_cost_per_km, load_kg, price: null} for one load; nothing else is priced",
+    "eligible": "trucks with capacity and rated burn; with tonnes_per_load (one consignment or a contract's planned load) only trucks with payload >= it, else all of them (one consignment: split into loads, tonnes_exceed_payload); the chosen truck (vehicle_type_id) always",
+    "load_t": "min(tonnes_per_load, payload_t), payload_t when tonnes_per_load is null",
+    "loads_needed": "ceil(total / load_t - 1e-9), total = total_tonnes ?? tonnes_per_load; last_load_t = total - (n - 1) * load_t; tonnes round(x, 6)",
+    "cost_per_load": "compute(load_kg = load_t * 1000).floor; cost_last_load = the same at last_load_t",
+    "total_cost": "cents((n - 1) * cost_per_load + cost_last_load)",
+    "billable_tonnes": "(n - 1) * max(load_t, min) + max(last_load_t, min); min = min_tonnes_per_load, else each truck's own load_t for its cost_per_tonne, the basis truck's load_t for the quote",
+    "cost_per_tonne": "cents(total_cost / billable_tonnes)",
+    "basis": "chosen truck, else the highest cost_per_tonne (tie: smaller payload, then higher id ranks first); all costs unknown: smallest payload",
+    "target_rate_per_tonne": "ceil(cost_per_tonne / (1 - target_margin_pct / 100) - 1e-9)",
+    "default_rate_per_tonne": "max(target_rate, ceil(minimum_charge / min_t - 1e-9))",
+    "rate_used": "rate_per_tonne ?? default_rate_per_tonne; every truck's at_rate uses it with the quote min",
+    "at_rate": "revenue = cents(rate * billable at the quote min); margin = cents(revenue - total_cost); margin_pct = (revenue - total_cost) / revenue * 100",
+    "lines": "basis truck lines over the plan: cents((n - 1) * full + last) per line; floor = total_cost",
+    "compare": "every amount to the cent; tonnes within 1e-9; warnings by code / severity / impact_zar."
+  },
+  "tonnage_cases": [
+    {
+      "name": "single_load_fits_one_truck",
+      "description": "One 30 t consignment, only a superlink in the fleet: one load, minimum = the 30 t planned.",
+      "inputs": {
+        "lane": {
+          "trip_type": "ONE_WAY",
+          "distance_km": 568.4,
+          "distance_estimated": false,
+          "distance_confirmed": false,
+          "duration_minutes": 440,
+          "diesel": {
+            "zone": "INLAND",
+            "mode": "LIVE",
+            "own_price": null,
+            "own_set_at": null,
+            "official_price": 32.7989,
+            "official_effective_from": "2026-10-06T22:01:00Z",
+            "official_stale": false,
+            "use_official": false,
+            "override_price": null
+          },
+          "tolls": {
+            "one_way": 1043.48,
+            "empty_return": 812.61,
+            "lookup_failed": false,
+            "confirmed_none": false
+          },
+          "driver": {
+            "allowance_per_night": 450.0,
+            "nights": null,
+            "amount": null
+          },
+          "hours_per_day": 9.0,
+          "border_cost": 0.0,
+          "international": false,
+          "include_empty_return": null,
+          "settings": {
+            "include_empty_return_default": true,
+            "empty_return_min_km": 300.0
+          },
+          "minimum_charge": null,
+          "default_price_per_km": null,
+          "target_margin_pct": 10.0
+        },
+        "trucks": [
+          {
+            "vehicle": {
+              "id": 11,
+              "name": "Superlink",
+              "capacity": 34,
+              "rated_burn_l_per_100km": 42
+            },
+            "operating_cost_per_km": 16.0,
+            "operating_cost_source": "vehicle_default"
+          }
+        ],
+        "tonnes_per_load": 30.0,
+        "total_tonnes": null,
+        "min_tonnes_per_load": null,
+        "vehicle_type_id": null,
+        "rate_per_tonne": 1250.0
+      },
+      "expected": {
+        "version": "qc-1",
+        "pricing_basis": "per_tonne",
+        "tonnage": {
+          "version": "qt-1",
+          "mode": "single",
+          "total_tonnes": 30.0,
+          "tonnes_per_load": 30.0,
+          "min_tonnes_per_load": 30.0,
+          "min_tonnes_source": "basis_load",
+          "vehicle_type_id": null,
+          "basis_vehicle_type_id": 11,
+          "basis_reason": "safest",
+          "trucks": [
+            {
+              "vehicle_type_id": 11,
+              "name": "Superlink",
+              "payload_t": 34.0,
+              "tonnes_per_load": 30.0,
+              "loads_needed": 1,
+              "last_load_t": 30.0,
+              "partial_last_load": false,
+              "cost_per_load": 33529.56,
+              "cost_last_load": 33529.56,
+              "total_cost": 33529.56,
+              "min_tonnes_per_load": 30.0,
+              "billable_tonnes": 30.0,
+              "cost_per_tonne": 1117.65,
+              "is_basis": true,
+              "at_rate": {
+                "rate_per_tonne": 1250.0,
+                "billable_tonnes": 30.0,
+                "revenue": 37500.0,
+                "margin": 3970.44,
+                "margin_pct": 10.587840000000007
+              }
+            }
+          ],
+          "excluded": [],
+          "summary": "Superlink 34 t R 1 118/t",
+          "loads_planned": 1,
+          "billable_tonnes": 30.0,
+          "total_cost": 33529.56,
+          "cost_per_tonne": 1117.65,
+          "target_margin_pct": 10.0,
+          "target_rate_per_tonne": 1242.0,
+          "minimum_charge_rate_per_tonne": null,
+          "default_rate_per_tonne": 1242.0,
+          "rate_per_tonne": 1250.0,
+          "rate_used": 1250.0,
+          "rate_source": "user",
+          "minimum_charge_per_load": 37500.0,
+          "estimated_revenue": 37500.0,
+          "margin": 3970.44,
+          "margin_pct": 10.587840000000007,
+          "basis_load_costing": {
+            "version": "qc-1",
+            "trip": {
+              "type": "ONE_WAY",
+              "legs_loaded": 1,
+              "distance_km": 568.4,
+              "empty_return_included": true,
+              "empty_return_default": true,
+              "km_loaded": 568.4,
+              "km_empty": 568.4,
+              "km_driven": 1136.8,
+              "hours_one_way": 7.333333333333333,
+              "return_nights": 1
+            },
+            "vehicle": {
+              "id": 11,
+              "name": "Superlink",
+              "capacity_t": 34.0,
+              "load_t": 30.0,
+              "load_ratio": 0.8823529411764706,
+              "rated_burn_l_per_100km": 42.0,
+              "burn_loaded_l_per_100km": 40.51764705882353,
+              "burn_empty_l_per_100km": 29.4
+            },
+            "diesel": {
+              "zone": "INLAND",
+              "mode": "LIVE",
+              "own_price": null,
+              "own_set_at": null,
+              "fuel_type": "Diesel",
+              "official_price": 32.7989,
+              "official_effective_from": "2026-10-07T00:01:00+02:00",
+              "official_stale": false,
+              "price": 32.7989,
+              "source": "official"
+            },
+            "litres": {
+              "loaded": 230.30230588235293,
+              "empty_return": 167.1096,
+              "total": 397.4119058823529
+            },
+            "lines": [
+              {
+                "key": "fuel",
+                "label": "Fuel",
+                "leg": "loaded",
+                "amount": 7553.66,
+                "basis": "568 km at 40,5 L/100km × R 32,80/L",
+                "litres": 230.30230588235293,
+                "burn_l_per_100km": 40.51764705882353,
+                "price_per_litre": 32.7989,
+                "km": 568.4
+              },
+              {
+                "key": "operating",
+                "label": "Operating costs",
+                "leg": "loaded",
+                "amount": 9094.4,
+                "basis": "568 km × R 16,00/km",
+                "rate_per_km": 16.0,
+                "km": 568.4,
+                "source": "vehicle_default"
+              },
+              {
+                "key": "tolls",
+                "label": "Tolls",
+                "leg": "loaded",
+                "amount": 1043.48,
+                "basis": "R 1 043,48 one way",
+                "one_way": 1043.48,
+                "legs": 1
+              },
+              {
+                "key": "driver",
+                "label": "Driver nights out",
+                "leg": "loaded",
+                "amount": 0.0,
+                "basis": "No night away",
+                "nights": 0,
+                "suggested_nights": 0,
+                "rate_per_night": 450.0,
+                "suggested": 0.0,
+                "source": "suggested"
+              },
+              {
+                "key": "fuel_return",
+                "label": "Fuel, empty return",
+                "leg": "empty_return",
+                "amount": 5481.01,
+                "basis": "568 km empty at 29,4 L/100km × R 32,80/L",
+                "litres": 167.1096,
+                "burn_l_per_100km": 29.4,
+                "price_per_litre": 32.7989,
+                "km": 568.4
+              },
+              {
+                "key": "operating_return",
+                "label": "Operating costs, empty return",
+                "leg": "empty_return",
+                "amount": 9094.4,
+                "basis": "568 km × R 16,00/km",
+                "rate_per_km": 16.0,
+                "km": 568.4,
+                "source": "vehicle_default"
+              },
+              {
+                "key": "tolls_return",
+                "label": "Tolls, empty return",
+                "leg": "empty_return",
+                "amount": 812.61,
+                "basis": "R 812,61 home empty",
+                "one_way": 812.61
+              },
+              {
+                "key": "driver_return",
+                "label": "Driver nights, empty return",
+                "leg": "empty_return",
+                "amount": 450.0,
+                "basis": "1 extra night × R 450,00",
+                "nights": 1,
+                "rate_per_night": 450.0
+              }
+            ],
+            "floor": 33529.56,
+            "floor_known": 33529.56,
+            "floor_complete": true,
+            "target_margin_pct": 10.0,
+            "target_price": 37255.07,
+            "minimum_charge": null,
+            "default_price_per_km": null,
+            "rate_price": null,
+            "default_price": 37300.0,
+            "alternative_with_return_load": {
+              "floor": 17691.54,
+              "target_price": 19657.27,
+              "default_price": 19700.0
+            },
+            "price": null,
+            "margin": null,
+            "margin_pct": null,
+            "warnings": [],
+            "blocking": [],
+            "can_send": true
+          }
+        },
+        "trip": {
+          "type": "ONE_WAY",
+          "legs_loaded": 1,
+          "distance_km": 568.4,
+          "empty_return_included": true,
+          "empty_return_default": true,
+          "km_loaded": 568.4,
+          "km_empty": 568.4,
+          "km_driven": 1136.8,
+          "hours_one_way": 7.333333333333333,
+          "return_nights": 1
+        },
+        "vehicle": {
+          "id": 11,
+          "name": "Superlink",
+          "capacity_t": 34.0,
+          "load_t": 30.0,
+          "load_ratio": 0.8823529411764706,
+          "rated_burn_l_per_100km": 42.0,
+          "burn_loaded_l_per_100km": 40.51764705882353,
+          "burn_empty_l_per_100km": 29.4
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "fuel_type": "Diesel",
+          "official_price": 32.7989,
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
+          "official_stale": false,
+          "price": 32.7989,
+          "source": "official"
+        },
+        "litres": {
+          "loaded": null,
+          "empty_return": null,
+          "total": 397.4119058823529
+        },
+        "lines": [
+          {
+            "key": "fuel",
+            "label": "Fuel",
+            "leg": "loaded",
+            "amount": 7553.66,
+            "basis": "568 km at 40,5 L/100km × R 32,80/L",
+            "litres": 230.30230588235293,
+            "burn_l_per_100km": 40.51764705882353,
+            "price_per_litre": 32.7989,
+            "km": 568.4,
+            "per_load_amount": 7553.66,
+            "loads": 1
+          },
+          {
+            "key": "operating",
+            "label": "Operating costs",
+            "leg": "loaded",
+            "amount": 9094.4,
+            "basis": "568 km × R 16,00/km",
+            "rate_per_km": 16.0,
+            "km": 568.4,
+            "source": "vehicle_default",
+            "per_load_amount": 9094.4,
+            "loads": 1
+          },
+          {
+            "key": "tolls",
+            "label": "Tolls",
+            "leg": "loaded",
+            "amount": 1043.48,
+            "basis": "R 1 043,48 one way",
+            "one_way": 1043.48,
+            "legs": 1,
+            "per_load_amount": 1043.48,
+            "loads": 1
+          },
+          {
+            "key": "driver",
+            "label": "Driver nights out",
+            "leg": "loaded",
+            "amount": 0.0,
+            "basis": "No night away",
+            "nights": 0,
+            "suggested_nights": 0,
+            "rate_per_night": 450.0,
+            "suggested": 0.0,
+            "source": "suggested",
+            "per_load_amount": 0.0,
+            "loads": 1
+          },
+          {
+            "key": "fuel_return",
+            "label": "Fuel, empty return",
+            "leg": "empty_return",
+            "amount": 5481.01,
+            "basis": "568 km empty at 29,4 L/100km × R 32,80/L",
+            "litres": 167.1096,
+            "burn_l_per_100km": 29.4,
+            "price_per_litre": 32.7989,
+            "km": 568.4,
+            "per_load_amount": 5481.01,
+            "loads": 1
+          },
+          {
+            "key": "operating_return",
+            "label": "Operating costs, empty return",
+            "leg": "empty_return",
+            "amount": 9094.4,
+            "basis": "568 km × R 16,00/km",
+            "rate_per_km": 16.0,
+            "km": 568.4,
+            "source": "vehicle_default",
+            "per_load_amount": 9094.4,
+            "loads": 1
+          },
+          {
+            "key": "tolls_return",
+            "label": "Tolls, empty return",
+            "leg": "empty_return",
+            "amount": 812.61,
+            "basis": "R 812,61 home empty",
+            "one_way": 812.61,
+            "per_load_amount": 812.61,
+            "loads": 1
+          },
+          {
+            "key": "driver_return",
+            "label": "Driver nights, empty return",
+            "leg": "empty_return",
+            "amount": 450.0,
+            "basis": "1 extra night × R 450,00",
+            "nights": 1,
+            "rate_per_night": 450.0,
+            "per_load_amount": 450.0,
+            "loads": 1
+          }
+        ],
+        "floor": 33529.56,
+        "floor_known": 33529.56,
+        "floor_complete": true,
+        "target_margin_pct": 10.0,
+        "target_price": 37260.0,
+        "minimum_charge": null,
+        "default_price": 37260.0,
+        "price": 37500.0,
+        "margin": 3970.44,
+        "margin_pct": 10.587840000000007,
+        "warnings": [],
+        "blocking": [],
+        "can_send": true
+      }
+    },
+    {
+      "name": "truck_unknown_three_eligible_safest",
+      "description": "Truck unknown, 30 t: superlink, tri-axle and tautliner can carry it; priced on the highest cost per tonne.",
+      "inputs": {
+        "lane": {
+          "trip_type": "ONE_WAY",
+          "distance_km": 568.4,
+          "distance_estimated": false,
+          "distance_confirmed": false,
+          "duration_minutes": 440,
+          "diesel": {
+            "zone": "INLAND",
+            "mode": "LIVE",
+            "own_price": null,
+            "own_set_at": null,
+            "official_price": 32.7989,
+            "official_effective_from": "2026-10-06T22:01:00Z",
+            "official_stale": false,
+            "use_official": false,
+            "override_price": null
+          },
+          "tolls": {
+            "one_way": 1043.48,
+            "empty_return": 812.61,
+            "lookup_failed": false,
+            "confirmed_none": false
+          },
+          "driver": {
+            "allowance_per_night": 450.0,
+            "nights": null,
+            "amount": null
+          },
+          "hours_per_day": 9.0,
+          "border_cost": 0.0,
+          "international": false,
+          "include_empty_return": null,
+          "settings": {
+            "include_empty_return_default": true,
+            "empty_return_min_km": 300.0
+          },
+          "minimum_charge": null,
+          "default_price_per_km": null,
+          "target_margin_pct": 10.0
+        },
+        "trucks": [
+          {
+            "vehicle": {
+              "id": 11,
+              "name": "Superlink",
+              "capacity": 34,
+              "rated_burn_l_per_100km": 42
+            },
+            "operating_cost_per_km": 16.0,
+            "operating_cost_source": "vehicle_default"
+          },
+          {
+            "vehicle": {
+              "id": 12,
+              "name": "Tri-axle",
+              "capacity": 30,
+              "rated_burn_l_per_100km": 38
+            },
+            "operating_cost_per_km": 15.0,
+            "operating_cost_source": "vehicle_default"
+          },
+          {
+            "vehicle": {
+              "id": 17,
+              "name": "Tautliner",
+              "capacity": 30,
+              "rated_burn_l_per_100km": 40
+            },
+            "operating_cost_per_km": 15.0,
+            "operating_cost_source": "vehicle_default"
+          }
+        ],
+        "tonnes_per_load": 30.0,
+        "total_tonnes": null,
+        "min_tonnes_per_load": null,
+        "vehicle_type_id": null,
+        "rate_per_tonne": null
+      },
+      "expected": {
+        "version": "qc-1",
+        "pricing_basis": "per_tonne",
+        "tonnage": {
+          "version": "qt-1",
+          "mode": "single",
+          "total_tonnes": 30.0,
+          "tonnes_per_load": 30.0,
+          "min_tonnes_per_load": 30.0,
+          "min_tonnes_source": "basis_load",
+          "vehicle_type_id": null,
+          "basis_vehicle_type_id": 11,
+          "basis_reason": "safest",
+          "trucks": [
+            {
+              "vehicle_type_id": 11,
+              "name": "Superlink",
+              "payload_t": 34.0,
+              "tonnes_per_load": 30.0,
+              "loads_needed": 1,
+              "last_load_t": 30.0,
+              "partial_last_load": false,
+              "cost_per_load": 33529.56,
+              "cost_last_load": 33529.56,
+              "total_cost": 33529.56,
+              "min_tonnes_per_load": 30.0,
+              "billable_tonnes": 30.0,
+              "cost_per_tonne": 1117.65,
+              "is_basis": true,
+              "at_rate": {
+                "rate_per_tonne": 1242.0,
+                "billable_tonnes": 30.0,
+                "revenue": 37260.0,
+                "margin": 3730.44,
+                "margin_pct": 10.011916264090184
+              }
+            },
+            {
+              "vehicle_type_id": 17,
+              "name": "Tautliner",
+              "payload_t": 30.0,
+              "tonnes_per_load": 30.0,
+              "loads_needed": 1,
+              "last_load_t": 30.0,
+              "partial_last_load": false,
+              "cost_per_load": 32035.26,
+              "cost_last_load": 32035.26,
+              "total_cost": 32035.26,
+              "min_tonnes_per_load": 30.0,
+              "billable_tonnes": 30.0,
+              "cost_per_tonne": 1067.84,
+              "is_basis": false,
+              "at_rate": {
+                "rate_per_tonne": 1242.0,
+                "billable_tonnes": 30.0,
+                "revenue": 37260.0,
+                "margin": 5224.74,
+                "margin_pct": 14.022383252818042
+              }
+            },
+            {
+              "vehicle_type_id": 12,
+              "name": "Tri-axle",
+              "payload_t": 30.0,
+              "tonnes_per_load": 30.0,
+              "loads_needed": 1,
+              "last_load_t": 30.0,
+              "partial_last_load": false,
+              "cost_per_load": 31401.4,
+              "cost_last_load": 31401.4,
+              "total_cost": 31401.4,
+              "min_tonnes_per_load": 30.0,
+              "billable_tonnes": 30.0,
+              "cost_per_tonne": 1046.71,
+              "is_basis": false,
+              "at_rate": {
+                "rate_per_tonne": 1242.0,
+                "billable_tonnes": 30.0,
+                "revenue": 37260.0,
+                "margin": 5858.6,
+                "margin_pct": 15.723564143853997
+              }
+            }
+          ],
+          "excluded": [],
+          "summary": "Superlink 34 t R 1 118/t · Tautliner 30 t R 1 068/t · Tri-axle 30 t R 1 047/t",
+          "loads_planned": 1,
+          "billable_tonnes": 30.0,
+          "total_cost": 33529.56,
+          "cost_per_tonne": 1117.65,
+          "target_margin_pct": 10.0,
+          "target_rate_per_tonne": 1242.0,
+          "minimum_charge_rate_per_tonne": null,
+          "default_rate_per_tonne": 1242.0,
+          "rate_per_tonne": null,
+          "rate_used": 1242.0,
+          "rate_source": "default",
+          "minimum_charge_per_load": 37260.0,
+          "estimated_revenue": 37260.0,
+          "margin": 3730.44,
+          "margin_pct": 10.011916264090184,
+          "basis_load_costing": {
+            "version": "qc-1",
+            "trip": {
+              "type": "ONE_WAY",
+              "legs_loaded": 1,
+              "distance_km": 568.4,
+              "empty_return_included": true,
+              "empty_return_default": true,
+              "km_loaded": 568.4,
+              "km_empty": 568.4,
+              "km_driven": 1136.8,
+              "hours_one_way": 7.333333333333333,
+              "return_nights": 1
+            },
+            "vehicle": {
+              "id": 11,
+              "name": "Superlink",
+              "capacity_t": 34.0,
+              "load_t": 30.0,
+              "load_ratio": 0.8823529411764706,
+              "rated_burn_l_per_100km": 42.0,
+              "burn_loaded_l_per_100km": 40.51764705882353,
+              "burn_empty_l_per_100km": 29.4
+            },
+            "diesel": {
+              "zone": "INLAND",
+              "mode": "LIVE",
+              "own_price": null,
+              "own_set_at": null,
+              "fuel_type": "Diesel",
+              "official_price": 32.7989,
+              "official_effective_from": "2026-10-07T00:01:00+02:00",
+              "official_stale": false,
+              "price": 32.7989,
+              "source": "official"
+            },
+            "litres": {
+              "loaded": 230.30230588235293,
+              "empty_return": 167.1096,
+              "total": 397.4119058823529
+            },
+            "lines": [
+              {
+                "key": "fuel",
+                "label": "Fuel",
+                "leg": "loaded",
+                "amount": 7553.66,
+                "basis": "568 km at 40,5 L/100km × R 32,80/L",
+                "litres": 230.30230588235293,
+                "burn_l_per_100km": 40.51764705882353,
+                "price_per_litre": 32.7989,
+                "km": 568.4
+              },
+              {
+                "key": "operating",
+                "label": "Operating costs",
+                "leg": "loaded",
+                "amount": 9094.4,
+                "basis": "568 km × R 16,00/km",
+                "rate_per_km": 16.0,
+                "km": 568.4,
+                "source": "vehicle_default"
+              },
+              {
+                "key": "tolls",
+                "label": "Tolls",
+                "leg": "loaded",
+                "amount": 1043.48,
+                "basis": "R 1 043,48 one way",
+                "one_way": 1043.48,
+                "legs": 1
+              },
+              {
+                "key": "driver",
+                "label": "Driver nights out",
+                "leg": "loaded",
+                "amount": 0.0,
+                "basis": "No night away",
+                "nights": 0,
+                "suggested_nights": 0,
+                "rate_per_night": 450.0,
+                "suggested": 0.0,
+                "source": "suggested"
+              },
+              {
+                "key": "fuel_return",
+                "label": "Fuel, empty return",
+                "leg": "empty_return",
+                "amount": 5481.01,
+                "basis": "568 km empty at 29,4 L/100km × R 32,80/L",
+                "litres": 167.1096,
+                "burn_l_per_100km": 29.4,
+                "price_per_litre": 32.7989,
+                "km": 568.4
+              },
+              {
+                "key": "operating_return",
+                "label": "Operating costs, empty return",
+                "leg": "empty_return",
+                "amount": 9094.4,
+                "basis": "568 km × R 16,00/km",
+                "rate_per_km": 16.0,
+                "km": 568.4,
+                "source": "vehicle_default"
+              },
+              {
+                "key": "tolls_return",
+                "label": "Tolls, empty return",
+                "leg": "empty_return",
+                "amount": 812.61,
+                "basis": "R 812,61 home empty",
+                "one_way": 812.61
+              },
+              {
+                "key": "driver_return",
+                "label": "Driver nights, empty return",
+                "leg": "empty_return",
+                "amount": 450.0,
+                "basis": "1 extra night × R 450,00",
+                "nights": 1,
+                "rate_per_night": 450.0
+              }
+            ],
+            "floor": 33529.56,
+            "floor_known": 33529.56,
+            "floor_complete": true,
+            "target_margin_pct": 10.0,
+            "target_price": 37255.07,
+            "minimum_charge": null,
+            "default_price_per_km": null,
+            "rate_price": null,
+            "default_price": 37300.0,
+            "alternative_with_return_load": {
+              "floor": 17691.54,
+              "target_price": 19657.27,
+              "default_price": 19700.0
+            },
+            "price": null,
+            "margin": null,
+            "margin_pct": null,
+            "warnings": [],
+            "blocking": [],
+            "can_send": true
+          }
+        },
+        "trip": {
+          "type": "ONE_WAY",
+          "legs_loaded": 1,
+          "distance_km": 568.4,
+          "empty_return_included": true,
+          "empty_return_default": true,
+          "km_loaded": 568.4,
+          "km_empty": 568.4,
+          "km_driven": 1136.8,
+          "hours_one_way": 7.333333333333333,
+          "return_nights": 1
+        },
+        "vehicle": {
+          "id": 11,
+          "name": "Superlink",
+          "capacity_t": 34.0,
+          "load_t": 30.0,
+          "load_ratio": 0.8823529411764706,
+          "rated_burn_l_per_100km": 42.0,
+          "burn_loaded_l_per_100km": 40.51764705882353,
+          "burn_empty_l_per_100km": 29.4
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "fuel_type": "Diesel",
+          "official_price": 32.7989,
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
+          "official_stale": false,
+          "price": 32.7989,
+          "source": "official"
+        },
+        "litres": {
+          "loaded": null,
+          "empty_return": null,
+          "total": 397.4119058823529
+        },
+        "lines": [
+          {
+            "key": "fuel",
+            "label": "Fuel",
+            "leg": "loaded",
+            "amount": 7553.66,
+            "basis": "568 km at 40,5 L/100km × R 32,80/L",
+            "litres": 230.30230588235293,
+            "burn_l_per_100km": 40.51764705882353,
+            "price_per_litre": 32.7989,
+            "km": 568.4,
+            "per_load_amount": 7553.66,
+            "loads": 1
+          },
+          {
+            "key": "operating",
+            "label": "Operating costs",
+            "leg": "loaded",
+            "amount": 9094.4,
+            "basis": "568 km × R 16,00/km",
+            "rate_per_km": 16.0,
+            "km": 568.4,
+            "source": "vehicle_default",
+            "per_load_amount": 9094.4,
+            "loads": 1
+          },
+          {
+            "key": "tolls",
+            "label": "Tolls",
+            "leg": "loaded",
+            "amount": 1043.48,
+            "basis": "R 1 043,48 one way",
+            "one_way": 1043.48,
+            "legs": 1,
+            "per_load_amount": 1043.48,
+            "loads": 1
+          },
+          {
+            "key": "driver",
+            "label": "Driver nights out",
+            "leg": "loaded",
+            "amount": 0.0,
+            "basis": "No night away",
+            "nights": 0,
+            "suggested_nights": 0,
+            "rate_per_night": 450.0,
+            "suggested": 0.0,
+            "source": "suggested",
+            "per_load_amount": 0.0,
+            "loads": 1
+          },
+          {
+            "key": "fuel_return",
+            "label": "Fuel, empty return",
+            "leg": "empty_return",
+            "amount": 5481.01,
+            "basis": "568 km empty at 29,4 L/100km × R 32,80/L",
+            "litres": 167.1096,
+            "burn_l_per_100km": 29.4,
+            "price_per_litre": 32.7989,
+            "km": 568.4,
+            "per_load_amount": 5481.01,
+            "loads": 1
+          },
+          {
+            "key": "operating_return",
+            "label": "Operating costs, empty return",
+            "leg": "empty_return",
+            "amount": 9094.4,
+            "basis": "568 km × R 16,00/km",
+            "rate_per_km": 16.0,
+            "km": 568.4,
+            "source": "vehicle_default",
+            "per_load_amount": 9094.4,
+            "loads": 1
+          },
+          {
+            "key": "tolls_return",
+            "label": "Tolls, empty return",
+            "leg": "empty_return",
+            "amount": 812.61,
+            "basis": "R 812,61 home empty",
+            "one_way": 812.61,
+            "per_load_amount": 812.61,
+            "loads": 1
+          },
+          {
+            "key": "driver_return",
+            "label": "Driver nights, empty return",
+            "leg": "empty_return",
+            "amount": 450.0,
+            "basis": "1 extra night × R 450,00",
+            "nights": 1,
+            "rate_per_night": 450.0,
+            "per_load_amount": 450.0,
+            "loads": 1
+          }
+        ],
+        "floor": 33529.56,
+        "floor_known": 33529.56,
+        "floor_complete": true,
+        "target_margin_pct": 10.0,
+        "target_price": 37260.0,
+        "minimum_charge": null,
+        "default_price": 37260.0,
+        "price": null,
+        "margin": null,
+        "margin_pct": null,
+        "warnings": [],
+        "blocking": [],
+        "can_send": true
+      }
+    },
+    {
+      "name": "chosen_truck",
+      "description": "Same consignment, the user picks the tri-axle: priced on it, the others shown with their margin.",
+      "inputs": {
+        "lane": {
+          "trip_type": "ONE_WAY",
+          "distance_km": 568.4,
+          "distance_estimated": false,
+          "distance_confirmed": false,
+          "duration_minutes": 440,
+          "diesel": {
+            "zone": "INLAND",
+            "mode": "LIVE",
+            "own_price": null,
+            "own_set_at": null,
+            "official_price": 32.7989,
+            "official_effective_from": "2026-10-06T22:01:00Z",
+            "official_stale": false,
+            "use_official": false,
+            "override_price": null
+          },
+          "tolls": {
+            "one_way": 1043.48,
+            "empty_return": 812.61,
+            "lookup_failed": false,
+            "confirmed_none": false
+          },
+          "driver": {
+            "allowance_per_night": 450.0,
+            "nights": null,
+            "amount": null
+          },
+          "hours_per_day": 9.0,
+          "border_cost": 0.0,
+          "international": false,
+          "include_empty_return": null,
+          "settings": {
+            "include_empty_return_default": true,
+            "empty_return_min_km": 300.0
+          },
+          "minimum_charge": null,
+          "default_price_per_km": null,
+          "target_margin_pct": 10.0
+        },
+        "trucks": [
+          {
+            "vehicle": {
+              "id": 11,
+              "name": "Superlink",
+              "capacity": 34,
+              "rated_burn_l_per_100km": 42
+            },
+            "operating_cost_per_km": 16.0,
+            "operating_cost_source": "vehicle_default"
+          },
+          {
+            "vehicle": {
+              "id": 12,
+              "name": "Tri-axle",
+              "capacity": 30,
+              "rated_burn_l_per_100km": 38
+            },
+            "operating_cost_per_km": 15.0,
+            "operating_cost_source": "vehicle_default"
+          },
+          {
+            "vehicle": {
+              "id": 17,
+              "name": "Tautliner",
+              "capacity": 30,
+              "rated_burn_l_per_100km": 40
+            },
+            "operating_cost_per_km": 15.0,
+            "operating_cost_source": "vehicle_default"
+          }
+        ],
+        "tonnes_per_load": 30.0,
+        "total_tonnes": null,
+        "min_tonnes_per_load": null,
+        "vehicle_type_id": 12,
+        "rate_per_tonne": 1200.0
+      },
+      "expected": {
+        "version": "qc-1",
+        "pricing_basis": "per_tonne",
+        "tonnage": {
+          "version": "qt-1",
+          "mode": "single",
+          "total_tonnes": 30.0,
+          "tonnes_per_load": 30.0,
+          "min_tonnes_per_load": 30.0,
+          "min_tonnes_source": "basis_load",
+          "vehicle_type_id": 12,
+          "basis_vehicle_type_id": 12,
+          "basis_reason": "chosen",
+          "trucks": [
+            {
+              "vehicle_type_id": 11,
+              "name": "Superlink",
+              "payload_t": 34.0,
+              "tonnes_per_load": 30.0,
+              "loads_needed": 1,
+              "last_load_t": 30.0,
+              "partial_last_load": false,
+              "cost_per_load": 33529.56,
+              "cost_last_load": 33529.56,
+              "total_cost": 33529.56,
+              "min_tonnes_per_load": 30.0,
+              "billable_tonnes": 30.0,
+              "cost_per_tonne": 1117.65,
+              "is_basis": false,
+              "at_rate": {
+                "rate_per_tonne": 1200.0,
+                "billable_tonnes": 30.0,
+                "revenue": 36000.0,
+                "margin": 2470.44,
+                "margin_pct": 6.86233333333334
+              }
+            },
+            {
+              "vehicle_type_id": 17,
+              "name": "Tautliner",
+              "payload_t": 30.0,
+              "tonnes_per_load": 30.0,
+              "loads_needed": 1,
+              "last_load_t": 30.0,
+              "partial_last_load": false,
+              "cost_per_load": 32035.26,
+              "cost_last_load": 32035.26,
+              "total_cost": 32035.26,
+              "min_tonnes_per_load": 30.0,
+              "billable_tonnes": 30.0,
+              "cost_per_tonne": 1067.84,
+              "is_basis": false,
+              "at_rate": {
+                "rate_per_tonne": 1200.0,
+                "billable_tonnes": 30.0,
+                "revenue": 36000.0,
+                "margin": 3964.74,
+                "margin_pct": 11.01316666666667
+              }
+            },
+            {
+              "vehicle_type_id": 12,
+              "name": "Tri-axle",
+              "payload_t": 30.0,
+              "tonnes_per_load": 30.0,
+              "loads_needed": 1,
+              "last_load_t": 30.0,
+              "partial_last_load": false,
+              "cost_per_load": 31401.4,
+              "cost_last_load": 31401.4,
+              "total_cost": 31401.4,
+              "min_tonnes_per_load": 30.0,
+              "billable_tonnes": 30.0,
+              "cost_per_tonne": 1046.71,
+              "is_basis": true,
+              "at_rate": {
+                "rate_per_tonne": 1200.0,
+                "billable_tonnes": 30.0,
+                "revenue": 36000.0,
+                "margin": 4598.6,
+                "margin_pct": 12.773888888888884
+              }
+            }
+          ],
+          "excluded": [],
+          "summary": "Superlink 34 t R 1 118/t · Tautliner 30 t R 1 068/t · Tri-axle 30 t R 1 047/t",
+          "loads_planned": 1,
+          "billable_tonnes": 30.0,
+          "total_cost": 31401.4,
+          "cost_per_tonne": 1046.71,
+          "target_margin_pct": 10.0,
+          "target_rate_per_tonne": 1164.0,
+          "minimum_charge_rate_per_tonne": null,
+          "default_rate_per_tonne": 1164.0,
+          "rate_per_tonne": 1200.0,
+          "rate_used": 1200.0,
+          "rate_source": "user",
+          "minimum_charge_per_load": 36000.0,
+          "estimated_revenue": 36000.0,
+          "margin": 4598.6,
+          "margin_pct": 12.773888888888884,
+          "basis_load_costing": {
+            "version": "qc-1",
+            "trip": {
+              "type": "ONE_WAY",
+              "legs_loaded": 1,
+              "distance_km": 568.4,
+              "empty_return_included": true,
+              "empty_return_default": true,
+              "km_loaded": 568.4,
+              "km_empty": 568.4,
+              "km_driven": 1136.8,
+              "hours_one_way": 7.333333333333333,
+              "return_nights": 1
+            },
+            "vehicle": {
+              "id": 12,
+              "name": "Tri-axle",
+              "capacity_t": 30.0,
+              "load_t": 30.0,
+              "load_ratio": 1.0,
+              "rated_burn_l_per_100km": 38.0,
+              "burn_loaded_l_per_100km": 38.0,
+              "burn_empty_l_per_100km": 26.599999999999998
+            },
+            "diesel": {
+              "zone": "INLAND",
+              "mode": "LIVE",
+              "own_price": null,
+              "own_set_at": null,
+              "fuel_type": "Diesel",
+              "official_price": 32.7989,
+              "official_effective_from": "2026-10-07T00:01:00+02:00",
+              "official_stale": false,
+              "price": 32.7989,
+              "source": "official"
+            },
+            "litres": {
+              "loaded": 215.99200000000002,
+              "empty_return": 151.19439999999997,
+              "total": 367.1864
+            },
+            "lines": [
+              {
+                "key": "fuel",
+                "label": "Fuel",
+                "leg": "loaded",
+                "amount": 7084.3,
+                "basis": "568 km at 38,0 L/100km × R 32,80/L",
+                "litres": 215.99200000000002,
+                "burn_l_per_100km": 38.0,
+                "price_per_litre": 32.7989,
+                "km": 568.4
+              },
+              {
+                "key": "operating",
+                "label": "Operating costs",
+                "leg": "loaded",
+                "amount": 8526.0,
+                "basis": "568 km × R 15,00/km",
+                "rate_per_km": 15.0,
+                "km": 568.4,
+                "source": "vehicle_default"
+              },
+              {
+                "key": "tolls",
+                "label": "Tolls",
+                "leg": "loaded",
+                "amount": 1043.48,
+                "basis": "R 1 043,48 one way",
+                "one_way": 1043.48,
+                "legs": 1
+              },
+              {
+                "key": "driver",
+                "label": "Driver nights out",
+                "leg": "loaded",
+                "amount": 0.0,
+                "basis": "No night away",
+                "nights": 0,
+                "suggested_nights": 0,
+                "rate_per_night": 450.0,
+                "suggested": 0.0,
+                "source": "suggested"
+              },
+              {
+                "key": "fuel_return",
+                "label": "Fuel, empty return",
+                "leg": "empty_return",
+                "amount": 4959.01,
+                "basis": "568 km empty at 26,6 L/100km × R 32,80/L",
+                "litres": 151.19439999999997,
+                "burn_l_per_100km": 26.599999999999998,
+                "price_per_litre": 32.7989,
+                "km": 568.4
+              },
+              {
+                "key": "operating_return",
+                "label": "Operating costs, empty return",
+                "leg": "empty_return",
+                "amount": 8526.0,
+                "basis": "568 km × R 15,00/km",
+                "rate_per_km": 15.0,
+                "km": 568.4,
+                "source": "vehicle_default"
+              },
+              {
+                "key": "tolls_return",
+                "label": "Tolls, empty return",
+                "leg": "empty_return",
+                "amount": 812.61,
+                "basis": "R 812,61 home empty",
+                "one_way": 812.61
+              },
+              {
+                "key": "driver_return",
+                "label": "Driver nights, empty return",
+                "leg": "empty_return",
+                "amount": 450.0,
+                "basis": "1 extra night × R 450,00",
+                "nights": 1,
+                "rate_per_night": 450.0
+              }
+            ],
+            "floor": 31401.4,
+            "floor_known": 31401.4,
+            "floor_complete": true,
+            "target_margin_pct": 10.0,
+            "target_price": 34890.44,
+            "minimum_charge": null,
+            "default_price_per_km": null,
+            "rate_price": null,
+            "default_price": 34900.0,
+            "alternative_with_return_load": {
+              "floor": 16653.78,
+              "target_price": 18504.2,
+              "default_price": 18550.0
+            },
+            "price": null,
+            "margin": null,
+            "margin_pct": null,
+            "warnings": [],
+            "blocking": [],
+            "can_send": true
+          }
+        },
+        "trip": {
+          "type": "ONE_WAY",
+          "legs_loaded": 1,
+          "distance_km": 568.4,
+          "empty_return_included": true,
+          "empty_return_default": true,
+          "km_loaded": 568.4,
+          "km_empty": 568.4,
+          "km_driven": 1136.8,
+          "hours_one_way": 7.333333333333333,
+          "return_nights": 1
+        },
+        "vehicle": {
+          "id": 12,
+          "name": "Tri-axle",
+          "capacity_t": 30.0,
+          "load_t": 30.0,
+          "load_ratio": 1.0,
+          "rated_burn_l_per_100km": 38.0,
+          "burn_loaded_l_per_100km": 38.0,
+          "burn_empty_l_per_100km": 26.599999999999998
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "fuel_type": "Diesel",
+          "official_price": 32.7989,
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
+          "official_stale": false,
+          "price": 32.7989,
+          "source": "official"
+        },
+        "litres": {
+          "loaded": null,
+          "empty_return": null,
+          "total": 367.1864
+        },
+        "lines": [
+          {
+            "key": "fuel",
+            "label": "Fuel",
+            "leg": "loaded",
+            "amount": 7084.3,
+            "basis": "568 km at 38,0 L/100km × R 32,80/L",
+            "litres": 215.99200000000002,
+            "burn_l_per_100km": 38.0,
+            "price_per_litre": 32.7989,
+            "km": 568.4,
+            "per_load_amount": 7084.3,
+            "loads": 1
+          },
+          {
+            "key": "operating",
+            "label": "Operating costs",
+            "leg": "loaded",
+            "amount": 8526.0,
+            "basis": "568 km × R 15,00/km",
+            "rate_per_km": 15.0,
+            "km": 568.4,
+            "source": "vehicle_default",
+            "per_load_amount": 8526.0,
+            "loads": 1
+          },
+          {
+            "key": "tolls",
+            "label": "Tolls",
+            "leg": "loaded",
+            "amount": 1043.48,
+            "basis": "R 1 043,48 one way",
+            "one_way": 1043.48,
+            "legs": 1,
+            "per_load_amount": 1043.48,
+            "loads": 1
+          },
+          {
+            "key": "driver",
+            "label": "Driver nights out",
+            "leg": "loaded",
+            "amount": 0.0,
+            "basis": "No night away",
+            "nights": 0,
+            "suggested_nights": 0,
+            "rate_per_night": 450.0,
+            "suggested": 0.0,
+            "source": "suggested",
+            "per_load_amount": 0.0,
+            "loads": 1
+          },
+          {
+            "key": "fuel_return",
+            "label": "Fuel, empty return",
+            "leg": "empty_return",
+            "amount": 4959.01,
+            "basis": "568 km empty at 26,6 L/100km × R 32,80/L",
+            "litres": 151.19439999999997,
+            "burn_l_per_100km": 26.599999999999998,
+            "price_per_litre": 32.7989,
+            "km": 568.4,
+            "per_load_amount": 4959.01,
+            "loads": 1
+          },
+          {
+            "key": "operating_return",
+            "label": "Operating costs, empty return",
+            "leg": "empty_return",
+            "amount": 8526.0,
+            "basis": "568 km × R 15,00/km",
+            "rate_per_km": 15.0,
+            "km": 568.4,
+            "source": "vehicle_default",
+            "per_load_amount": 8526.0,
+            "loads": 1
+          },
+          {
+            "key": "tolls_return",
+            "label": "Tolls, empty return",
+            "leg": "empty_return",
+            "amount": 812.61,
+            "basis": "R 812,61 home empty",
+            "one_way": 812.61,
+            "per_load_amount": 812.61,
+            "loads": 1
+          },
+          {
+            "key": "driver_return",
+            "label": "Driver nights, empty return",
+            "leg": "empty_return",
+            "amount": 450.0,
+            "basis": "1 extra night × R 450,00",
+            "nights": 1,
+            "rate_per_night": 450.0,
+            "per_load_amount": 450.0,
+            "loads": 1
+          }
+        ],
+        "floor": 31401.4,
+        "floor_known": 31401.4,
+        "floor_complete": true,
+        "target_margin_pct": 10.0,
+        "target_price": 34920.0,
+        "minimum_charge": null,
+        "default_price": 34920.0,
+        "price": 36000.0,
+        "margin": 4598.6,
+        "margin_pct": 12.773888888888884,
+        "warnings": [],
+        "blocking": [],
+        "can_send": true
+      }
+    },
+    {
+      "name": "partial_load_under_minimum",
+      "description": "12 t consignment with a 30 t minimum per load: charged for 30 t; the rigid is too small.",
+      "inputs": {
+        "lane": {
+          "trip_type": "ONE_WAY",
+          "distance_km": 568.4,
+          "distance_estimated": false,
+          "distance_confirmed": false,
+          "duration_minutes": 440,
+          "diesel": {
+            "zone": "INLAND",
+            "mode": "LIVE",
+            "own_price": null,
+            "own_set_at": null,
+            "official_price": 32.7989,
+            "official_effective_from": "2026-10-06T22:01:00Z",
+            "official_stale": false,
+            "use_official": false,
+            "override_price": null
+          },
+          "tolls": {
+            "one_way": 1043.48,
+            "empty_return": 812.61,
+            "lookup_failed": false,
+            "confirmed_none": false
+          },
+          "driver": {
+            "allowance_per_night": 450.0,
+            "nights": null,
+            "amount": null
+          },
+          "hours_per_day": 9.0,
+          "border_cost": 0.0,
+          "international": false,
+          "include_empty_return": null,
+          "settings": {
+            "include_empty_return_default": true,
+            "empty_return_min_km": 300.0
+          },
+          "minimum_charge": null,
+          "default_price_per_km": null,
+          "target_margin_pct": 10.0
+        },
+        "trucks": [
+          {
+            "vehicle": {
+              "id": 11,
+              "name": "Superlink",
+              "capacity": 34,
+              "rated_burn_l_per_100km": 42
+            },
+            "operating_cost_per_km": 16.0,
+            "operating_cost_source": "vehicle_default"
+          },
+          {
+            "vehicle": {
+              "id": 17,
+              "name": "Tautliner",
+              "capacity": 30,
+              "rated_burn_l_per_100km": 40
+            },
+            "operating_cost_per_km": 15.0,
+            "operating_cost_source": "vehicle_default"
+          },
+          {
+            "vehicle": {
+              "id": 13,
+              "name": "8 ton rigid",
+              "capacity": 8000,
+              "rated_burn_l_per_100km": 24
+            },
+            "operating_cost_per_km": 8.0,
+            "operating_cost_source": "vehicle_default"
+          }
+        ],
+        "tonnes_per_load": 12.0,
+        "total_tonnes": null,
+        "min_tonnes_per_load": 30.0,
+        "vehicle_type_id": null,
+        "rate_per_tonne": 1100.0
+      },
+      "expected": {
+        "version": "qc-1",
+        "pricing_basis": "per_tonne",
+        "tonnage": {
+          "version": "qt-1",
+          "mode": "single",
+          "total_tonnes": 12.0,
+          "tonnes_per_load": 12.0,
+          "min_tonnes_per_load": 30.0,
+          "min_tonnes_source": "quote",
+          "vehicle_type_id": null,
+          "basis_vehicle_type_id": 11,
+          "basis_reason": "safest",
+          "trucks": [
+            {
+              "vehicle_type_id": 11,
+              "name": "Superlink",
+              "payload_t": 34.0,
+              "tonnes_per_load": 12.0,
+              "loads_needed": 1,
+              "last_load_t": 12.0,
+              "partial_last_load": false,
+              "cost_per_load": 32285.97,
+              "cost_last_load": 32285.97,
+              "total_cost": 32285.97,
+              "min_tonnes_per_load": 30.0,
+              "billable_tonnes": 30.0,
+              "cost_per_tonne": 1076.2,
+              "is_basis": true,
+              "at_rate": {
+                "rate_per_tonne": 1100.0,
+                "billable_tonnes": 30.0,
+                "revenue": 33000.0,
+                "margin": 714.03,
+                "margin_pct": 2.1637272727272694
+              }
+            },
+            {
+              "vehicle_type_id": 17,
+              "name": "Tautliner",
+              "payload_t": 30.0,
+              "tonnes_per_load": 12.0,
+              "loads_needed": 1,
+              "last_load_t": 12.0,
+              "partial_last_load": false,
+              "cost_per_load": 30692.97,
+              "cost_last_load": 30692.97,
+              "total_cost": 30692.97,
+              "min_tonnes_per_load": 30.0,
+              "billable_tonnes": 30.0,
+              "cost_per_tonne": 1023.1,
+              "is_basis": false,
+              "at_rate": {
+                "rate_per_tonne": 1100.0,
+                "billable_tonnes": 30.0,
+                "revenue": 33000.0,
+                "margin": 2307.03,
+                "margin_pct": 6.990999999999996
+              }
+            }
+          ],
+          "excluded": [
+            {
+              "vehicle_type_id": 13,
+              "name": "8 ton rigid",
+              "reason": "too_small"
+            }
+          ],
+          "summary": "Superlink 34 t R 1 076/t · Tautliner 30 t R 1 023/t",
+          "loads_planned": 1,
+          "billable_tonnes": 30.0,
+          "total_cost": 32285.97,
+          "cost_per_tonne": 1076.2,
+          "target_margin_pct": 10.0,
+          "target_rate_per_tonne": 1196.0,
+          "minimum_charge_rate_per_tonne": null,
+          "default_rate_per_tonne": 1196.0,
+          "rate_per_tonne": 1100.0,
+          "rate_used": 1100.0,
+          "rate_source": "user",
+          "minimum_charge_per_load": 33000.0,
+          "estimated_revenue": 33000.0,
+          "margin": 714.03,
+          "margin_pct": 2.1637272727272694,
+          "basis_load_costing": {
+            "version": "qc-1",
+            "trip": {
+              "type": "ONE_WAY",
+              "legs_loaded": 1,
+              "distance_km": 568.4,
+              "empty_return_included": true,
+              "empty_return_default": true,
+              "km_loaded": 568.4,
+              "km_empty": 568.4,
+              "km_driven": 1136.8,
+              "hours_one_way": 7.333333333333333,
+              "return_nights": 1
+            },
+            "vehicle": {
+              "id": 11,
+              "name": "Superlink",
+              "capacity_t": 34.0,
+              "load_t": 12.0,
+              "load_ratio": 0.35294117647058826,
+              "rated_burn_l_per_100km": 42.0,
+              "burn_loaded_l_per_100km": 33.84705882352941,
+              "burn_empty_l_per_100km": 29.4
+            },
+            "diesel": {
+              "zone": "INLAND",
+              "mode": "LIVE",
+              "own_price": null,
+              "own_set_at": null,
+              "fuel_type": "Diesel",
+              "official_price": 32.7989,
+              "official_effective_from": "2026-10-07T00:01:00+02:00",
+              "official_stale": false,
+              "price": 32.7989,
+              "source": "official"
+            },
+            "litres": {
+              "loaded": 192.38668235294114,
+              "empty_return": 167.1096,
+              "total": 359.49628235294114
+            },
+            "lines": [
+              {
+                "key": "fuel",
+                "label": "Fuel",
+                "leg": "loaded",
+                "amount": 6310.07,
+                "basis": "568 km at 33,8 L/100km × R 32,80/L",
+                "litres": 192.38668235294114,
+                "burn_l_per_100km": 33.84705882352941,
+                "price_per_litre": 32.7989,
+                "km": 568.4
+              },
+              {
+                "key": "operating",
+                "label": "Operating costs",
+                "leg": "loaded",
+                "amount": 9094.4,
+                "basis": "568 km × R 16,00/km",
+                "rate_per_km": 16.0,
+                "km": 568.4,
+                "source": "vehicle_default"
+              },
+              {
+                "key": "tolls",
+                "label": "Tolls",
+                "leg": "loaded",
+                "amount": 1043.48,
+                "basis": "R 1 043,48 one way",
+                "one_way": 1043.48,
+                "legs": 1
+              },
+              {
+                "key": "driver",
+                "label": "Driver nights out",
+                "leg": "loaded",
+                "amount": 0.0,
+                "basis": "No night away",
+                "nights": 0,
+                "suggested_nights": 0,
+                "rate_per_night": 450.0,
+                "suggested": 0.0,
+                "source": "suggested"
+              },
+              {
+                "key": "fuel_return",
+                "label": "Fuel, empty return",
+                "leg": "empty_return",
+                "amount": 5481.01,
+                "basis": "568 km empty at 29,4 L/100km × R 32,80/L",
+                "litres": 167.1096,
+                "burn_l_per_100km": 29.4,
+                "price_per_litre": 32.7989,
+                "km": 568.4
+              },
+              {
+                "key": "operating_return",
+                "label": "Operating costs, empty return",
+                "leg": "empty_return",
+                "amount": 9094.4,
+                "basis": "568 km × R 16,00/km",
+                "rate_per_km": 16.0,
+                "km": 568.4,
+                "source": "vehicle_default"
+              },
+              {
+                "key": "tolls_return",
+                "label": "Tolls, empty return",
+                "leg": "empty_return",
+                "amount": 812.61,
+                "basis": "R 812,61 home empty",
+                "one_way": 812.61
+              },
+              {
+                "key": "driver_return",
+                "label": "Driver nights, empty return",
+                "leg": "empty_return",
+                "amount": 450.0,
+                "basis": "1 extra night × R 450,00",
+                "nights": 1,
+                "rate_per_night": 450.0
+              }
+            ],
+            "floor": 32285.97,
+            "floor_known": 32285.97,
+            "floor_complete": true,
+            "target_margin_pct": 10.0,
+            "target_price": 35873.3,
+            "minimum_charge": null,
+            "default_price_per_km": null,
+            "rate_price": null,
+            "default_price": 35900.0,
+            "alternative_with_return_load": {
+              "floor": 16447.95,
+              "target_price": 18275.5,
+              "default_price": 18300.0
+            },
+            "price": null,
+            "margin": null,
+            "margin_pct": null,
+            "warnings": [],
+            "blocking": [],
+            "can_send": true
+          }
+        },
+        "trip": {
+          "type": "ONE_WAY",
+          "legs_loaded": 1,
+          "distance_km": 568.4,
+          "empty_return_included": true,
+          "empty_return_default": true,
+          "km_loaded": 568.4,
+          "km_empty": 568.4,
+          "km_driven": 1136.8,
+          "hours_one_way": 7.333333333333333,
+          "return_nights": 1
+        },
+        "vehicle": {
+          "id": 11,
+          "name": "Superlink",
+          "capacity_t": 34.0,
+          "load_t": 12.0,
+          "load_ratio": 0.35294117647058826,
+          "rated_burn_l_per_100km": 42.0,
+          "burn_loaded_l_per_100km": 33.84705882352941,
+          "burn_empty_l_per_100km": 29.4
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "fuel_type": "Diesel",
+          "official_price": 32.7989,
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
+          "official_stale": false,
+          "price": 32.7989,
+          "source": "official"
+        },
+        "litres": {
+          "loaded": null,
+          "empty_return": null,
+          "total": 359.49628235294114
+        },
+        "lines": [
+          {
+            "key": "fuel",
+            "label": "Fuel",
+            "leg": "loaded",
+            "amount": 6310.07,
+            "basis": "568 km at 33,8 L/100km × R 32,80/L",
+            "litres": 192.38668235294114,
+            "burn_l_per_100km": 33.84705882352941,
+            "price_per_litre": 32.7989,
+            "km": 568.4,
+            "per_load_amount": 6310.07,
+            "loads": 1
+          },
+          {
+            "key": "operating",
+            "label": "Operating costs",
+            "leg": "loaded",
+            "amount": 9094.4,
+            "basis": "568 km × R 16,00/km",
+            "rate_per_km": 16.0,
+            "km": 568.4,
+            "source": "vehicle_default",
+            "per_load_amount": 9094.4,
+            "loads": 1
+          },
+          {
+            "key": "tolls",
+            "label": "Tolls",
+            "leg": "loaded",
+            "amount": 1043.48,
+            "basis": "R 1 043,48 one way",
+            "one_way": 1043.48,
+            "legs": 1,
+            "per_load_amount": 1043.48,
+            "loads": 1
+          },
+          {
+            "key": "driver",
+            "label": "Driver nights out",
+            "leg": "loaded",
+            "amount": 0.0,
+            "basis": "No night away",
+            "nights": 0,
+            "suggested_nights": 0,
+            "rate_per_night": 450.0,
+            "suggested": 0.0,
+            "source": "suggested",
+            "per_load_amount": 0.0,
+            "loads": 1
+          },
+          {
+            "key": "fuel_return",
+            "label": "Fuel, empty return",
+            "leg": "empty_return",
+            "amount": 5481.01,
+            "basis": "568 km empty at 29,4 L/100km × R 32,80/L",
+            "litres": 167.1096,
+            "burn_l_per_100km": 29.4,
+            "price_per_litre": 32.7989,
+            "km": 568.4,
+            "per_load_amount": 5481.01,
+            "loads": 1
+          },
+          {
+            "key": "operating_return",
+            "label": "Operating costs, empty return",
+            "leg": "empty_return",
+            "amount": 9094.4,
+            "basis": "568 km × R 16,00/km",
+            "rate_per_km": 16.0,
+            "km": 568.4,
+            "source": "vehicle_default",
+            "per_load_amount": 9094.4,
+            "loads": 1
+          },
+          {
+            "key": "tolls_return",
+            "label": "Tolls, empty return",
+            "leg": "empty_return",
+            "amount": 812.61,
+            "basis": "R 812,61 home empty",
+            "one_way": 812.61,
+            "per_load_amount": 812.61,
+            "loads": 1
+          },
+          {
+            "key": "driver_return",
+            "label": "Driver nights, empty return",
+            "leg": "empty_return",
+            "amount": 450.0,
+            "basis": "1 extra night × R 450,00",
+            "nights": 1,
+            "rate_per_night": 450.0,
+            "per_load_amount": 450.0,
+            "loads": 1
+          }
+        ],
+        "floor": 32285.97,
+        "floor_known": 32285.97,
+        "floor_complete": true,
+        "target_margin_pct": 10.0,
+        "target_price": 35880.0,
+        "minimum_charge": null,
+        "default_price": 35880.0,
+        "price": 33000.0,
+        "margin": 714.03,
+        "margin_pct": 2.1637272727272694,
+        "warnings": [
+          {
+            "code": "below_minimum_tonnes",
+            "severity": "warn",
+            "title": "Load is under the minimum tonnes",
+            "detail": "12 t carried, charged for 30 t per load.",
+            "impact_zar": null,
+            "actions": []
+          }
+        ],
+        "blocking": [],
+        "can_send": true
+      }
+    },
+    {
+      "name": "volume_600t_mixed_fleet",
+      "description": "600 t contract over superlink, tautliner and 8 t rigid: loads per truck, safest basis (the rigid).",
+      "inputs": {
+        "lane": {
+          "trip_type": "ONE_WAY",
+          "distance_km": 568.4,
+          "distance_estimated": false,
+          "distance_confirmed": false,
+          "duration_minutes": 440,
+          "diesel": {
+            "zone": "INLAND",
+            "mode": "LIVE",
+            "own_price": null,
+            "own_set_at": null,
+            "official_price": 32.7989,
+            "official_effective_from": "2026-10-06T22:01:00Z",
+            "official_stale": false,
+            "use_official": false,
+            "override_price": null
+          },
+          "tolls": {
+            "one_way": 1043.48,
+            "empty_return": 812.61,
+            "lookup_failed": false,
+            "confirmed_none": false
+          },
+          "driver": {
+            "allowance_per_night": 450.0,
+            "nights": null,
+            "amount": null
+          },
+          "hours_per_day": 9.0,
+          "border_cost": 0.0,
+          "international": false,
+          "include_empty_return": null,
+          "settings": {
+            "include_empty_return_default": true,
+            "empty_return_min_km": 300.0
+          },
+          "minimum_charge": null,
+          "default_price_per_km": null,
+          "target_margin_pct": 10.0
+        },
+        "trucks": [
+          {
+            "vehicle": {
+              "id": 11,
+              "name": "Superlink",
+              "capacity": 34,
+              "rated_burn_l_per_100km": 42
+            },
+            "operating_cost_per_km": 16.0,
+            "operating_cost_source": "vehicle_default"
+          },
+          {
+            "vehicle": {
+              "id": 17,
+              "name": "Tautliner",
+              "capacity": 30,
+              "rated_burn_l_per_100km": 40
+            },
+            "operating_cost_per_km": 15.0,
+            "operating_cost_source": "vehicle_default"
+          },
+          {
+            "vehicle": {
+              "id": 13,
+              "name": "8 ton rigid",
+              "capacity": 8000,
+              "rated_burn_l_per_100km": 24
+            },
+            "operating_cost_per_km": 8.0,
+            "operating_cost_source": "vehicle_default"
+          }
+        ],
+        "tonnes_per_load": null,
+        "total_tonnes": 600.0,
+        "min_tonnes_per_load": null,
+        "vehicle_type_id": null,
+        "rate_per_tonne": 2700.0
+      },
+      "expected": {
+        "version": "qc-1",
+        "pricing_basis": "per_tonne",
+        "tonnage": {
+          "version": "qt-1",
+          "mode": "volume",
+          "total_tonnes": 600.0,
+          "tonnes_per_load": null,
+          "min_tonnes_per_load": 8.0,
+          "min_tonnes_source": "basis_load",
+          "vehicle_type_id": null,
+          "basis_vehicle_type_id": 13,
+          "basis_reason": "safest",
+          "trucks": [
+            {
+              "vehicle_type_id": 13,
+              "name": "8 ton rigid",
+              "payload_t": 8.0,
+              "tonnes_per_load": 8.0,
+              "loads_needed": 75,
+              "last_load_t": 8.0,
+              "partial_last_load": false,
+              "cost_per_load": 19006.79,
+              "cost_last_load": 19006.79,
+              "total_cost": 1425509.25,
+              "min_tonnes_per_load": 8.0,
+              "billable_tonnes": 600.0,
+              "cost_per_tonne": 2375.85,
+              "is_basis": true,
+              "at_rate": {
+                "rate_per_tonne": 2700.0,
+                "billable_tonnes": 600.0,
+                "revenue": 1620000.0,
+                "margin": 194490.75,
+                "margin_pct": 12.005601851851852
+              }
+            },
+            {
+              "vehicle_type_id": 17,
+              "name": "Tautliner",
+              "payload_t": 30.0,
+              "tonnes_per_load": 30.0,
+              "loads_needed": 20,
+              "last_load_t": 30.0,
+              "partial_last_load": false,
+              "cost_per_load": 32035.26,
+              "cost_last_load": 32035.26,
+              "total_cost": 640705.2,
+              "min_tonnes_per_load": 30.0,
+              "billable_tonnes": 600.0,
+              "cost_per_tonne": 1067.84,
+              "is_basis": false,
+              "at_rate": {
+                "rate_per_tonne": 2700.0,
+                "billable_tonnes": 600.0,
+                "revenue": 1620000.0,
+                "margin": 979294.8,
+                "margin_pct": 60.4502962962963
+              }
+            },
+            {
+              "vehicle_type_id": 11,
+              "name": "Superlink",
+              "payload_t": 34.0,
+              "tonnes_per_load": 34.0,
+              "loads_needed": 18,
+              "last_load_t": 22.0,
+              "partial_last_load": true,
+              "cost_per_load": 33805.92,
+              "cost_last_load": 32976.86,
+              "total_cost": 607677.5,
+              "min_tonnes_per_load": 34.0,
+              "billable_tonnes": 612.0,
+              "cost_per_tonne": 992.94,
+              "is_basis": false,
+              "at_rate": {
+                "rate_per_tonne": 2700.0,
+                "billable_tonnes": 600.0,
+                "revenue": 1620000.0,
+                "margin": 1012322.5,
+                "margin_pct": 62.48904320987654
+              }
+            }
+          ],
+          "excluded": [],
+          "summary": "8 ton rigid 8 t R 2 376/t · Tautliner 30 t R 1 068/t · Superlink 34 t R 993/t",
+          "loads_planned": 75,
+          "billable_tonnes": 600.0,
+          "total_cost": 1425509.25,
+          "cost_per_tonne": 2375.85,
+          "target_margin_pct": 10.0,
+          "target_rate_per_tonne": 2640.0,
+          "minimum_charge_rate_per_tonne": null,
+          "default_rate_per_tonne": 2640.0,
+          "rate_per_tonne": 2700.0,
+          "rate_used": 2700.0,
+          "rate_source": "user",
+          "minimum_charge_per_load": 21600.0,
+          "estimated_revenue": 1620000.0,
+          "margin": 194490.75,
+          "margin_pct": 12.005601851851852,
+          "basis_load_costing": {
+            "version": "qc-1",
+            "trip": {
+              "type": "ONE_WAY",
+              "legs_loaded": 1,
+              "distance_km": 568.4,
+              "empty_return_included": true,
+              "empty_return_default": true,
+              "km_loaded": 568.4,
+              "km_empty": 568.4,
+              "km_driven": 1136.8,
+              "hours_one_way": 7.333333333333333,
+              "return_nights": 1
+            },
+            "vehicle": {
+              "id": 13,
+              "name": "8 ton rigid",
+              "capacity_t": 8.0,
+              "load_t": 8.0,
+              "load_ratio": 1.0,
+              "rated_burn_l_per_100km": 24.0,
+              "burn_loaded_l_per_100km": 24.0,
+              "burn_empty_l_per_100km": 16.799999999999997
+            },
+            "diesel": {
+              "zone": "INLAND",
+              "mode": "LIVE",
+              "own_price": null,
+              "own_set_at": null,
+              "fuel_type": "Diesel",
+              "official_price": 32.7989,
+              "official_effective_from": "2026-10-07T00:01:00+02:00",
+              "official_stale": false,
+              "price": 32.7989,
+              "source": "official"
+            },
+            "litres": {
+              "loaded": 136.416,
+              "empty_return": 95.49119999999998,
+              "total": 231.9072
+            },
+            "lines": [
+              {
+                "key": "fuel",
+                "label": "Fuel",
+                "leg": "loaded",
+                "amount": 4474.29,
+                "basis": "568 km at 24,0 L/100km × R 32,80/L",
+                "litres": 136.416,
+                "burn_l_per_100km": 24.0,
+                "price_per_litre": 32.7989,
+                "km": 568.4
+              },
+              {
+                "key": "operating",
+                "label": "Operating costs",
+                "leg": "loaded",
+                "amount": 4547.2,
+                "basis": "568 km × R 8,00/km",
+                "rate_per_km": 8.0,
+                "km": 568.4,
+                "source": "vehicle_default"
+              },
+              {
+                "key": "tolls",
+                "label": "Tolls",
+                "leg": "loaded",
+                "amount": 1043.48,
+                "basis": "R 1 043,48 one way",
+                "one_way": 1043.48,
+                "legs": 1
+              },
+              {
+                "key": "driver",
+                "label": "Driver nights out",
+                "leg": "loaded",
+                "amount": 0.0,
+                "basis": "No night away",
+                "nights": 0,
+                "suggested_nights": 0,
+                "rate_per_night": 450.0,
+                "suggested": 0.0,
+                "source": "suggested"
+              },
+              {
+                "key": "fuel_return",
+                "label": "Fuel, empty return",
+                "leg": "empty_return",
+                "amount": 3132.01,
+                "basis": "568 km empty at 16,8 L/100km × R 32,80/L",
+                "litres": 95.49119999999998,
+                "burn_l_per_100km": 16.799999999999997,
+                "price_per_litre": 32.7989,
+                "km": 568.4
+              },
+              {
+                "key": "operating_return",
+                "label": "Operating costs, empty return",
+                "leg": "empty_return",
+                "amount": 4547.2,
+                "basis": "568 km × R 8,00/km",
+                "rate_per_km": 8.0,
+                "km": 568.4,
+                "source": "vehicle_default"
+              },
+              {
+                "key": "tolls_return",
+                "label": "Tolls, empty return",
+                "leg": "empty_return",
+                "amount": 812.61,
+                "basis": "R 812,61 home empty",
+                "one_way": 812.61
+              },
+              {
+                "key": "driver_return",
+                "label": "Driver nights, empty return",
+                "leg": "empty_return",
+                "amount": 450.0,
+                "basis": "1 extra night × R 450,00",
+                "nights": 1,
+                "rate_per_night": 450.0
+              }
+            ],
+            "floor": 19006.79,
+            "floor_known": 19006.79,
+            "floor_complete": true,
+            "target_margin_pct": 10.0,
+            "target_price": 21118.66,
+            "minimum_charge": null,
+            "default_price_per_km": null,
+            "rate_price": null,
+            "default_price": 21200.0,
+            "alternative_with_return_load": {
+              "floor": 10064.97,
+              "target_price": 11183.3,
+              "default_price": 11200.0
+            },
+            "price": null,
+            "margin": null,
+            "margin_pct": null,
+            "warnings": [],
+            "blocking": [],
+            "can_send": true
+          }
+        },
+        "trip": {
+          "type": "ONE_WAY",
+          "legs_loaded": 1,
+          "distance_km": 568.4,
+          "empty_return_included": true,
+          "empty_return_default": true,
+          "km_loaded": 568.4,
+          "km_empty": 568.4,
+          "km_driven": 1136.8,
+          "hours_one_way": 7.333333333333333,
+          "return_nights": 1
+        },
+        "vehicle": {
+          "id": 13,
+          "name": "8 ton rigid",
+          "capacity_t": 8.0,
+          "load_t": 8.0,
+          "load_ratio": 1.0,
+          "rated_burn_l_per_100km": 24.0,
+          "burn_loaded_l_per_100km": 24.0,
+          "burn_empty_l_per_100km": 16.799999999999997
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "fuel_type": "Diesel",
+          "official_price": 32.7989,
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
+          "official_stale": false,
+          "price": 32.7989,
+          "source": "official"
+        },
+        "litres": {
+          "loaded": null,
+          "empty_return": null,
+          "total": 17393.039999999997
+        },
+        "lines": [
+          {
+            "key": "fuel",
+            "label": "Fuel",
+            "leg": "loaded",
+            "amount": 335571.75,
+            "basis": "568 km at 24,0 L/100km × R 32,80/L · 75 loads",
+            "litres": 10231.199999999999,
+            "burn_l_per_100km": 24.0,
+            "price_per_litre": 32.7989,
+            "km": 568.4,
+            "per_load_amount": 4474.29,
+            "loads": 75
+          },
+          {
+            "key": "operating",
+            "label": "Operating costs",
+            "leg": "loaded",
+            "amount": 341040.0,
+            "basis": "568 km × R 8,00/km · 75 loads",
+            "rate_per_km": 8.0,
+            "km": 568.4,
+            "source": "vehicle_default",
+            "per_load_amount": 4547.2,
+            "loads": 75
+          },
+          {
+            "key": "tolls",
+            "label": "Tolls",
+            "leg": "loaded",
+            "amount": 78261.0,
+            "basis": "R 1 043,48 one way · 75 loads",
+            "one_way": 1043.48,
+            "legs": 1,
+            "per_load_amount": 1043.48,
+            "loads": 75
+          },
+          {
+            "key": "driver",
+            "label": "Driver nights out",
+            "leg": "loaded",
+            "amount": 0.0,
+            "basis": "No night away · 75 loads",
+            "nights": 0,
+            "suggested_nights": 0,
+            "rate_per_night": 450.0,
+            "suggested": 0.0,
+            "source": "suggested",
+            "per_load_amount": 0.0,
+            "loads": 75
+          },
+          {
+            "key": "fuel_return",
+            "label": "Fuel, empty return",
+            "leg": "empty_return",
+            "amount": 234900.75,
+            "basis": "568 km empty at 16,8 L/100km × R 32,80/L · 75 loads",
+            "litres": 7161.839999999998,
+            "burn_l_per_100km": 16.799999999999997,
+            "price_per_litre": 32.7989,
+            "km": 568.4,
+            "per_load_amount": 3132.01,
+            "loads": 75
+          },
+          {
+            "key": "operating_return",
+            "label": "Operating costs, empty return",
+            "leg": "empty_return",
+            "amount": 341040.0,
+            "basis": "568 km × R 8,00/km · 75 loads",
+            "rate_per_km": 8.0,
+            "km": 568.4,
+            "source": "vehicle_default",
+            "per_load_amount": 4547.2,
+            "loads": 75
+          },
+          {
+            "key": "tolls_return",
+            "label": "Tolls, empty return",
+            "leg": "empty_return",
+            "amount": 60945.75,
+            "basis": "R 812,61 home empty · 75 loads",
+            "one_way": 812.61,
+            "per_load_amount": 812.61,
+            "loads": 75
+          },
+          {
+            "key": "driver_return",
+            "label": "Driver nights, empty return",
+            "leg": "empty_return",
+            "amount": 33750.0,
+            "basis": "1 extra night × R 450,00 · 75 loads",
+            "nights": 1,
+            "rate_per_night": 450.0,
+            "per_load_amount": 450.0,
+            "loads": 75
+          }
+        ],
+        "floor": 1425509.25,
+        "floor_known": 1425509.25,
+        "floor_complete": true,
+        "target_margin_pct": 10.0,
+        "target_price": 1584000.0,
+        "minimum_charge": null,
+        "default_price": 1584000.0,
+        "price": 1620000.0,
+        "margin": 194490.75,
+        "margin_pct": 12.005601851851852,
+        "warnings": [],
+        "blocking": [],
+        "can_send": true
+      }
+    },
+    {
+      "name": "volume_partial_last_load",
+      "description": "100 t at 28 t a load on a chosen superlink: 4 loads, the last 16 t, charged at the 28 t minimum.",
+      "inputs": {
+        "lane": {
+          "trip_type": "ONE_WAY",
+          "distance_km": 568.4,
+          "distance_estimated": false,
+          "distance_confirmed": false,
+          "duration_minutes": 440,
+          "diesel": {
+            "zone": "INLAND",
+            "mode": "LIVE",
+            "own_price": null,
+            "own_set_at": null,
+            "official_price": 32.7989,
+            "official_effective_from": "2026-10-06T22:01:00Z",
+            "official_stale": false,
+            "use_official": false,
+            "override_price": null
+          },
+          "tolls": {
+            "one_way": 1043.48,
+            "empty_return": 812.61,
+            "lookup_failed": false,
+            "confirmed_none": false
+          },
+          "driver": {
+            "allowance_per_night": 450.0,
+            "nights": null,
+            "amount": null
+          },
+          "hours_per_day": 9.0,
+          "border_cost": 0.0,
+          "international": false,
+          "include_empty_return": null,
+          "settings": {
+            "include_empty_return_default": true,
+            "empty_return_min_km": 300.0
+          },
+          "minimum_charge": null,
+          "default_price_per_km": null,
+          "target_margin_pct": 10.0
+        },
+        "trucks": [
+          {
+            "vehicle": {
+              "id": 11,
+              "name": "Superlink",
+              "capacity": 34,
+              "rated_burn_l_per_100km": 42
+            },
+            "operating_cost_per_km": 16.0,
+            "operating_cost_source": "vehicle_default"
+          },
+          {
+            "vehicle": {
+              "id": 12,
+              "name": "Tri-axle",
+              "capacity": 30,
+              "rated_burn_l_per_100km": 38
+            },
+            "operating_cost_per_km": 15.0,
+            "operating_cost_source": "vehicle_default"
+          },
+          {
+            "vehicle": {
+              "id": 17,
+              "name": "Tautliner",
+              "capacity": 30,
+              "rated_burn_l_per_100km": 40
+            },
+            "operating_cost_per_km": 15.0,
+            "operating_cost_source": "vehicle_default"
+          }
+        ],
+        "tonnes_per_load": 28.0,
+        "total_tonnes": 100.0,
+        "min_tonnes_per_load": null,
+        "vehicle_type_id": 11,
+        "rate_per_tonne": 1350.0
+      },
+      "expected": {
+        "version": "qc-1",
+        "pricing_basis": "per_tonne",
+        "tonnage": {
+          "version": "qt-1",
+          "mode": "volume",
+          "total_tonnes": 100.0,
+          "tonnes_per_load": 28.0,
+          "min_tonnes_per_load": 28.0,
+          "min_tonnes_source": "basis_load",
+          "vehicle_type_id": 11,
+          "basis_vehicle_type_id": 11,
+          "basis_reason": "chosen",
+          "trucks": [
+            {
+              "vehicle_type_id": 11,
+              "name": "Superlink",
+              "payload_t": 34.0,
+              "tonnes_per_load": 28.0,
+              "loads_needed": 4,
+              "last_load_t": 16.0,
+              "partial_last_load": true,
+              "cost_per_load": 33391.39,
+              "cost_last_load": 32562.33,
+              "total_cost": 132736.5,
+              "min_tonnes_per_load": 28.0,
+              "billable_tonnes": 112.0,
+              "cost_per_tonne": 1185.15,
+              "is_basis": true,
+              "at_rate": {
+                "rate_per_tonne": 1350.0,
+                "billable_tonnes": 112.0,
+                "revenue": 151200.0,
+                "margin": 18463.5,
+                "margin_pct": 12.211309523809524
+              }
+            },
+            {
+              "vehicle_type_id": 17,
+              "name": "Tautliner",
+              "payload_t": 30.0,
+              "tonnes_per_load": 28.0,
+              "loads_needed": 4,
+              "last_load_t": 16.0,
+              "partial_last_load": true,
+              "cost_per_load": 31886.11,
+              "cost_last_load": 30991.26,
+              "total_cost": 126649.59,
+              "min_tonnes_per_load": 28.0,
+              "billable_tonnes": 112.0,
+              "cost_per_tonne": 1130.8,
+              "is_basis": false,
+              "at_rate": {
+                "rate_per_tonne": 1350.0,
+                "billable_tonnes": 112.0,
+                "revenue": 151200.0,
+                "margin": 24550.41,
+                "margin_pct": 16.23704365079365
+              }
+            },
+            {
+              "vehicle_type_id": 12,
+              "name": "Tri-axle",
+              "payload_t": 30.0,
+              "tonnes_per_load": 28.0,
+              "loads_needed": 4,
+              "last_load_t": 16.0,
+              "partial_last_load": true,
+              "cost_per_load": 31259.71,
+              "cost_last_load": 30409.6,
+              "total_cost": 124188.73,
+              "min_tonnes_per_load": 28.0,
+              "billable_tonnes": 112.0,
+              "cost_per_tonne": 1108.83,
+              "is_basis": false,
+              "at_rate": {
+                "rate_per_tonne": 1350.0,
+                "billable_tonnes": 112.0,
+                "revenue": 151200.0,
+                "margin": 27011.27,
+                "margin_pct": 17.864596560846564
+              }
+            }
+          ],
+          "excluded": [],
+          "summary": "Superlink 34 t R 1 185/t · Tautliner 30 t R 1 131/t · Tri-axle 30 t R 1 109/t",
+          "loads_planned": 4,
+          "billable_tonnes": 112.0,
+          "total_cost": 132736.5,
+          "cost_per_tonne": 1185.15,
+          "target_margin_pct": 10.0,
+          "target_rate_per_tonne": 1317.0,
+          "minimum_charge_rate_per_tonne": null,
+          "default_rate_per_tonne": 1317.0,
+          "rate_per_tonne": 1350.0,
+          "rate_used": 1350.0,
+          "rate_source": "user",
+          "minimum_charge_per_load": 37800.0,
+          "estimated_revenue": 151200.0,
+          "margin": 18463.5,
+          "margin_pct": 12.211309523809524,
+          "basis_load_costing": {
+            "version": "qc-1",
+            "trip": {
+              "type": "ONE_WAY",
+              "legs_loaded": 1,
+              "distance_km": 568.4,
+              "empty_return_included": true,
+              "empty_return_default": true,
+              "km_loaded": 568.4,
+              "km_empty": 568.4,
+              "km_driven": 1136.8,
+              "hours_one_way": 7.333333333333333,
+              "return_nights": 1
+            },
+            "vehicle": {
+              "id": 11,
+              "name": "Superlink",
+              "capacity_t": 34.0,
+              "load_t": 28.0,
+              "load_ratio": 0.8235294117647058,
+              "rated_burn_l_per_100km": 42.0,
+              "burn_loaded_l_per_100km": 39.77647058823529,
+              "burn_empty_l_per_100km": 29.4
+            },
+            "diesel": {
+              "zone": "INLAND",
+              "mode": "LIVE",
+              "own_price": null,
+              "own_set_at": null,
+              "fuel_type": "Diesel",
+              "official_price": 32.7989,
+              "official_effective_from": "2026-10-07T00:01:00+02:00",
+              "official_stale": false,
+              "price": 32.7989,
+              "source": "official"
+            },
+            "litres": {
+              "loaded": 226.08945882352938,
+              "empty_return": 167.1096,
+              "total": 393.1990588235294
+            },
+            "lines": [
+              {
+                "key": "fuel",
+                "label": "Fuel",
+                "leg": "loaded",
+                "amount": 7415.49,
+                "basis": "568 km at 39,8 L/100km × R 32,80/L",
+                "litres": 226.08945882352938,
+                "burn_l_per_100km": 39.77647058823529,
+                "price_per_litre": 32.7989,
+                "km": 568.4
+              },
+              {
+                "key": "operating",
+                "label": "Operating costs",
+                "leg": "loaded",
+                "amount": 9094.4,
+                "basis": "568 km × R 16,00/km",
+                "rate_per_km": 16.0,
+                "km": 568.4,
+                "source": "vehicle_default"
+              },
+              {
+                "key": "tolls",
+                "label": "Tolls",
+                "leg": "loaded",
+                "amount": 1043.48,
+                "basis": "R 1 043,48 one way",
+                "one_way": 1043.48,
+                "legs": 1
+              },
+              {
+                "key": "driver",
+                "label": "Driver nights out",
+                "leg": "loaded",
+                "amount": 0.0,
+                "basis": "No night away",
+                "nights": 0,
+                "suggested_nights": 0,
+                "rate_per_night": 450.0,
+                "suggested": 0.0,
+                "source": "suggested"
+              },
+              {
+                "key": "fuel_return",
+                "label": "Fuel, empty return",
+                "leg": "empty_return",
+                "amount": 5481.01,
+                "basis": "568 km empty at 29,4 L/100km × R 32,80/L",
+                "litres": 167.1096,
+                "burn_l_per_100km": 29.4,
+                "price_per_litre": 32.7989,
+                "km": 568.4
+              },
+              {
+                "key": "operating_return",
+                "label": "Operating costs, empty return",
+                "leg": "empty_return",
+                "amount": 9094.4,
+                "basis": "568 km × R 16,00/km",
+                "rate_per_km": 16.0,
+                "km": 568.4,
+                "source": "vehicle_default"
+              },
+              {
+                "key": "tolls_return",
+                "label": "Tolls, empty return",
+                "leg": "empty_return",
+                "amount": 812.61,
+                "basis": "R 812,61 home empty",
+                "one_way": 812.61
+              },
+              {
+                "key": "driver_return",
+                "label": "Driver nights, empty return",
+                "leg": "empty_return",
+                "amount": 450.0,
+                "basis": "1 extra night × R 450,00",
+                "nights": 1,
+                "rate_per_night": 450.0
+              }
+            ],
+            "floor": 33391.39,
+            "floor_known": 33391.39,
+            "floor_complete": true,
+            "target_margin_pct": 10.0,
+            "target_price": 37101.54,
+            "minimum_charge": null,
+            "default_price_per_km": null,
+            "rate_price": null,
+            "default_price": 37200.0,
+            "alternative_with_return_load": {
+              "floor": 17553.37,
+              "target_price": 19503.74,
+              "default_price": 19550.0
+            },
+            "price": null,
+            "margin": null,
+            "margin_pct": null,
+            "warnings": [],
+            "blocking": [],
+            "can_send": true
+          }
+        },
+        "trip": {
+          "type": "ONE_WAY",
+          "legs_loaded": 1,
+          "distance_km": 568.4,
+          "empty_return_included": true,
+          "empty_return_default": true,
+          "km_loaded": 568.4,
+          "km_empty": 568.4,
+          "km_driven": 1136.8,
+          "hours_one_way": 7.333333333333333,
+          "return_nights": 1
+        },
+        "vehicle": {
+          "id": 11,
+          "name": "Superlink",
+          "capacity_t": 34.0,
+          "load_t": 28.0,
+          "load_ratio": 0.8235294117647058,
+          "rated_burn_l_per_100km": 42.0,
+          "burn_loaded_l_per_100km": 39.77647058823529,
+          "burn_empty_l_per_100km": 29.4
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "fuel_type": "Diesel",
+          "official_price": 32.7989,
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
+          "official_stale": false,
+          "price": 32.7989,
+          "source": "official"
+        },
+        "litres": {
+          "loaded": null,
+          "empty_return": null,
+          "total": 1547.5191529411763
+        },
+        "lines": [
+          {
+            "key": "fuel",
+            "label": "Fuel",
+            "leg": "loaded",
+            "amount": 28832.9,
+            "basis": "568 km at 39,8 L/100km × R 32,80/L · 4 loads",
+            "litres": 879.0807529411763,
+            "burn_l_per_100km": 39.77647058823529,
+            "price_per_litre": 32.7989,
+            "km": 568.4,
+            "per_load_amount": 7415.49,
+            "loads": 4
+          },
+          {
+            "key": "operating",
+            "label": "Operating costs",
+            "leg": "loaded",
+            "amount": 36377.6,
+            "basis": "568 km × R 16,00/km · 4 loads",
+            "rate_per_km": 16.0,
+            "km": 568.4,
+            "source": "vehicle_default",
+            "per_load_amount": 9094.4,
+            "loads": 4
+          },
+          {
+            "key": "tolls",
+            "label": "Tolls",
+            "leg": "loaded",
+            "amount": 4173.92,
+            "basis": "R 1 043,48 one way · 4 loads",
+            "one_way": 1043.48,
+            "legs": 1,
+            "per_load_amount": 1043.48,
+            "loads": 4
+          },
+          {
+            "key": "driver",
+            "label": "Driver nights out",
+            "leg": "loaded",
+            "amount": 0.0,
+            "basis": "No night away · 4 loads",
+            "nights": 0,
+            "suggested_nights": 0,
+            "rate_per_night": 450.0,
+            "suggested": 0.0,
+            "source": "suggested",
+            "per_load_amount": 0.0,
+            "loads": 4
+          },
+          {
+            "key": "fuel_return",
+            "label": "Fuel, empty return",
+            "leg": "empty_return",
+            "amount": 21924.04,
+            "basis": "568 km empty at 29,4 L/100km × R 32,80/L · 4 loads",
+            "litres": 668.4384,
+            "burn_l_per_100km": 29.4,
+            "price_per_litre": 32.7989,
+            "km": 568.4,
+            "per_load_amount": 5481.01,
+            "loads": 4
+          },
+          {
+            "key": "operating_return",
+            "label": "Operating costs, empty return",
+            "leg": "empty_return",
+            "amount": 36377.6,
+            "basis": "568 km × R 16,00/km · 4 loads",
+            "rate_per_km": 16.0,
+            "km": 568.4,
+            "source": "vehicle_default",
+            "per_load_amount": 9094.4,
+            "loads": 4
+          },
+          {
+            "key": "tolls_return",
+            "label": "Tolls, empty return",
+            "leg": "empty_return",
+            "amount": 3250.44,
+            "basis": "R 812,61 home empty · 4 loads",
+            "one_way": 812.61,
+            "per_load_amount": 812.61,
+            "loads": 4
+          },
+          {
+            "key": "driver_return",
+            "label": "Driver nights, empty return",
+            "leg": "empty_return",
+            "amount": 1800.0,
+            "basis": "1 extra night × R 450,00 · 4 loads",
+            "nights": 1,
+            "rate_per_night": 450.0,
+            "per_load_amount": 450.0,
+            "loads": 4
+          }
+        ],
+        "floor": 132736.5,
+        "floor_known": 132736.5,
+        "floor_complete": true,
+        "target_margin_pct": 10.0,
+        "target_price": 147504.0,
+        "minimum_charge": null,
+        "default_price": 147504.0,
+        "price": 151200.0,
+        "margin": 18463.5,
+        "margin_pct": 12.211309523809524,
+        "warnings": [
+          {
+            "code": "partial_last_load",
+            "severity": "warn",
+            "title": "Last load is part-full",
+            "detail": "Load 4 carries 16 t of 28 t; charged for 28 t.",
+            "impact_zar": null,
+            "actions": []
+          }
+        ],
+        "blocking": [],
+        "can_send": true
+      }
+    },
+    {
+      "name": "return_load_booked",
+      "description": "Return load booked: no empty return in any truck's cost per load.",
+      "inputs": {
+        "lane": {
+          "trip_type": "ONE_WAY",
+          "distance_km": 568.4,
+          "distance_estimated": false,
+          "distance_confirmed": false,
+          "duration_minutes": 440,
+          "diesel": {
+            "zone": "INLAND",
+            "mode": "LIVE",
+            "own_price": null,
+            "own_set_at": null,
+            "official_price": 32.7989,
+            "official_effective_from": "2026-10-06T22:01:00Z",
+            "official_stale": false,
+            "use_official": false,
+            "override_price": null
+          },
+          "tolls": {
+            "one_way": 1043.48,
+            "empty_return": 812.61,
+            "lookup_failed": false,
+            "confirmed_none": false
+          },
+          "driver": {
+            "allowance_per_night": 450.0,
+            "nights": null,
+            "amount": null
+          },
+          "hours_per_day": 9.0,
+          "border_cost": 0.0,
+          "international": false,
+          "include_empty_return": false,
+          "settings": {
+            "include_empty_return_default": true,
+            "empty_return_min_km": 300.0
+          },
+          "minimum_charge": null,
+          "default_price_per_km": null,
+          "target_margin_pct": 10.0
+        },
+        "trucks": [
+          {
+            "vehicle": {
+              "id": 11,
+              "name": "Superlink",
+              "capacity": 34,
+              "rated_burn_l_per_100km": 42
+            },
+            "operating_cost_per_km": 16.0,
+            "operating_cost_source": "vehicle_default"
+          },
+          {
+            "vehicle": {
+              "id": 12,
+              "name": "Tri-axle",
+              "capacity": 30,
+              "rated_burn_l_per_100km": 38
+            },
+            "operating_cost_per_km": 15.0,
+            "operating_cost_source": "vehicle_default"
+          },
+          {
+            "vehicle": {
+              "id": 17,
+              "name": "Tautliner",
+              "capacity": 30,
+              "rated_burn_l_per_100km": 40
+            },
+            "operating_cost_per_km": 15.0,
+            "operating_cost_source": "vehicle_default"
+          }
+        ],
+        "tonnes_per_load": 30.0,
+        "total_tonnes": null,
+        "min_tonnes_per_load": null,
+        "vehicle_type_id": null,
+        "rate_per_tonne": 900.0
+      },
+      "expected": {
+        "version": "qc-1",
+        "pricing_basis": "per_tonne",
+        "tonnage": {
+          "version": "qt-1",
+          "mode": "single",
+          "total_tonnes": 30.0,
+          "tonnes_per_load": 30.0,
+          "min_tonnes_per_load": 30.0,
+          "min_tonnes_source": "basis_load",
+          "vehicle_type_id": null,
+          "basis_vehicle_type_id": 11,
+          "basis_reason": "safest",
+          "trucks": [
+            {
+              "vehicle_type_id": 11,
+              "name": "Superlink",
+              "payload_t": 34.0,
+              "tonnes_per_load": 30.0,
+              "loads_needed": 1,
+              "last_load_t": 30.0,
+              "partial_last_load": false,
+              "cost_per_load": 17691.54,
+              "cost_last_load": 17691.54,
+              "total_cost": 17691.54,
+              "min_tonnes_per_load": 30.0,
+              "billable_tonnes": 30.0,
+              "cost_per_tonne": 589.72,
+              "is_basis": true,
+              "at_rate": {
+                "rate_per_tonne": 900.0,
+                "billable_tonnes": 30.0,
+                "revenue": 27000.0,
+                "margin": 9308.46,
+                "margin_pct": 34.47577777777777
+              }
+            },
+            {
+              "vehicle_type_id": 17,
+              "name": "Tautliner",
+              "payload_t": 30.0,
+              "tonnes_per_load": 30.0,
+              "loads_needed": 1,
+              "last_load_t": 30.0,
+              "partial_last_load": false,
+              "cost_per_load": 17026.64,
+              "cost_last_load": 17026.64,
+              "total_cost": 17026.64,
+              "min_tonnes_per_load": 30.0,
+              "billable_tonnes": 30.0,
+              "cost_per_tonne": 567.55,
+              "is_basis": false,
+              "at_rate": {
+                "rate_per_tonne": 900.0,
+                "billable_tonnes": 30.0,
+                "revenue": 27000.0,
+                "margin": 9973.36,
+                "margin_pct": 36.93837037037037
+              }
+            },
+            {
+              "vehicle_type_id": 12,
+              "name": "Tri-axle",
+              "payload_t": 30.0,
+              "tonnes_per_load": 30.0,
+              "loads_needed": 1,
+              "last_load_t": 30.0,
+              "partial_last_load": false,
+              "cost_per_load": 16653.78,
+              "cost_last_load": 16653.78,
+              "total_cost": 16653.78,
+              "min_tonnes_per_load": 30.0,
+              "billable_tonnes": 30.0,
+              "cost_per_tonne": 555.13,
+              "is_basis": false,
+              "at_rate": {
+                "rate_per_tonne": 900.0,
+                "billable_tonnes": 30.0,
+                "revenue": 27000.0,
+                "margin": 10346.22,
+                "margin_pct": 38.31933333333334
+              }
+            }
+          ],
+          "excluded": [],
+          "summary": "Superlink 34 t R 590/t · Tautliner 30 t R 568/t · Tri-axle 30 t R 555/t",
+          "loads_planned": 1,
+          "billable_tonnes": 30.0,
+          "total_cost": 17691.54,
+          "cost_per_tonne": 589.72,
+          "target_margin_pct": 10.0,
+          "target_rate_per_tonne": 656.0,
+          "minimum_charge_rate_per_tonne": null,
+          "default_rate_per_tonne": 656.0,
+          "rate_per_tonne": 900.0,
+          "rate_used": 900.0,
+          "rate_source": "user",
+          "minimum_charge_per_load": 27000.0,
+          "estimated_revenue": 27000.0,
+          "margin": 9308.46,
+          "margin_pct": 34.47577777777777,
+          "basis_load_costing": {
+            "version": "qc-1",
+            "trip": {
+              "type": "ONE_WAY",
+              "legs_loaded": 1,
+              "distance_km": 568.4,
+              "empty_return_included": false,
+              "empty_return_default": true,
+              "km_loaded": 568.4,
+              "km_empty": 0.0,
+              "km_driven": 568.4,
+              "hours_one_way": 7.333333333333333,
+              "return_nights": null
+            },
+            "vehicle": {
+              "id": 11,
+              "name": "Superlink",
+              "capacity_t": 34.0,
+              "load_t": 30.0,
+              "load_ratio": 0.8823529411764706,
+              "rated_burn_l_per_100km": 42.0,
+              "burn_loaded_l_per_100km": 40.51764705882353,
+              "burn_empty_l_per_100km": 29.4
+            },
+            "diesel": {
+              "zone": "INLAND",
+              "mode": "LIVE",
+              "own_price": null,
+              "own_set_at": null,
+              "fuel_type": "Diesel",
+              "official_price": 32.7989,
+              "official_effective_from": "2026-10-07T00:01:00+02:00",
+              "official_stale": false,
+              "price": 32.7989,
+              "source": "official"
+            },
+            "litres": {
+              "loaded": 230.30230588235293,
+              "empty_return": 0.0,
+              "total": 230.30230588235293
+            },
+            "lines": [
+              {
+                "key": "fuel",
+                "label": "Fuel",
+                "leg": "loaded",
+                "amount": 7553.66,
+                "basis": "568 km at 40,5 L/100km × R 32,80/L",
+                "litres": 230.30230588235293,
+                "burn_l_per_100km": 40.51764705882353,
+                "price_per_litre": 32.7989,
+                "km": 568.4
+              },
+              {
+                "key": "operating",
+                "label": "Operating costs",
+                "leg": "loaded",
+                "amount": 9094.4,
+                "basis": "568 km × R 16,00/km",
+                "rate_per_km": 16.0,
+                "km": 568.4,
+                "source": "vehicle_default"
+              },
+              {
+                "key": "tolls",
+                "label": "Tolls",
+                "leg": "loaded",
+                "amount": 1043.48,
+                "basis": "R 1 043,48 one way",
+                "one_way": 1043.48,
+                "legs": 1
+              },
+              {
+                "key": "driver",
+                "label": "Driver nights out",
+                "leg": "loaded",
+                "amount": 0.0,
+                "basis": "No night away",
+                "nights": 0,
+                "suggested_nights": 0,
+                "rate_per_night": 450.0,
+                "suggested": 0.0,
+                "source": "suggested"
+              }
+            ],
+            "floor": 17691.54,
+            "floor_known": 17691.54,
+            "floor_complete": true,
+            "target_margin_pct": 10.0,
+            "target_price": 19657.27,
+            "minimum_charge": null,
+            "default_price_per_km": null,
+            "rate_price": null,
+            "default_price": 19700.0,
+            "alternative_with_return_load": null,
+            "price": null,
+            "margin": null,
+            "margin_pct": null,
+            "warnings": [],
+            "blocking": [],
+            "can_send": true
+          }
+        },
+        "trip": {
+          "type": "ONE_WAY",
+          "legs_loaded": 1,
+          "distance_km": 568.4,
+          "empty_return_included": false,
+          "empty_return_default": true,
+          "km_loaded": 568.4,
+          "km_empty": 0.0,
+          "km_driven": 568.4,
+          "hours_one_way": 7.333333333333333,
+          "return_nights": null
+        },
+        "vehicle": {
+          "id": 11,
+          "name": "Superlink",
+          "capacity_t": 34.0,
+          "load_t": 30.0,
+          "load_ratio": 0.8823529411764706,
+          "rated_burn_l_per_100km": 42.0,
+          "burn_loaded_l_per_100km": 40.51764705882353,
+          "burn_empty_l_per_100km": 29.4
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "fuel_type": "Diesel",
+          "official_price": 32.7989,
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
+          "official_stale": false,
+          "price": 32.7989,
+          "source": "official"
+        },
+        "litres": {
+          "loaded": null,
+          "empty_return": null,
+          "total": 230.30230588235293
+        },
+        "lines": [
+          {
+            "key": "fuel",
+            "label": "Fuel",
+            "leg": "loaded",
+            "amount": 7553.66,
+            "basis": "568 km at 40,5 L/100km × R 32,80/L",
+            "litres": 230.30230588235293,
+            "burn_l_per_100km": 40.51764705882353,
+            "price_per_litre": 32.7989,
+            "km": 568.4,
+            "per_load_amount": 7553.66,
+            "loads": 1
+          },
+          {
+            "key": "operating",
+            "label": "Operating costs",
+            "leg": "loaded",
+            "amount": 9094.4,
+            "basis": "568 km × R 16,00/km",
+            "rate_per_km": 16.0,
+            "km": 568.4,
+            "source": "vehicle_default",
+            "per_load_amount": 9094.4,
+            "loads": 1
+          },
+          {
+            "key": "tolls",
+            "label": "Tolls",
+            "leg": "loaded",
+            "amount": 1043.48,
+            "basis": "R 1 043,48 one way",
+            "one_way": 1043.48,
+            "legs": 1,
+            "per_load_amount": 1043.48,
+            "loads": 1
+          },
+          {
+            "key": "driver",
+            "label": "Driver nights out",
+            "leg": "loaded",
+            "amount": 0.0,
+            "basis": "No night away",
+            "nights": 0,
+            "suggested_nights": 0,
+            "rate_per_night": 450.0,
+            "suggested": 0.0,
+            "source": "suggested",
+            "per_load_amount": 0.0,
+            "loads": 1
+          }
+        ],
+        "floor": 17691.54,
+        "floor_known": 17691.54,
+        "floor_complete": true,
+        "target_margin_pct": 10.0,
+        "target_price": 19680.0,
+        "minimum_charge": null,
+        "default_price": 19680.0,
+        "price": 27000.0,
+        "margin": 9308.46,
+        "margin_pct": 34.47577777777777,
+        "warnings": [],
+        "blocking": [],
+        "can_send": true
+      }
+    },
+    {
+      "name": "diesel_missing_blocked",
+      "description": "No diesel price: every cost is unknown, diesel_missing blocks, no rate.",
+      "inputs": {
+        "lane": {
+          "trip_type": "ONE_WAY",
+          "distance_km": 568.4,
+          "distance_estimated": false,
+          "distance_confirmed": false,
+          "duration_minutes": 440,
+          "diesel": {
+            "zone": "INLAND",
+            "mode": "LIVE",
+            "own_price": null,
+            "own_set_at": null,
+            "official_price": null,
+            "official_effective_from": null,
+            "official_stale": false,
+            "use_official": false,
+            "override_price": null
+          },
+          "tolls": {
+            "one_way": 1043.48,
+            "empty_return": 812.61,
+            "lookup_failed": false,
+            "confirmed_none": false
+          },
+          "driver": {
+            "allowance_per_night": 450.0,
+            "nights": null,
+            "amount": null
+          },
+          "hours_per_day": 9.0,
+          "border_cost": 0.0,
+          "international": false,
+          "include_empty_return": null,
+          "settings": {
+            "include_empty_return_default": true,
+            "empty_return_min_km": 300.0
+          },
+          "minimum_charge": null,
+          "default_price_per_km": null,
+          "target_margin_pct": 10.0
+        },
+        "trucks": [
+          {
+            "vehicle": {
+              "id": 11,
+              "name": "Superlink",
+              "capacity": 34,
+              "rated_burn_l_per_100km": 42
+            },
+            "operating_cost_per_km": 16.0,
+            "operating_cost_source": "vehicle_default"
+          },
+          {
+            "vehicle": {
+              "id": 12,
+              "name": "Tri-axle",
+              "capacity": 30,
+              "rated_burn_l_per_100km": 38
+            },
+            "operating_cost_per_km": 15.0,
+            "operating_cost_source": "vehicle_default"
+          },
+          {
+            "vehicle": {
+              "id": 17,
+              "name": "Tautliner",
+              "capacity": 30,
+              "rated_burn_l_per_100km": 40
+            },
+            "operating_cost_per_km": 15.0,
+            "operating_cost_source": "vehicle_default"
+          }
+        ],
+        "tonnes_per_load": 30.0,
+        "total_tonnes": null,
+        "min_tonnes_per_load": null,
+        "vehicle_type_id": null,
+        "rate_per_tonne": null
+      },
+      "expected": {
+        "version": "qc-1",
+        "pricing_basis": "per_tonne",
+        "tonnage": {
+          "version": "qt-1",
+          "mode": "single",
+          "total_tonnes": 30.0,
+          "tonnes_per_load": 30.0,
+          "min_tonnes_per_load": 30.0,
+          "min_tonnes_source": "basis_load",
+          "vehicle_type_id": null,
+          "basis_vehicle_type_id": 12,
+          "basis_reason": "costs_unknown",
+          "trucks": [
+            {
+              "vehicle_type_id": 12,
+              "name": "Tri-axle",
+              "payload_t": 30.0,
+              "tonnes_per_load": 30.0,
+              "loads_needed": 1,
+              "last_load_t": 30.0,
+              "partial_last_load": false,
+              "cost_per_load": null,
+              "cost_last_load": null,
+              "total_cost": null,
+              "min_tonnes_per_load": 30.0,
+              "billable_tonnes": 30.0,
+              "cost_per_tonne": null,
+              "is_basis": true,
+              "at_rate": null
+            },
+            {
+              "vehicle_type_id": 17,
+              "name": "Tautliner",
+              "payload_t": 30.0,
+              "tonnes_per_load": 30.0,
+              "loads_needed": 1,
+              "last_load_t": 30.0,
+              "partial_last_load": false,
+              "cost_per_load": null,
+              "cost_last_load": null,
+              "total_cost": null,
+              "min_tonnes_per_load": 30.0,
+              "billable_tonnes": 30.0,
+              "cost_per_tonne": null,
+              "is_basis": false,
+              "at_rate": null
+            },
+            {
+              "vehicle_type_id": 11,
+              "name": "Superlink",
+              "payload_t": 34.0,
+              "tonnes_per_load": 30.0,
+              "loads_needed": 1,
+              "last_load_t": 30.0,
+              "partial_last_load": false,
+              "cost_per_load": null,
+              "cost_last_load": null,
+              "total_cost": null,
+              "min_tonnes_per_load": 30.0,
+              "billable_tonnes": 30.0,
+              "cost_per_tonne": null,
+              "is_basis": false,
+              "at_rate": null
+            }
+          ],
+          "excluded": [],
+          "summary": null,
+          "loads_planned": 1,
+          "billable_tonnes": 30.0,
+          "total_cost": null,
+          "cost_per_tonne": null,
+          "target_margin_pct": 10.0,
+          "target_rate_per_tonne": null,
+          "minimum_charge_rate_per_tonne": null,
+          "default_rate_per_tonne": null,
+          "rate_per_tonne": null,
+          "rate_used": null,
+          "rate_source": null,
+          "minimum_charge_per_load": null,
+          "estimated_revenue": null,
+          "margin": null,
+          "margin_pct": null,
+          "basis_load_costing": {
+            "version": "qc-1",
+            "trip": {
+              "type": "ONE_WAY",
+              "legs_loaded": 1,
+              "distance_km": 568.4,
+              "empty_return_included": true,
+              "empty_return_default": true,
+              "km_loaded": 568.4,
+              "km_empty": 568.4,
+              "km_driven": 1136.8,
+              "hours_one_way": 7.333333333333333,
+              "return_nights": 1
+            },
+            "vehicle": {
+              "id": 12,
+              "name": "Tri-axle",
+              "capacity_t": 30.0,
+              "load_t": 30.0,
+              "load_ratio": 1.0,
+              "rated_burn_l_per_100km": 38.0,
+              "burn_loaded_l_per_100km": 38.0,
+              "burn_empty_l_per_100km": 26.599999999999998
+            },
+            "diesel": {
+              "zone": "INLAND",
+              "mode": "LIVE",
+              "own_price": null,
+              "own_set_at": null,
+              "fuel_type": "Diesel",
+              "official_price": null,
+              "official_effective_from": null,
+              "official_stale": false,
+              "price": null,
+              "source": "missing"
+            },
+            "litres": {
+              "loaded": 215.99200000000002,
+              "empty_return": 151.19439999999997,
+              "total": 367.1864
+            },
+            "lines": [
+              {
+                "key": "fuel",
+                "label": "Fuel",
+                "leg": "loaded",
+                "amount": null,
+                "basis": "568 km at 38,0 L/100km",
+                "litres": 215.99200000000002,
+                "burn_l_per_100km": 38.0,
+                "price_per_litre": null,
+                "km": 568.4
+              },
+              {
+                "key": "operating",
+                "label": "Operating costs",
+                "leg": "loaded",
+                "amount": 8526.0,
+                "basis": "568 km × R 15,00/km",
+                "rate_per_km": 15.0,
+                "km": 568.4,
+                "source": "vehicle_default"
+              },
+              {
+                "key": "tolls",
+                "label": "Tolls",
+                "leg": "loaded",
+                "amount": 1043.48,
+                "basis": "R 1 043,48 one way",
+                "one_way": 1043.48,
+                "legs": 1
+              },
+              {
+                "key": "driver",
+                "label": "Driver nights out",
+                "leg": "loaded",
+                "amount": 0.0,
+                "basis": "No night away",
+                "nights": 0,
+                "suggested_nights": 0,
+                "rate_per_night": 450.0,
+                "suggested": 0.0,
+                "source": "suggested"
+              },
+              {
+                "key": "fuel_return",
+                "label": "Fuel, empty return",
+                "leg": "empty_return",
+                "amount": null,
+                "basis": "568 km empty at 26,6 L/100km",
+                "litres": 151.19439999999997,
+                "burn_l_per_100km": 26.599999999999998,
+                "price_per_litre": null,
+                "km": 568.4
+              },
+              {
+                "key": "operating_return",
+                "label": "Operating costs, empty return",
+                "leg": "empty_return",
+                "amount": 8526.0,
+                "basis": "568 km × R 15,00/km",
+                "rate_per_km": 15.0,
+                "km": 568.4,
+                "source": "vehicle_default"
+              },
+              {
+                "key": "tolls_return",
+                "label": "Tolls, empty return",
+                "leg": "empty_return",
+                "amount": 812.61,
+                "basis": "R 812,61 home empty",
+                "one_way": 812.61
+              },
+              {
+                "key": "driver_return",
+                "label": "Driver nights, empty return",
+                "leg": "empty_return",
+                "amount": 450.0,
+                "basis": "1 extra night × R 450,00",
+                "nights": 1,
+                "rate_per_night": 450.0
+              }
+            ],
+            "floor": null,
+            "floor_known": 19358.09,
+            "floor_complete": false,
+            "target_margin_pct": 10.0,
+            "target_price": null,
+            "minimum_charge": null,
+            "default_price_per_km": null,
+            "rate_price": null,
+            "default_price": null,
+            "alternative_with_return_load": {
+              "floor": null,
+              "target_price": null,
+              "default_price": null
+            },
+            "price": null,
+            "margin": null,
+            "margin_pct": null,
+            "warnings": [
+              {
+                "code": "diesel_missing",
+                "severity": "block",
+                "title": "No diesel price available",
+                "detail": "No official price on record; set your own in settings.",
+                "impact_zar": null,
+                "actions": [
+                  {
+                    "id": "retry_diesel",
+                    "label": "Try again"
+                  },
+                  {
+                    "id": "update_own",
+                    "label": "Update my price"
+                  }
+                ]
+              }
+            ],
+            "blocking": [
+              "diesel_missing"
+            ],
+            "can_send": false
+          }
+        },
+        "trip": {
+          "type": "ONE_WAY",
+          "legs_loaded": 1,
+          "distance_km": 568.4,
+          "empty_return_included": true,
+          "empty_return_default": true,
+          "km_loaded": 568.4,
+          "km_empty": 568.4,
+          "km_driven": 1136.8,
+          "hours_one_way": 7.333333333333333,
+          "return_nights": 1
+        },
+        "vehicle": {
+          "id": 12,
+          "name": "Tri-axle",
+          "capacity_t": 30.0,
+          "load_t": 30.0,
+          "load_ratio": 1.0,
+          "rated_burn_l_per_100km": 38.0,
+          "burn_loaded_l_per_100km": 38.0,
+          "burn_empty_l_per_100km": 26.599999999999998
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "fuel_type": "Diesel",
+          "official_price": null,
+          "official_effective_from": null,
+          "official_stale": false,
+          "price": null,
+          "source": "missing"
+        },
+        "litres": {
+          "loaded": null,
+          "empty_return": null,
+          "total": 367.1864
+        },
+        "lines": [
+          {
+            "key": "fuel",
+            "label": "Fuel",
+            "leg": "loaded",
+            "amount": null,
+            "basis": "568 km at 38,0 L/100km",
+            "litres": 215.99200000000002,
+            "burn_l_per_100km": 38.0,
+            "price_per_litre": null,
+            "km": 568.4,
+            "per_load_amount": null,
+            "loads": 1
+          },
+          {
+            "key": "operating",
+            "label": "Operating costs",
+            "leg": "loaded",
+            "amount": 8526.0,
+            "basis": "568 km × R 15,00/km",
+            "rate_per_km": 15.0,
+            "km": 568.4,
+            "source": "vehicle_default",
+            "per_load_amount": 8526.0,
+            "loads": 1
+          },
+          {
+            "key": "tolls",
+            "label": "Tolls",
+            "leg": "loaded",
+            "amount": 1043.48,
+            "basis": "R 1 043,48 one way",
+            "one_way": 1043.48,
+            "legs": 1,
+            "per_load_amount": 1043.48,
+            "loads": 1
+          },
+          {
+            "key": "driver",
+            "label": "Driver nights out",
+            "leg": "loaded",
+            "amount": 0.0,
+            "basis": "No night away",
+            "nights": 0,
+            "suggested_nights": 0,
+            "rate_per_night": 450.0,
+            "suggested": 0.0,
+            "source": "suggested",
+            "per_load_amount": 0.0,
+            "loads": 1
+          },
+          {
+            "key": "fuel_return",
+            "label": "Fuel, empty return",
+            "leg": "empty_return",
+            "amount": null,
+            "basis": "568 km empty at 26,6 L/100km",
+            "litres": 151.19439999999997,
+            "burn_l_per_100km": 26.599999999999998,
+            "price_per_litre": null,
+            "km": 568.4,
+            "per_load_amount": null,
+            "loads": 1
+          },
+          {
+            "key": "operating_return",
+            "label": "Operating costs, empty return",
+            "leg": "empty_return",
+            "amount": 8526.0,
+            "basis": "568 km × R 15,00/km",
+            "rate_per_km": 15.0,
+            "km": 568.4,
+            "source": "vehicle_default",
+            "per_load_amount": 8526.0,
+            "loads": 1
+          },
+          {
+            "key": "tolls_return",
+            "label": "Tolls, empty return",
+            "leg": "empty_return",
+            "amount": 812.61,
+            "basis": "R 812,61 home empty",
+            "one_way": 812.61,
+            "per_load_amount": 812.61,
+            "loads": 1
+          },
+          {
+            "key": "driver_return",
+            "label": "Driver nights, empty return",
+            "leg": "empty_return",
+            "amount": 450.0,
+            "basis": "1 extra night × R 450,00",
+            "nights": 1,
+            "rate_per_night": 450.0,
+            "per_load_amount": 450.0,
+            "loads": 1
+          }
+        ],
+        "floor": null,
+        "floor_known": 19358.09,
+        "floor_complete": false,
+        "target_margin_pct": 10.0,
+        "target_price": null,
+        "minimum_charge": null,
+        "default_price": null,
+        "price": null,
+        "margin": null,
+        "margin_pct": null,
+        "warnings": [
+          {
+            "code": "diesel_missing",
+            "severity": "block",
+            "title": "No diesel price available",
+            "detail": "No official price on record; set your own in settings.",
+            "impact_zar": null,
+            "actions": [
+              {
+                "id": "retry_diesel",
+                "label": "Try again"
+              },
+              {
+                "id": "update_own",
+                "label": "Update my price"
+              }
+            ]
+          }
+        ],
+        "blocking": [
+          "diesel_missing"
+        ],
+        "can_send": false
+      }
+    },
+    {
+      "name": "rate_below_cost",
+      "description": "R 800/t is under the cost per tonne on the basis truck: rate_below_cost warns with the loss.",
+      "inputs": {
+        "lane": {
+          "trip_type": "ONE_WAY",
+          "distance_km": 568.4,
+          "distance_estimated": false,
+          "distance_confirmed": false,
+          "duration_minutes": 440,
+          "diesel": {
+            "zone": "INLAND",
+            "mode": "LIVE",
+            "own_price": null,
+            "own_set_at": null,
+            "official_price": 32.7989,
+            "official_effective_from": "2026-10-06T22:01:00Z",
+            "official_stale": false,
+            "use_official": false,
+            "override_price": null
+          },
+          "tolls": {
+            "one_way": 1043.48,
+            "empty_return": 812.61,
+            "lookup_failed": false,
+            "confirmed_none": false
+          },
+          "driver": {
+            "allowance_per_night": 450.0,
+            "nights": null,
+            "amount": null
+          },
+          "hours_per_day": 9.0,
+          "border_cost": 0.0,
+          "international": false,
+          "include_empty_return": null,
+          "settings": {
+            "include_empty_return_default": true,
+            "empty_return_min_km": 300.0
+          },
+          "minimum_charge": null,
+          "default_price_per_km": null,
+          "target_margin_pct": 10.0
+        },
+        "trucks": [
+          {
+            "vehicle": {
+              "id": 11,
+              "name": "Superlink",
+              "capacity": 34,
+              "rated_burn_l_per_100km": 42
+            },
+            "operating_cost_per_km": 16.0,
+            "operating_cost_source": "vehicle_default"
+          },
+          {
+            "vehicle": {
+              "id": 12,
+              "name": "Tri-axle",
+              "capacity": 30,
+              "rated_burn_l_per_100km": 38
+            },
+            "operating_cost_per_km": 15.0,
+            "operating_cost_source": "vehicle_default"
+          },
+          {
+            "vehicle": {
+              "id": 17,
+              "name": "Tautliner",
+              "capacity": 30,
+              "rated_burn_l_per_100km": 40
+            },
+            "operating_cost_per_km": 15.0,
+            "operating_cost_source": "vehicle_default"
+          }
+        ],
+        "tonnes_per_load": 30.0,
+        "total_tonnes": null,
+        "min_tonnes_per_load": null,
+        "vehicle_type_id": null,
+        "rate_per_tonne": 800.0
+      },
+      "expected": {
+        "version": "qc-1",
+        "pricing_basis": "per_tonne",
+        "tonnage": {
+          "version": "qt-1",
+          "mode": "single",
+          "total_tonnes": 30.0,
+          "tonnes_per_load": 30.0,
+          "min_tonnes_per_load": 30.0,
+          "min_tonnes_source": "basis_load",
+          "vehicle_type_id": null,
+          "basis_vehicle_type_id": 11,
+          "basis_reason": "safest",
+          "trucks": [
+            {
+              "vehicle_type_id": 11,
+              "name": "Superlink",
+              "payload_t": 34.0,
+              "tonnes_per_load": 30.0,
+              "loads_needed": 1,
+              "last_load_t": 30.0,
+              "partial_last_load": false,
+              "cost_per_load": 33529.56,
+              "cost_last_load": 33529.56,
+              "total_cost": 33529.56,
+              "min_tonnes_per_load": 30.0,
+              "billable_tonnes": 30.0,
+              "cost_per_tonne": 1117.65,
+              "is_basis": true,
+              "at_rate": {
+                "rate_per_tonne": 800.0,
+                "billable_tonnes": 30.0,
+                "revenue": 24000.0,
+                "margin": -9529.56,
+                "margin_pct": -39.70649999999999
+              }
+            },
+            {
+              "vehicle_type_id": 17,
+              "name": "Tautliner",
+              "payload_t": 30.0,
+              "tonnes_per_load": 30.0,
+              "loads_needed": 1,
+              "last_load_t": 30.0,
+              "partial_last_load": false,
+              "cost_per_load": 32035.26,
+              "cost_last_load": 32035.26,
+              "total_cost": 32035.26,
+              "min_tonnes_per_load": 30.0,
+              "billable_tonnes": 30.0,
+              "cost_per_tonne": 1067.84,
+              "is_basis": false,
+              "at_rate": {
+                "rate_per_tonne": 800.0,
+                "billable_tonnes": 30.0,
+                "revenue": 24000.0,
+                "margin": -8035.26,
+                "margin_pct": -33.48025
+              }
+            },
+            {
+              "vehicle_type_id": 12,
+              "name": "Tri-axle",
+              "payload_t": 30.0,
+              "tonnes_per_load": 30.0,
+              "loads_needed": 1,
+              "last_load_t": 30.0,
+              "partial_last_load": false,
+              "cost_per_load": 31401.4,
+              "cost_last_load": 31401.4,
+              "total_cost": 31401.4,
+              "min_tonnes_per_load": 30.0,
+              "billable_tonnes": 30.0,
+              "cost_per_tonne": 1046.71,
+              "is_basis": false,
+              "at_rate": {
+                "rate_per_tonne": 800.0,
+                "billable_tonnes": 30.0,
+                "revenue": 24000.0,
+                "margin": -7401.4,
+                "margin_pct": -30.839166666666674
+              }
+            }
+          ],
+          "excluded": [],
+          "summary": "Superlink 34 t R 1 118/t · Tautliner 30 t R 1 068/t · Tri-axle 30 t R 1 047/t",
+          "loads_planned": 1,
+          "billable_tonnes": 30.0,
+          "total_cost": 33529.56,
+          "cost_per_tonne": 1117.65,
+          "target_margin_pct": 10.0,
+          "target_rate_per_tonne": 1242.0,
+          "minimum_charge_rate_per_tonne": null,
+          "default_rate_per_tonne": 1242.0,
+          "rate_per_tonne": 800.0,
+          "rate_used": 800.0,
+          "rate_source": "user",
+          "minimum_charge_per_load": 24000.0,
+          "estimated_revenue": 24000.0,
+          "margin": -9529.56,
+          "margin_pct": -39.70649999999999,
+          "basis_load_costing": {
+            "version": "qc-1",
+            "trip": {
+              "type": "ONE_WAY",
+              "legs_loaded": 1,
+              "distance_km": 568.4,
+              "empty_return_included": true,
+              "empty_return_default": true,
+              "km_loaded": 568.4,
+              "km_empty": 568.4,
+              "km_driven": 1136.8,
+              "hours_one_way": 7.333333333333333,
+              "return_nights": 1
+            },
+            "vehicle": {
+              "id": 11,
+              "name": "Superlink",
+              "capacity_t": 34.0,
+              "load_t": 30.0,
+              "load_ratio": 0.8823529411764706,
+              "rated_burn_l_per_100km": 42.0,
+              "burn_loaded_l_per_100km": 40.51764705882353,
+              "burn_empty_l_per_100km": 29.4
+            },
+            "diesel": {
+              "zone": "INLAND",
+              "mode": "LIVE",
+              "own_price": null,
+              "own_set_at": null,
+              "fuel_type": "Diesel",
+              "official_price": 32.7989,
+              "official_effective_from": "2026-10-07T00:01:00+02:00",
+              "official_stale": false,
+              "price": 32.7989,
+              "source": "official"
+            },
+            "litres": {
+              "loaded": 230.30230588235293,
+              "empty_return": 167.1096,
+              "total": 397.4119058823529
+            },
+            "lines": [
+              {
+                "key": "fuel",
+                "label": "Fuel",
+                "leg": "loaded",
+                "amount": 7553.66,
+                "basis": "568 km at 40,5 L/100km × R 32,80/L",
+                "litres": 230.30230588235293,
+                "burn_l_per_100km": 40.51764705882353,
+                "price_per_litre": 32.7989,
+                "km": 568.4
+              },
+              {
+                "key": "operating",
+                "label": "Operating costs",
+                "leg": "loaded",
+                "amount": 9094.4,
+                "basis": "568 km × R 16,00/km",
+                "rate_per_km": 16.0,
+                "km": 568.4,
+                "source": "vehicle_default"
+              },
+              {
+                "key": "tolls",
+                "label": "Tolls",
+                "leg": "loaded",
+                "amount": 1043.48,
+                "basis": "R 1 043,48 one way",
+                "one_way": 1043.48,
+                "legs": 1
+              },
+              {
+                "key": "driver",
+                "label": "Driver nights out",
+                "leg": "loaded",
+                "amount": 0.0,
+                "basis": "No night away",
+                "nights": 0,
+                "suggested_nights": 0,
+                "rate_per_night": 450.0,
+                "suggested": 0.0,
+                "source": "suggested"
+              },
+              {
+                "key": "fuel_return",
+                "label": "Fuel, empty return",
+                "leg": "empty_return",
+                "amount": 5481.01,
+                "basis": "568 km empty at 29,4 L/100km × R 32,80/L",
+                "litres": 167.1096,
+                "burn_l_per_100km": 29.4,
+                "price_per_litre": 32.7989,
+                "km": 568.4
+              },
+              {
+                "key": "operating_return",
+                "label": "Operating costs, empty return",
+                "leg": "empty_return",
+                "amount": 9094.4,
+                "basis": "568 km × R 16,00/km",
+                "rate_per_km": 16.0,
+                "km": 568.4,
+                "source": "vehicle_default"
+              },
+              {
+                "key": "tolls_return",
+                "label": "Tolls, empty return",
+                "leg": "empty_return",
+                "amount": 812.61,
+                "basis": "R 812,61 home empty",
+                "one_way": 812.61
+              },
+              {
+                "key": "driver_return",
+                "label": "Driver nights, empty return",
+                "leg": "empty_return",
+                "amount": 450.0,
+                "basis": "1 extra night × R 450,00",
+                "nights": 1,
+                "rate_per_night": 450.0
+              }
+            ],
+            "floor": 33529.56,
+            "floor_known": 33529.56,
+            "floor_complete": true,
+            "target_margin_pct": 10.0,
+            "target_price": 37255.07,
+            "minimum_charge": null,
+            "default_price_per_km": null,
+            "rate_price": null,
+            "default_price": 37300.0,
+            "alternative_with_return_load": {
+              "floor": 17691.54,
+              "target_price": 19657.27,
+              "default_price": 19700.0
+            },
+            "price": null,
+            "margin": null,
+            "margin_pct": null,
+            "warnings": [],
+            "blocking": [],
+            "can_send": true
+          }
+        },
+        "trip": {
+          "type": "ONE_WAY",
+          "legs_loaded": 1,
+          "distance_km": 568.4,
+          "empty_return_included": true,
+          "empty_return_default": true,
+          "km_loaded": 568.4,
+          "km_empty": 568.4,
+          "km_driven": 1136.8,
+          "hours_one_way": 7.333333333333333,
+          "return_nights": 1
+        },
+        "vehicle": {
+          "id": 11,
+          "name": "Superlink",
+          "capacity_t": 34.0,
+          "load_t": 30.0,
+          "load_ratio": 0.8823529411764706,
+          "rated_burn_l_per_100km": 42.0,
+          "burn_loaded_l_per_100km": 40.51764705882353,
+          "burn_empty_l_per_100km": 29.4
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "fuel_type": "Diesel",
+          "official_price": 32.7989,
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
+          "official_stale": false,
+          "price": 32.7989,
+          "source": "official"
+        },
+        "litres": {
+          "loaded": null,
+          "empty_return": null,
+          "total": 397.4119058823529
+        },
+        "lines": [
+          {
+            "key": "fuel",
+            "label": "Fuel",
+            "leg": "loaded",
+            "amount": 7553.66,
+            "basis": "568 km at 40,5 L/100km × R 32,80/L",
+            "litres": 230.30230588235293,
+            "burn_l_per_100km": 40.51764705882353,
+            "price_per_litre": 32.7989,
+            "km": 568.4,
+            "per_load_amount": 7553.66,
+            "loads": 1
+          },
+          {
+            "key": "operating",
+            "label": "Operating costs",
+            "leg": "loaded",
+            "amount": 9094.4,
+            "basis": "568 km × R 16,00/km",
+            "rate_per_km": 16.0,
+            "km": 568.4,
+            "source": "vehicle_default",
+            "per_load_amount": 9094.4,
+            "loads": 1
+          },
+          {
+            "key": "tolls",
+            "label": "Tolls",
+            "leg": "loaded",
+            "amount": 1043.48,
+            "basis": "R 1 043,48 one way",
+            "one_way": 1043.48,
+            "legs": 1,
+            "per_load_amount": 1043.48,
+            "loads": 1
+          },
+          {
+            "key": "driver",
+            "label": "Driver nights out",
+            "leg": "loaded",
+            "amount": 0.0,
+            "basis": "No night away",
+            "nights": 0,
+            "suggested_nights": 0,
+            "rate_per_night": 450.0,
+            "suggested": 0.0,
+            "source": "suggested",
+            "per_load_amount": 0.0,
+            "loads": 1
+          },
+          {
+            "key": "fuel_return",
+            "label": "Fuel, empty return",
+            "leg": "empty_return",
+            "amount": 5481.01,
+            "basis": "568 km empty at 29,4 L/100km × R 32,80/L",
+            "litres": 167.1096,
+            "burn_l_per_100km": 29.4,
+            "price_per_litre": 32.7989,
+            "km": 568.4,
+            "per_load_amount": 5481.01,
+            "loads": 1
+          },
+          {
+            "key": "operating_return",
+            "label": "Operating costs, empty return",
+            "leg": "empty_return",
+            "amount": 9094.4,
+            "basis": "568 km × R 16,00/km",
+            "rate_per_km": 16.0,
+            "km": 568.4,
+            "source": "vehicle_default",
+            "per_load_amount": 9094.4,
+            "loads": 1
+          },
+          {
+            "key": "tolls_return",
+            "label": "Tolls, empty return",
+            "leg": "empty_return",
+            "amount": 812.61,
+            "basis": "R 812,61 home empty",
+            "one_way": 812.61,
+            "per_load_amount": 812.61,
+            "loads": 1
+          },
+          {
+            "key": "driver_return",
+            "label": "Driver nights, empty return",
+            "leg": "empty_return",
+            "amount": 450.0,
+            "basis": "1 extra night × R 450,00",
+            "nights": 1,
+            "rate_per_night": 450.0,
+            "per_load_amount": 450.0,
+            "loads": 1
+          }
+        ],
+        "floor": 33529.56,
+        "floor_known": 33529.56,
+        "floor_complete": true,
+        "target_margin_pct": 10.0,
+        "target_price": 37260.0,
+        "minimum_charge": null,
+        "default_price": 37260.0,
+        "price": 24000.0,
+        "margin": -9529.56,
+        "margin_pct": -39.70649999999999,
+        "warnings": [
+          {
+            "code": "rate_below_cost",
+            "severity": "warn",
+            "title": "Rate is below your cost per tonne",
+            "detail": "R 800/t is under the R 1 118/t cost on the Superlink 34 t; this loses R 9 530.",
+            "impact_zar": -9529.56,
+            "actions": [
+              {
+                "id": "use_target_rate",
+                "label": "Price at target · R 1 242/t"
+              }
+            ],
+            "target_rate_per_tonne": 1242.0
+          }
+        ],
+        "blocking": [],
+        "can_send": true
+      }
+    },
+    {
+      "name": "tonnes_exceed_payload",
+      "description": "40 t consignment, no truck carries it: split into loads on the safest truck.",
+      "inputs": {
+        "lane": {
+          "trip_type": "ONE_WAY",
+          "distance_km": 568.4,
+          "distance_estimated": false,
+          "distance_confirmed": false,
+          "duration_minutes": 440,
+          "diesel": {
+            "zone": "INLAND",
+            "mode": "LIVE",
+            "own_price": null,
+            "own_set_at": null,
+            "official_price": 32.7989,
+            "official_effective_from": "2026-10-06T22:01:00Z",
+            "official_stale": false,
+            "use_official": false,
+            "override_price": null
+          },
+          "tolls": {
+            "one_way": 1043.48,
+            "empty_return": 812.61,
+            "lookup_failed": false,
+            "confirmed_none": false
+          },
+          "driver": {
+            "allowance_per_night": 450.0,
+            "nights": null,
+            "amount": null
+          },
+          "hours_per_day": 9.0,
+          "border_cost": 0.0,
+          "international": false,
+          "include_empty_return": null,
+          "settings": {
+            "include_empty_return_default": true,
+            "empty_return_min_km": 300.0
+          },
+          "minimum_charge": null,
+          "default_price_per_km": null,
+          "target_margin_pct": 10.0
+        },
+        "trucks": [
+          {
+            "vehicle": {
+              "id": 11,
+              "name": "Superlink",
+              "capacity": 34,
+              "rated_burn_l_per_100km": 42
+            },
+            "operating_cost_per_km": 16.0,
+            "operating_cost_source": "vehicle_default"
+          },
+          {
+            "vehicle": {
+              "id": 12,
+              "name": "Tri-axle",
+              "capacity": 30,
+              "rated_burn_l_per_100km": 38
+            },
+            "operating_cost_per_km": 15.0,
+            "operating_cost_source": "vehicle_default"
+          },
+          {
+            "vehicle": {
+              "id": 17,
+              "name": "Tautliner",
+              "capacity": 30,
+              "rated_burn_l_per_100km": 40
+            },
+            "operating_cost_per_km": 15.0,
+            "operating_cost_source": "vehicle_default"
+          }
+        ],
+        "tonnes_per_load": 40.0,
+        "total_tonnes": null,
+        "min_tonnes_per_load": null,
+        "vehicle_type_id": null,
+        "rate_per_tonne": null
+      },
+      "expected": {
+        "version": "qc-1",
+        "pricing_basis": "per_tonne",
+        "tonnage": {
+          "version": "qt-1",
+          "mode": "single",
+          "total_tonnes": 40.0,
+          "tonnes_per_load": 40.0,
+          "min_tonnes_per_load": 30.0,
+          "min_tonnes_source": "basis_load",
+          "vehicle_type_id": null,
+          "basis_vehicle_type_id": 17,
+          "basis_reason": "safest",
+          "trucks": [
+            {
+              "vehicle_type_id": 17,
+              "name": "Tautliner",
+              "payload_t": 30.0,
+              "tonnes_per_load": 30.0,
+              "loads_needed": 2,
+              "last_load_t": 10.0,
+              "partial_last_load": true,
+              "cost_per_load": 32035.26,
+              "cost_last_load": 30543.83,
+              "total_cost": 62579.09,
+              "min_tonnes_per_load": 30.0,
+              "billable_tonnes": 60.0,
+              "cost_per_tonne": 1042.98,
+              "is_basis": true,
+              "at_rate": {
+                "rate_per_tonne": 1159.0,
+                "billable_tonnes": 60.0,
+                "revenue": 69540.0,
+                "margin": 6960.91,
+                "margin_pct": 10.009936727063566
+              }
+            },
+            {
+              "vehicle_type_id": 12,
+              "name": "Tri-axle",
+              "payload_t": 30.0,
+              "tonnes_per_load": 30.0,
+              "loads_needed": 2,
+              "last_load_t": 10.0,
+              "partial_last_load": true,
+              "cost_per_load": 31401.4,
+              "cost_last_load": 29984.54,
+              "total_cost": 61385.94,
+              "min_tonnes_per_load": 30.0,
+              "billable_tonnes": 60.0,
+              "cost_per_tonne": 1023.1,
+              "is_basis": false,
+              "at_rate": {
+                "rate_per_tonne": 1159.0,
+                "billable_tonnes": 60.0,
+                "revenue": 69540.0,
+                "margin": 8154.06,
+                "margin_pct": 11.725711820534942
+              }
+            },
+            {
+              "vehicle_type_id": 11,
+              "name": "Superlink",
+              "payload_t": 34.0,
+              "tonnes_per_load": 34.0,
+              "loads_needed": 2,
+              "last_load_t": 6.0,
+              "partial_last_load": true,
+              "cost_per_load": 33805.92,
+              "cost_last_load": 31871.44,
+              "total_cost": 65677.36,
+              "min_tonnes_per_load": 34.0,
+              "billable_tonnes": 68.0,
+              "cost_per_tonne": 965.84,
+              "is_basis": false,
+              "at_rate": {
+                "rate_per_tonne": 1159.0,
+                "billable_tonnes": 64.0,
+                "revenue": 74176.0,
+                "margin": 8498.64,
+                "margin_pct": 11.457398619499568
+              }
+            }
+          ],
+          "excluded": [],
+          "summary": "Tautliner 30 t R 1 043/t · Tri-axle 30 t R 1 023/t · Superlink 34 t R 966/t",
+          "loads_planned": 2,
+          "billable_tonnes": 60.0,
+          "total_cost": 62579.09,
+          "cost_per_tonne": 1042.98,
+          "target_margin_pct": 10.0,
+          "target_rate_per_tonne": 1159.0,
+          "minimum_charge_rate_per_tonne": null,
+          "default_rate_per_tonne": 1159.0,
+          "rate_per_tonne": null,
+          "rate_used": 1159.0,
+          "rate_source": "default",
+          "minimum_charge_per_load": 34770.0,
+          "estimated_revenue": 69540.0,
+          "margin": 6960.91,
+          "margin_pct": 10.009936727063566,
+          "basis_load_costing": {
+            "version": "qc-1",
+            "trip": {
+              "type": "ONE_WAY",
+              "legs_loaded": 1,
+              "distance_km": 568.4,
+              "empty_return_included": true,
+              "empty_return_default": true,
+              "km_loaded": 568.4,
+              "km_empty": 568.4,
+              "km_driven": 1136.8,
+              "hours_one_way": 7.333333333333333,
+              "return_nights": 1
+            },
+            "vehicle": {
+              "id": 17,
+              "name": "Tautliner",
+              "capacity_t": 30.0,
+              "load_t": 30.0,
+              "load_ratio": 1.0,
+              "rated_burn_l_per_100km": 40.0,
+              "burn_loaded_l_per_100km": 40.0,
+              "burn_empty_l_per_100km": 28.0
+            },
+            "diesel": {
+              "zone": "INLAND",
+              "mode": "LIVE",
+              "own_price": null,
+              "own_set_at": null,
+              "fuel_type": "Diesel",
+              "official_price": 32.7989,
+              "official_effective_from": "2026-10-07T00:01:00+02:00",
+              "official_stale": false,
+              "price": 32.7989,
+              "source": "official"
+            },
+            "litres": {
+              "loaded": 227.36,
+              "empty_return": 159.152,
+              "total": 386.512
+            },
+            "lines": [
+              {
+                "key": "fuel",
+                "label": "Fuel",
+                "leg": "loaded",
+                "amount": 7457.16,
+                "basis": "568 km at 40,0 L/100km × R 32,80/L",
+                "litres": 227.36,
+                "burn_l_per_100km": 40.0,
+                "price_per_litre": 32.7989,
+                "km": 568.4
+              },
+              {
+                "key": "operating",
+                "label": "Operating costs",
+                "leg": "loaded",
+                "amount": 8526.0,
+                "basis": "568 km × R 15,00/km",
+                "rate_per_km": 15.0,
+                "km": 568.4,
+                "source": "vehicle_default"
+              },
+              {
+                "key": "tolls",
+                "label": "Tolls",
+                "leg": "loaded",
+                "amount": 1043.48,
+                "basis": "R 1 043,48 one way",
+                "one_way": 1043.48,
+                "legs": 1
+              },
+              {
+                "key": "driver",
+                "label": "Driver nights out",
+                "leg": "loaded",
+                "amount": 0.0,
+                "basis": "No night away",
+                "nights": 0,
+                "suggested_nights": 0,
+                "rate_per_night": 450.0,
+                "suggested": 0.0,
+                "source": "suggested"
+              },
+              {
+                "key": "fuel_return",
+                "label": "Fuel, empty return",
+                "leg": "empty_return",
+                "amount": 5220.01,
+                "basis": "568 km empty at 28,0 L/100km × R 32,80/L",
+                "litres": 159.152,
+                "burn_l_per_100km": 28.0,
+                "price_per_litre": 32.7989,
+                "km": 568.4
+              },
+              {
+                "key": "operating_return",
+                "label": "Operating costs, empty return",
+                "leg": "empty_return",
+                "amount": 8526.0,
+                "basis": "568 km × R 15,00/km",
+                "rate_per_km": 15.0,
+                "km": 568.4,
+                "source": "vehicle_default"
+              },
+              {
+                "key": "tolls_return",
+                "label": "Tolls, empty return",
+                "leg": "empty_return",
+                "amount": 812.61,
+                "basis": "R 812,61 home empty",
+                "one_way": 812.61
+              },
+              {
+                "key": "driver_return",
+                "label": "Driver nights, empty return",
+                "leg": "empty_return",
+                "amount": 450.0,
+                "basis": "1 extra night × R 450,00",
+                "nights": 1,
+                "rate_per_night": 450.0
+              }
+            ],
+            "floor": 32035.26,
+            "floor_known": 32035.26,
+            "floor_complete": true,
+            "target_margin_pct": 10.0,
+            "target_price": 35594.73,
+            "minimum_charge": null,
+            "default_price_per_km": null,
+            "rate_price": null,
+            "default_price": 35600.0,
+            "alternative_with_return_load": {
+              "floor": 17026.64,
+              "target_price": 18918.49,
+              "default_price": 18950.0
+            },
+            "price": null,
+            "margin": null,
+            "margin_pct": null,
+            "warnings": [],
+            "blocking": [],
+            "can_send": true
+          }
+        },
+        "trip": {
+          "type": "ONE_WAY",
+          "legs_loaded": 1,
+          "distance_km": 568.4,
+          "empty_return_included": true,
+          "empty_return_default": true,
+          "km_loaded": 568.4,
+          "km_empty": 568.4,
+          "km_driven": 1136.8,
+          "hours_one_way": 7.333333333333333,
+          "return_nights": 1
+        },
+        "vehicle": {
+          "id": 17,
+          "name": "Tautliner",
+          "capacity_t": 30.0,
+          "load_t": 30.0,
+          "load_ratio": 1.0,
+          "rated_burn_l_per_100km": 40.0,
+          "burn_loaded_l_per_100km": 40.0,
+          "burn_empty_l_per_100km": 28.0
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "fuel_type": "Diesel",
+          "official_price": 32.7989,
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
+          "official_stale": false,
+          "price": 32.7989,
+          "source": "official"
+        },
+        "litres": {
+          "loaded": null,
+          "empty_return": null,
+          "total": 727.5519999999999
+        },
+        "lines": [
+          {
+            "key": "fuel",
+            "label": "Fuel",
+            "leg": "loaded",
+            "amount": 13422.89,
+            "basis": "568 km at 40,0 L/100km × R 32,80/L · 2 loads",
+            "litres": 409.24799999999993,
+            "burn_l_per_100km": 40.0,
+            "price_per_litre": 32.7989,
+            "km": 568.4,
+            "per_load_amount": 7457.16,
+            "loads": 2
+          },
+          {
+            "key": "operating",
+            "label": "Operating costs",
+            "leg": "loaded",
+            "amount": 17052.0,
+            "basis": "568 km × R 15,00/km · 2 loads",
+            "rate_per_km": 15.0,
+            "km": 568.4,
+            "source": "vehicle_default",
+            "per_load_amount": 8526.0,
+            "loads": 2
+          },
+          {
+            "key": "tolls",
+            "label": "Tolls",
+            "leg": "loaded",
+            "amount": 2086.96,
+            "basis": "R 1 043,48 one way · 2 loads",
+            "one_way": 1043.48,
+            "legs": 1,
+            "per_load_amount": 1043.48,
+            "loads": 2
+          },
+          {
+            "key": "driver",
+            "label": "Driver nights out",
+            "leg": "loaded",
+            "amount": 0.0,
+            "basis": "No night away · 2 loads",
+            "nights": 0,
+            "suggested_nights": 0,
+            "rate_per_night": 450.0,
+            "suggested": 0.0,
+            "source": "suggested",
+            "per_load_amount": 0.0,
+            "loads": 2
+          },
+          {
+            "key": "fuel_return",
+            "label": "Fuel, empty return",
+            "leg": "empty_return",
+            "amount": 10440.02,
+            "basis": "568 km empty at 28,0 L/100km × R 32,80/L · 2 loads",
+            "litres": 318.304,
+            "burn_l_per_100km": 28.0,
+            "price_per_litre": 32.7989,
+            "km": 568.4,
+            "per_load_amount": 5220.01,
+            "loads": 2
+          },
+          {
+            "key": "operating_return",
+            "label": "Operating costs, empty return",
+            "leg": "empty_return",
+            "amount": 17052.0,
+            "basis": "568 km × R 15,00/km · 2 loads",
+            "rate_per_km": 15.0,
+            "km": 568.4,
+            "source": "vehicle_default",
+            "per_load_amount": 8526.0,
+            "loads": 2
+          },
+          {
+            "key": "tolls_return",
+            "label": "Tolls, empty return",
+            "leg": "empty_return",
+            "amount": 1625.22,
+            "basis": "R 812,61 home empty · 2 loads",
+            "one_way": 812.61,
+            "per_load_amount": 812.61,
+            "loads": 2
+          },
+          {
+            "key": "driver_return",
+            "label": "Driver nights, empty return",
+            "leg": "empty_return",
+            "amount": 900.0,
+            "basis": "1 extra night × R 450,00 · 2 loads",
+            "nights": 1,
+            "rate_per_night": 450.0,
+            "per_load_amount": 450.0,
+            "loads": 2
+          }
+        ],
+        "floor": 62579.09,
+        "floor_known": 62579.09,
+        "floor_complete": true,
+        "target_margin_pct": 10.0,
+        "target_price": 69540.0,
+        "minimum_charge": null,
+        "default_price": 69540.0,
+        "price": null,
+        "margin": null,
+        "margin_pct": null,
+        "warnings": [
+          {
+            "code": "tonnes_exceed_payload",
+            "severity": "warn",
+            "title": "Too heavy for one truck",
+            "detail": "40 t is split into 2 loads on the Tautliner 30 t.",
+            "impact_zar": null,
+            "actions": []
+          },
+          {
+            "code": "partial_last_load",
+            "severity": "warn",
+            "title": "Last load is part-full",
+            "detail": "Load 2 carries 10 t of 30 t; charged for 30 t.",
+            "impact_zar": null,
+            "actions": []
+          }
+        ],
+        "blocking": [],
+        "can_send": true
+      }
+    },
+    {
+      "name": "no_eligible_trucks",
+      "description": "Only a truck without fuel use on record: no eligible truck, blocks.",
+      "inputs": {
+        "lane": {
+          "trip_type": "ONE_WAY",
+          "distance_km": 568.4,
+          "distance_estimated": false,
+          "distance_confirmed": false,
+          "duration_minutes": 440,
+          "diesel": {
+            "zone": "INLAND",
+            "mode": "LIVE",
+            "own_price": null,
+            "own_set_at": null,
+            "official_price": 32.7989,
+            "official_effective_from": "2026-10-06T22:01:00Z",
+            "official_stale": false,
+            "use_official": false,
+            "override_price": null
+          },
+          "tolls": {
+            "one_way": 1043.48,
+            "empty_return": 812.61,
+            "lookup_failed": false,
+            "confirmed_none": false
+          },
+          "driver": {
+            "allowance_per_night": 450.0,
+            "nights": null,
+            "amount": null
+          },
+          "hours_per_day": 9.0,
+          "border_cost": 0.0,
+          "international": false,
+          "include_empty_return": null,
+          "settings": {
+            "include_empty_return_default": true,
+            "empty_return_min_km": 300.0
+          },
+          "minimum_charge": null,
+          "default_price_per_km": null,
+          "target_margin_pct": 10.0
+        },
+        "trucks": [
+          {
+            "vehicle": {
+              "id": 18,
+              "name": "Flatdeck",
+              "capacity": 32,
+              "rated_burn_l_per_100km": null
+            },
+            "operating_cost_per_km": 15.0,
+            "operating_cost_source": "vehicle_default"
+          }
+        ],
+        "tonnes_per_load": 30.0,
+        "total_tonnes": null,
+        "min_tonnes_per_load": null,
+        "vehicle_type_id": null,
+        "rate_per_tonne": null
+      },
+      "expected": {
+        "version": "qc-1",
+        "pricing_basis": "per_tonne",
+        "tonnage": {
+          "version": "qt-1",
+          "mode": "single",
+          "total_tonnes": 30.0,
+          "tonnes_per_load": 30.0,
+          "min_tonnes_per_load": null,
+          "min_tonnes_source": null,
+          "vehicle_type_id": null,
+          "basis_vehicle_type_id": null,
+          "basis_reason": null,
+          "trucks": [],
+          "excluded": [
+            {
+              "vehicle_type_id": 18,
+              "name": "Flatdeck",
+              "reason": "burn_missing"
+            }
+          ],
+          "summary": null,
+          "loads_planned": null,
+          "billable_tonnes": null,
+          "total_cost": null,
+          "cost_per_tonne": null,
+          "target_margin_pct": 10.0,
+          "target_rate_per_tonne": null,
+          "minimum_charge_rate_per_tonne": null,
+          "default_rate_per_tonne": null,
+          "rate_per_tonne": null,
+          "rate_used": null,
+          "rate_source": null,
+          "minimum_charge_per_load": null,
+          "estimated_revenue": null,
+          "margin": null,
+          "margin_pct": null,
+          "basis_load_costing": null
+        },
+        "trip": null,
+        "vehicle": null,
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "fuel_type": "Diesel",
+          "official_price": 32.7989,
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
+          "official_stale": false,
+          "price": 32.7989,
+          "source": "official"
+        },
+        "litres": {
+          "loaded": null,
+          "empty_return": null,
+          "total": null
+        },
+        "lines": [],
+        "floor": null,
+        "floor_known": 0.0,
+        "floor_complete": false,
+        "target_margin_pct": 10.0,
+        "target_price": null,
+        "minimum_charge": null,
+        "default_price": null,
+        "price": null,
+        "margin": null,
+        "margin_pct": null,
+        "warnings": [
+          {
+            "code": "no_eligible_trucks",
+            "severity": "block",
+            "title": "No truck in your fleet can carry this",
+            "detail": "Add a truck with its payload and fuel use.",
+            "impact_zar": null,
+            "actions": [
+              {
+                "id": "add_vehicle",
+                "label": "Add a truck"
+              },
+              {
+                "id": "choose_vehicle",
+                "label": "Choose truck"
+              }
+            ]
+          }
+        ],
+        "blocking": [
+          "no_eligible_trucks"
+        ],
+        "can_send": false
+      }
+    },
+    {
+      "name": "minimum_charge_lifts_rate",
+      "description": "Company minimum charge R 45 000 a load: default rate lifted to it; a lower rate blocks.",
+      "inputs": {
+        "lane": {
+          "trip_type": "ONE_WAY",
+          "distance_km": 568.4,
+          "distance_estimated": false,
+          "distance_confirmed": false,
+          "duration_minutes": 440,
+          "diesel": {
+            "zone": "INLAND",
+            "mode": "LIVE",
+            "own_price": null,
+            "own_set_at": null,
+            "official_price": 32.7989,
+            "official_effective_from": "2026-10-06T22:01:00Z",
+            "official_stale": false,
+            "use_official": false,
+            "override_price": null
+          },
+          "tolls": {
+            "one_way": 1043.48,
+            "empty_return": 812.61,
+            "lookup_failed": false,
+            "confirmed_none": false
+          },
+          "driver": {
+            "allowance_per_night": 450.0,
+            "nights": null,
+            "amount": null
+          },
+          "hours_per_day": 9.0,
+          "border_cost": 0.0,
+          "international": false,
+          "include_empty_return": null,
+          "settings": {
+            "include_empty_return_default": true,
+            "empty_return_min_km": 300.0
+          },
+          "minimum_charge": 45000.0,
+          "default_price_per_km": null,
+          "target_margin_pct": 10.0
+        },
+        "trucks": [
+          {
+            "vehicle": {
+              "id": 11,
+              "name": "Superlink",
+              "capacity": 34,
+              "rated_burn_l_per_100km": 42
+            },
+            "operating_cost_per_km": 16.0,
+            "operating_cost_source": "vehicle_default"
+          },
+          {
+            "vehicle": {
+              "id": 12,
+              "name": "Tri-axle",
+              "capacity": 30,
+              "rated_burn_l_per_100km": 38
+            },
+            "operating_cost_per_km": 15.0,
+            "operating_cost_source": "vehicle_default"
+          },
+          {
+            "vehicle": {
+              "id": 17,
+              "name": "Tautliner",
+              "capacity": 30,
+              "rated_burn_l_per_100km": 40
+            },
+            "operating_cost_per_km": 15.0,
+            "operating_cost_source": "vehicle_default"
+          }
+        ],
+        "tonnes_per_load": 30.0,
+        "total_tonnes": null,
+        "min_tonnes_per_load": null,
+        "vehicle_type_id": null,
+        "rate_per_tonne": 1300.0
+      },
+      "expected": {
+        "version": "qc-1",
+        "pricing_basis": "per_tonne",
+        "tonnage": {
+          "version": "qt-1",
+          "mode": "single",
+          "total_tonnes": 30.0,
+          "tonnes_per_load": 30.0,
+          "min_tonnes_per_load": 30.0,
+          "min_tonnes_source": "basis_load",
+          "vehicle_type_id": null,
+          "basis_vehicle_type_id": 11,
+          "basis_reason": "safest",
+          "trucks": [
+            {
+              "vehicle_type_id": 11,
+              "name": "Superlink",
+              "payload_t": 34.0,
+              "tonnes_per_load": 30.0,
+              "loads_needed": 1,
+              "last_load_t": 30.0,
+              "partial_last_load": false,
+              "cost_per_load": 33529.56,
+              "cost_last_load": 33529.56,
+              "total_cost": 33529.56,
+              "min_tonnes_per_load": 30.0,
+              "billable_tonnes": 30.0,
+              "cost_per_tonne": 1117.65,
+              "is_basis": true,
+              "at_rate": {
+                "rate_per_tonne": 1300.0,
+                "billable_tonnes": 30.0,
+                "revenue": 39000.0,
+                "margin": 5470.44,
+                "margin_pct": 14.026769230769236
+              }
+            },
+            {
+              "vehicle_type_id": 17,
+              "name": "Tautliner",
+              "payload_t": 30.0,
+              "tonnes_per_load": 30.0,
+              "loads_needed": 1,
+              "last_load_t": 30.0,
+              "partial_last_load": false,
+              "cost_per_load": 32035.26,
+              "cost_last_load": 32035.26,
+              "total_cost": 32035.26,
+              "min_tonnes_per_load": 30.0,
+              "billable_tonnes": 30.0,
+              "cost_per_tonne": 1067.84,
+              "is_basis": false,
+              "at_rate": {
+                "rate_per_tonne": 1300.0,
+                "billable_tonnes": 30.0,
+                "revenue": 39000.0,
+                "margin": 6964.74,
+                "margin_pct": 17.858307692307697
+              }
+            },
+            {
+              "vehicle_type_id": 12,
+              "name": "Tri-axle",
+              "payload_t": 30.0,
+              "tonnes_per_load": 30.0,
+              "loads_needed": 1,
+              "last_load_t": 30.0,
+              "partial_last_load": false,
+              "cost_per_load": 31401.4,
+              "cost_last_load": 31401.4,
+              "total_cost": 31401.4,
+              "min_tonnes_per_load": 30.0,
+              "billable_tonnes": 30.0,
+              "cost_per_tonne": 1046.71,
+              "is_basis": false,
+              "at_rate": {
+                "rate_per_tonne": 1300.0,
+                "billable_tonnes": 30.0,
+                "revenue": 39000.0,
+                "margin": 7598.6,
+                "margin_pct": 19.48358974358974
+              }
+            }
+          ],
+          "excluded": [],
+          "summary": "Superlink 34 t R 1 118/t · Tautliner 30 t R 1 068/t · Tri-axle 30 t R 1 047/t",
+          "loads_planned": 1,
+          "billable_tonnes": 30.0,
+          "total_cost": 33529.56,
+          "cost_per_tonne": 1117.65,
+          "target_margin_pct": 10.0,
+          "target_rate_per_tonne": 1242.0,
+          "minimum_charge_rate_per_tonne": 1500.0,
+          "default_rate_per_tonne": 1500.0,
+          "rate_per_tonne": 1300.0,
+          "rate_used": 1300.0,
+          "rate_source": "user",
+          "minimum_charge_per_load": 39000.0,
+          "estimated_revenue": 39000.0,
+          "margin": 5470.44,
+          "margin_pct": 14.026769230769236,
+          "basis_load_costing": {
+            "version": "qc-1",
+            "trip": {
+              "type": "ONE_WAY",
+              "legs_loaded": 1,
+              "distance_km": 568.4,
+              "empty_return_included": true,
+              "empty_return_default": true,
+              "km_loaded": 568.4,
+              "km_empty": 568.4,
+              "km_driven": 1136.8,
+              "hours_one_way": 7.333333333333333,
+              "return_nights": 1
+            },
+            "vehicle": {
+              "id": 11,
+              "name": "Superlink",
+              "capacity_t": 34.0,
+              "load_t": 30.0,
+              "load_ratio": 0.8823529411764706,
+              "rated_burn_l_per_100km": 42.0,
+              "burn_loaded_l_per_100km": 40.51764705882353,
+              "burn_empty_l_per_100km": 29.4
+            },
+            "diesel": {
+              "zone": "INLAND",
+              "mode": "LIVE",
+              "own_price": null,
+              "own_set_at": null,
+              "fuel_type": "Diesel",
+              "official_price": 32.7989,
+              "official_effective_from": "2026-10-07T00:01:00+02:00",
+              "official_stale": false,
+              "price": 32.7989,
+              "source": "official"
+            },
+            "litres": {
+              "loaded": 230.30230588235293,
+              "empty_return": 167.1096,
+              "total": 397.4119058823529
+            },
+            "lines": [
+              {
+                "key": "fuel",
+                "label": "Fuel",
+                "leg": "loaded",
+                "amount": 7553.66,
+                "basis": "568 km at 40,5 L/100km × R 32,80/L",
+                "litres": 230.30230588235293,
+                "burn_l_per_100km": 40.51764705882353,
+                "price_per_litre": 32.7989,
+                "km": 568.4
+              },
+              {
+                "key": "operating",
+                "label": "Operating costs",
+                "leg": "loaded",
+                "amount": 9094.4,
+                "basis": "568 km × R 16,00/km",
+                "rate_per_km": 16.0,
+                "km": 568.4,
+                "source": "vehicle_default"
+              },
+              {
+                "key": "tolls",
+                "label": "Tolls",
+                "leg": "loaded",
+                "amount": 1043.48,
+                "basis": "R 1 043,48 one way",
+                "one_way": 1043.48,
+                "legs": 1
+              },
+              {
+                "key": "driver",
+                "label": "Driver nights out",
+                "leg": "loaded",
+                "amount": 0.0,
+                "basis": "No night away",
+                "nights": 0,
+                "suggested_nights": 0,
+                "rate_per_night": 450.0,
+                "suggested": 0.0,
+                "source": "suggested"
+              },
+              {
+                "key": "fuel_return",
+                "label": "Fuel, empty return",
+                "leg": "empty_return",
+                "amount": 5481.01,
+                "basis": "568 km empty at 29,4 L/100km × R 32,80/L",
+                "litres": 167.1096,
+                "burn_l_per_100km": 29.4,
+                "price_per_litre": 32.7989,
+                "km": 568.4
+              },
+              {
+                "key": "operating_return",
+                "label": "Operating costs, empty return",
+                "leg": "empty_return",
+                "amount": 9094.4,
+                "basis": "568 km × R 16,00/km",
+                "rate_per_km": 16.0,
+                "km": 568.4,
+                "source": "vehicle_default"
+              },
+              {
+                "key": "tolls_return",
+                "label": "Tolls, empty return",
+                "leg": "empty_return",
+                "amount": 812.61,
+                "basis": "R 812,61 home empty",
+                "one_way": 812.61
+              },
+              {
+                "key": "driver_return",
+                "label": "Driver nights, empty return",
+                "leg": "empty_return",
+                "amount": 450.0,
+                "basis": "1 extra night × R 450,00",
+                "nights": 1,
+                "rate_per_night": 450.0
+              }
+            ],
+            "floor": 33529.56,
+            "floor_known": 33529.56,
+            "floor_complete": true,
+            "target_margin_pct": 10.0,
+            "target_price": 45000.0,
+            "minimum_charge": 45000.0,
+            "default_price_per_km": null,
+            "rate_price": null,
+            "default_price": 45000.0,
+            "alternative_with_return_load": {
+              "floor": 17691.54,
+              "target_price": 45000.0,
+              "default_price": 45000.0
+            },
+            "price": null,
+            "margin": null,
+            "margin_pct": null,
+            "warnings": [],
+            "blocking": [],
+            "can_send": true
+          }
+        },
+        "trip": {
+          "type": "ONE_WAY",
+          "legs_loaded": 1,
+          "distance_km": 568.4,
+          "empty_return_included": true,
+          "empty_return_default": true,
+          "km_loaded": 568.4,
+          "km_empty": 568.4,
+          "km_driven": 1136.8,
+          "hours_one_way": 7.333333333333333,
+          "return_nights": 1
+        },
+        "vehicle": {
+          "id": 11,
+          "name": "Superlink",
+          "capacity_t": 34.0,
+          "load_t": 30.0,
+          "load_ratio": 0.8823529411764706,
+          "rated_burn_l_per_100km": 42.0,
+          "burn_loaded_l_per_100km": 40.51764705882353,
+          "burn_empty_l_per_100km": 29.4
+        },
+        "diesel": {
+          "zone": "INLAND",
+          "mode": "LIVE",
+          "own_price": null,
+          "own_set_at": null,
+          "fuel_type": "Diesel",
+          "official_price": 32.7989,
+          "official_effective_from": "2026-10-07T00:01:00+02:00",
+          "official_stale": false,
+          "price": 32.7989,
+          "source": "official"
+        },
+        "litres": {
+          "loaded": null,
+          "empty_return": null,
+          "total": 397.4119058823529
+        },
+        "lines": [
+          {
+            "key": "fuel",
+            "label": "Fuel",
+            "leg": "loaded",
+            "amount": 7553.66,
+            "basis": "568 km at 40,5 L/100km × R 32,80/L",
+            "litres": 230.30230588235293,
+            "burn_l_per_100km": 40.51764705882353,
+            "price_per_litre": 32.7989,
+            "km": 568.4,
+            "per_load_amount": 7553.66,
+            "loads": 1
+          },
+          {
+            "key": "operating",
+            "label": "Operating costs",
+            "leg": "loaded",
+            "amount": 9094.4,
+            "basis": "568 km × R 16,00/km",
+            "rate_per_km": 16.0,
+            "km": 568.4,
+            "source": "vehicle_default",
+            "per_load_amount": 9094.4,
+            "loads": 1
+          },
+          {
+            "key": "tolls",
+            "label": "Tolls",
+            "leg": "loaded",
+            "amount": 1043.48,
+            "basis": "R 1 043,48 one way",
+            "one_way": 1043.48,
+            "legs": 1,
+            "per_load_amount": 1043.48,
+            "loads": 1
+          },
+          {
+            "key": "driver",
+            "label": "Driver nights out",
+            "leg": "loaded",
+            "amount": 0.0,
+            "basis": "No night away",
+            "nights": 0,
+            "suggested_nights": 0,
+            "rate_per_night": 450.0,
+            "suggested": 0.0,
+            "source": "suggested",
+            "per_load_amount": 0.0,
+            "loads": 1
+          },
+          {
+            "key": "fuel_return",
+            "label": "Fuel, empty return",
+            "leg": "empty_return",
+            "amount": 5481.01,
+            "basis": "568 km empty at 29,4 L/100km × R 32,80/L",
+            "litres": 167.1096,
+            "burn_l_per_100km": 29.4,
+            "price_per_litre": 32.7989,
+            "km": 568.4,
+            "per_load_amount": 5481.01,
+            "loads": 1
+          },
+          {
+            "key": "operating_return",
+            "label": "Operating costs, empty return",
+            "leg": "empty_return",
+            "amount": 9094.4,
+            "basis": "568 km × R 16,00/km",
+            "rate_per_km": 16.0,
+            "km": 568.4,
+            "source": "vehicle_default",
+            "per_load_amount": 9094.4,
+            "loads": 1
+          },
+          {
+            "key": "tolls_return",
+            "label": "Tolls, empty return",
+            "leg": "empty_return",
+            "amount": 812.61,
+            "basis": "R 812,61 home empty",
+            "one_way": 812.61,
+            "per_load_amount": 812.61,
+            "loads": 1
+          },
+          {
+            "key": "driver_return",
+            "label": "Driver nights, empty return",
+            "leg": "empty_return",
+            "amount": 450.0,
+            "basis": "1 extra night × R 450,00",
+            "nights": 1,
+            "rate_per_night": 450.0,
+            "per_load_amount": 450.0,
+            "loads": 1
+          }
+        ],
+        "floor": 33529.56,
+        "floor_known": 33529.56,
+        "floor_complete": true,
+        "target_margin_pct": 10.0,
+        "target_price": 37260.0,
+        "minimum_charge": 45000.0,
+        "default_price": 45000.0,
+        "price": 39000.0,
+        "margin": 5470.44,
+        "margin_pct": 14.026769230769236,
+        "warnings": [
+          {
+            "code": "below_minimum_charge",
+            "severity": "block",
+            "title": "Price is below your minimum charge",
+            "detail": "R 6 000 a load below your R 45 000 minimum.",
+            "impact_zar": 6000.0,
+            "actions": [
+              {
+                "id": "use_minimum",
+                "label": "Use minimum charge"
+              }
+            ]
+          }
+        ],
+        "blocking": [
+          "below_minimum_charge"
+        ],
+        "can_send": false
+      }
+    }
   ]
 }

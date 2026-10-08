@@ -2787,10 +2787,17 @@ class QuoteFilterSet(django_filters.FilterSet):
     # tagged with a status this app no longer produces), so filtering the
     # Accepted column by status alone must not silently drop them.
     status = django_filters.CharFilter(method='filter_status')
+    # Tonnage quotes: ?pricing_basis=per_tonne; ?contract=true = volume
+    # contracts only (per-tonne quotes with total_tonnes), false = not.
+    contract = django_filters.BooleanFilter(method='filter_contract')
 
     class Meta:
         model = Quote
-        fields = ['status', 'customer']
+        fields = ['status', 'customer', 'pricing_basis']
+
+    def filter_contract(self, queryset, name, value):
+        q = Q(pricing_basis='per_tonne', total_tonnes__isnull=False)
+        return queryset.filter(q) if value else queryset.exclude(q)
 
     def filter_status(self, queryset, name, value):
         # Board columns: ACCEPTED is "won, still to book"; BOOKED is a quote
@@ -3097,11 +3104,17 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         from core.services import booking as bk
         quote = self.get_object()
 
+        # Tonnage quotes (QUOTE-RULES "Tonnage quotes"): a VOLUME CONTRACT
+        # (per tonne with a total) books call-off loads (body {tonnes?}) until
+        # its tonnes are used up, so it is never "already booked"; one
+        # consignment books once like any quote.
+        tonnage_fields, contract = {}, None
+        is_contract = quote.pricing_basis == 'per_tonne' and quote.total_tonnes is not None
         # One-tap booking (trip economics): idempotent. A quote already
         # converted answers 200 with ITS job (+ the booking block) instead of
         # creating a second one; a Load referencing the quote is the source of
         # truth (not quote.status, which stays ACCEPTED once converted).
-        existing = quote.loads.order_by('pk').first()
+        existing = None if is_contract else quote.loads.order_by('pk').first()
         if existing is not None:
             return bk.booking_response(request, quote, existing, created=False, view=self)
         refusal = bk.bookable_or_refusal(quote)
@@ -3110,6 +3123,17 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         outbound, refusal = bk.requested_outbound(request, self)
         if refusal is not None:
             return refusal
+        if quote.pricing_basis == 'per_tonne':
+            from core.services.tonnage_jobs import (CallOffError, call_off_tonnes, copy_tonnage_costing,
+                                                    tonnage_load_fields)
+            if quote.rate_per_tonne is None:
+                return Response({'error': 'Set the rate per tonne before booking this quote.'},
+                                status=status.HTTP_400_BAD_REQUEST)
+            try:
+                tonnes, contract = call_off_tonnes(quote, request.data.get('tonnes'))
+            except CallOffError as exc:
+                return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            tonnage_fields = tonnage_load_fields(quote, tonnes)
 
         driver_id = request.data.get('driver_id')
         vehicle_id = request.data.get('vehicle_id')
@@ -3177,11 +3201,17 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
             with transaction.atomic():
                 # Lock the quote: two taps never make two jobs.
                 locked = Quote.objects.select_for_update().get(pk=quote.pk)
-                raced = locked.loads.order_by('pk').first()
+                raced = None if is_contract else locked.loads.order_by('pk').first()
                 if raced is not None:
                     raise bk.AlreadyBooked(raced)
+                if is_contract:
+                    # Call-offs never overbook: re-checked under the lock.
+                    from core.services.tonnage_jobs import contract_status
+                    if tonnage_fields['planned_tonnes'] > Decimal(str(contract_status(locked)['remaining_tonnes'])):
+                        return Response({'error': 'Those tonnes are no longer left on this contract.'},
+                                        status=status.HTTP_409_CONFLICT)
                 # Create load from quote (stamp the company so it's tenant-scoped/visible)
-                load = Load.objects.create(
+                load = Load.objects.create(**{**dict(
                     load_number=load_number,
                     company=getattr(quote, 'company', None) or getattr(request.user, 'company', None),
                     customer=quote.customer,
@@ -3224,9 +3254,12 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
                     status='ASSIGNED' if vehicle else 'PENDING',
                     created_by=request.user,
                     # Trip economics: what the job was priced on (lines incl. the
-                    # empty return, floor, fuel, truck, quoted margin).
-                    **copy_quote_costing(quote),
-                )
+                    # empty return, floor, fuel, truck, quoted margin). A
+                    # per-tonne quote's snapshot is the whole plan (a contract's
+                    # many loads), so its job is costed from its own data below.
+                    **(copy_tonnage_costing(quote, tonnage_fields) if quote.pricing_basis == 'per_tonne'
+                       else copy_quote_costing(quote)),
+                ), **tonnage_fields})   # per-tonne: rate x tonnes, planned tonnes
                 if not load.costing_source:
                     # A legacy quote with no pricing snapshot: cost the job from its
                     # own data (or mark it unknown) instead of a generic model.
@@ -3249,7 +3282,11 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
             # The requested return link can't exist: nothing was booked.
             return Response({'code': e.code, 'error': e.message}, status=status.HTTP_400_BAD_REQUEST)
 
-        return bk.booking_response(request, quote, load, created=True, view=self, link=link)
+        response = bk.booking_response(request, quote, load, created=True, view=self, link=link)
+        if contract is not None and isinstance(getattr(response, 'data', None), dict):
+            from core.services.tonnage_jobs import contract_status
+            response.data['volume_contract'] = contract_status(quote)
+        return response
 
     @action(detail=True, methods=['get'])
     def generate_pdf(self, request, pk=None):

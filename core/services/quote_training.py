@@ -64,7 +64,9 @@ def closed_outcomes():
     """
     from core.models import QuoteOutcome
     return (QuoteOutcome.objects.filter(outcome__in=['accepted', 'rejected'])
-            .exclude(quote__was_sent=False))
+            .exclude(quote__was_sent=False)
+            # Tonnage quotes are priced per tonne, not per load: not win-model rows.
+            .exclude(quote__pricing_basis='per_tonne'))
 
 
 def live_class_counts(scope: str, user_id=None, company_id=None) -> Tuple[int, int]:
