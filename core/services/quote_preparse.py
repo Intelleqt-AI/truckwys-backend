@@ -151,24 +151,41 @@ _COUNTRIES: List[Tuple[str, str, Sequence[str]]] = [
     ("Tanzania", "TZ", ["tanzania", "tanzanie"]),
 ]
 
-# Border posts → canonical name. Mentioning one implies a cross-border trip.
-_BORDER_POSTS: List[Tuple[str, Sequence[str]]] = [
-    ("Beitbridge", ["beitbridge", "beit bridge", "beitbrug"]),
-    ("Lebombo", ["lebombo", "ressano garcia", "ressano"]),
-    ("Groblersbrug", ["groblersbrug", "grobler's bridge", "groblers bridge", "martins drift", "martin s drift"]),
-    ("Kopfontein", ["kopfontein", "tlokweng"]),
-    ("Skilpadshek", ["skilpadshek", "pioneer gate"]),
-    ("Ramatlabama", ["ramatlabama"]),
-    ("Vioolsdrif", ["vioolsdrif", "noordoewer"]),
-    ("Nakop", ["nakop", "ariamsvlei"]),
-    ("Maseru Bridge", ["maseru bridge", "maserubrug"]),
-    ("Ficksburg", ["ficksburg bridge", "ficksburg"]),
-    ("Oshoek", ["oshoek", "ngwenya"]),
-    ("Golela", ["golela", "lavumisa"]),
-    ("Kazungula", ["kazungula"]),
-    ("Chirundu", ["chirundu"]),
-    ("Kasumbalesa", ["kasumbalesa"]),
-]
+# Border posts. Canonical names are exactly cross_border.BORDER_POSTS' names
+# (what route/border costing uses), so an extracted border_post can be looked
+# up directly; aliases are each side's own name plus spoken/Afrikaans forms.
+_BORDER_EXTRA_ALIASES = {
+    "Beitbridge": ["beit bridge", "beitbrug", "bietbridge", "bb border"],
+    "Groblersbrug / Martin's Drift": ["grobler's bridge", "groblers bridge", "grobblersbrug", "martins drift"],
+    "Kopfontein / Tlokweng": ["kop fontein", "tlokweng gate"],
+    "Skilpadshek / Pioneer Gate": ["skilpadshek border", "pioneer"],
+    "Lebombo / Ressano Garcia": ["ressano", "komatipoort border", "lebombo border"],
+    "Kosi Bay / Ponta do Ouro": ["kosibaai", "kosi baai"],
+    "Trans-Kalahari: Mamuno / Buitepos": ["trans kalahari", "mamuno", "buitepos"],
+    "Nakop / Ariamsvlei": ["nakop border", "ariamsvlei"],
+    "Vioolsdrif / Noordoewer": ["vioolsdrift", "violsdrif", "noordoewer"],
+    "Maseru Bridge": ["maserubrug", "maseru brug", "maseru border"],
+    "Ficksburg Bridge / Maputsoe": ["ficksburg border", "ficksburgbrug"],
+    "Oshoek / Ngwenya": ["oshoek border", "os hoek"],
+    "Golela / Lavumisa": ["golela border"],
+}
+# Single-word aliases that are also ordinary words or towns: never border posts alone.
+_BORDER_SKIP_ALIASES = {"bray", "pioneer", "sendelingsdrif", "alexander bay", "ficksburg"}
+
+
+def _border_posts() -> List[Tuple[str, Sequence[str]]]:
+    from core.services.cross_border import BORDER_POSTS
+    rows = []
+    for name, _lat, _lng in BORDER_POSTS:
+        base = name.split(":", 1)[-1]
+        aliases = [part.strip() for part in base.split("/") if part.strip()]
+        aliases += [name] + _BORDER_EXTRA_ALIASES.get(name, [])
+        aliases = [a for a in aliases if norm_phrase(a) not in _BORDER_SKIP_ALIASES]
+        rows.append((name, aliases))
+    # outside SA's own borders, spoken often enough to matter
+    rows += [("Kazungula", ["kazungula"]), ("Chirundu", ["chirundu"]), ("Kasumbalesa", ["kasumbalesa"])]
+    return rows
+
 
 # Aliases that are also ordinary words / names: only a place when a route
 # marker sits right before them ("to George", "na die Kaap").
@@ -573,7 +590,7 @@ def _alias_table(entries):
 
 _PLACE_ROWS = _alias_table(_PLACES) + _alias_table(_COUNTRIES)
 _COUNTRY_NAMES = {c for c, _, _ in _COUNTRIES}
-_BORDER_ROWS = _alias_table([(name, None, aliases) for name, aliases in _BORDER_POSTS])
+_BORDER_ROWS = _alias_table([(name, None, aliases) for name, aliases in _border_posts()])
 _CARGO_ROWS = _alias_table([(name, None, aliases) for name, aliases in _CARGO])
 _VEHICLE_ROWS = _alias_table([(key, label, aliases) for key, label, aliases, _ in _VEHICLES])
 _VEHICLE_FLEET_PHRASES = {key: list(phr) for key, _, _, phr in _VEHICLES}
@@ -604,7 +621,8 @@ _KNOWN_VOCAB.update({"today", "tomorrow", "tomorrowaf", "overmorrow", "vandag", 
                      "this", "coming", "komende", "empty", "leeg", "terug", "back", "return", "round", "way",
                      "heen", "retoervrag", "terugvrag", "border", "grens", "cross", "oorgrens", "night", "nights",
                      "nag", "nagte", "diesel", "fuel", "brandstof", "client", "customer", "klient", "valid",
-                     "geldig", "until", "days", "dae", "toe", "local", "domestic", "export", "import"})
+                     "geldig", "until", "days", "dae", "toe", "local", "domestic", "export", "import", "abnormal",
+                     "abnormale", "oversize", "permit", "wide"})
 
 
 def canonical_place(text: str) -> Optional[str]:
@@ -618,6 +636,12 @@ def canonical_place(text: str) -> Optional[str]:
     if m and m.group(1) not in _AMBIGUOUS_ALIASES:
         return _PLACE_LOOKUP[m.group(1)]
     return None
+
+
+def canonical_border_post(text: str) -> Optional[str]:
+    """cross_border.BORDER_POSTS name for a border-post string, or None."""
+    m = _BORDER_RX.search(norm_phrase(text))
+    return _BORDER_LOOKUP[m.group(1)] if m else None
 
 
 def place_country(canonical: Optional[str]) -> Optional[str]:
@@ -667,13 +691,18 @@ def preparse(message: str, *, today: Optional[date] = None,
     _weights(ctx, out)
     _trip_shape(ctx, out)
     _border_and_international_keywords(ctx, out)
+    _abnormal(ctx, out)
     _vehicles(ctx, out, vehicle_types)
+    if out.vehicle_hint == "lowbed" and "abnormal_load" not in out.fields:
+        out.set("abnormal_load", True, 0.7)  # a lowbed load is almost always an abnormal
     _dates(ctx, out, today)
     _driver_and_fuel(ctx, out)
     _customers(ctx, out, customers)
     _places(ctx, out)
     _cargo(ctx, out)
     _international_from_places(out)
+    if out.fields.get("pickup_date"):
+        out.set("trip_date", out.fields["pickup_date"], out.confidence["pickup_date"])
     _distance_mentions(ctx, out)
     _residue(ctx, out)
     return out
@@ -808,6 +837,19 @@ def _border_and_international_keywords(ctx: _Ctx, out: PreParse) -> None:
     if m and "international" not in out.fields:
         ctx.consume(m.start(), m.end())
         out.set("international", False, 0.8)
+
+
+def _abnormal(ctx: _Ctx, out: PreParse) -> None:
+    m = re.search(r"\b(?:abnormale?\s+(?:vrag|load|lading)|abnormal|abnormals|oorgrootte\s*(?:vrag)?|oor\s*grootte|"
+                  r"over\s*size(?:d)?(?:\s+load)?|over\s*dimension(?:al)?|wide\s+load|bree\s+vrag|"
+                  r"abnormal\s+permit|abnormale\s+permit)\b", ctx.t)
+    neg = re.search(r"\b(?:not|nie|no|geen)\s+(?:n\s+|an\s+|a\s+)?(?:abnormal|abnormale)\b", ctx.t)
+    if neg:
+        ctx.consume(neg.start(), neg.end())
+        out.set("abnormal_load", False, 0.85)
+    elif m:
+        ctx.consume(m.start(), m.end())
+        out.set("abnormal_load", True, 0.9)
 
 
 def _vehicles(ctx: _Ctx, out: PreParse, vehicle_types) -> None:

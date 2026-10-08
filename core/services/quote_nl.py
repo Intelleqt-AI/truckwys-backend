@@ -33,12 +33,13 @@ from core.services import quote_preparse as qp
 
 logger = logging.getLogger(__name__)
 
-RULE_PREFERRED = {"weight", "pickup_date", "delivery_date", "valid_until", "trip_type", "return_load_booked",
+RULE_PREFERRED = {"weight", "abnormal_load", "pickup_date", "delivery_date", "valid_until", "trip_type", "return_load_booked",
                   "international", "border_post", "driver_nights", "fuel_price_override"}
 ESSENTIALS = ("pickup_location", "delivery_location", "cargo_description", "weight")
 FIELD_ORDER = ("pickup_location", "delivery_location", "stops", "weight", "cargo_description", "vehicle_type",
                "customer_id", "customer_name", "pickup_date", "delivery_date", "valid_until", "trip_type",
-               "return_load_booked", "international", "border_post", "driver_nights", "fuel_price_override")
+               "return_load_booked", "international", "border_post", "abnormal_load", "driver_nights",
+               "fuel_price_override")
 
 
 @dataclass
@@ -129,6 +130,11 @@ def merge(rules: qp.PreParse, llm_fields: Dict[str, Any], llm_conf: Dict[str, fl
                     out[k], conf[k] = (r, 0.6) if rc >= 0.9 else (l, 0.55)
             else:
                 out[k], conf[k] = l, 0.6
+    # trip_date (what toll tariffs and border schedules are priced on) is the
+    # pickup date, whichever source set it.
+    out.pop("trip_date", None)
+    if out.get("pickup_date"):
+        out["trip_date"], conf["trip_date"] = out["pickup_date"], conf.get("pickup_date", 0.6)
     # Cross-border follows from the final places, whichever source set them.
     countries = {qp.place_country(qp.canonical_place(str(out.get(k) or ""))) for k in
                  ("pickup_location", "delivery_location")}
@@ -221,6 +227,8 @@ def _summary(f: Dict[str, Any], lang: str) -> List[str]:
     if f.get("international"):
         bp = f.get("border_post")
         bits.append(("oorgrens" if af else "cross-border") + (f" ({bp})" if bp else ""))
+    if f.get("abnormal_load"):
+        bits.append("abnormale vrag" if af else "abnormal load")
     if f.get("driver_nights"):
         n = f["driver_nights"]
         bits.append(f"{n} {'nagte' if af else 'nights'}" if n != 1 else ("1 nag" if af else "1 night"))

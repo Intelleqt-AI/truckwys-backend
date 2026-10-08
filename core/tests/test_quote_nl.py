@@ -436,3 +436,33 @@ class VoiceTranscriptionTests(TestCase):
         resp = self._post()
         self.assertEqual(resp.status_code, 500)
         self.assertNotIn("secret", resp.data["error"])
+
+
+class QuoteModelParamsTests(SimpleTestCase):
+    @mock.patch("core.services.llm_quote._provider", return_value="anthropic")
+    def test_default_model_and_no_sampling_params(self, _):
+        payload = llm_payload(pickup_location="Durban", abnormal_load="yes", border_post="oshoek",
+                              pickup_date="2026-10-09")
+        client = _llm_returning(payload)
+        with mock.patch("core.services.llm_quote.anthropic", create=True) as anth, \
+                mock.patch("core.services.llm_quote._sast_today", return_value=TODAY):
+            anth.Anthropic.return_value = client
+            fields, _, _ = llm_quote.extract("x")
+        kw = client.messages.create.call_args.kwargs
+        self.assertEqual(llm_quote.QUOTE_MODEL, "claude-sonnet-5-5")
+        self.assertEqual(kw["model"], "claude-sonnet-5-5")
+        for banned in ("temperature", "top_p", "top_k", "thinking"):
+            self.assertNotIn(banned, kw)
+        self.assertEqual(kw["output_config"]["effort"], "low")
+        self.assertEqual(kw["output_config"]["format"]["type"], "json_schema")
+        self.assertIs(fields["abnormal_load"], True)
+        self.assertEqual(fields["border_post"], "Oshoek / Ngwenya")
+        self.assertEqual(fields["trip_date"], "2026-10-09")
+
+    def test_border_posts_match_costing_names(self):
+        from core.services.cross_border import BORDER_POSTS
+        names = {n for n, _, _ in BORDER_POSTS}
+        for spoken in ("Beitbridge", "Lebombo", "Oshoek", "Maseru Bridge", "Kopfontein", "Skilpadshek",
+                       "Groblersbrug", "Vioolsdrif", "Nakop", "Ariamsvlei", "Kosi Bay", "Mamuno"):
+            with self.subTest(spoken=spoken):
+                self.assertIn(qp.canonical_border_post(spoken), names)

@@ -4,8 +4,12 @@ This is the primary path for /api/v1/ai/chat-quote/. It degrades gracefully:
 when the Anthropic SDK isn't installed or no API key is configured, the caller
 falls back to the regex extractor in views_ai_quote.py.
 
-Model is configurable via CLAUDE_QUOTE_MODEL (default: claude-opus-4-8).
-For a faster / cheaper per-quote path, set CLAUDE_QUOTE_MODEL=claude-haiku-4-5.
+Model is configurable via CLAUDE_QUOTE_MODEL (default: claude-sonnet-5-5 — fast
+and cheap enough for form filling). Sampling parameters are not sent (newer
+models reject `temperature`); latency is controlled with
+CLAUDE_QUOTE_EFFORT (default "low": adaptive thinking stays short and is
+skipped on most simple messages). Set CLAUDE_QUOTE_EFFORT="" to send no
+effort (e.g. for a model that doesn't accept it).
 """
 import difflib
 import json
@@ -32,7 +36,8 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     OPENAI_AVAILABLE = False
 
-QUOTE_MODEL = os.environ.get("CLAUDE_QUOTE_MODEL", "claude-opus-4-8")
+QUOTE_MODEL = os.environ.get("CLAUDE_QUOTE_MODEL") or "claude-sonnet-5-5"
+QUOTE_EFFORT = os.environ.get("CLAUDE_QUOTE_EFFORT", "low")
 OPENAI_QUOTE_MODEL = (
     os.environ.get("OPENAI_QUOTE_MODEL")
     or getattr(settings, "OPENAI_CHAT_MODEL", "") or "gpt-4o"
@@ -92,7 +97,12 @@ SYSTEM_PROMPT_BASE = (
     "back empty ('empty back', 'leeg terug'); otherwise \"\". Either one implies trip_type ONE_WAY.\n"
     "- international: \"yes\" when the trip crosses a border (a pickup/delivery outside South Africa, a "
     "border post such as Beitbridge/Lebombo/Kopfontein/Vioolsdrif, or 'cross-border'/'oorgrens'); \"no\" "
-    "only when the user says it's local; otherwise \"\". border_post: the border post named, else \"\".\n"
+    "only when the user says it's local; otherwise \"\". border_post: the border post named (e.g. Beitbridge, "
+    "Lebombo, Oshoek, Maseru Bridge, Kopfontein, Skilpadshek, Groblersbrug, Vioolsdrif, Nakop/Ariamsvlei, "
+    "Kosi Bay, Mamuno), else \"\".\n"
+    "- abnormal_load: \"yes\" for an abnormal / oversize / over-dimension load needing a permit (Afrikaans "
+    "'abnormale vrag', 'oorgrootte'), or one carried on a lowbed; \"no\" only if the user says it isn't; "
+    "otherwise \"\".\n"
     "- stops: intermediate places between pickup and delivery ('via X', 'oor X', 'stop in X'), in order; "
     "[] when none.\n"
     "- driver_nights: nights the driver sleeps out, only if stated (else 0). fuel_price_override: a diesel "
@@ -194,6 +204,7 @@ EXTRACTION_SCHEMA = {
         "return_load_booked": {"type": "string", "enum": ["", "yes", "no"]},
         "international": {"type": "string", "enum": ["", "yes", "no"]},
         "border_post": {"type": "string"},
+        "abnormal_load": {"type": "string", "enum": ["", "yes", "no"]},
         "stops": {"type": "array", "items": {"type": "string"}},
         "driver_nights": {"type": "number"},
         "fuel_price_override": {"type": "number"},
@@ -203,8 +214,8 @@ EXTRACTION_SCHEMA = {
             "properties": {k: {"type": "number"} for k in (
                 "pickup_location", "delivery_location", "weight_kg", "vehicle_type", "customer_name",
                 "cargo_description", "pickup_date", "delivery_date", "valid_until", "trip_type",
-                "return_load_booked", "international", "border_post", "stops", "driver_nights",
-                "fuel_price_override")},
+                "return_load_booked", "international", "border_post", "abnormal_load", "stops",
+                "driver_nights", "fuel_price_override")},
             "additionalProperties": False,
         },
         "reply": {"type": "string"},
@@ -213,7 +224,7 @@ EXTRACTION_SCHEMA = {
         "pickup_location", "delivery_location", "weight_kg",
         "vehicle_type", "customer_name", "cargo_description",
         "pickup_date", "delivery_date", "valid_until", "trip_type",
-        "return_load_booked", "international", "border_post", "stops", "driver_nights",
+        "return_load_booked", "international", "border_post", "abnormal_load", "stops", "driver_nights",
         "fuel_price_override", "not_understood", "field_confidence",
         "reply",
     ],
@@ -520,17 +531,21 @@ def extract(message: str, history: Optional[List[Dict[str, Any]]] = None,
 
     if provider == "anthropic":
         client = anthropic.Anthropic(timeout=LLM_TIMEOUT_SECONDS, max_retries=0)
+        output_config: Dict[str, Any] = {"format": {"type": "json_schema", "schema": EXTRACTION_SCHEMA}}
+        if QUOTE_EFFORT:
+            output_config["effort"] = QUOTE_EFFORT
         response = client.messages.create(
             model=QUOTE_MODEL,
-            max_tokens=900,
-            temperature=0,
+            # Thinking counts toward max_tokens; the JSON itself is ~300 tokens.
+            max_tokens=4000,
             system=_system_prompt(_candidate_labels(vt_records), None, detected_language),
             messages=msgs,
-            output_config={"format": {"type": "json_schema", "schema": EXTRACTION_SCHEMA}},
+            output_config=output_config,
         )
         if getattr(response, "stop_reason", None) in ("refusal", "max_tokens"):
             # Output may not match the schema — let the caller use the rules instead.
             raise RuntimeError(f"LLM extraction stopped early: {response.stop_reason}")
+        # Read by block type: a response may open with an (empty) thinking block.
         text = next((b.text for b in response.content if b.type == "text"), "")
         data = json.loads(text)
     elif provider == "openai":
@@ -587,9 +602,11 @@ def extract(message: str, history: Optional[List[Dict[str, Any]]] = None,
         unmatched["vehicle_type"] = unmatched_vt
 
     for k in ("pickup_date", "delivery_date", "valid_until", "trip_type", "return_load_booked",
-              "international", "border_post", "stops", "driver_nights", "fuel_price_override"):
+              "international", "border_post", "abnormal_load", "stops", "driver_nights", "fuel_price_override"):
         if k in extra:
             extracted[k] = extra[k]
+    if extracted.get("pickup_date"):
+        extracted["trip_date"] = extracted["pickup_date"]
     if extracted.get("return_load_booked") is not None and "trip_type" not in extracted:
         extracted["trip_type"] = "ONE_WAY"
 
@@ -659,7 +676,7 @@ def validate_extraction(data: Dict[str, Any], today: Optional[date] = None,
     tt = data.get("trip_type")
     if isinstance(tt, str) and tt.strip().upper() in ("ONE_WAY", "ROUND_TRIP"):
         out["trip_type"] = tt.strip().upper()
-    for key in ("return_load_booked", "international"):
+    for key in ("return_load_booked", "international", "abnormal_load"):
         v = data.get(key)
         if isinstance(v, bool):
             out[key] = v
@@ -667,7 +684,9 @@ def validate_extraction(data: Dict[str, Any], today: Optional[date] = None,
             out[key] = v.strip().lower() in ("yes", "true")
     bp = data.get("border_post")
     if isinstance(bp, str) and bp.strip():
-        out["border_post"] = bp.strip()[:80]
+        # canonical cross_border name when it's a known post, else as said
+        from core.services.quote_preparse import canonical_border_post
+        out["border_post"] = canonical_border_post(bp) or bp.strip()[:80]
     stops = data.get("stops")
     if isinstance(stops, list):
         clean = [s.strip()[:120] for s in stops if isinstance(s, str) and s.strip()][:8]
