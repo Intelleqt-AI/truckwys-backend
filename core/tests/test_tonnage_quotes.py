@@ -229,6 +229,25 @@ class TonnageApiTests(_Base):
         self.assertEqual(self.api.post(url, {}, format='json').status_code, 400)
         detail = self.api.get(f'/api/v1/quotes/{q.id}/').json()
         self.assertEqual(detail['volume_contract']['loads_booked'], 3)
+        self.assertEqual([r['planned_tonnes'] for r in detail['volume_contract']['loads']], [30.0, 28.0, 12.0])
+        listed = self.api.get('/api/v1/quotes/?contract=true').json()
+        ids = [r['id'] for r in (listed['results'] if isinstance(listed, dict) else listed)]
+        self.assertEqual(ids, [q.id])
+
+    def test_contract_period_and_slip(self):
+        r = self.api.post('/api/v1/quotes/', self.tonnage_payload(total_tonnes='600', contract_start='2026-11-01',
+                                                                  contract_end='2026-10-01'), format='json')
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('contract_end', r.json())
+        q = self.create(**self.tonnage_payload(total_tonnes='600', contract_start='2026-10-01',
+                                               contract_end='2026-12-31'))
+        load_id = self.api.post(f'/api/v1/quotes/{q.id}/convert_to_load/', {}, format='json').json()['id']
+        r = self.api.patch(f'/api/v1/loads/{load_id}/', {'actual_tonnes': '29.8', 'weighbridge_slip': 'WB-1042',
+                                                         'actual_tonnes_source': 'weighbridge'}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        vc = self.api.get(f'/api/v1/quotes/{q.id}/').json()['volume_contract']
+        self.assertEqual((vc['delivered_tonnes'], vc['contract_end'], vc['loads'][0]['weighbridge_slip']),
+                         (29.8, '2026-12-31', 'WB-1042'))
 
     def _delivered_load(self, **quote_over):
         from core.models import Invoice, Load

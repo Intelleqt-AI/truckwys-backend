@@ -73,6 +73,8 @@ class Load(models.Model):
     planned_tonnes = models.DecimalField(max_digits=8, decimal_places=3, null=True, blank=True)
     actual_tonnes = models.DecimalField(max_digits=8, decimal_places=3, null=True, blank=True,
                                         help_text='Weighbridge tonnes delivered')
+    weighbridge_slip = models.CharField(max_length=60, blank=True, default='',
+                                        help_text='Weighbridge ticket / slip number')
     actual_tonnes_source = models.CharField(max_length=20, blank=True, default='',
                                             help_text='weighbridge | manual | tms')
     

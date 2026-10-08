@@ -45,15 +45,27 @@ def contract_status(quote):
     """{total_tonnes, booked_tonnes, remaining_tonnes, loads_booked,
     loads_planned, tonnes_per_load} for a volume contract."""
     total = Decimal(quote.total_tonnes or 0)
-    booked = Decimal('0')
-    n = 0
-    for load in quote.loads.exclude(status='CANCELLED').only('actual_tonnes', 'planned_tonnes'):
-        booked += Decimal(load.actual_tonnes if load.actual_tonnes is not None else (load.planned_tonnes or 0))
-        n += 1
+    booked = delivered = Decimal('0')
+    rows = []
+    for load in quote.loads.exclude(status='CANCELLED').order_by('id'):
+        t = Decimal(load.actual_tonnes if load.actual_tonnes is not None else (load.planned_tonnes or 0))
+        booked += t
+        if load.actual_tonnes is not None:
+            delivered += Decimal(load.actual_tonnes)
+        rows.append({'id': load.id, 'load_number': load.load_number, 'status': load.status,
+                     'pickup_date': load.pickup_date.isoformat() if load.pickup_date else None,
+                     'planned_tonnes': float(load.planned_tonnes) if load.planned_tonnes is not None else None,
+                     'actual_tonnes': float(load.actual_tonnes) if load.actual_tonnes is not None else None,
+                     'weighbridge_slip': load.weighbridge_slip or None, 'total_amount': float(load.total_amount)})
     size = quote_load_size(quote)
     return {'total_tonnes': float(total), 'booked_tonnes': float(booked),
-            'remaining_tonnes': float(max(total - booked, Decimal('0'))), 'loads_booked': n,
-            'loads_planned': quote.loads_planned, 'tonnes_per_load': float(size) if size is not None else None}
+            # Weighbridge tonnes on record (loads with actual tonnes).
+            'delivered_tonnes': float(delivered),
+            'remaining_tonnes': float(max(total - booked, Decimal('0'))), 'loads_booked': len(rows),
+            'loads_planned': quote.loads_planned, 'tonnes_per_load': float(size) if size is not None else None,
+            'contract_start': quote.contract_start.isoformat() if quote.contract_start else None,
+            'contract_end': quote.contract_end.isoformat() if quote.contract_end else None,
+            'loads': rows}
 
 
 def load_billing(load):

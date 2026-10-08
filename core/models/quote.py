@@ -186,6 +186,10 @@ class Quote(models.Model):
                                           help_text='Tonnes per load (planned load size)')
     min_tonnes_per_load = models.DecimalField(max_digits=8, decimal_places=3, null=True, blank=True,
                                               help_text='Minimum tonnes invoiced per load (null = planned load)')
+    # Volume contract period (SAST dates, inclusive): call-offs are booked
+    # within it. Display/booking aid; pricing does not depend on it.
+    contract_start = models.DateField(null=True, blank=True)
+    contract_end = models.DateField(null=True, blank=True)
     loads_planned = models.PositiveIntegerField(null=True, blank=True,
                                                 help_text='Loads on the basis truck (server-set when priced)')
     # The truck the user CHOSE to price on; null = truck unknown, priced on

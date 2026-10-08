@@ -2777,10 +2777,17 @@ class QuoteFilterSet(django_filters.FilterSet):
     # tagged with a status this app no longer produces), so filtering the
     # Accepted column by status alone must not silently drop them.
     status = django_filters.CharFilter(method='filter_status')
+    # Tonnage quotes: ?pricing_basis=per_tonne; ?contract=true = volume
+    # contracts only (per-tonne quotes with total_tonnes), false = not.
+    contract = django_filters.BooleanFilter(method='filter_contract')
 
     class Meta:
         model = Quote
-        fields = ['status', 'customer']
+        fields = ['status', 'customer', 'pricing_basis']
+
+    def filter_contract(self, queryset, name, value):
+        q = Q(pricing_basis='per_tonne', total_tonnes__isnull=False)
+        return queryset.filter(q) if value else queryset.exclude(q)
 
     def filter_status(self, queryset, name, value):
         # Board columns: ACCEPTED is "won, still to book"; BOOKED is a quote

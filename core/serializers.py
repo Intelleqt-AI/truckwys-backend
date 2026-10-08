@@ -250,6 +250,9 @@ class SelfProfileSerializer(UserSerializer):
                 'Change your password from Security settings (this verifies your '
                 'current password first), not here.'
             ]
+        start, end = get('contract_start'), get('contract_end')
+        if start and end and end < start:
+            errors['contract_end'] = 'The contract ends before it starts.'
         if errors:
             raise serializers.ValidationError(errors)
         return attrs
@@ -305,6 +308,9 @@ class CustomerSerializer(serializers.ModelSerializer):
                     attrs[field] = _validate_identifier(attrs[field], kind, country)
                 except serializers.ValidationError as e:
                     errors[field] = e.detail
+        start, end = get('contract_start'), get('contract_end')
+        if start and end and end < start:
+            errors['contract_end'] = 'The contract ends before it starts.'
         if errors:
             raise serializers.ValidationError(errors)
         return attrs
@@ -840,6 +846,9 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
                 errors[key] = f'Enter a figure above 0 and up to {cap:,}'.replace(',', ' ') + '.'
         if get('tonnes_per_load') is None and get('total_tonnes') is None:
             errors['tonnes_per_load'] = 'Enter the tonnes per load or the total tonnes for the contract.'
+        start, end = get('contract_start'), get('contract_end')
+        if start and end and end < start:
+            errors['contract_end'] = 'The contract ends before it starts.'
         if errors:
             raise serializers.ValidationError(errors)
 

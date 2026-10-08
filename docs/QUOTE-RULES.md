@@ -447,3 +447,10 @@ rate. No actual tonnes at delivery → planned tonnes, invoice stays DRAFT with 
 invoiced on planned tonnes.", never auto-emailed, team notified. Entering the actual tonnes re-prices the load and
 its DRAFT invoice (issued invoices only via credit note). Load API `tonnage {tonnes, tonnes_source, min_tonnes,
 billable_tonnes, rate_per_tonne, amount, awaiting_weighbridge, flag}`.
+
+**Client screens (8 Oct 2026).** Volume contracts list: `GET /quotes/?contract=true` (also `?pricing_basis=per_tonne`).
+Quote fields `contract_start` / `contract_end` (dates, end ≥ start) are the contract period (display and booking aid,
+not priced); one lane per contract in v1 (a client with several lanes has one contract per lane).
+`volume_contract` adds `delivered_tonnes` (weighbridge tonnes on record), the period and `loads [{id, load_number,
+status, pickup_date, planned_tonnes, actual_tonnes, weighbridge_slip, total_amount}]`. Load `weighbridge_slip`
+(ticket number, optional) is saved with the weighbridge tonnes.
