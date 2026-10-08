@@ -181,8 +181,8 @@ CASES = [
     ('default_price_no_rate_one_way_long',
      'No default price per km: default price = target price rounded up; alternative included.',
      long_trip(default_price_per_km=None)),
-    ('tolls_none_found',
-     'Route found R 0 tolls (not confirmed): warning tolls_none_found, floor still complete.',
+    ('tolls_no_plazas',
+     'Toll lookup worked and found no plazas: R 0 known, line "No toll plazas on this route", no warning.',
      base(tolls={'one_way': 0.0, 'empty_return': None, 'lookup_failed': False, 'confirmed_none': False})),
     ('international_border_costs_missing',
      'International trip without border costs: border line null, border_costs_missing blocks.',
@@ -222,6 +222,51 @@ CASES = [
      petrol_trip(diesel={'zone': 'INLAND', 'mode': 'OWN', 'own_price': None, 'own_set_at': None,
                          'official_price': None, 'official_effective_from': None, 'official_stale': False,
                          'use_official': False, 'override_price': None, 'fuel_type': 'Electric'})),
+    # Border costs not on file for part of the route (added 8 Oct 2026).
+    ('international_border_unknown_country',
+     'SA -> Namibia -> Angola: the Namibia->Angola crossing has no figures on file; the route border total '
+     'leaves it out, so the border lines are null and border_costs_missing blocks.',
+     long_trip(international=True, border_cost=4840.0,
+               border_costs_unknown={'countries': ['Angola'], 'crossings': ['Namibia→Angola'],
+                                     'known': [{'label': 'SA→NA', 'amount': 4463.29},
+                                               {'label': 'permit', 'amount': 376.71}]})),
+    ('international_border_unknown_country_user_cost',
+     'The same trip with the border costs entered by the user (border_cost_is_override): complete.',
+     long_trip(international=True, border_cost=9800.0, border_cost_is_override=True,
+               border_costs_unknown={'countries': ['Angola'], 'crossings': ['Namibia→Angola'],
+                                     'known': [{'label': 'SA→NA', 'amount': 4463.29},
+                                               {'label': 'permit', 'amount': 376.71}]})),
+    # Both legs as the route calculation prices them (toll/border audit, 8 Oct 2026).
+    ('round_trip_return_leg_tolls',
+     'Round trip whose way back has its own plazas: tolls = one_way + return_leg (R1 043,48 + R812,61), '
+     'not one_way x 2.',
+     long_trip(trip_type='ROUND_TRIP', price=62000.0,
+               tolls={'one_way': 1043.48, 'empty_return': None, 'return_leg': 812.61,
+                      'lookup_failed': False, 'confirmed_none': False})),
+    ('international_border_estimate_one_way',
+     'One-way international trip, empty return: border R6 239,66 out of which R2 005,00 (agent) is an '
+     'estimate; the way back empty is priced on its own (R2 381,71, all estimate).',
+     long_trip(international=True, include_empty_return=True, border_cost=6239.66, border_estimate=2005.0,
+               border_cost_empty_return=2381.71, border_estimate_empty_return=2381.71)),
+    ('international_border_estimate_round_trip',
+     'Round trip: border_cost and border_estimate are out + back (R9 618,08 of which R4 386,71 '
+     'estimated = R2 005,00 + R2 381,71).',
+     long_trip(trip_type='ROUND_TRIP', international=True, price=70000.0,
+               border_cost=9618.08, border_estimate=4386.71,
+               tolls={'one_way': 1043.48, 'empty_return': None, 'return_leg': 812.61,
+                      'lookup_failed': False, 'confirmed_none': False})),
+    ('international_border_agent_fee_entered',
+     "The user entered their clearing agent's fee: the route calculation then has no estimate left "
+     '(border_estimate 0) and the line says nothing about estimates.',
+     long_trip(international=True, include_empty_return=False, border_cost=5734.66, border_estimate=0.0)),
+    # User-applied driver nights (costing_inputs.driver_nights, 8 Oct 2026).
+    ('driver_nights_applied',
+     'User applied 3 nights out (the route suggests 0 on 7 h 20 min): driver line = 3 x R450,00; '
+     'the empty return still adds its own suggested extra night.',
+     long_trip(driver={'allowance_per_night': 450.0, 'nights': 3, 'amount': None})),
+    ('driver_amount_wins_over_nights',
+     'Applied nights AND a typed driver amount: the typed amount wins.',
+     long_trip(driver={'allowance_per_night': 450.0, 'nights': 3, 'amount': 1000.0}, include_empty_return=False)),
 ]
 
 
@@ -237,4 +282,79 @@ REOPEN_CASES = [
                             'priced_at': None}),
     ('loss_making_then', {'price': 9000.0, 'floor_then': 9500.0, 'floor_now': 9800.55,
                           'priced_at': '2026-09-15T08:00:00Z'}),
+]
+
+
+# ---------------------------------------------------------------------------
+# Tonnage quotes (rate per tonne): compute_tonnage() inputs. Added after every
+# case above (those are unchanged); golden key `tonnage_cases`.
+# ---------------------------------------------------------------------------
+
+TAUTLINER = {'id': 17, 'name': 'Tautliner', 'capacity': 30, 'rated_burn_l_per_100km': 40}
+NO_BURN = {'id': 18, 'name': 'Flatdeck', 'capacity': 32, 'rated_burn_l_per_100km': None}
+
+_LANE_DROP = ('vehicle', 'load_kg', 'price', 'operating_cost_per_km', 'operating_cost_source')
+
+
+def lane(**over):
+    """The JHB -> DBN-ish lane (568,4 km, empty return by default) without the
+    truck / load / price, for tonnage quotes."""
+    out = {k: v for k, v in long_trip().items() if k not in _LANE_DROP}
+    out.update(over)
+    return out
+
+
+def truck(vehicle, op):
+    return {'vehicle': dict(vehicle), 'operating_cost_per_km': op, 'operating_cost_source': 'vehicle_default'}
+
+
+FLEET = [truck(SUPERLINK, 16.0), truck(TRI_AXLE, 15.0), truck(TAUTLINER, 15.0)]
+MIXED_FLEET = [truck(SUPERLINK, 16.0), truck(TAUTLINER, 15.0), truck(RIGID_KG, 8.0)]
+
+
+def tonnage(**over):
+    inputs = {'lane': lane(), 'trucks': [dict(t) for t in FLEET], 'tonnes_per_load': None, 'total_tonnes': None,
+              'min_tonnes_per_load': None, 'vehicle_type_id': None, 'rate_per_tonne': None}
+    inputs.update(over)
+    return inputs
+
+
+TONNAGE_CASES = [
+    ('single_load_fits_one_truck',
+     'One 30 t consignment, only a superlink in the fleet: one load, minimum = the 30 t planned.',
+     tonnage(trucks=[truck(SUPERLINK, 16.0)], tonnes_per_load=30.0, rate_per_tonne=1250.0)),
+    ('truck_unknown_three_eligible_safest',
+     'Truck unknown, 30 t: superlink, tri-axle and tautliner can carry it; priced on the highest cost per tonne.',
+     tonnage(tonnes_per_load=30.0)),
+    ('chosen_truck',
+     'Same consignment, the user picks the tri-axle: priced on it, the others shown with their margin.',
+     tonnage(tonnes_per_load=30.0, vehicle_type_id=12, rate_per_tonne=1200.0)),
+    ('partial_load_under_minimum',
+     '12 t consignment with a 30 t minimum per load: charged for 30 t; the rigid is too small.',
+     tonnage(trucks=[dict(t) for t in MIXED_FLEET], tonnes_per_load=12.0, min_tonnes_per_load=30.0,
+             rate_per_tonne=1100.0)),
+    ('volume_600t_mixed_fleet',
+     '600 t contract over superlink, tautliner and 8 t rigid: loads per truck, safest basis (the rigid).',
+     tonnage(trucks=[dict(t) for t in MIXED_FLEET], total_tonnes=600.0, rate_per_tonne=2700.0)),
+    ('volume_partial_last_load',
+     '100 t at 28 t a load on a chosen superlink: 4 loads, the last 16 t, charged at the 28 t minimum.',
+     tonnage(total_tonnes=100.0, tonnes_per_load=28.0, vehicle_type_id=11, rate_per_tonne=1350.0)),
+    ('return_load_booked',
+     'Return load booked: no empty return in any truck\'s cost per load.',
+     tonnage(lane=lane(include_empty_return=False), tonnes_per_load=30.0, rate_per_tonne=900.0)),
+    ('diesel_missing_blocked',
+     'No diesel price: every cost is unknown, diesel_missing blocks, no rate.',
+     tonnage(lane=lane(diesel=official(price=None, official_effective_from=None)), tonnes_per_load=30.0)),
+    ('rate_below_cost',
+     'R 800/t is under the cost per tonne on the basis truck: rate_below_cost warns with the loss.',
+     tonnage(tonnes_per_load=30.0, rate_per_tonne=800.0)),
+    ('tonnes_exceed_payload',
+     '40 t consignment, no truck carries it: split into loads on the safest truck.',
+     tonnage(tonnes_per_load=40.0)),
+    ('no_eligible_trucks',
+     'Only a truck without fuel use on record: no eligible truck, blocks.',
+     tonnage(trucks=[truck(NO_BURN, 15.0)], tonnes_per_load=30.0)),
+    ('minimum_charge_lifts_rate',
+     'Company minimum charge R 45 000 a load: default rate lifted to it; a lower rate blocks.',
+     tonnage(lane=lane(minimum_charge=45000.0), tonnes_per_load=30.0, rate_per_tonne=1300.0)),
 ]

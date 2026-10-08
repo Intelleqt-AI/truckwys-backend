@@ -47,7 +47,9 @@ def create_invoice_for_load(load, *, company=None, mark_sent: bool = False):
         return None, False
     if not getattr(load, 'customer', None):
         return None, False
-    subtotal = load.total_amount or Decimal('0')
+    from core.services.tonnage_jobs import AWAITING_WEIGHBRIDGE, invoice_line_for_load, load_billing
+    billing = load_billing(load)
+    subtotal = Decimal(str(billing['amount'])) if billing else (load.total_amount or Decimal('0'))
     if subtotal <= 0:
         return None, False
 
@@ -75,16 +77,12 @@ def create_invoice_for_load(load, *, company=None, mark_sent: bool = False):
         )
         from core.services.invoice_lines import terms_days_for
         invoice.terms_days = terms_days_for(terms)
-        apply_lines(invoice, [{
-            'description': _load_line_description(load),
-            'quantity': 1,
-            'unit_price': Decimal(str(subtotal)),
-            # The company's default code (STANDARD for a VAT vendor, NO_VAT
-            # otherwise); an international load is zero-rated (s11(2)(a)),
-            # matching the VAT 0% its quote showed the customer.
-            'tax_code': load_tax_code(load, company),
-            'load': load.pk,
-        }])
+        if billing and billing['awaiting_weighbridge']:
+            # Per tonne without the weighbridge figure: the planned tonnes,
+            # flagged (never silently), and never sent as it stands.
+            invoice.notes = f'{invoice.notes}\n{AWAITING_WEIGHBRIDGE}: invoiced on planned tonnes.'
+            mark_sent = False
+        apply_lines(invoice, invoice_lines_for_load(load, company))
         if mark_sent:
             invoice.status = 'SENT'
             invoice.sent_at = timezone.now()
@@ -94,13 +92,79 @@ def create_invoice_for_load(load, *, company=None, mark_sent: bool = False):
     # (we may be called from inside that very signal — avoid re-entrancy).
     from core.models import Load
     Load.objects.filter(pk=load.pk).update(status='INVOICED')
+    load.status = 'INVOICED'      # the caller's instance (and its API response) shows the truth
 
     return invoice, True
 
 
+def invoice_lines_for_load(load, company=None):
+    """The invoice line(s) a load is billed on: ONE place, shared by the
+    delivery auto-invoice, the manual convert and the booking preview, so the
+    preview is exactly what gets raised.
+
+    Per-tonne loads: quantity = max(weighbridge tonnes, minimum) (planned
+    tonnes while awaiting the weighbridge) and unit_price = rate per tonne;
+    everything downstream (VAT, totals, preview) follows."""
+    from core.services.invoice_lines import load_tax_code
+    from core.services.tonnage_jobs import invoice_line_for_load, load_billing
+    company = company or getattr(load, 'company', None)
+    if load_billing(load) is not None:
+        # Per tonne: quantity = max(weighbridge tonnes, minimum), else the
+        # planned tonnes (flagged "Awaiting weighbridge tonnes").
+        return [{**invoice_line_for_load(load, _load_line_description(load)),
+                 'tax_code': load_tax_code(load, company), 'load': load.pk}]
+    return [{
+        'description': _load_line_description(load),
+        'quantity': 1,
+        'unit_price': Decimal(str(load.total_amount or 0)),
+        # The company's default code (STANDARD for a VAT vendor, NO_VAT
+        # otherwise); an international load is zero-rated (s11(2)(a)),
+        # matching the VAT 0% its quote showed the customer.
+        'tax_code': load_tax_code(load, company),
+        'load': load.pk,
+    }]
+
+
+def invoice_preview(load):
+    """What the delivery auto-invoice will be for this load (or the invoice
+    already raised). Never writes."""
+    from django.conf import settings
+    from core.models.invoice import Invoice
+    from core.services.invoice_lines import build_lines, customer_terms, terms_days_for, totals_of
+    existing = (Invoice.objects.filter(load=load).exclude(status='CANCELLED').order_by('-id').first()
+                if load.pk is not None else None)
+    if existing is not None:
+        return {'state': 'raised', 'invoice_id': existing.pk, 'invoice_number': existing.invoice_number,
+                'status': existing.status, 'subtotal': float(existing.subtotal),
+                'vat_amount': float(existing.vat_amount), 'total': float(existing.total_amount),
+                'mismatch': getattr(load, 'invoice_mismatch', None) or None}
+    company = getattr(load, 'company', None)
+    auto = bool(getattr(settings, 'AUTO_INVOICE_ON_DELIVERY', True))
+    if load.status == 'CANCELLED' or not (load.total_amount and load.total_amount > 0):
+        return {'state': 'not_invoiceable', 'auto_on_delivery': auto,
+                'reason': 'cancelled' if load.status == 'CANCELLED' else 'no_amount'}
+    raw = invoice_lines_for_load(load, company)
+    lines = build_lines([{**ln, 'load': None} for ln in raw], company=company, on_date=date.today())
+    t = totals_of(lines)
+    terms = customer_terms(load.customer)
+    return {
+        'state': 'on_delivery' if auto else 'manual',
+        'auto_on_delivery': auto,
+        'auto_email': bool(getattr(company, 'auto_email_invoices', False)),
+        'lines': [{'description': ln['description'], 'quantity': float(ln['quantity']),
+                   'unit_price': float(ln['unit_price']), 'tax_code': ln['tax_code'],
+                   'tax_rate': float(ln['tax_rate']), 'net_amount': float(ln['net_amount']),
+                   'vat_amount': float(ln['vat_amount']), 'total': float(ln['total_amount'])} for ln in lines],
+        'subtotal': float(t['subtotal']), 'vat_amount': float(t['vat_amount']), 'total': float(t['total_amount']),
+        'payment_terms': terms, 'terms_days': terms_days_for(terms),
+        'billing_basis': 'per_load',     # the per-tonne branch sets 'per_tonne'
+    }
+
+
 def _load_line_description(load) -> str:
     route = ' → '.join(p for p in (getattr(load, 'pickup_city', '') or '', getattr(load, 'delivery_city', '') or '') if p)
-    return f'Transport: load {load.load_number}' + (f' ({route})' if route else '')
+    head = f'Transport: load {load.load_number}' if load.load_number else 'Transport (load number on booking)'
+    return head + (f' ({route})' if route else '')
 
 
 def email_invoice_to_customer(invoice, additional_recipients=None) -> bool:

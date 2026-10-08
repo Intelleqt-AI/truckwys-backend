@@ -8,7 +8,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('core', '0157_quote_margin_percentage_wider'),
+        ('core', '0177_quote_load_tonnage'),
     ]
 
     operations = [

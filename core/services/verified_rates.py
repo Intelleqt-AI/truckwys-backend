@@ -25,10 +25,13 @@ logger = logging.getLogger(__name__)
 
 ALLOWANCE_LABELS = {
     'nbcrfli': 'NBCRFLI driver allowance',
+    'nbcrfli_cross_border': 'NBCRFLI cross-border driver allowance',
     'sars_subsistence': 'SARS daily subsistence allowance (meals & incidentals)',
 }
 # Which approved allowance the price check uses when several are on record.
 ALLOWANCE_PREFERENCE = ('nbcrfli', 'sars_subsistence')
+# International trips (NBCRFLI clause 36B replaces 36A outside SA).
+CROSS_BORDER_PREFERENCE = ('nbcrfli_cross_border',) + ALLOWANCE_PREFERENCE
 SANRAL_CLASSES = (1, 2, 3, 4)
 
 
@@ -105,13 +108,13 @@ def current_allowance_row(key: str, today: date):
             .first())
 
 
-def current_allowance(today: date):
+def current_allowance(today: date, cross_border: bool = False):
     """The approved driver allowance in force today (NBCRFLI first, then the
     SARS subsistence allowance), or None when an admin has approved none.
     {'rate_per_night', 'allowance_type', 'label', 'effective_from',
     'verified_at', 'source_url', 'source_name', 'id'}. Never raises."""
     try:
-        for key in ALLOWANCE_PREFERENCE:
+        for key in (CROSS_BORDER_PREFERENCE if cross_border else ALLOWANCE_PREFERENCE):
             row = current_allowance_row(key, today)
             if row is not None:
                 return {'id': row.id, 'rate_per_night': float(row.value), 'allowance_type': key,

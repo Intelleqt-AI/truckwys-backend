@@ -596,3 +596,74 @@ class SnapshotAndSuggestionTests(_Base):
         self.assertEqual(qc.suggest_vehicle(self.company, 28000).id, other.id)      # typed 40 < 42
         self.measured(rated=36.5)                                                     # Superlink measured 36,5
         self.assertEqual(qc.suggest_vehicle(self.company, 28000).id, self.vt.id)
+
+
+class StackIntegrationTests(_Base):
+    """Measured burn through the rest of the stack: tonnage quotes (cost per
+    tonne on the burn in use, per truck) and trip economics (the job keeps the
+    burn it was costed on; the fuel cost group says which)."""
+    measured = PricingTests.measured
+    create_quote = SnapshotAndSuggestionTests.create_quote
+
+    def setUp(self):
+        super().setUp()
+        from core.tests.quote_rules_fixtures import add_vehicle
+        add_vehicle(self.company, self.vt)
+        self.taut = VehicleType.objects.create(company=self.company, name='Tautliner', capacity=30, max_distance=3000,
+                                               base_rate=20, fuel_consumption_l_per_100km=40)
+        add_vehicle(self.company, self.taut)
+        self.customer = Customer.objects.create(company=self.company, name='Acme', email='a@x.test', phone='',
+                                                address='', city='', state='', zip_code='')
+
+    def tonnage(self, **over):
+        return qc.costing_for_payload({'pricing_basis': 'per_tonne', 'one_way_distance_km': 568.4,
+                                       'duration_minutes': 440, 'toll_cost': 1043.48, 'cargo_description': 'Steel',
+                                       'tonnes_per_load': 30, **over}, self.company)
+
+    def test_cost_per_tonne_uses_each_trucks_burn_in_use(self):
+        before = {r['vehicle_type_id']: r for r in self.tonnage()['tonnage']['trucks']}
+        self.assertEqual(before[self.vt.id]['burn_source'], 'configured')
+        self.measured(rated=36.0)
+        out = self.tonnage()
+        rows = {r['vehicle_type_id']: r for r in out['tonnage']['trucks']}
+        sl, tl = rows[self.vt.id], rows[self.taut.id]
+        self.assertEqual(sl['burn_source'], 'measured')
+        self.assertEqual(sl['burn_label'], 'Measured by Cartrack: 36,0 L/100 km over 18 400 km (90 days)')
+        self.assertEqual(tl['burn_source'], 'configured')
+        self.assertLess(sl['cost_per_tonne'], before[self.vt.id]['cost_per_tonne'])
+        self.assertEqual(tl['cost_per_tonne'], before[self.taut.id]['cost_per_tonne'])
+        sl_input = next(t for t in out['inputs']['trucks'] if t['vehicle']['id'] == self.vt.id)
+        self.assertEqual(sl_input['vehicle']['rated_burn_l_per_100km'], 36.0)
+        # The basis truck's burn is the quote's.
+        basis = out['tonnage']['basis_vehicle_type_id']
+        self.assertEqual(out['resolution']['rated_burn']['source'], rows[basis]['burn_source'])
+
+    def test_chosen_truck_pinned_to_configured_and_differs_warning(self):
+        self.measured(rated=34.0)
+        out = self.tonnage(vehicle_type_id=self.vt.id, use_configured_burn=True)
+        self.assertEqual(out['resolution']['rated_burn']['source'], 'configured')
+        self.assertEqual(out['resolution']['rated_burn']['chosen_by'], 'quote')
+        self.assertIn('truck_burn_differs_measured', [w['code'] for w in out['warnings']])
+
+    def test_job_keeps_the_burn_it_was_quoted_on(self):
+        from core.models import Load
+        from core.services import trip_economics as te
+        self.measured(rated=40.2)
+        q = self.create_quote()
+        r = self.api.post(f'/api/v1/quotes/{q.id}/convert_to_load/', {}, format='json')
+        self.assertIn(r.status_code, (200, 201), r.content)
+        load = Load.objects.get(id=r.json()['id'])
+        self.assertEqual(load.costing_snapshot['rated_burn']['value'], 40.2)
+        self.assertEqual(load.costing_snapshot['rated_burn']['source'], 'measured')
+        row = te.economics_rows(self.company, [load])[load.id]
+        fuel = next(g for g in row['cost_groups'] if g['group'] == 'fuel')
+        self.assertEqual(fuel['rated_burn']['label'], 'Measured by Cartrack: 40,2 L/100 km over 18 400 km (90 days)')
+        self.assertEqual(fuel['basis'], 'estimate')
+
+    def test_job_costed_from_its_own_data_records_the_burn(self):
+        from core.services.trip_costing import computed_fields
+        self.measured(rated=40.2)
+        fields = computed_fields(qc.costing_for_payload(self.PAYLOAD, self.company), NOW)
+        snap = fields['costing_snapshot']
+        self.assertEqual(snap['rated_burn']['source'], 'measured')
+        self.assertNotIn('rejections', str(snap['resolution']['rated_burn']))

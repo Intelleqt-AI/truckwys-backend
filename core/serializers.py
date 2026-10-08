@@ -552,6 +552,17 @@ class VehicleLogSerializer(serializers.ModelSerializer):
 
 
 # Load Serializer
+LOAD_ECONOMICS_READ_ONLY = (
+    'costing_source', 'costing_inputs', 'costing_snapshot', 'cost_floor', 'empty_return_assumed',
+    'fuel_price_used', 'fuel_price_source', 'fuel_zone', 'fuel_effective_from', 'fuel_litres',
+    'priced_vehicle_type', 'costed_at', 'quoted_price', 'quoted_cost_floor', 'quoted_margin_pct',
+    # Linked only through POST loads/{id}/link-return/ (validated) or the TMS.
+    'return_of', 'return_link_source', 'return_linked_at', 'return_linked_by',
+    'estimated_cost', 'estimate_basis', 'economics_updated_at',
+    'external_id', 'external_source', 'return_of_external_ref', 'invoice_mismatch', 'costs_closed',
+)
+
+
 class LoadSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
     company_scoped_relations = {
         'customer': 'company_id', 'driver': 'company_id',
@@ -569,6 +580,33 @@ class LoadSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
     # Price excl. VAT, VAT and total incl. VAT for the order, by the same
     # rule as its quote (core.services.quote_vat: 15%, or 0% international).
     customer_price = serializers.SerializerMethodField()
+    # Per-tonne loads: how the invoice line is worked out (rate x max(actual
+    # or planned tonnes, minimum)) and the "Awaiting weighbridge tonnes" flag.
+    tonnage = serializers.SerializerMethodField()
+
+    def get_tonnage(self, obj):
+        from core.services.tonnage_jobs import load_billing
+        return load_billing(obj)
+
+    def validate_actual_tonnes(self, value):
+        if value is not None and not (0 < float(value) <= 100):
+            raise serializers.ValidationError('Enter the weighbridge tonnes, above 0 and up to 100 t.')
+        return value
+
+    def validate_actual_tonnes_source(self, value):
+        if value not in ('', 'weighbridge', 'manual', 'tms'):
+            raise serializers.ValidationError('Source must be weighbridge, manual or tms.')
+        return value
+
+    def update(self, instance, validated_data):
+        changed = 'actual_tonnes' in validated_data and validated_data['actual_tonnes'] != instance.actual_tonnes
+        if changed and not validated_data.get('actual_tonnes_source'):
+            validated_data['actual_tonnes_source'] = 'manual' if validated_data['actual_tonnes'] is not None else ''
+        instance = super().update(instance, validated_data)
+        if changed:
+            from core.services.tonnage_jobs import refresh_load_amount
+            refresh_load_amount(instance)
+        return instance
 
     class Meta:
         model = Load
@@ -581,6 +619,12 @@ class LoadSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
             'pod_signature', 'pod_received_by', 'pod_document',
             'pod_captured_at', 'pod_latitude', 'pod_longitude', 'pod_device',
             'pod_source', 'pod_file_sha256',
+            # Trip economics: written by the server only (convert_to_load,
+            # trip_costing, return-load linking, TMS sync).
+            *LOAD_ECONOMICS_READ_ONLY,
+            # Tonnage terms come from the quote (convert_to_load); only the
+            # weighbridge tonnes (actual_tonnes) are edited on the load.
+            'pricing_basis', 'rate_per_tonne', 'min_tonnes', 'planned_tonnes',
         ]
 
     def get_customer_price(self, obj):
@@ -653,6 +697,15 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
     # the source of truth for "converted": the quote itself stays ACCEPTED.
     booked_load = serializers.SerializerMethodField()
     converted = serializers.SerializerMethodField()
+    # Volume contract (per-tonne quote with total_tonnes): tonnes booked as
+    # call-off loads and what is left. Null for every other quote.
+    volume_contract = serializers.SerializerMethodField()
+
+    def get_volume_contract(self, obj):
+        if obj.pricing_basis != 'per_tonne' or obj.total_tonnes is None:
+            return None
+        from core.services.tonnage_jobs import contract_status
+        return contract_status(obj)
     # What the customer is shown once the quote is sent: price excl. VAT,
     # VAT and total incl. VAT (core.services.quote_vat; same figures as the
     # PDF, emails and online quote page). Used for the WhatsApp message.
@@ -701,7 +754,7 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
                             # Pricing snapshot (QUOTE-RULES.md §9): server-set on save.
                             'fuel_price_used', 'fuel_price_source', 'fuel_zone', 'fuel_effective_from',
                             'fuel_official_at_pricing', 'fuel_litres', 'priced_at', 'priced_vehicle_type',
-                            'empty_return_included', 'cost_floor', 'costing_snapshot',
+                            'empty_return_included', 'cost_floor', 'costing_snapshot', 'loads_planned',
                             # Only the outcome flow (record outcome / accept /
                             # decline) sets it: a client-sent outcome is ignored,
                             # so a PATCH cannot fake model / market evidence.
@@ -753,6 +806,17 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
             if v is None or v == '':
                 continue
             try:
+                if key == 'tolls_by_vehicle_type':
+                    out[key] = self._tolls_by_vehicle_type(v)
+                    continue
+                if kind is dict:
+                    from core.services.quote_costing import border_costs_unknown_input
+                    if not isinstance(v, dict):
+                        raise serializers.ValidationError(f'costing_inputs.{key} must be a JSON object.')
+                    norm = border_costs_unknown_input({'border_costs_unknown': v})
+                    if norm:
+                        out[key] = norm
+                    continue
                 if kind is bool:
                     if not isinstance(v, bool):
                         raise ValueError
@@ -767,8 +831,57 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
                     out[key] = int(num) if kind is int else num
             except (TypeError, ValueError):
                 raise serializers.ValidationError(f'costing_inputs.{key} must be '
-                                                  + ('true or false.' if kind is bool else 'a number of 0 or more.'))
+                                                  + ('true or false.' if kind is bool else
+                                                     'an object of truck id to {one_way, empty_return}.'
+                                                     if kind is dict else 'a number of 0 or more.'))
         return out
+
+    @staticmethod
+    def _tolls_by_vehicle_type(value):
+        if not isinstance(value, dict) or len(value) > 50:
+            raise ValueError
+        out = {}
+        for vt_id, tolls in value.items():
+            if not str(vt_id).isdigit() or not isinstance(tolls, dict):
+                raise ValueError
+            row = {}
+            for k in ('one_way', 'empty_return'):
+                if tolls.get(k) not in (None, ''):
+                    num = float(tolls[k])
+                    if num != num or num < 0:
+                        raise ValueError
+                    row[k] = num
+            out[str(int(vt_id))] = row
+        return out
+
+    def validate_basis_vehicle_type(self, value):
+        if value is None:
+            return value
+        from core.services.vehicle_types import visible_vehicle_types_queryset
+        company = getattr(self._request_user(), 'company', None) or getattr(self.instance, 'company', None)
+        if not visible_vehicle_types_queryset(company).filter(id=value.id).exists():
+            raise serializers.ValidationError('That truck is not one of your vehicle types.')
+        return value
+
+    def _validate_tonnage(self, attrs):
+        """A per-tonne quote needs the tonnes: tonnes per load and/or a
+        contract total, a minimum no larger than 100 t, rates and tonnes > 0."""
+        get = lambda k: attrs[k] if k in attrs else getattr(self.instance, k, None)
+        if get('pricing_basis') != 'per_tonne':
+            return
+        errors = {}
+        for key, cap in (('tonnes_per_load', 100), ('total_tonnes', 1_000_000), ('min_tonnes_per_load', 100),
+                         ('rate_per_tonne', 100_000)):
+            v = get(key)
+            if v is not None and not (0 < float(v) <= cap):
+                errors[key] = f'Enter a figure above 0 and up to {cap:,}'.replace(',', ' ') + '.'
+        if get('tonnes_per_load') is None and get('total_tonnes') is None:
+            errors['tonnes_per_load'] = 'Enter the tonnes per load or the total tonnes for the contract.'
+        start, end = get('contract_start'), get('contract_end')
+        if start and end and end < start:
+            errors['contract_end'] = 'The contract ends before it starts.'
+        if errors:
+            raise serializers.ValidationError(errors)
 
     def _snapshot(self, instance, validated_data, created):
         from core.services.quote_snapshot import snapshot_quote
@@ -887,9 +1000,12 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
         # trust every caller to have checked client-side. Quote.vehicle_type
         # is a plain name string (no FK), same lookup the frontend already
         # does by name+company.
+        self._validate_tonnage(attrs)
         vt_name = attrs.get('vehicle_type', getattr(self.instance, 'vehicle_type', None))
         weight_kg = attrs.get('weight', getattr(self.instance, 'weight', None))
-        if vt_name and weight_kg:
+        per_tonne = attrs.get('pricing_basis', getattr(self.instance, 'pricing_basis', None)) == 'per_tonne'
+        # A tonnage quote may be more than one truckload (it is split into loads).
+        if vt_name and weight_kg and not per_tonne:
             request = self.context.get('request')
             company = getattr(getattr(request, 'user', None), 'company', None)
             vt = VehicleType.objects.filter(name=vt_name, company=company).first() if company else None
@@ -920,6 +1036,22 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
+        # Pricing completeness from the stored snapshot (no query): tolls that
+        # were unknown when it was priced are shown as unknown (null), never
+        # as R 0, and the quote is marked incomplete.
+        snap = getattr(instance, 'costing_snapshot', None) or {}
+        blocking = list(snap.get('blocking') or [])
+        tolls_unknown = 'tolls_unknown' in blocking or bool((instance.costing_inputs or {}).get('tolls_unknown'))
+        if tolls_unknown and 'tolls_unknown' not in blocking:
+            blocking.append('tolls_unknown')
+        if tolls_unknown:
+            data['toll_charges'] = None
+            if isinstance(data.get('customer_price'), dict):
+                data['customer_price'] = {**data['customer_price'], 'incomplete': True,
+                                          'incomplete_reason': 'Tolls are unknown on this quote.'}
+        data['tolls_unknown'] = tolls_unknown
+        data['pricing_complete'] = not blocking if snap or tolls_unknown else None
+        data['pricing_blocking'] = blocking
         if isinstance(self.parent, serializers.ListSerializer):
             data.pop('route_snapshot', None)
         else:

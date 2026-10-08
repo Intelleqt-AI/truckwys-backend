@@ -122,7 +122,8 @@ class VoiceQuoteAutoDetectTests(TestCase):
 
         self.assertEqual(resp.status_code, 502)
         self.assertFalse(resp.data['success'])
-        self.assertIn('Could not transcribe', resp.data['error'])
+        self.assertIn("Couldn't read that recording", resp.data['error'])
+        self.assertNotIn('bad audio', resp.data['error'])  # provider text is never shown
         # English is required -- must not attempt the Afrikaans pass at all
         # once the first (English) call itself fails.
         self.assertEqual(mock_client.audio.transcriptions.create.call_count, 1)

@@ -41,7 +41,7 @@ from .views_import import (
 from .views_bulk_delete import CustomerBulkDeleteView, VehicleBulkDeleteView
 from .views_ai_quote import (
     AIChatQuoteView, AIQuoteAnalyzeView, AIQuotePriceAnalysisView, AIQuoteSuggestionView, AIVoiceQuoteView,
-    FuelPriceCurrentView, FuelPriceSurchargeCheckView,
+    FuelPriceCurrentView, FuelPriceRefreshView, FuelPriceSurchargeCheckView,
     QuoteBenchmarkView, QuoteFuelAlertView, QuoteModelStatsView,
     QuoteOutcomeView, QuoteWinProbabilityView, RevenueGuardView
 )
@@ -329,6 +329,7 @@ urlpatterns = [
 
     # AI Quote & Revenue Guard endpoints (Phase 2 + Sprint 1)
     path('fuel-prices/current/', FuelPriceCurrentView.as_view(), name='fuel-prices-current'),
+    path('fuel-prices/refresh/', FuelPriceRefreshView.as_view(), name='fuel-prices-refresh'),
     path('fuel-prices/surcharge-check/', FuelPriceSurchargeCheckView.as_view(), name='fuel-surcharge-check'),
     path('quotes/suggest/', AIQuoteSuggestionView.as_view(), name='quotes-suggest'),
     path('quotes/guard/', RevenueGuardView.as_view(), name='quotes-guard'),

@@ -1,10 +1,8 @@
 # TENANCY AUDIT: 2026-03-15 — Fleet integration API endpoints
-# - FleetTripSyncAPIView: Uses authenticated requests, operates on specific Load IDs ✓
-# - FleetBookingSyncAPIView: Uses authenticated requests, operates on specific Load IDs ✓
-# - FleetVehicleStatusAPIView: Filters by company ✓
-# - FleetWebhookTripUpdateView: API key auth, operates on specific entities by ID ✓
-# - FleetWebhookVehicleEventView: API key auth, operates on specific entities by ID ✓
-# - FleetWebhookDriverEventView: API key auth, operates on specific entities by ID ✓
+# 2026-10 re-audit (trip economics): the "specific IDs" ticks above were wrong:
+# any id from any tenant was accepted. Now every lookup is scoped to the
+# caller's company (JWT user) or the webhook subscription's company
+# (WebhookSubscription.company; none = 403, fail closed).
 
 """Fleet Management API endpoints for external fleet system integration."""
 
@@ -18,10 +16,169 @@ from drf_spectacular.types import OpenApiTypes
 from django.utils import timezone
 import hmac
 import hashlib
+import logging
+
+logger = logging.getLogger(__name__)
 
 from core.models import Load, Vehicle, Driver, ActivityEvent
 from core.serializers import LoadSerializer
 from core.auth import APIKeyAuthentication
+
+
+def _user_company(request):
+    from core.views import resolve_user_company
+    return resolve_user_company(request.user)
+
+
+def _subscription_company(request):
+    """The transporter a fleet webhook subscription acts for. A subscription
+    with no company (e.g. a lender partner) can't touch any company's loads,
+    vehicles or drivers: fail closed."""
+    sub = getattr(request, 'auth', None)
+    return getattr(sub, 'company', None)
+
+
+def bad_webhook_input(data, *, ints=(), dates=(), numbers=(), ranges=None):
+    """An error message when an id / count isn't a whole number >= 0, a date
+    isn't YYYY-MM-DD or a number isn't a number (-> 400, never a 500), else
+    None. Dates are replaced by date objects in `data` (a dict copy)."""
+    from datetime import datetime as _dt
+    from decimal import Decimal as _D, InvalidOperation
+    for k in ints:
+        v = data.get(k)
+        if v in (None, ''):
+            continue
+        if isinstance(v, bool) or not str(v).strip().isdigit():
+            return f'{k} must be a whole number'
+    for k in dates:
+        v = data.get(k)
+        if v in (None, ''):
+            continue
+        try:
+            data[k] = _dt.strptime(str(v)[:10], '%Y-%m-%d').date()
+        except ValueError:
+            return f'{k} must be a date (YYYY-MM-DD)'
+    for k in numbers:
+        v = data.get(k)
+        if v in (None, ''):
+            continue
+        try:
+            d = _D(str(v))
+            if not d.is_finite():
+                raise InvalidOperation
+        except (InvalidOperation, ValueError):
+            return f'{k} must be a number'
+        lo, hi = (ranges or {}).get(k, (None, None))
+        if (lo is not None and d < lo) or (hi is not None and d >= hi):
+            return f'{k} must be from {lo} to under {hi:,}'.replace(',', ' ')
+    return None
+
+
+# Odometer km: Vehicle.mileage is NUMERIC(10, 2) (1e8 would overflow on PostgreSQL).
+MILEAGE_RANGE = {'mileage': (0, 100_000_000)}
+
+SIGNATURE_WINDOW_SECONDS = 300
+LEGACY_REPLAY_TTL_SECONDS = 30 * 86400
+
+
+def verify_fleet_signature(request, *, allow_legacy=False):
+    try:
+        return _verify_fleet_signature(request, allow_legacy=allow_legacy)
+    except SignatureStoreUnavailable:
+        logger.exception('fleet webhook signature store unavailable')
+        return False, STORE_UNAVAILABLE
+
+
+def _verify_fleet_signature(request, *, allow_legacy=False):
+    """HMAC check for fleet webhooks, with the subscription's own secret.
+
+    Scheme (required on vehicle/driver events, preferred everywhere):
+      X-Fleet-Timestamp: <unix seconds>
+      X-Fleet-Signature: sha256=hex(HMAC_SHA256(secret, "<timestamp>." + raw body))
+    The timestamp must be within 5 minutes of now, and each signature is
+    accepted once (replays inside the window are refused).
+    allow_legacy: the trip-update webhook accepts the old body-only
+    signature (no timestamp) ONLY for subscriptions with
+    allow_legacy_signature (admin opt-in), each signature once (30-day
+    replay cache; an identical body re-sent is refused).
+    Returns (ok, reason)."""
+    import time
+    sub = getattr(request, 'auth', None)
+    signature = request.META.get('HTTP_X_FLEET_SIGNATURE') or ''
+    if sub is None or not getattr(sub, 'secret', None) or not signature:
+        return False, 'Missing signature'
+    ts = request.META.get('HTTP_X_FLEET_TIMESTAMP')
+    if not ts:
+        # The old body-only signature can be replayed: only for a subscription
+        # opted in (allow_legacy_signature), and each signature once.
+        if not (allow_legacy and getattr(sub, 'allow_legacy_signature', False)):
+            return False, 'Missing X-Fleet-Timestamp'
+        expected = 'sha256=' + hmac.new(sub.secret.encode(), request.body, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            return False, 'Invalid signature'
+        if not claim_signature(f'legacy:{sub.pk}:{hashlib.sha256(signature.encode()).hexdigest()}',
+                               LEGACY_REPLAY_TTL_SECONDS):
+            return False, 'Signature already used'
+        return True, None
+    try:
+        ts_int = int(ts)
+    except (TypeError, ValueError):
+        return False, 'Invalid X-Fleet-Timestamp'
+    if abs(time.time() - ts_int) > SIGNATURE_WINDOW_SECONDS:
+        return False, 'Signature expired'
+    expected = 'sha256=' + hmac.new(sub.secret.encode(), f'{ts_int}.'.encode() + request.body,
+                                    hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        return False, 'Invalid signature'
+    if not claim_signature(f'ts:{sub.pk}:{hashlib.sha256(signature.encode()).hexdigest()}',
+                           SIGNATURE_WINDOW_SECONDS * 2):
+        return False, 'Signature already used'
+    return True, None
+
+
+class SignatureStoreUnavailable(Exception):
+    pass
+
+
+def claim_signature(key, ttl_seconds):
+    """True the first time `key` is seen (within its TTL), else False.
+    Raises SignatureStoreUnavailable when the store can't be used: callers
+    answer 503 (never accept an unchecked signature, never a 500)."""
+    import random
+    from datetime import timedelta
+    from django.db import DatabaseError, IntegrityError, transaction
+    from core.models import UsedWebhookSignature
+    now = timezone.now()
+    try:
+        if random.random() < 0.02:
+            UsedWebhookSignature.objects.filter(expires_at__lt=now).delete()
+        try:
+            with transaction.atomic():
+                UsedWebhookSignature.objects.create(key=key[:100], expires_at=now + timedelta(seconds=ttl_seconds))
+            return True
+        except IntegrityError:
+            with transaction.atomic():
+                # An expired claim of the same key may be re-used.
+                n = UsedWebhookSignature.objects.filter(key=key[:100], expires_at__lt=now).update(
+                    expires_at=now + timedelta(seconds=ttl_seconds))
+            return n == 1
+    except DatabaseError as exc:
+        raise SignatureStoreUnavailable(str(exc))
+
+
+def _signature_refusal(reason):
+    if reason == STORE_UNAVAILABLE:
+        return Response({'error': 'Signature check unavailable; try again shortly.'},
+                        status=status.HTTP_503_SERVICE_UNAVAILABLE)
+    return Response({'error': reason}, status=status.HTTP_401_UNAUTHORIZED)
+
+
+STORE_UNAVAILABLE = 'signature_store_unavailable'
+
+
+def _no_company_response():
+    return Response({'error': 'This API key is not linked to a company.'},
+                    status=status.HTTP_403_FORBIDDEN)
 
 
 class FleetTripSyncAPIView(APIView):
@@ -72,10 +229,11 @@ class FleetTripSyncAPIView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        company = _user_company(request)
         results = []
         for load_id in load_ids:
             try:
-                load = Load.objects.get(id=load_id)
+                load = Load.objects.get(id=load_id, company=company)
 
                 # TODO: Implement actual external API call to fleet system
                 # For now, just mark as successful
@@ -92,6 +250,7 @@ class FleetTripSyncAPIView(APIView):
                     description=f'Successfully synced to external fleet management system',
                     entity_id=load.id,
                     entity_type='load',
+                    company=company,
                     metadata={'synced_at': timezone.now().isoformat()}
                 )
 
@@ -158,10 +317,11 @@ class FleetBookingSyncAPIView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        company = _user_company(request)
         results = []
         for booking_id in booking_ids:
             try:
-                load = Load.objects.get(id=booking_id)
+                load = Load.objects.get(id=booking_id, company=company)
 
                 # TODO: Implement actual external API call
                 results.append({
@@ -235,7 +395,7 @@ class FleetVehicleStatusAPIView(APIView):
         """Get vehicle status and availability."""
         vehicle_id = request.query_params.get('vehicle_id')
 
-        vehicles = Vehicle.objects.filter(company=request.user.company)
+        vehicles = Vehicle.objects.filter(company=_user_company(request))
         if vehicle_id:
             try:
                 vehicles = vehicles.filter(id=vehicle_id)
@@ -280,25 +440,6 @@ class FleetWebhookTripUpdateView(APIView):
 
     authentication_classes = [APIKeyAuthentication]
     permission_classes = []  # Authentication is via API key
-
-    def _verify_signature(self, request):
-        """Verify webhook signature from fleet system."""
-        signature = request.META.get('HTTP_X_FLEET_SIGNATURE')
-        if not signature:
-            return False
-
-        # Get the subscription/API key from request.auth (set by APIKeyAuthentication)
-        if not hasattr(request, 'auth') or not request.auth:
-            return False
-
-        subscription = request.auth
-        expected_signature = 'sha256=' + hmac.new(
-            subscription.secret.encode(),
-            request.body,
-            hashlib.sha256
-        ).hexdigest()
-
-        return hmac.compare_digest(signature, expected_signature)
 
     @extend_schema(
         tags=['Fleet Management'],
@@ -358,13 +499,19 @@ class FleetWebhookTripUpdateView(APIView):
     def post(self, request):
         """Process trip update webhook."""
         # Verify signature
-        if not self._verify_signature(request):
-            return Response(
-                {'error': 'Invalid signature'},
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+        ok, reason = verify_fleet_signature(request, allow_legacy=True)
+        if not ok:
+            return _signature_refusal(reason)
 
-        data = request.data
+        company = _subscription_company(request)
+        if company is None:
+            return _no_company_response()
+        data = dict(request.data) if isinstance(request.data, dict) else {}
+        err = bad_webhook_input(data, ints=('load_id',))
+        if not err and 'pod_data' in data and data['pod_data'] is not None and not isinstance(data['pod_data'], dict):
+            err = 'pod_data must be an object'
+        if err:
+            return Response({'error': err}, status=status.HTTP_400_BAD_REQUEST)
         load_id = data.get('load_id')
         load_number = data.get('load_number')
         event_type = data.get('event_type')
@@ -378,9 +525,9 @@ class FleetWebhookTripUpdateView(APIView):
         # Find load
         try:
             if load_id:
-                load = Load.objects.get(id=load_id)
+                load = Load.objects.get(id=load_id, company=company)
             elif load_number:
-                load = Load.objects.get(load_number=load_number)
+                load = Load.objects.get(load_number=load_number, company=company)
             else:
                 return Response(
                     {'error': 'load_id or load_number is required'},
@@ -399,22 +546,33 @@ class FleetWebhookTripUpdateView(APIView):
             description=f'Received {event_type} from fleet system',
             entity_id=load.id,
             entity_type='load',
-            metadata=data
+            company=company,
+            metadata={k: (v.isoformat() if hasattr(v, 'isoformat') else v) for k, v in data.items()}
         )
 
-        # Handle delivery confirmation
+        # Handle delivery confirmation — through the same status rules as a
+        # TMS sync (core.services.tms_sync.allowed_status_move): a cancelled
+        # job stays cancelled, an invoiced one is never moved back.
+        refused = None
         if event_type == 'delivery_confirmed':
-            load.status = 'DELIVERED'
-            if 'pod_data' in data:
+            from core.services.tms_sync import allowed_status_move
+            fields = []
+            new_status, refused = allowed_status_move(load, 'DELIVERED')
+            if new_status:
+                load.status = new_status
+                fields.append('status')
+            if refused is None and data.get('pod_data') is not None:
                 pod = data['pod_data']
-                load.pod_received_by = pod.get('received_by', '')
+                load.pod_received_by = str(pod.get('received_by') or '')[:200]
+                fields.append('pod_received_by')
                 # TODO: Store signature/document
-            load.save()
+            if fields:
+                load.save(update_fields=fields + ['updated_at'])
 
-        return Response({
-            'status': 'success',
-            'message': f'Trip update processed for {load.load_number}'
-        })
+        body = {'status': 'success', 'message': f'Trip update processed for {load.load_number}'}
+        if refused:
+            body['status_refused'] = refused
+        return Response(body)
 
 
 class FleetWebhookVehicleEventView(APIView):
@@ -467,16 +625,26 @@ class FleetWebhookVehicleEventView(APIView):
     )
     def post(self, request):
         """Process vehicle event webhook."""
-        data = request.data
+        ok, reason = verify_fleet_signature(request)
+        if not ok:
+            return _signature_refusal(reason)
+        company = _subscription_company(request)
+        if company is None:
+            return _no_company_response()
+        data = dict(request.data) if isinstance(request.data, dict) else {}
+        err = bad_webhook_input(data, ints=('vehicle_id',), dates=('maintenance_due', 'last_inspection'),
+                                numbers=('mileage',), ranges=MILEAGE_RANGE)
+        if err:
+            return Response({'error': err}, status=status.HTTP_400_BAD_REQUEST)
         vehicle_id = data.get('vehicle_id')
         vin = data.get('vin')
 
         # Find vehicle
         try:
             if vehicle_id:
-                vehicle = Vehicle.objects.get(id=vehicle_id)
+                vehicle = Vehicle.objects.get(id=vehicle_id, company=company)
             elif vin:
-                vehicle = Vehicle.objects.get(vin=vin)
+                vehicle = Vehicle.objects.get(vin=vin, company=company)
             else:
                 return Response(
                     {'error': 'vehicle_id or vin is required'},
@@ -495,7 +663,10 @@ class FleetWebhookVehicleEventView(APIView):
         if 'last_inspection' in data:
             vehicle.last_maintenance_date = data['last_inspection']
         if 'status' in data:
-            vehicle.status = data['status']
+            vehicle.status = str(data['status'])[:50]
+        if data.get('mileage') not in (None, ''):
+            from decimal import Decimal as _D
+            vehicle.mileage = _D(str(data['mileage']))
 
         vehicle.save()
 
@@ -506,7 +677,8 @@ class FleetWebhookVehicleEventView(APIView):
             description=f'Fleet system reported {event_type} event',
             entity_id=vehicle.id,
             entity_type='vehicle',
-            metadata=data
+            company=company,
+            metadata={k: (v.isoformat() if hasattr(v, 'isoformat') else v) for k, v in data.items()}
         )
 
         return Response({
@@ -565,16 +737,25 @@ class FleetWebhookDriverEventView(APIView):
     )
     def post(self, request):
         """Process driver event webhook."""
-        data = request.data
+        ok, reason = verify_fleet_signature(request)
+        if not ok:
+            return _signature_refusal(reason)
+        company = _subscription_company(request)
+        if company is None:
+            return _no_company_response()
+        data = dict(request.data) if isinstance(request.data, dict) else {}
+        err = bad_webhook_input(data, ints=('driver_id', 'violation_count', 'accident_count'))
+        if err:
+            return Response({'error': err}, status=status.HTTP_400_BAD_REQUEST)
         driver_id = data.get('driver_id')
         license_number = data.get('license_number')
 
         # Find driver
         try:
             if driver_id:
-                driver = Driver.objects.get(id=driver_id)
+                driver = Driver.objects.get(id=driver_id, company=company)
             elif license_number:
-                driver = Driver.objects.get(license_number=license_number)
+                driver = Driver.objects.get(license_number=license_number, company=company)
             else:
                 return Response(
                     {'error': 'driver_id or license_number is required'},
@@ -588,10 +769,10 @@ class FleetWebhookDriverEventView(APIView):
 
         # Update driver fields
         event_type = data.get('event_type')
-        if 'violation_count' in data:
-            driver.violation_count = data['violation_count']
-        if 'accident_count' in data:
-            driver.accident_history = data['accident_count']
+        if data.get('violation_count') not in (None, ''):
+            driver.violation_count = int(data['violation_count'])
+        if data.get('accident_count') not in (None, ''):
+            driver.accident_history = int(data['accident_count'])
 
         driver.save()
 
@@ -602,7 +783,8 @@ class FleetWebhookDriverEventView(APIView):
             description=data.get('description', f'Fleet system reported {event_type} event'),
             entity_id=driver.id,
             entity_type='driver',
-            metadata=data
+            company=company,
+            metadata={k: (v.isoformat() if hasattr(v, 'isoformat') else v) for k, v in data.items()}
         )
 
         return Response({

@@ -22,6 +22,9 @@ PRICING_FIELDS = frozenset({
     'distance', 'weight', 'vehicle_type', 'toll_charges', 'driver_allowance', 'fuel_surcharge',
     'total_amount', 'base_rate', 'base_rate_per_km', 'trip_type', 'costing_inputs', 'additional_charges',
     'estimated_duration_minutes', 'return_distance', 'pickup_location', 'delivery_location', 'stops',
+    # Tonnage quotes
+    'pricing_basis', 'rate_per_tonne', 'total_tonnes', 'tonnes_per_load', 'min_tonnes_per_load',
+    'basis_vehicle_type',
 })
 
 SNAPSHOT_KEYS = ('version', 'trip', 'vehicle', 'diesel', 'litres', 'lines', 'floor', 'floor_known',
@@ -52,17 +55,21 @@ def snapshot_fields(costing, now):
         'priced_vehicle_type_id': vehicle.get('id'),
         'empty_return_included': costing['trip']['empty_return_included'],
         'cost_floor': _dec(costing['floor'], '0.01') if costing['floor'] is not None else None,
-        'costing_snapshot': {k: costing.get(k) for k in SNAPSHOT_KEYS},
+        'costing_snapshot': {k: costing.get(k) for k in SNAPSHOT_KEYS
+                             + (('pricing_basis', 'tonnage') if 'tonnage' in costing else ())},
     }
     # The truck fuel figure it was priced on (measured by the tracker or
     # typed), compact: a later re-measure then explains a cost change.
-    from core.services.quote_costing import burn_snapshot
-    res = dict(out['costing_snapshot'].get('resolution') or {})
-    rb = burn_snapshot(res.get('rated_burn'))
-    if 'rated_burn' in res:
-        res['rated_burn'] = rb
-        out['costing_snapshot']['resolution'] = res
-    out['costing_snapshot']['rated_burn'] = rb
+    from core.services.trip_costing import compact_burn
+    compact_burn(out['costing_snapshot'])
+    if costing.get('pricing_basis') == 'per_tonne':
+        # Tonnage quote: total_amount is the rate x billed tonnes on the basis
+        # truck (server-set, like the margin). The per-load fields (tolls,
+        # driver, distance) stay as entered: they are the lane's inputs.
+        t = costing['tonnage']
+        out['loads_planned'] = t['loads_planned']
+        if costing.get('price') is not None:
+            out['total_amount'] = _dec(costing['price'], '0.01')
     if costing.get('margin_pct') is not None:
         # Server-side margin % on the stored floor and price (margin on price).
         # The true margin on price; null only past what the column holds.
@@ -91,6 +98,11 @@ def itemise_quote(quote, now=None):
     from core.models import Quote
     from core.services.quote_costing import cents, costing_for_quote
     now = now or timezone.now()
+    if getattr(quote, 'pricing_basis', 'per_load') == 'per_tonne':
+        # A tonnage quote is not itemised per load: its tolls / driver /
+        # distance fields are the lane's per-load inputs (the plan's totals
+        # would corrupt them). The snapshot re-prices it and sets the total.
+        return snapshot_quote(quote, now)
     try:
         costing = costing_for_quote(quote, now)
     except Exception:
@@ -313,3 +325,24 @@ def fuel_lines_delta(quote, costing_now=None, now=None):
     if not now_lines or any(ln['amount'] is None for ln in now_lines):
         return None
     return cents(sum(ln['amount'] for ln in now_lines) - sum(ln['amount'] for ln in then_lines))
+
+
+def incomplete_quote_q():
+    """Quotes whose price can't be stood behind yet: the pricing snapshot has
+    a blocking warning (tolls unknown, border costs not known, ...) or the
+    builder flagged tolls unknown. Board / list / pipeline totals leave them
+    out (they are shown as "Incomplete", not counted as pipeline value)."""
+    from django.db.models import Q
+    # blocking[0] exists = a non-empty list (portable on SQLite and Postgres;
+    # JSON equality with [] is not).
+    has_blocking = Q(costing_snapshot__blocking__0__isnull=False)
+    return has_blocking | Q(costing_inputs__tolls_unknown=True)
+
+
+def exclude_incomplete(queryset):
+    """`queryset` without incomplete quotes. Done by id (a subquery), because
+    exclude() over JSON key lookups would also drop rows where the lookup is
+    NULL (SQL three-valued logic)."""
+    from core.models import Quote
+    return queryset.exclude(pk__in=Quote.objects.filter(incomplete_quote_q()).values('pk'))
+

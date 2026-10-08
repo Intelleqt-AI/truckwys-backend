@@ -151,3 +151,201 @@ empty values back to 10.00 first.
   when it is the higher of the two. Fleets that never set it can clear it in settings.
 - Migration 0156 makes `quotes.margin_percentage` nullable and sets a stored 0 to null on quotes with no cost
   floor (no floor = no margin). Rollback: `migrate core 0155` sets nulls back to 0 first.
+
+## Trip economics (branch truckwys/trip-economics, 8 Oct 2026)
+
+### Migrations (all reversible; forward, back to 0165 and forward again checked on PostgreSQL and SQLite)
+| # | What | Notes |
+|---|------|-------|
+| 0166 | `WebhookSubscription.company` (nullable FK) | Isolated: if PR #130 (same field) merges first, delete this file and point 0167 at the latest migration. After migrate run `python manage.py bind_webhook_subscriptions` (dry run), then `--apply`; bind the rest in admin or `--bind SUB_ID=COMPANY_ID --apply`. |
+| 0167 | Load costing columns, each with a database default | No data step: adding columns with constant defaults is metadata-only on PostgreSQL 11+ (no table rewrite, no long lock). |
+| 0168 | Back-fill converted loads from their quote | `atomic = False`: batches of 1 000 rows (`bulk_update`), each in its own short transaction; loads are never locked for the whole run. |
+| 0169 | `Load.return_of` (one-to-one self), link source / time / user, `expecting_return`, `costs_closed` | Database defaults on the NOT NULL columns. |
+| 0170 | Cached `estimated_cost` / `estimate_basis` / `economics_updated_at` | Fill with `python manage.py recompute_trip_economics` after migrate (idempotent). |
+| 0171 | `external_id`, `external_source`, `return_of_external_ref`, `invoice_mismatch` (database defaults) | Columns only. |
+| 0172 | Move trips/sync's `ext_id:` notes onto `external_id` | `atomic = False`, batches of 1 000. The id runs to the end of its line; first load per (company, id) wins; > 100 characters stay in the note; other `ext_id` lines stay findable through the notes. |
+| 0173 | Unique (company, external_id) where external_id ≠ '' | Builds a unique index (brief write lock on `loads`). |
+| 0174 | QuoteOutcome actuals + estimate so far | Labels only. |
+| 0175 | `UsedWebhookSignature` table (replay protection) + `WebhookSubscription.allow_legacy_signature` | Purged hourly by `core.tasks.purge_used_webhook_signatures` (beat). |
+| 0176 | `ON DELETE SET NULL` in the database for `loads.return_of_id`, `priced_vehicle_type_id`, `return_linked_by_id` (PostgreSQL) | So an older image can delete a linked load, a vehicle type or a user. A later Django AlterField on these fields would recreate the constraint without it: re-run this migration's SQL then. |
+
+Old-image writes during migrate are SAFE on PostgreSQL: every new NOT NULL column has a database default (inserts
+by the old image succeed), the new foreign keys null themselves in the database (its deletes succeed), and the
+data steps run in short batches. Jobs the old image books after 0168 ran have no costing yet: run
+`python manage.py backfill_load_costing` (dry run, counts) then `--apply` once the new image serves traffic
+(re-runnable, only touches converted loads with an empty `costing_source`).
+
+Deploy steps:
+1. Pre-deploy SQL counts (below).
+2. `migrate` (new image).
+3. `python manage.py bind_webhook_subscriptions` → `--apply`.
+4. `python manage.py backfill_load_costing --apply`, then `python manage.py recompute_trip_economics`.
+
+Rollback (order matters):
+1. Image-only rollback (keep the schema at 0176) is safe on PostgreSQL: the old image inserts and deletes loads,
+   vehicle types and users (database defaults + ON DELETE SET NULL) and simply ignores the new columns. (Not on
+   SQLite, which has no ON DELETE on these keys; production is PostgreSQL.)
+2. Full rollback: run `python manage.py migrate core 0165` with the NEW image still deployed (only it has the
+   reverse migrations), THEN redeploy the old image. Drops the new columns and the signature table; nothing else
+   changes.
+
+Pre-deploy checks (PostgreSQL), run and note the numbers:
+```sql
+-- loads whose TMS id is only in notes (0172 moves it onto external_id)
+SELECT count(*) FROM loads WHERE notes LIKE 'ext_id:%';
+-- ids longer than 100 characters (left in the note, not moved)
+SELECT count(*) FROM loads WHERE notes LIKE 'ext_id:%' AND length(split_part(substr(notes, 8), E'\n', 1)) > 100;
+-- duplicates per company (only the first load per company + id gets it)
+SELECT company_id, split_part(substr(notes, 8), E'\n', 1) AS ext, count(*) FROM loads
+ WHERE notes LIKE 'ext_id:%' GROUP BY 1, 2 HAVING count(*) > 1;
+-- fleet webhook subscriptions to bind after migrate (bind_webhook_subscriptions)
+SELECT count(*) FROM webhook_subscriptions;
+```
+
+
+### Security note (read before deploy)
+- Every fleet / TMS endpoint now works ONLY on the API key's company (`IntegrationAPIKey.operator.company`):
+  `integrations/fleet/sync/`, `.../sync/bulk/`, `integrations/trips/sync/`, `fleet/trips/sync/`,
+  `fleet/bookings/sync/`, `fleet/webhooks/*` (subscription company) and `fleet/webhooks/ctrlfleet/`.
+  Before: any load in any company could be updated by load number; new loads took `Customer.objects.first()`;
+  TMS customers were matched by email across companies.
+- Real IntegrationAPIKey records now work on fleet/sync (they were rejected; only DEBUG demo keys passed).
+  LENDER keys, keys whose operator is inactive or has no company, and IP-blocked callers get 401; over quota 429.
+- Demo keys (`fleet_demo_key_123`, `tms_integration_test`) work only with DEBUG on AND
+  `FLEET_DEMO_COMPANY_ID` set; never in production.
+- CtrlFleet webhook: the shared `X-CtrlFleet-Key` names no company, so callers must now also send a company
+  `X-API-Key` (an IntegrationAPIKey). When `CTRLFLEET_WEBHOOK_KEY` is set it is still required too.
+- A fleet/sync `create` with a load number that another company already uses answers 409 (never updates it).
+
+### TMS payload changes (backwards compatible)
+`POST /api/v1/integrations/trips/sync/` (X-API-Key) — now an UPSERT on `external_id`:
+```json
+[{"external_id": "TMS-12345", "origin": "Johannesburg", "destination": "Durban",
+  "pickup_date": "2026-11-02", "delivery_date": "2026-11-03", "distance": 600, "weight": 10000,
+  "rate": 30000, "status": "IN_TRANSIT", "vehicle_plate": "CA 123 GP", "driver_id": 7,
+  "stops": [], "trip_type": "ONE_WAY",
+  "toll_cost": 800, "duration_minutes": 420, "driver_cost": 1200, "vehicle_type": "Tautliner 34t",
+  "pickup_lat": -26.20, "pickup_lng": 28.04, "delivery_lat": -29.85, "delivery_lng": 31.02,
+  "return_of_external_id": "TMS-12000"}]
+```
+Tolls / border for a job without its own figures come from the toll/border engine (same as route/calculate):
+send `route_geometry` ([{lat, lon}] of the route driven) and, for a round trip or the empty run home,
+`return_route_geometry`; for a cross-border job `countries` (["SA", "BW"]) or `origin_country` / `dest_country`,
+and optionally `gross_mass_kg`, `axle_config`, `abnormal_load`, `clearing_agent_fee`. Tolls are priced at the
+truck's SANRAL class on the tariffs in force on the PICKUP date; `toll_cost` / `border_cost` sent by the TMS always
+win. No live routing is done from a sync: no geometry and no `toll_cost` = tolls unknown (the job asks for them).
+What was filled is in `load.costing_inputs.route_costs` {filled, trip_date, toll_class, countries}.
+
+Response: `{created, updated, unchanged, skipped (= unchanged, for old clients), errors, total, load_ids
+(created), updated_ids, results: [{index, load_id, external_id, outcome, changed: [...], return_link?,
+invoice_mismatch?}]}`. Only fields present in a record are changed. `return_of_external_id: null` unlinks; an
+outbound not synced yet is linked when it arrives (same company only).
+
+`POST /api/v1/integrations/fleet/sync/` (+ `/bulk/`): `load_number` and/or `external_id`; actions
+`create | status_update | update | complete`; the same fields as above (`pickup_location` / `delivery_location`
+for places) and `return_of_external_id` / `return_of_load_number`. Response: the load + `sync {load_id,
+load_number, external_id, created, changed, return_link?, invoice_mismatch?}` (bulk: `results[]`).
+
+Invoices are never changed by a sync: a total that differs from the load's invoice (excl. VAT, net of credit
+notes) sets `load.invoice_mismatch` `{code: "invoice_differs_from_rate", invoice_id, invoice_number,
+invoice_status, invoice_excl_vat, load_total_excl_vat, difference, title, detail}` until they match again.
+
+### Fleet webhook signatures (vehicle / driver events now REQUIRE them)
+`/fleet/webhooks/vehicle-event/` and `/fleet/webhooks/driver-event/` now verify an HMAC with the subscription's own
+`secret` (it never had one before: the API key alone was enough):
+```
+X-API-Key: <subscription api_key>
+X-Fleet-Timestamp: 1791446400                       # unix seconds, within 5 minutes of now
+X-Fleet-Signature: sha256=<hex HMAC-SHA256(secret, "1791446400." + raw request body)>
+```
+Each signature is accepted once (a replay inside the window gets 401 "Signature already used"). The trip-update
+webhook accepts the same scheme and, for existing integrations, still the old body-only signature (no timestamp).
+Partners sending vehicle/driver events must add the timestamp + signature before this deploy.
+
+### CtrlFleet webhook (accepted change)
+`/fleet/webhooks/ctrlfleet/` callers must send their company's `X-API-Key` (IntegrationAPIKey) in addition to
+`X-CtrlFleet-Key` when `CTRLFLEET_WEBHOOK_KEY` is set. The shared key alone names no company and is refused (401).
+CtrlFleet's documented API is pull-only, so no live caller is expected.
+
+### Behaviour change
+`POST /quotes/{id}/convert_to_load/` on an already-converted quote now answers 200 with the existing job (was 400
+"Quote already converted").
+
+### TMS jobs with no route: tolls worked out by TomTom (no user prompt)
+A TMS job synced with no `route_geometry` and no toll figure is queued (after commit, never in the sync request)
+for Celery task `core.tasks.route_tms_load`: TomTom truck routing of its own collection / stops / delivery
+(geocoded when there are no coordinates), the way back too when the empty return applies (or a round trip); it
+stores `route_geometry` (+ duration / distance when missing) and re-costs on the pickup-date tariffs. Until done the
+job's `missing` says `{code: "tolls_pending", prompt: "Working out tolls…", pending: true}`; if routing fails it
+is `tolls_unknown` with the prompt. Deduped per job + locations; re-routed only when locations / stops change;
+per-company daily cap `TMS_ROUTING_DAILY_CAP` (default 200, the rest wait until tomorrow). State in
+`load.costing_inputs.route_job {state: pending|deferred|done|failed, reason}`. Needs a Celery worker and
+`TOMTOM_API_KEY` in production.
+
+### Booking preview and analyze
+- `GET /api/v1/quotes/{id}/booking-preview/?pickup_date=&delivery_date=&candidate_days=` returns
+  `{preview, can_book, blocked, load_id, booking: {return_candidates, outbound_candidates, invoice_preview,
+  costing, ...}}` — the same shapes as convert_to_load's `booking`, without creating the job (a converted quote
+  answers with its job's block, `preview: false`). The preview's invoice line reads "Transport (A → B)" (no load
+  number yet); amounts are exactly what delivery raises.
+- `POST /quotes/analyze/` adds `return_load_history` (same shape as the pricing analysis).
+- `convert_to_load` also accepts `return_load_id` (an existing load that brings the new job's truck home: the new job
+  is the OUTBOUND), linked in the same transaction with link-return's validation / warnings; `return_of_load_id`
+  is the other direction; both at once = 400 `both_directions`. `booking.return_link` adds `direction`
+  (`return_of` | `return`), `outbound_id`, `return_id`. `booking.link_fields` = `{outbound_candidates:
+  "return_of_load_id", return_candidates: "return_load_id"}` (also in booking-preview).
+
+### Verification fixes (8 Oct)
+- **Cancelled legs**: a load that becomes CANCELLED is unlinked from its pair automatically (ActivityEvent "(a leg
+  was cancelled)"); a cancelled partner never counts as paired; candidates never offer cancelled loads; the
+  outbound is marked expecting a return again.
+- **Stale saves**: `Load.save()` without update_fields never writes `return_of` / link fields / cached estimate
+  (they are written only by their services); TMS / webhook saves name their fields.
+- **Actual vs estimate per cost group**: fuel / tolls / driver / operating (maintenance, insurance, overhead)
+  each use recorded expenses when there are any, else the estimate; OTHER adds on top; a SUBCONTRACTOR bill or
+  `POST /loads/{id}/close-costs/ {closed: true}` makes the recorded expenses the whole cost. `cost_basis`:
+  `actual` | `part_actual` | `estimate`; legs carry `cost_groups[{group, estimated, actual, used, basis}]`,
+  `cost_complete`, `costs_closed`. A job counts as actual (learning, quote `actuals.complete`) only when
+  delivered / invoiced AND fuel, tolls and driver (where estimated) are recorded, or closed. Until then
+  QuoteOutcome.actual_* stay null and `estimated_cost` / `estimated_margin_pct` hold the estimate so far
+  (`actual_cost_basis` says part_actual / estimate).
+- **TMS**: `external_id` is required on trips/sync and at most 100 characters (400); external_id and load_number
+  pointing at different loads = 409; status never moves back once DELIVERED / INVOICED, INVOICED is never taken
+  from a TMS, CANCELLED on an invoiced job flags it (`invoice_mismatch.code = cancelled_after_invoicing`) instead
+  of cancelling — each reported as `status_refused {code, detail}` while the rest of the record applies.
+- **Routing**: bad stop coordinates fail the job with reason `bad_stop_coordinates` (tolls_unknown + reason,
+  never stuck on "Working out tolls…"); failed jobs re-queue on a location change or after 6 h; a pending job
+  older than 2 h is shown as unknown and re-queued on the next sync; at most 50 routing jobs start per sync
+  request, the rest in batches 5 minutes apart; routing merges its keys into costing_inputs under a row lock.
+- **Webhooks**: the trip-update body-only signature only for subscriptions with `allow_legacy_signature` (admin),
+  each signature once (30-day replay cache); bad ids / dates / numbers answer 400.
+- `assign_driver` re-costs a job not costed from a quote. The booking preview's invoice line reads
+  "Transport (load number on booking) (A → B)".
+
+### Round-2 verification (8 Oct)
+- Capital scoring margin and `GET /trips/{id}/costs/` use the economics endpoint's merged cost: a load counts as
+  `actual` only when its costs are complete (`cost_complete`), part-actual loads are modelled / `part_actual`.
+  TripCostView adds `cost_complete`.
+- Operating group (running cost per km) stays an ESTIMATE unless the job's costs are closed: MAINTENANCE /
+  INSURANCE / OVERHEAD slips appear as `operating_recorded` (basis `recorded_in_operating_estimate`, used 0) and
+  never replace or add to it (no double count).
+- Full `Load.save()` never writes any server-only costing / link / TMS field (`Load.SERVER_ONLY_FIELDS`).
+- Deleting a load refreshes its partner's cached estimate from the database link, even from a stale instance.
+- **Merge note:** `WebhookSubscription.company` is added ONLY in 0166 (nothing else in that migration). If
+  truckwys/webhook-tenant-scope (its 0158 adds the same field + the same admin class) merges first, delete 0166,
+  point 0167's dependency at the latest migration, keep their admin class and add `allow_legacy_signature` to it.
+
+### Round-3 security fixes (8 Oct)
+- Trip-update `delivery_confirmed` (and CtrlFleet `completed` / status) go through the TMS status rules: a
+  CANCELLED job stays cancelled (`status_refused.code = cancelled_in_truckwys`, no invoice), an INVOICED job is
+  never moved back (re-sent DELIVERED is a quiet no-op). A non-object `pod_data` / `pod` = 400.
+- TMS updates merge only the costing-input keys they sent into the current row under a lock (routing's
+  `route_job` / tolls are never wiped by a stale read); `cost_load` re-reads costing inputs under the same lock.
+- Replay protection lives in the `used_webhook_signatures` table (not the culled cache); if it can't be used the
+  webhook answers 503 (never accepts unchecked, never 500).
+- A full `Load.save()` never moves an INVOICED job back (only CANCELLED may follow) and never clears a delivered
+  job's `actual_delivered_at`; the auto-invoice updates the caller's instance, so a PATCH to DELIVERED answers
+  `INVOICED`.
+- `external_id` / `return_of_external_id` / `return_of_load_number`: strings or numbers only, one line, ≤ 100
+  characters (per-record 400). `mileage` on vehicle events validated. A `bad_stop_coordinates` routing failure is
+  retried only when the stops change.

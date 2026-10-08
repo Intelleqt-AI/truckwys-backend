@@ -686,6 +686,8 @@ class TruckSuggestionTests(_Base):
 
 class SavedQuoteInputsTests(_Base):
     def test_saved_zero_driver_keeps_allowance_rules_and_border_counts(self):
+        from core.models import VerifiedRate
+        VerifiedRate.objects.filter(proposed_by='migration_0158').delete()   # tests own their allowance rows
         from core.services.quote_costing import costing_for_quote
         self.company.driver_allowance_per_night = None
         self.company.save()
@@ -697,6 +699,37 @@ class SavedQuoteInputsTests(_Base):
         q.refresh_from_db()
         self.assertEqual(q.margin_percentage,
                          Decimal(str(round((36000 - float(q.cost_floor)) / 36000 * 100, 2))))
+
+
+class SavedDriverNightsTests(_Base):
+    """costing_inputs.driver_nights: nights the user applied in the builder
+    (a typed driver amount still wins)."""
+
+    def test_applied_nights_saved_and_priced(self):
+        from core.services.quote_costing import costing_for_quote
+        q = self.create(costing_inputs={'driver_nights': 3, 'include_empty_return': False})
+        self.assertEqual(q.costing_inputs['driver_nights'], 3)
+        line = next(ln for ln in costing_for_quote(q)['lines'] if ln['key'] == 'driver')
+        rate = line['rate_per_night']
+        self.assertEqual(line['nights'], 3)
+        self.assertEqual(line['amount'], round(3 * rate, 2))
+        self.assertEqual(line['source'], 'suggested')
+
+    def test_number_forms_accepted_and_bad_values_refused(self):
+        q = self.create(costing_inputs={'driver_nights': '2'})
+        self.assertEqual(q.costing_inputs['driver_nights'], 2)
+        q = self.create(costing_inputs={'driver_nights': 1.0})
+        self.assertEqual(q.costing_inputs['driver_nights'], 1)
+        r = self.api.post('/api/v1/quotes/', self.quote_payload(costing_inputs={'driver_nights': -1}), format='json')
+        self.assertEqual(r.status_code, 400)
+
+    def test_typed_amount_wins_over_applied_nights(self):
+        from core.services.quote_costing import costing_for_quote
+        q = self.create(driver_allowance='1000',
+                        costing_inputs={'driver_nights': 3, 'driver_cost_is_override': True,
+                                        'include_empty_return': False})
+        line = next(ln for ln in costing_for_quote(q)['lines'] if ln['key'] == 'driver')
+        self.assertEqual((line['amount'], line['source']), (1000.0, 'user'))
 
 
 class AiCheckOnComputeTests(_Base):
@@ -1347,3 +1380,163 @@ class SettingsPlainMessagesTests(_Base):
                 text = ' '.join(msgs) if isinstance(msgs, list) else str(msgs)
                 self.assertNotIn('Ensure', text, (field, v))
                 self.assertIn(SETTINGS_MESSAGES[field], text, (field, v, text))
+
+
+class NbcrfliAllowanceTests(_Base):
+    """Item 5: the NBCRFLI minimum is seeded (migration 0158) and used when a
+    company has no own rate; international trips use the cross-border rate."""
+
+    def test_seeded_rates_in_force_by_date(self):
+        from core.services.quote_costing import driver_rate
+        self.company.driver_allowance_per_night = None
+        self.company.save()
+        self.assertEqual(driver_rate(self.company, date(2026, 10, 7)), (243.63, 'approved_allowance'))
+        self.assertEqual(driver_rate(self.company, date(2025, 10, 7)), (229.83, 'approved_allowance'))
+        self.assertEqual(driver_rate(self.company, date(2026, 10, 7), True), (487.05, 'approved_allowance'))
+        self.assertEqual(driver_rate(self.company, date(2025, 10, 7), True), (459.48, 'approved_allowance'))
+        self.company.driver_allowance_per_night = Decimal('450')
+        self.company.save()
+        self.assertEqual(driver_rate(self.company, date(2026, 10, 7), True), (450.0, 'company_setting'))
+
+    def test_line_detail_and_no_missing_warning(self):
+        from core.services.pricing_analysis import analyze_pricing
+        from core.tests.test_pricing_analysis import base_payload
+        self.company.driver_allowance_per_night = None
+        self.company.save()
+        r = analyze_pricing(base_payload(duration_minutes=1200, include_return=False, vehicle_type='Superlink'),
+                            company=self.company, user=self.user)
+        self.assertNotIn('driver_allowance_missing', {w['code'] for w in r['warnings']})
+        line = next(ln for ln in r['cost_floor']['lines'] if ln['key'] == 'driver_allowance')
+        rate = next(d['value'] for d in line['details'] if d['label'] == 'Rate').replace(' ', ' ')
+        self.assertEqual(rate, 'NBCRFLI minimum R 243,63/night (from 1 Mar 2026)')
+        r = analyze_pricing(base_payload(duration_minutes=1200, include_return=False, vehicle_type='Superlink',
+                                         is_international=True, cross_border_cost=900),
+                            company=self.company, user=self.user)
+        line = next(ln for ln in r['cost_floor']['lines'] if ln['key'] == 'driver_allowance')
+        rate = next(d['value'] for d in line['details'] if d['label'] == 'Rate').replace(' ', ' ')
+        self.assertTrue(rate.startswith('NBCRFLI cross-border minimum R 487,05/night (from 1 Mar 2026)'), rate)
+
+    def test_migration_does_not_duplicate_an_approved_row(self):
+        import importlib
+        from django.apps import apps as django_apps
+        from core.models import VerifiedRate
+        mod = importlib.import_module('core.migrations.0158_seed_nbcrfli_driver_allowance')
+        before = VerifiedRate.objects.filter(kind='driver_allowance').count()
+        mod.seed(django_apps, None)
+        self.assertEqual(VerifiedRate.objects.filter(kind='driver_allowance').count(), before)
+        mod.unseed(django_apps, None)
+        self.assertFalse(VerifiedRate.objects.filter(proposed_by='migration_0158').exists())
+
+
+class RecentLocationCountryTests(_Base):
+    URL = '/api/v1/location/recent/'
+
+    def test_country_code_is_stored_returned_and_kept(self):
+        r = self.api.post(self.URL, {'location_text': 'Thaba-Tseka, Lesotho', 'lat': -29.52, 'lon': 28.61,
+                                     'country_code': 'ls'}, format='json')
+        self.assertEqual(r.status_code, 204)
+        body = self.api.get(self.URL).json()
+        self.assertEqual(body[0]['country_code'], 'LS')
+        # A later pick without a country keeps the one on record.
+        self.api.post(self.URL, {'location_text': 'Thaba-Tseka, Lesotho', 'lat': -29.52, 'lon': 28.61}, format='json')
+        self.assertEqual(self.api.get(self.URL).json()[0]['country_code'], 'LS')
+        # Junk is ignored; an old row without one reads null.
+        self.api.post(self.URL, {'location_text': 'Durban', 'lat': -29.86, 'lon': 31.02, 'country_code': '1!'},
+                      format='json')
+        rows = {r['label']: r for r in self.api.get(self.URL).json()}
+        self.assertIsNone(rows['Durban']['country_code'])
+
+
+class BrowserCheckFixTests(_Base):
+    def test_snapshot_with_unknown_tolls_shows_tolls_null_and_incomplete(self):
+        q = self.create(costing_inputs={'tolls_unknown': True})
+        body = self.api.get(f'/api/v1/quotes/{q.id}/').json()
+        self.assertIsNone(body['toll_charges'])
+        self.assertTrue(body['tolls_unknown'])
+        self.assertFalse(body['pricing_complete'])
+        self.assertIn('tolls_unknown', body['pricing_blocking'])
+        self.assertTrue(body['customer_price']['incomplete'])
+        ok = self.api.get(f'/api/v1/quotes/{self.create().id}/').json()
+        self.assertTrue(ok['pricing_complete'])
+        self.assertFalse(ok['tolls_unknown'])
+        self.assertIsNotNone(ok['toll_charges'])
+
+    def test_cost_breakdown_uses_and_returns_the_cross_border_rate(self):
+        self.company.driver_allowance_per_night = None
+        self.company.save()
+        p = {'distance_km': 900, 'duration_minutes': 1200, 'vehicle_type': 'Superlink', 'weight': 28000,
+             'toll_cost': 500, 'fuel_type': 'Diesel'}
+        dom = self.api.post('/api/v1/quotes/cost-breakdown/', p, format='json').json()
+        intl = self.api.post('/api/v1/quotes/cost-breakdown/', {**p, 'is_international': True,
+                                                               'cross_border_cost': 900}, format='json').json()
+        self.assertEqual(dom['company_figures']['driver_rate']['per_night'], 243.63)
+        self.assertEqual(dom['company_figures']['driver_rate']['kind'], 'nbcrfli')
+        self.assertEqual(intl['company_figures']['driver_rate']['per_night'], 487.05)
+        self.assertEqual(intl['company_figures']['driver_rate']['kind'], 'nbcrfli_cross_border')
+        self.assertEqual(intl['resolution']['driver_rate']['per_night'], 487.05)
+        drv = next(ln for ln in intl['lines'] if ln['key'] == 'driver')
+        self.assertEqual(drv['rate_per_night'], 487.05)
+
+    def test_angola_is_detected_and_its_border_costs_reported_unknown(self):
+        from core.services.cross_border import (calculate_cross_border_costs, detect_countries,
+                                                get_cross_border_warnings, internal_country)
+        self.assertEqual(internal_country('AGO'), 'AO')
+        self.assertEqual(detect_countries('Cape Town', 'Lubango', 'ZA', 'AO'), ['SA', 'AO'])
+        countries = ['SA', 'NA', 'AO']
+        out = calculate_cross_border_costs(countries, 3000, weight_kg=28000)
+        self.assertFalse(out['complete'])
+        self.assertEqual(out['unknown_countries'], ['AO'])
+        self.assertEqual(out['unknown_crossings'], ['NA-AO'])
+        self.assertFalse(any('AO' in b['description'] for b in out['breakdown']))
+        self.assertIn('Border costs for Angola not known: add them to the quote by hand.',
+                      get_cross_border_warnings(countries))
+
+
+class BorderUnknownTests(_Base):
+    ROUTE_UNKNOWN = {'cross_border': True, 'border_costs_unknown': {'countries': ['AO'], 'crossings': ['NA-AO']},
+                     'cross_border_breakdown': [
+                         {'type': 'border_crossing', 'description': 'SA → NA border crossing', 'amount': 4463.29},
+                         {'type': 'sa_permit', 'description': 'SA C-BRTA Class 2 permit (R 9 041/yr over 24 crossings)',
+                          'amount': 376.71}]}
+
+    def payload(self, **over):
+        p = {'distance_km': 2900, 'duration_minutes': 2400, 'vehicle_type': 'Superlink', 'weight': 28000,
+             'toll_cost': 500, 'is_international': True, 'cross_border_cost': 4840, 'route': self.ROUTE_UNKNOWN,
+             'include_empty_return': False}
+        p.update(over)
+        return p
+
+    def test_route_unknown_country_blocks_until_the_user_enters_costs(self):
+        from core.services.quote_costing import costing_for_payload
+        c = costing_for_payload(self.payload(), self.company)
+        self.assertIsNone(c['floor'])
+        w = next(w for w in c['warnings'] if w['code'] == 'border_costs_missing')
+        self.assertEqual(w['title'], 'Border costs for Angola not known')
+        self.assertEqual(w['detail'], 'Known: SA→NA R 4 463,29 + permit R 376,71; missing: Namibia→Angola')
+        self.assertEqual(w['actions'], [{'id': 'enter_border_costs', 'label': 'Enter border costs'}])
+        c = costing_for_payload(self.payload(cross_border_cost=9800, border_cost_is_override=True), self.company)
+        self.assertNotIn('border_costs_missing', c['blocking'])
+        self.assertIsNotNone(c['floor'])
+
+    def test_saved_quote_and_send_guard_follow(self):
+        q = self.create(is_international=True, costing_inputs={
+            'border_cost': 4840, 'border_costs_unknown': {'countries': ['AO'], 'crossings': ['NA-AO']},
+            'include_empty_return': False})
+        self.assertEqual(q.costing_inputs['border_costs_unknown']['countries'], ['Angola'])
+        r = self.api.patch(f'/api/v1/quotes/{q.id}/', {'status': 'SENT'}, format='json')
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertIn('border_costs_missing', r.json()['blocking'])
+        body = self.api.get(f'/api/v1/quotes/{q.id}/').json()
+        self.assertFalse(body['pricing_complete'])
+        r = self.api.patch(f'/api/v1/quotes/{q.id}/', {'costing_inputs': {
+            **q.costing_inputs, 'border_cost': 9800, 'border_cost_is_override': True}}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        r = self.api.patch(f'/api/v1/quotes/{q.id}/', {'status': 'SENT'}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+
+    def test_board_and_list_totals_leave_out_incomplete_quotes(self):
+        self.create(total_amount='30000')
+        self.create(total_amount='24800', costing_inputs={'tolls_unknown': True})
+        body = self.api.get('/api/v1/quotes/?status=DRAFT').json()
+        self.assertEqual(float(body['total_amount']), 30000.0)
+        self.assertEqual(body['incomplete_count'], 1)
