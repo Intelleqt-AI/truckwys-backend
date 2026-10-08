@@ -1481,7 +1481,7 @@ class CompanySerializer(serializers.ModelSerializer):
     class Meta:
         model = Company
         fields = [
-            'company_name', 'registration_number', 'vat_number',
+            'company_name', 'registration_number', 'vat_number', 'vat_registered',
             'industry', 'website', 'description', 'logo_url',
             'address', 'contact',
             'default_base_rate_per_km', 'default_sla_hours',

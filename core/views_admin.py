@@ -153,6 +153,8 @@ class AdminCompaniesView(APIView):
             'subscription_status': c.subscription_status,
             'is_demo': c.is_demo,
             'is_deleted': c.is_deleted,
+            'vat_registered': c.vat_registered,
+            'has_vat_number': bool((c.vat_number or '').strip()),
             'created_at': c.created_at,
             'next_billing_date': c.next_billing_date,
             'grace_period_expires_at': c.grace_period_expires_at,
@@ -256,8 +258,10 @@ class AdminDemoStatusView(APIView):
 
 
 class AdminCompanyActionView(APIView):
-    """POST {action: 'suspend'|'reactivate'|'delete'} — company lifecycle
-    controls. 'reactivate' is the "unlock a company" action: unlike the
+    """POST {action: 'suspend'|'reactivate'|'delete'|'vat_on'|'vat_off'} —
+    company lifecycle controls, plus whether the company is a VAT vendor
+    (vat_off: new invoices carry no VAT and are titled INVOICE; past
+    invoices never change). 'reactivate' is the "unlock a company" action: unlike the
     automated record_charge_success (core/services/subscription_billing.py),
     which deliberately only un-graces an active/grace_period company, this
     reaches suspended/cancelled too — that's the whole point of a manual
@@ -282,11 +286,15 @@ class AdminCompanyActionView(APIView):
             company.is_deleted = True
             company.deleted_at = timezone.now()
             company.save(update_fields=['is_deleted', 'deleted_at', 'updated_at'])
+        elif action in ('vat_on', 'vat_off'):
+            company.vat_registered = action == 'vat_on'
+            company.save(update_fields=['vat_registered', 'updated_at'])
         else:
             return Response({'error': f'Unknown action "{action}"'}, status=status.HTTP_400_BAD_REQUEST)
 
         _log(request, 'UPDATE', 'Company', company.pk, admin_action=action)
-        return Response({'id': company.id, 'subscription_status': company.subscription_status, 'is_deleted': company.is_deleted})
+        return Response({'id': company.id, 'subscription_status': company.subscription_status, 'is_deleted': company.is_deleted,
+                         'vat_registered': company.vat_registered})
 
 
 class AdminCompanyBillingView(APIView):
