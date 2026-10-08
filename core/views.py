@@ -3047,16 +3047,22 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         action. A driver without a vehicle is rejected as ambiguous.
         """
         import secrets
+        from core.services import booking as bk
         quote = self.get_object()
 
-        # Check if quote already converted — a Load referencing this quote is
-        # the source of truth (not a quote.status value, which no longer
-        # advances past ACCEPTED once converted).
-        if quote.loads.exists():
-            return Response(
-                {'error': 'Quote already converted'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        # One-tap booking (trip economics): idempotent. A quote already
+        # converted answers 200 with ITS job (+ the booking block) instead of
+        # creating a second one; a Load referencing the quote is the source of
+        # truth (not quote.status, which stays ACCEPTED once converted).
+        existing = quote.loads.order_by('pk').first()
+        if existing is not None:
+            return bk.booking_response(request, quote, existing, created=False, view=self)
+        refusal = bk.bookable_or_refusal(quote)
+        if refusal is not None:
+            return refusal
+        outbound, refusal = bk.requested_outbound(request, self)
+        if refusal is not None:
+            return refusal
 
         driver_id = request.data.get('driver_id')
         vehicle_id = request.data.get('vehicle_id')
@@ -3118,71 +3124,85 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
             return Response({'error': 'The delivery date cannot be before the collection date.'},
                             status=status.HTTP_400_BAD_REQUEST)
 
-        # Create load from quote (stamp the company so it's tenant-scoped/visible)
-        load = Load.objects.create(
-            load_number=load_number,
-            company=getattr(quote, 'company', None) or getattr(request.user, 'company', None),
-            customer=quote.customer,
-            quote=quote,
-            driver=driver,
-            vehicle=vehicle,
-            pickup_location=quote.pickup_location,
-            delivery_location=quote.delivery_location,
-            # City/province from the lane code (blank when unknown) instead of
-            # the old hardcoded 'GP' / '0000', which put Cape Town in Gauteng.
-            pickup_city=pickup_city or 'TBD',
-            pickup_state=pickup_state,
-            pickup_zip='',
-            pickup_lat=quote.pickup_lat,
-            pickup_lng=quote.pickup_lng,
-            # Use the quote's own dates when it has them (now reliably
-            # captured via the AI/voice quote flow) instead of always
-            # discarding them for a generic +2/+4 day placeholder.
-            pickup_date=_date_to_aware_datetime(eff_pickup) or (timezone.now() + timedelta(days=2)),
-            delivery_city=delivery_city or 'TBD',
-            delivery_state=delivery_state,
-            delivery_zip='',
-            delivery_lat=quote.delivery_lat,
-            delivery_lng=quote.delivery_lng,
-            delivery_date=_date_to_aware_datetime(eff_delivery) or (timezone.now() + timedelta(days=4)),
-            # Same list, verbatim — the order's route must show identically
-            # to what the customer actually quoted/accepted.
-            stops=quote.stops,
-            route_geometry=quote.route_geometry,
-            cargo_description=quote.cargo_description,
-            weight=quote.weight,
-            distance=quote.distance,
-            rate=quote.base_rate,
-            fuel_surcharge=quote.fuel_surcharge,
-            toll_charges=quote.toll_charges or 0,
-            driver_allowance=quote.driver_allowance or 0,
-            is_international=quote.is_international,
-            additional_charges=quote.additional_charges,
-            total_amount=quote.total_amount,
-            status='ASSIGNED' if vehicle else 'PENDING',
-            created_by=request.user,
-            # Trip economics: what the job was priced on (lines incl. the
-            # empty return, floor, fuel, truck, quoted margin).
-            **copy_quote_costing(quote),
-        )
-        if not load.costing_source:
-            # A legacy quote with no pricing snapshot: cost the job from its
-            # own data (or mark it unknown) instead of a generic model.
-            from core.services.trip_costing import cost_load
-            cost_load(load)
+        from django.db import transaction
+        from core.services.return_loads import LinkError
+        try:
+            with transaction.atomic():
+                # Lock the quote: two taps never make two jobs.
+                locked = Quote.objects.select_for_update().get(pk=quote.pk)
+                raced = locked.loads.order_by('pk').first()
+                if raced is not None:
+                    raise bk.AlreadyBooked(raced)
+                # Create load from quote (stamp the company so it's tenant-scoped/visible)
+                load = Load.objects.create(
+                    load_number=load_number,
+                    company=getattr(quote, 'company', None) or getattr(request.user, 'company', None),
+                    customer=quote.customer,
+                    quote=quote,
+                    driver=driver,
+                    vehicle=vehicle,
+                    pickup_location=quote.pickup_location,
+                    delivery_location=quote.delivery_location,
+                    # City/province from the lane code (blank when unknown) instead of
+                    # the old hardcoded 'GP' / '0000', which put Cape Town in Gauteng.
+                    pickup_city=pickup_city or 'TBD',
+                    pickup_state=pickup_state,
+                    pickup_zip='',
+                    pickup_lat=quote.pickup_lat,
+                    pickup_lng=quote.pickup_lng,
+                    # Use the quote's own dates when it has them (now reliably
+                    # captured via the AI/voice quote flow) instead of always
+                    # discarding them for a generic +2/+4 day placeholder.
+                    pickup_date=_date_to_aware_datetime(eff_pickup) or (timezone.now() + timedelta(days=2)),
+                    delivery_city=delivery_city or 'TBD',
+                    delivery_state=delivery_state,
+                    delivery_zip='',
+                    delivery_lat=quote.delivery_lat,
+                    delivery_lng=quote.delivery_lng,
+                    delivery_date=_date_to_aware_datetime(eff_delivery) or (timezone.now() + timedelta(days=4)),
+                    # Same list, verbatim — the order's route must show identically
+                    # to what the customer actually quoted/accepted.
+                    stops=quote.stops,
+                    route_geometry=quote.route_geometry,
+                    cargo_description=quote.cargo_description,
+                    weight=quote.weight,
+                    distance=quote.distance,
+                    rate=quote.base_rate,
+                    fuel_surcharge=quote.fuel_surcharge,
+                    toll_charges=quote.toll_charges or 0,
+                    driver_allowance=quote.driver_allowance or 0,
+                    is_international=quote.is_international,
+                    additional_charges=quote.additional_charges,
+                    total_amount=quote.total_amount,
+                    status='ASSIGNED' if vehicle else 'PENDING',
+                    created_by=request.user,
+                    # Trip economics: what the job was priced on (lines incl. the
+                    # empty return, floor, fuel, truck, quoted margin).
+                    **copy_quote_costing(quote),
+                )
+                if not load.costing_source:
+                    # A legacy quote with no pricing snapshot: cost the job from its
+                    # own data (or mark it unknown) instead of a generic model.
+                    from core.services.trip_costing import cost_load
+                    cost_load(load)
 
-        # Quote stays ACCEPTED — its own lifecycle ends here. The Load created
-        # above (status PENDING/ASSIGNED) now owns delivery progress
-        # (LOADING/IN_TRANSIT/DELIVERED/INVOICED), so nothing on the quote
-        # needs to track that.
+                # Quote stays ACCEPTED — its own lifecycle ends here. The Load created
+                # above (status PENDING/ASSIGNED) now owns delivery progress
+                # (LOADING/IN_TRANSIT/DELIVERED/INVOICED), so nothing on the quote
+                # needs to track that.
 
-        # Converting to a load IS a win — capture the ML label (idempotent:
-        # no-ops when the quote was already recorded as accepted).
-        from core.services.quote_outcome_capture import record_quote_outcome
-        record_quote_outcome(quote, 'accepted')
+                # Converting to a load IS a win — capture the ML label (idempotent:
+                # no-ops when the quote was already recorded as accepted).
+                from core.services.quote_outcome_capture import record_quote_outcome
+                record_quote_outcome(quote, 'accepted')
+                link = bk.link_or_flag(request, load, outbound)
+        except bk.AlreadyBooked as done:
+            return bk.booking_response(request, quote, done.load, created=False, view=self)
+        except LinkError as e:
+            # The requested return link can't exist: nothing was booked.
+            return Response({'code': e.code, 'error': e.message}, status=status.HTTP_400_BAD_REQUEST)
 
-        serializer = LoadSerializer(load)
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return bk.booking_response(request, quote, load, created=True, view=self, link=link)
 
     @action(detail=True, methods=['get'])
     def generate_pdf(self, request, pk=None):
