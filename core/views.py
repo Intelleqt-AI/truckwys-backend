@@ -3739,6 +3739,11 @@ class RouteCalculatorView(APIView):
         # (unknown => full-load burn, per the quote rules).
         weight_kg = int(load_kg or 20000)
         vehicle_type = data.get('vehicle_type', 'Flatbed')
+        # Tolls are priced at the tariff in force on the trip's own day
+        # (SANRAL changes every 1 March): trip_date / pickup_date when sent,
+        # else today.
+        from core.services.toll_calculator import parse_trip_date
+        trip_date = parse_trip_date(data.get('trip_date') or data.get('pickup_date'))
 
         # Ordered intermediate stops between origin and destination — only
         # entries with real coordinates are usable as routing waypoints; a
@@ -3936,10 +3941,11 @@ class RouteCalculatorView(APIView):
                 return out
             try:
                 if geom:
-                    res = calculate_tolls_by_geometry(geom, toll_truck_type)
+                    res = calculate_tolls_by_geometry(geom, toll_truck_type, trip_date=trip_date)
                 else:
                     res = calculate_tolls(f"{origin} {origin_label}",
-                                          f"{destination} {dest_label}", toll_truck_type)
+                                          f"{destination} {dest_label}", toll_truck_type,
+                                          trip_date=trip_date)
                     if not res.routes_used:
                         res.unavailable_reason = res.unavailable_reason or 'no_known_toll_corridor'
             except Exception:
@@ -3956,7 +3962,12 @@ class RouteCalculatorView(APIView):
                                  'location_km': float(it.location_km),
                                  'tariff': float(it.tariff_excl_vat),
                                  'tariff_excl_vat': float(it.tariff_excl_vat),
-                                 'tariff_incl_vat': float(it.tariff)}
+                                 'tariff_incl_vat': float(it.tariff),
+                                 'plaza_type': it.plaza_type,
+                                 'operator': it.operator,
+                                 'country': it.country,
+                                 'tariff_effective_from': (it.tariff_effective_from.isoformat()
+                                                           if it.tariff_effective_from else None)}
                                 for it in res.breakdown]
             return out
 
@@ -4047,6 +4058,7 @@ class RouteCalculatorView(APIView):
             'toll_warning': _TOLL_UNAVAILABLE_MESSAGES.get(toll_unavailable_reason) if toll_unavailable_reason else None,
             'toll_routes': toll_routes_used,
             'toll_breakdown': toll_breakdown,
+            'toll_trip_date': trip_date.isoformat(),
             'total_cost_zar': (round(fuel_zar + toll_zar + sum(additional_costs.values()), 2)
                                if fuel_zar is not None and toll_zar is not None else None),
             'origin_coords': o,

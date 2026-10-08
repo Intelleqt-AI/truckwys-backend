@@ -661,7 +661,8 @@ def run_refresh(*, today: date = None, kinds=KINDS, sanral_classes=None, trigger
 
     steps = []
     if 'toll_tariff' in kinds:
-        plazas = list(TollPlaza.objects.filter(is_active=True).order_by('route', 'location_km'))
+        # SANRAL schedule only: Mozambican plazas are not on it.
+        plazas = list(TollPlaza.objects.filter(is_active=True, country='ZA').order_by('route', 'location_km'))
         outcomes = {}
         for sanral_class in (sanral_classes or VERIFIED_RATES_TOLL_CLASSES):
             if int(sanral_class) in SANRAL_CLASS_LABELS and plazas:

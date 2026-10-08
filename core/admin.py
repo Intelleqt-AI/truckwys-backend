@@ -197,11 +197,19 @@ class FuelPriceAdmin(admin.ModelAdmin):
     readonly_fields = ['created_at', 'updated_at']
 
 
+class TollTariffInline(admin.TabularInline):
+    from .models.toll_plaza import TollTariff as model
+    extra = 0
+    fields = ['effective_from', 'effective_to', 'tariff_class_2', 'tariff_class_3', 'tariff_class_4',
+              'tariff_class_5', 'source_name', 'source_url']
+
+
 @admin.register(TollPlaza)
 class TollPlazaAdmin(admin.ModelAdmin):
-    list_display = ['name', 'route', 'location_km', 'tariff_class_3', 'tariff_class_4', 'tariff_class_5', 'tariff_year',
+    inlines = [TollTariffInline]
+    list_display = ['name', 'route', 'plaza_type', 'plaza_group', 'operator', 'country', 'location_km', 'tariff_class_3', 'tariff_class_4', 'tariff_class_5', 'tariff_year',
                     'tariff_effective_from', 'tariff_verified_at', 'is_active']
-    list_filter = ['route', 'is_active', 'tariff_year', 'tariff_verified_at']
+    list_filter = ['route', 'plaza_type', 'operator', 'country', 'is_active', 'tariff_year', 'tariff_verified_at']
     search_fields = ['name', 'direction']
     readonly_fields = ['created_at', 'updated_at']
 
