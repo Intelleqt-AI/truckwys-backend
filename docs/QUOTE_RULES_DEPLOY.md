@@ -151,3 +151,59 @@ empty values back to 10.00 first.
   when it is the higher of the two. Fleets that never set it can clear it in settings.
 - Migration 0156 makes `quotes.margin_percentage` nullable and sets a stored 0 to null on quotes with no cost
   floor (no floor = no margin). Rollback: `migrate core 0155` sets nulls back to 0 first.
+
+## Trip economics (branch truckwys/trip-economics, 8 Oct 2026)
+
+### Migrations (all reversible; checked forward + back on PostgreSQL 8091 scratch and a SQLite copy)
+| # | What | Notes |
+|---|------|-------|
+| 0158 | `WebhookSubscription.company` (nullable FK) | Fleet webhooks refuse a subscription without one (403). Bind fleet subscriptions to their transporter in Django admin BEFORE deploy, or their webhooks stop. |
+| 0159 | Load costing fields + back-fill from each converted load's quote snapshot | Adds columns with defaults (fast on PG 11+), then a batched data update (500 rows). |
+| 0160 | `Load.return_of` (one-to-one self), link source / time / user, `expecting_return` | Unique index on `return_of_id`. |
+| 0161 | Cached `estimated_cost` / `estimate_basis` / `economics_updated_at` | Fill with `python manage.py recompute_trip_economics` after migrate (idempotent, safe to re-run). |
+| 0162 | `external_id`, `external_source`, `return_of_external_ref`, `invoice_mismatch` + move trips/sync's `ext_id:` notes onto `external_id` | First load per (company, id) wins; duplicates keep only the note. |
+| 0163 | Unique (company, external_id) where external_id ≠ '' | Own migration so PostgreSQL never ALTERs after 0162's data update in one transaction. Builds a unique index (locks `loads` writes briefly). |
+| 0164 | QuoteOutcome actuals (`actual_revenue`, `actual_cost`, `actual_margin_pct`, `actual_cost_basis`, `backhaul_found`, `actuals_recorded_at`) | Labels only. |
+
+Rollback: `migrate core 0157` (drops the new columns; no data outside them is changed).
+
+After migrate: `python manage.py recompute_trip_economics` (or `--company ID`).
+
+### Security note (read before deploy)
+- Every fleet / TMS endpoint now works ONLY on the API key's company (`IntegrationAPIKey.operator.company`):
+  `integrations/fleet/sync/`, `.../sync/bulk/`, `integrations/trips/sync/`, `fleet/trips/sync/`,
+  `fleet/bookings/sync/`, `fleet/webhooks/*` (subscription company) and `fleet/webhooks/ctrlfleet/`.
+  Before: any load in any company could be updated by load number; new loads took `Customer.objects.first()`;
+  TMS customers were matched by email across companies.
+- Real IntegrationAPIKey records now work on fleet/sync (they were rejected; only DEBUG demo keys passed).
+  LENDER keys, keys whose operator is inactive or has no company, and IP-blocked callers get 401; over quota 429.
+- Demo keys (`fleet_demo_key_123`, `tms_integration_test`) work only with DEBUG on AND
+  `FLEET_DEMO_COMPANY_ID` set; never in production.
+- CtrlFleet webhook: the shared `X-CtrlFleet-Key` names no company, so callers must now also send a company
+  `X-API-Key` (an IntegrationAPIKey). When `CTRLFLEET_WEBHOOK_KEY` is set it is still required too.
+- A fleet/sync `create` with a load number that another company already uses answers 409 (never updates it).
+
+### TMS payload changes (backwards compatible)
+`POST /api/v1/integrations/trips/sync/` (X-API-Key) — now an UPSERT on `external_id`:
+```json
+[{"external_id": "TMS-12345", "origin": "Johannesburg", "destination": "Durban",
+  "pickup_date": "2026-11-02", "delivery_date": "2026-11-03", "distance": 600, "weight": 10000,
+  "rate": 30000, "status": "IN_TRANSIT", "vehicle_plate": "CA 123 GP", "driver_id": 7,
+  "stops": [], "trip_type": "ONE_WAY",
+  "toll_cost": 800, "duration_minutes": 420, "driver_cost": 1200, "vehicle_type": "Tautliner 34t",
+  "pickup_lat": -26.20, "pickup_lng": 28.04, "delivery_lat": -29.85, "delivery_lng": 31.02,
+  "return_of_external_id": "TMS-12000"}]
+```
+Response: `{created, updated, unchanged, skipped (= unchanged, for old clients), errors, total, load_ids
+(created), updated_ids, results: [{index, load_id, external_id, outcome, changed: [...], return_link?,
+invoice_mismatch?}]}`. Only fields present in a record are changed. `return_of_external_id: null` unlinks; an
+outbound not synced yet is linked when it arrives (same company only).
+
+`POST /api/v1/integrations/fleet/sync/` (+ `/bulk/`): `load_number` and/or `external_id`; actions
+`create | status_update | update | complete`; the same fields as above (`pickup_location` / `delivery_location`
+for places) and `return_of_external_id` / `return_of_load_number`. Response: the load + `sync {load_id,
+load_number, external_id, created, changed, return_link?, invoice_mismatch?}` (bulk: `results[]`).
+
+Invoices are never changed by a sync: a total that differs from the load's invoice (excl. VAT, net of credit
+notes) sets `load.invoice_mismatch` `{code: "invoice_differs_from_rate", invoice_id, invoice_number,
+invoice_status, invoice_excl_vat, load_total_excl_vat, difference, title, detail}` until they match again.
