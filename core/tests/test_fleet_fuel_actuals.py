@@ -56,12 +56,26 @@ class FakeCartrack:
                  'sensors': t['sensors']} for i, (reg, t) in enumerate(self.trucks.items())]
 
     # integrals ------------------------------------------------------------
-    def _km(self, t, a, b):
+    # A segment is (start, end, ratio) at the truck's base speed, or
+    # (start, end, ratio, kmh): a real long-haul run (e.g. 76 km/h for 7,5 h).
+    @staticmethod
+    def _seg(seg):
+        return (seg[0], seg[1], seg[2], seg[3] if len(seg) > 3 else None)
+
+    def _base_km(self, t, a, b):
         return max((b - a).total_seconds(), 0) / 3600.0 * t['kmh']
+
+    def _km(self, t, a, b):
+        km = self._base_km(t, a, b)
+        for s, e, _r, kmh in map(self._seg, t['segments']):
+            lo, hi = max(a, s), min(b, e)
+            if hi > lo and kmh is not None:
+                km += (hi - lo).total_seconds() / 3600.0 * (kmh - t['kmh'])
+        return km
 
     def _litres(self, t, a, b):
         total, covered = 0.0, 0.0
-        for s, e, r in t['segments']:
+        for s, e, r, _kmh in map(self._seg, t['segments']):
             lo, hi = max(a, s), min(b, e)
             if hi > lo:
                 km = self._km(t, lo, hi)
@@ -252,9 +266,9 @@ class RefreshTests(_Base):
                                     license_expiry=date(2028, 1, 1), license_state='GP', hire_date=date(2020, 1, 1))
         segments = []
         start = ffa.period_bounds(NOW)[0] + timedelta(days=1)
-        for i in range(25):           # 25 loaded runs of 30 h (375 km) at 27,2 t (ratio 0,8)
-            a = start + timedelta(days=3 * i)
-            b = a + timedelta(hours=30)
+        for i in range(25):           # 25 JHB-DBN runs: 7,5 h at 76 km/h (570 km), 27,2 t (ratio 0,8)
+            a = start + timedelta(days=3 * i, hours=5)
+            b = a + timedelta(hours=7.5)
             ld = Load.objects.create(
                 company=self.company, load_number=f'L{i}', customer=cust, pickup_location='JHB', pickup_city='JHB',
                 pickup_state='GP', pickup_zip='1', pickup_date=a, delivery_location='DBN', delivery_city='DBN',
@@ -263,16 +277,17 @@ class RefreshTests(_Base):
             Trip.objects.create(load=ld, vehicle=v, driver=drv, origin='JHB', destination='DBN',
                                 estimated_distance_km=Decimal('568'), estimated_duration_hours=Decimal('8'),
                                 start_time=a, end_time=b, status='COMPLETED')
-            segments.append((a, b, 0.8))
-        self.fake.add('CA300GP', rated=41.0, km_per_day=300, segments=segments, idle_ratio=0.0)
+            segments.append((a, b, 0.8, 76.0))
+        self.fake.add('CA300GP', rated=41.0, km_per_day=120, segments=segments, idle_ratio=0.0)
         self.refresh()
         row = self.type_row()
         self.assertEqual(row.rated_method, 'loaded_trips')
-        self.assertAlmostEqual(row.loaded_km, 25 * 375, delta=5)
+        self.assertEqual(row.windows_rejected, 0)
+        self.assertAlmostEqual(row.loaded_km, 25 * 570, delta=5)
         self.assertAlmostEqual(row.loaded_mean_load_ratio, 0.8, places=3)
         self.assertAlmostEqual(row.rated_burn_l_per_100km, 41.0, delta=0.15)
         self.assertAlmostEqual(row.other_l_per_100km, 41.0 * 0.7, delta=0.15)
-        self.assertEqual(row.confidence, 'medium')   # loaded km 9 375 < 10 000
+        self.assertEqual(row.confidence, 'high')     # 14 250 loaded km, CAN counter
 
     def test_quality_checks_reject_and_report(self):
         self.truck('CA400GP')
@@ -297,7 +312,7 @@ class RefreshTests(_Base):
         self.assertEqual(row.vehicles_count, 2)                  # CA600GP left out as an outlier
         self.assertIn('differs_from_type', [r['reason'] for r in row.rejections])
         out = next(r for r in row.rejections if r['reason'] == 'differs_from_type')
-        self.assertRegex(out['detail'], r'^\d+,\d vs \d+,\d L/100 km for the type$')   # SA format
+        self.assertRegex(out['detail'], r'^average \d+,\d L/100 km vs type median \d+,\d$')   # SA format
         self.assertEqual(row.fuel_source, 'mixed')
         self.assertAlmostEqual(row.rated_burn_l_per_100km, 40.0, delta=0.1)
 
@@ -519,10 +534,38 @@ class FleetFuelApiTests(_Base):
         with patch('core.tasks.refresh_fleet_fuel_actuals.delay') as delay:
             r1 = self.api.post('/api/v1/fleet/fuel-actuals/refresh/')
             r2 = self.api.post('/api/v1/fleet/fuel-actuals/refresh/')
-        self.assertEqual((r1.status_code, r2.status_code), (202, 202))
+        self.assertEqual((r1.status_code, r2.status_code), (202, 429))
+        self.assertEqual(r2.json()['error'], 'You can refresh again at 09:15.')     # 15 min from the start, SAST
+        self.assertEqual(r2.json()['code'], 'refresh_cooldown')
         delay.assert_called_once_with(company_id=self.company.id)
         self.assertEqual(self.fake.calls, [])
-        self.assertTrue(self.api.get(self.URL).json()['refresh_queued'])
+        body = self.api.get(self.URL).json()
+        self.assertTrue(body['refresh_queued'])
+        self.assertEqual(body['refresh_next_at'], '2026-10-07T09:15:00+02:00')
+
+    def test_cooldown_holds_after_the_run_and_ends_at_15_minutes(self):
+        from core.tasks import refresh_fleet_fuel_actuals
+        with patch('core.tasks.refresh_fleet_fuel_actuals.delay') as delay:
+            self.assertEqual(self.api.post('/api/v1/fleet/fuel-actuals/refresh/').status_code, 202)
+        with patch.object(ffa, 'refresh_company', side_effect=lambda c: FleetFuelSyncRun.objects.create(
+                company=c, status='ok', finished_at=NOW + timedelta(minutes=3))):
+            refresh_fleet_fuel_actuals(company_id=self.company.id)
+        body = self.api.get(self.URL).json()
+        self.assertFalse(body['refresh_queued'])                       # done
+        self.assertIsNotNone(body['refresh_next_at'])                  # but still cooling down
+        with patch('core.tasks.refresh_fleet_fuel_actuals.delay') as delay:
+            self.assertEqual(self.api.post('/api/v1/fleet/fuel-actuals/refresh/').status_code, 429)
+            later = NOW + timedelta(minutes=15, seconds=1)
+            with patch('django.utils.timezone.now', return_value=later):
+                self.assertEqual(self.api.post('/api/v1/fleet/fuel-actuals/refresh/').status_code, 202)
+        delay.assert_called_once()
+
+    def test_burn_mode_needs_an_object_body(self):
+        url = f'/api/v1/fleet/fuel-actuals/vehicle-types/{self.vt.id}/burn-mode/'
+        for body in ([1], 'MEASURED', 7):
+            r = self.api.post(url, body, format='json')
+            self.assertEqual(r.status_code, 400, body)
+            self.assertEqual(r.json()['code'], 'invalid_body')
 
     def test_refresh_needs_a_tracker(self):
         self.company.cartrack_connected_at = None
@@ -721,3 +764,121 @@ class FuelClauseConsistencyTests(_Base):
         q.save()
         self.assertEqual(q.costing_snapshot['rated_burn']['source'], 'configured')
         self.assertAlmostEqual(float(q.fuel_litres), self.litres_at(q, 42.0), places=2)
+
+
+class RefreshRobustnessTests(_Base):
+    """Verifier round: real trip speeds, partial outages, tracker errors."""
+
+    def jhb_dbn_trips(self, v, n=10, kmh=76.0, hours=7.5):
+        cust = Customer.objects.create(company=self.company, name='Acme', email='a@x.test')
+        du = User.objects.create_user(username=f'drv{v.id}', password='x')
+        drv = Driver.objects.create(company=self.company, user=du, license_number=f'D{v.id}',
+                                    license_expiry=date(2028, 1, 1), license_state='GP', hire_date=date(2020, 1, 1))
+        start = ffa.period_bounds(NOW)[0] + timedelta(days=1)
+        segs = []
+        for i in range(n):
+            a = start + timedelta(days=4 * i, hours=5)
+            b = a + timedelta(hours=hours)
+            ld = Load.objects.create(
+                company=self.company, load_number=f'J{v.id}-{i}', customer=cust, pickup_location='JHB',
+                pickup_city='JHB', pickup_state='GP', pickup_zip='1', pickup_date=a, delivery_location='DBN',
+                delivery_city='DBN', delivery_state='KZN', delivery_zip='2', delivery_date=b,
+                cargo_description='Steel', weight=Decimal('34000'), rate=Decimal('30000'),
+                total_amount=Decimal('30000'), status='DELIVERED')
+            Trip.objects.create(load=ld, vehicle=v, driver=drv, origin='JHB', destination='DBN',
+                                estimated_distance_km=Decimal('570'), estimated_duration_hours=Decimal('7.5'),
+                                start_time=a, end_time=b, status='COMPLETED')
+            segs.append((a, b, 1.0, kmh))
+        return segs
+
+    def test_speed_cap_by_window_length(self):
+        a = NOW
+        self.assertGreater(ffa.max_plausible_km(a, a + timedelta(hours=7.5)), 570)      # JHB-DBN at 76 km/h
+        self.assertLess(ffa.max_plausible_km(a, a + timedelta(hours=2)), 570)           # 285 km/h: no
+        self.assertEqual(ffa.max_plausible_km(a, a + timedelta(days=30)), 30 * ffa.MAX_KM_PER_DAY)
+        w = ffa.assess_window(a, a + timedelta(hours=7.5), {'distance': 570_000},
+                              {'fuel_consumed': 240}, 'can_bus', min_km=ffa.MIN_TRIP_KM)
+        self.assertIsNone(w['reject'])
+
+    def test_ten_jhb_dbn_trips_are_accepted(self):
+        v = self.truck('CJ100GP')
+        segs = self.jhb_dbn_trips(v)
+        self.fake.add('CJ100GP', rated=42.0, km_per_day=150, segments=segs, idle_ratio=0.0)
+        self.refresh()
+        row = FleetFuelMeasurement.objects.get(scope='VEHICLE', vehicle=v)
+        self.assertNotIn('distance_implausible', [r['reason'] for r in row.rejections])
+        self.assertAlmostEqual(row.loaded_km, 10 * 570, delta=5)
+        self.assertAlmostEqual(row.loaded_l_per_100km, 42.0, delta=0.2)    # full loads burn the rated figure
+
+    def _good_then(self, failing):
+        self.truck('CK100GP')
+        self.truck('CK200GP')
+        self.fake.add('CK100GP', rated=40.0, idle_ratio=0.5)
+        self.fake.add('CK200GP', rated=40.0, idle_ratio=0.5)
+        self.refresh()
+        before = self.type_row()
+        self.assertTrue(ffa.usable(before, self.company, NOW)[0])
+        truck_before = FleetFuelMeasurement.objects.get(scope='VEHICLE', vehicle__plate='CK100GP')
+        with failing():
+            run = self.refresh()
+        return before, truck_before, run
+
+    def test_all_500_refresh_keeps_the_good_figure(self):
+        from core.integrations.cartrack import CartrackAPIError
+        err = CartrackAPIError('Cartrack GET /vehicles/CK100GP/odometer failed: 500')
+
+        def failing():
+            from contextlib import ExitStack
+            st = ExitStack()
+            st.enter_context(patch.object(self.fake, 'get_odometer', side_effect=err))
+            st.enter_context(patch.object(self.fake, 'get_fuel_consumed', side_effect=err))
+            return st
+        before, truck_before, run = self._good_then(failing)
+        self.assertEqual(run.status, 'partial')
+        self.assertEqual(run.message, "Cartrack didn't answer for 2 trucks; their last measured figures are kept.")
+        self.assertNotIn('500', run.message)
+        after = self.type_row()
+        self.assertEqual(after.rated_burn_l_per_100km, before.rated_burn_l_per_100km)
+        self.assertEqual(after.computed_at, before.computed_at)
+        self.assertTrue(ffa.usable(after, self.company, NOW)[0])
+        truck_after = FleetFuelMeasurement.objects.get(scope='VEHICLE', vehicle__plate='CK100GP')
+        self.assertEqual((truck_after.distance_km, truck_after.computed_at),
+                         (truck_before.distance_km, truck_before.computed_at))
+        # Pricing still uses it.
+        self.assertEqual(qc.resolve_rated_burn(self.company, self.vt)['source'], 'measured')
+
+    def test_timeouts_and_bad_json_are_tracker_errors(self):
+        import requests
+
+        def failing():
+            from contextlib import ExitStack
+            st = ExitStack()
+            st.enter_context(patch.object(self.fake, 'get_odometer', side_effect=requests.Timeout('slow')))
+            st.enter_context(patch.object(self.fake, 'get_fuel_consumed',
+                                          side_effect=ValueError('Expecting value: line 1 column 1')))
+            return st
+        before, _, run = self._good_then(failing)
+        self.assertEqual(run.status, 'partial')
+        self.assertIsNotNone(run.finished_at)
+        self.assertEqual(self.type_row().rated_burn_l_per_100km, before.rated_burn_l_per_100km)
+
+    def test_roster_failure_is_plain_words_and_finished(self):
+        import requests
+        with patch.object(self.fake, 'get_vehicles', side_effect=requests.ConnectionError('reset by peer')):
+            run = self.refresh()
+        self.assertEqual((run.status, run.message), ('failed', "Cartrack didn't answer. Your last measured figures are kept."))
+        self.assertIsNotNone(run.finished_at)
+        self.assertIn('reset by peer', run.summary['error'])
+
+    def test_crash_mid_loop_finishes_the_run_and_keeps_rows(self):
+        self.truck('CK100GP')
+        self.fake.add('CK100GP', rated=40.0, idle_ratio=0.5)
+        self.refresh()
+        before = self.type_row()
+        with patch.object(ffa, 'measure_vehicle', side_effect=RuntimeError('boom')):
+            run = self.refresh()
+        run.refresh_from_db()
+        self.assertEqual(run.status, 'failed')
+        self.assertIsNotNone(run.finished_at)
+        self.assertNotIn('boom', run.message)
+        self.assertEqual(self.type_row().computed_at, before.computed_at)

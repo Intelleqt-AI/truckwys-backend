@@ -724,10 +724,8 @@ def refresh_fleet_fuel_actuals(company_id=None):
         except Exception:
             logger.exception('Fleet fuel refresh failed for company %s', company.id)
             done[company.id] = 'failed'
-        finally:
-            if company_id is not None:
-                from django.core.cache import cache
-                cache.delete(f'fleet-fuel-refresh:{company.id}')
+        # The manual-refresh lock is NOT released here: it holds the start
+        # time for the 15-minute cooldown (core.views_fleet_fuel).
     return done
 
 

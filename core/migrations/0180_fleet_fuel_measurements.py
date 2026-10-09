@@ -6,6 +6,46 @@ from django.conf import settings
 from django.db import migrations, models
 
 
+# ON DELETE in the database (PostgreSQL only, production; SQLite keeps
+# Django's own handling), as 0176 and 0178 do: the previous image doesn't know
+# these tables, so it can still delete a company, vehicle, vehicle type or user
+# without an IntegrityError from the measurement rows pointing at them.
+DB_ON_DELETE = (
+    ('fleet_fuel_measurements', 'company_id', 'CASCADE'),
+    ('fleet_fuel_measurements', 'vehicle_id', 'CASCADE'),
+    ('fleet_fuel_measurements', 'vehicle_type_id', 'CASCADE'),
+    ('fleet_fuel_measurements', 'burn_mode_set_by_id', 'SET NULL'),
+    ('fleet_fuel_sync_runs', 'company_id', 'CASCADE'),
+)
+
+
+_REWRITE = """
+DO $$
+DECLARE r record;
+BEGIN
+  FOR r IN SELECT con.conname, pg_get_constraintdef(con.oid) AS def
+             FROM pg_constraint con
+             JOIN pg_class rel ON rel.oid = con.conrelid
+             JOIN pg_attribute att ON att.attrelid = rel.oid AND att.attnum = ANY (con.conkey)
+            WHERE rel.relname = '{table}' AND con.contype = 'f' AND att.attname = '{column}'
+  LOOP
+    EXECUTE format('ALTER TABLE {table} DROP CONSTRAINT %I', r.conname);
+    EXECUTE format('ALTER TABLE {table} ADD CONSTRAINT %I %s ON DELETE {action} DEFERRABLE INITIALLY DEFERRED',
+                   r.conname, split_part(split_part(r.def, ' ON DELETE ', 1), ' DEFERRABLE', 1));
+  END LOOP;
+END $$;
+"""
+
+
+def db_on_delete(apps, schema_editor):
+    """Queued after the foreign keys themselves: CreateModel adds them as
+    deferred SQL at the end of this migration, so the rewrite is queued there
+    too (runs last, in the same transaction). Same as 0178."""
+    if schema_editor.connection.vendor != 'postgresql':
+        return
+    for table, column, action in DB_ON_DELETE:
+        schema_editor.deferred_sql.append(_REWRITE.format(table=table, column=column, action=action))
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -72,4 +112,5 @@ class Migration(migrations.Migration):
                 'indexes': [models.Index(fields=['company', '-started_at'], name='fleet_fuel__company_58197f_idx')],
             },
         ),
+        migrations.RunPython(db_on_delete, migrations.RunPython.noop),
     ]

@@ -36,7 +36,8 @@ Code: `core/services/fleet_fuel_actuals.py` (pure helpers at the top, `refresh_c
 1. Period: the last 90 days ending 24 hours ago (recent readings settle), split into windows of at most 30 days.
 2. Per window: distance from the odometer, litres from the CAN counter (else the tank estimate). A window is
    rejected for an odometer reset, a replaced tracker unit, no or uncalibrated fuel data, provisional fuel
-   level, more than 1 500 km a day, or a burn outside 12 to 80 L/100 km. Rejections are stored with a reason
+   level, an impossible distance (a recorded trip of a day or less: an average above 110 km/h over the
+   window, so a 7,5 h Johannesburg-Durban run of 570 km passes; longer windows: more than 1 500 km a day), or a burn outside 12 to 80 L/100 km. Rejections are stored with a reason
    and shown in the UI ("Left out").
 3. Recorded loads: each completed TMS trip of the truck (start and end times, load weight) inside an accepted
    window is measured the same way, with load ratio = min(load t / truck t, 1). At most 60 per truck.
@@ -103,7 +104,7 @@ Per company, per vehicle type: `FleetFuelMeasurement.burn_mode` = `AUTO` (defaul
 |---|---|---|
 | GET | `/api/v1/fleet/fuel-actuals/` | any company user |
 | POST | `/api/v1/fleet/fuel-actuals/vehicle-types/<id>/burn-mode/` `{mode}` | admin |
-| POST | `/api/v1/fleet/fuel-actuals/refresh/` | admin (queues the job, deduplicated for 15 minutes) |
+| POST | `/api/v1/fleet/fuel-actuals/refresh/` | admin: 202 and queues the job; one per company per 15 minutes from the last start, else 429 `{error: "You can refresh again at 14:35.", code: "refresh_cooldown", next_at}`; the GET returns `refresh_next_at` |
 
 Vehicle types (`/api/v1/vehicle-types/`) gain read-only `fuel_use_in_use`. No request ever calls Cartrack.
 
@@ -111,6 +112,11 @@ Vehicle types (`/api/v1/vehicle-types/`) gain read-only `fuel_use_in_use`. No re
 - `core.tasks.refresh_fleet_fuel_actuals` (beat `refresh-fleet-fuel-actuals`): Mondays 02:30 SAST
   (`CELERY_TIMEZONE = Africa/Johannesburg`). Runs every company with a connected Cartrack account; one company's
   failure never stops the others. With `company_id` it runs one company ("Refresh now").
+- Failures never wipe a figure: a truck whose readings don't come back (Cartrack error, timeout, connection error,
+  a body that isn't JSON) keeps its previous row, and a vehicle type with such a truck keeps its previous type row.
+  Each truck's and each type's write is its own transaction. The run is always finished (`finished_at`, status
+  `failed` if anything crashed). `message` is plain words for the settings strip; the raw error is in
+  `summary.error`.
 - Each run writes a `FleetFuelSyncRun` (`ok`, `partial` when some Cartrack calls failed, `skipped`, `failed`) with a
   summary (matched, unmatched registrations, trucks with no fuel sensor, API errors, types measured).
 - API budget: per truck about 3 windows x 2 calls plus 2 calls per recorded load (max 60). Cartrack rate limits are
@@ -121,7 +127,9 @@ Vehicle types (`/api/v1/vehicle-types/`) gain read-only `fuel_use_in_use`. No re
    file, `core/migrations/0180_fleet_fuel_measurements.py` after `0179_quote_followups_backfill` (two new
    tables, additive, reversible; every NOT NULL column has a `db_default`, so the previous image keeps working
    mid-deploy).
-2. `python manage.py migrate` (the image entrypoint does this).
+2. `python manage.py migrate` (the image entrypoint does this). On PostgreSQL 0180 also sets ON DELETE CASCADE
+   (SET NULL for `burn_mode_set_by`) in the database on the new foreign keys, so the previous image can still delete
+   a company, vehicle, vehicle type or user mid-deploy.
 3. Restart the Celery worker **and beat** so the new task and schedule load.
 4. Optional first fill instead of waiting for Monday:
    `python manage.py shell -c "from core.tasks import refresh_fleet_fuel_actuals; refresh_fleet_fuel_actuals.delay()"`

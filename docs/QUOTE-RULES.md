@@ -634,7 +634,8 @@ API JSON: `FOLLOWUPS-CLIENT-SPEC.md` (tw-wt root). Endpoints in `core/views_quot
 - Weekly Celery job (`refresh_fleet_fuel_actuals`, Mon 02:30 SAST; only companies with a connected Cartrack
   account) measures the last 90 days (ending 24 h ago) in ≤ 30-day windows per truck and stores
   `FleetFuelMeasurement` rows per truck and per vehicle type (distance, litres, averages, sample size, period,
-  source, confidence, rejections). Windows outside 12–80 L/100 km or > 1 500 km/day are rejected; with 3+ trucks a
+  source, confidence, rejections). Windows outside 12–80 L/100 km, or with an impossible distance (≤ 1 day: average > 110 km/h; longer: > 1 500
+  km/day), are rejected; a truck whose readings don't come back keeps its previous row and its type keeps its type row; with 3+ trucks a
   truck > 35% off the type median is left out of the type figure.
 - Rated (full-load) burn from measurements, inverting §4: with ≥ 2 000 km on recorded loads (completed TMS trips
   with times and load weight, ratio = min(load t / truck t, 1)): `rated = 100 × litres_on_loads / Σ km_i × (0,70 +
@@ -653,7 +654,8 @@ API JSON: `FOLLOWUPS-CLIENT-SPEC.md` (tw-wt root). Endpoints in `core/views_quot
   prices and differs > 15% from a usable measured one: "Your fuel figure differs from measured" / "42,0 set,
   34,0 L/100 km measured.", actions `use_measured_burn`, `edit_vehicle`.
 - API: `GET /api/v1/fleet/fuel-actuals/`, `POST .../vehicle-types/<id>/burn-mode/ {mode: AUTO|MEASURED|CONFIGURED}`
-  (admin), `POST .../refresh/` (admin, queues the job, deduplicated 15 min); vehicle types gain read-only
+  (admin), `POST .../refresh/` (admin, queues the job; one per company per 15 min from the last start, else 429 "You can
+  refresh again at 14:35." with `next_at`; GET adds `refresh_next_at`); vehicle types gain read-only
   `fuel_use_in_use`. No tracker call ever happens in a request.
 - Snapshot: `costing_snapshot.rated_burn` {value, source, label, configured, measured_at, measured_value} records the
   truck fuel figure a saved quote was priced on (and `resolution.rated_burn` is stored in the same compact form).

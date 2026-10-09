@@ -7,6 +7,8 @@ POST /api/v1/fleet/fuel-actuals/refresh/                            admin
 Reads stored rows only; "refresh" queues the Celery job (never calls the
 tracker in the request).
 """
+from datetime import timedelta
+
 from django.core.cache import cache
 from django.utils import timezone
 from rest_framework import status
@@ -16,7 +18,33 @@ from rest_framework.views import APIView
 
 from core.permissions import IsIntegrationAdmin
 
+# One manual refresh per company per 15 minutes, counted from its start;
+# the lock (holding the start time) lives for the whole cooldown.
 REFRESH_LOCK_SECONDS = 15 * 60
+
+
+def _lock_key(company):
+    return f'fleet-fuel-refresh:{company.id}'
+
+
+def refresh_state(company, now=None):
+    """{queued, next_at, next_at_dt}: queued = started and no run has finished
+    since; next_at = when "Refresh now" can run again (SAST ISO) or None."""
+    from datetime import datetime, timedelta
+    from core.models import FleetFuelSyncRun
+    now = now or timezone.now()
+    raw = cache.get(_lock_key(company))
+    try:
+        started = datetime.fromisoformat(raw) if raw else None
+    except (TypeError, ValueError):
+        started = None
+    if started is None:
+        return {'queued': False, 'next_at': None, 'next_at_dt': None}
+    next_at = started + timedelta(seconds=REFRESH_LOCK_SECONDS)
+    if next_at <= now:
+        return {'queued': False, 'next_at': None, 'next_at_dt': None}
+    done = FleetFuelSyncRun.objects.filter(company=company, finished_at__gte=started).exists()
+    return {'queued': not done, 'next_at': timezone.localtime(next_at).isoformat(), 'next_at_dt': next_at}
 
 
 def _company(request):
@@ -58,6 +86,7 @@ class FleetFuelActualsView(APIView):
         company = _company(request)
         now = timezone.now()
         provider, reason = ffa.connection_status(company)
+        refresh = refresh_state(company, now)
         vehicle_rows = {r.vehicle_id: r for r in M.objects.filter(company=company, scope=M.SCOPE_VEHICLE)}
         vehicles = [{
             'id': v.id, 'plate': v.plate, 'vehicle_type_id': v.vehicle_type_id,
@@ -69,7 +98,9 @@ class FleetFuelActualsView(APIView):
         return Response({
             'connection': {'provider': provider, 'reason': reason, 'can_measure': provider is not None},
             'last_run': _run_out(FleetFuelSyncRun.objects.filter(company=company).first()),
-            'refresh_queued': bool(cache.get(f'fleet-fuel-refresh:{company.id}')),
+            'refresh_queued': refresh['queued'],
+            # "Refresh now" can run again from this time (SAST), else null.
+            'refresh_next_at': refresh['next_at'],
             'vehicle_types': [vehicle_type_row(company, vt, now) for vt in visible_vehicle_types_queryset(company)],
             'vehicles': vehicles,
             'rules': {
@@ -91,7 +122,11 @@ class FleetFuelBurnModeView(APIView):
         vt = visible_vehicle_types_queryset(company).filter(id=pk).first()
         if vt is None:
             return Response({'error': 'Vehicle type not found.'}, status=status.HTTP_404_NOT_FOUND)
-        mode = str(request.data.get('mode') or '').upper()
+        body = request.data if isinstance(request.data, dict) else None
+        if body is None:
+            return Response({'error': 'Send {"mode": "MEASURED"}, {"mode": "CONFIGURED"} or {"mode": "AUTO"}.',
+                             'code': 'invalid_body'}, status=status.HTTP_400_BAD_REQUEST)
+        mode = str(body.get('mode') or '').upper()
         if mode not in (M.MODE_AUTO, M.MODE_MEASURED, M.MODE_CONFIGURED):
             return Response({'error': 'Choose "Use measured figure", "Use my figure" or automatic.'},
                             status=status.HTTP_400_BAD_REQUEST)
@@ -127,9 +162,21 @@ class FleetFuelRefreshView(APIView):
         provider, reason = ffa.connection_status(company)
         if provider is None:
             return Response({'error': reason, 'queued': False}, status=status.HTTP_400_BAD_REQUEST)
-        if not cache.add(f'fleet-fuel-refresh:{company.id}', 1, REFRESH_LOCK_SECONDS):
-            return Response({'queued': True, 'message': 'A refresh is already on its way.'},
-                            status=status.HTTP_202_ACCEPTED)
-        refresh_fleet_fuel_actuals.delay(company_id=company.id)
+        now = timezone.now()
+        state = refresh_state(company, now)
+        if state['next_at'] is None:
+            # Expired or missing: claim it (add() is atomic between two presses).
+            cache.delete(_lock_key(company))
+            if cache.add(_lock_key(company), now.isoformat(), REFRESH_LOCK_SECONDS):
+                refresh_fleet_fuel_actuals.delay(company_id=company.id)
+                return Response({'queued': True, 'next_at': timezone.localtime(
+                    now + timedelta(seconds=REFRESH_LOCK_SECONDS)).isoformat(),
+                    'message': 'Refreshing from your tracker; this takes a few minutes.'},
+                    status=status.HTTP_202_ACCEPTED)
+            state = refresh_state(company, now)
+        at = timezone.localtime(state['next_at_dt']).strftime('%H:%M') if state['next_at_dt'] else None
+        return Response({'error': f'You can refresh again at {at}.' if at else 'A refresh is already on its way.',
+                         'code': 'refresh_cooldown', 'queued': state['queued'], 'next_at': state['next_at']},
+                        status=status.HTTP_429_TOO_MANY_REQUESTS)
         return Response({'queued': True, 'message': 'Refreshing from your tracker; this takes a few minutes.'},
                         status=status.HTTP_202_ACCEPTED)

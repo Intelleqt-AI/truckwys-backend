@@ -65,7 +65,8 @@ MIN_WINDOW_KM = 50.0
 MIN_TRIP_KM = 30.0
 MAX_TRIPS_PER_VEHICLE = 60      # API budget: 2 calls per recorded load
 BURN_MIN, BURN_MAX = 12.0, 80.0  # plausible L/100km for one window of a truck
-MAX_KM_PER_DAY = 1500.0
+MAX_KM_PER_DAY = 1500.0         # multi-day windows (period windows of up to 30 days)
+MAX_AVG_SPEED_KMH = 110.0       # windows of a day or less (a recorded trip): average speed cap
 TYPE_OUTLIER_PCT = 0.35
 ASSUMED_LOAD_RATIO = 0.5
 HIGH_KM, MEDIUM_KM = 10000.0, 5000.0
@@ -135,6 +136,17 @@ def fuel_litres(fuel, method):
     return None, 'no_fuel_sensor'
 
 
+def max_plausible_km(start, end):
+    """Most km a truck can really cover in the window. A trip (a day or
+    less) is capped by average speed over its length, so a 7,5 h
+    Johannesburg-Durban run of 570 km (76 km/h) passes; longer windows by
+    km per day."""
+    hours = max((end - start).total_seconds() / 3600.0, 1 / 60)
+    if hours <= 24:
+        return MAX_AVG_SPEED_KMH * hours
+    return MAX_KM_PER_DAY * hours / 24
+
+
 def assess_window(start, end, odo, fuel, method, *, min_km=MIN_WINDOW_KM):
     """One measured window: {start, end, km, litres, l_per_100km, reject}."""
     out = {'start': start, 'end': end, 'km': None, 'litres': None, 'l_per_100km': None, 'reject': None}
@@ -147,8 +159,7 @@ def assess_window(start, end, odo, fuel, method, *, min_km=MIN_WINDOW_KM):
     if why:
         out['reject'] = why
         return out
-    days = max((end - start).total_seconds() / 86400.0, 1 / 24)
-    if km > MAX_KM_PER_DAY * days:
+    if km > max_plausible_km(start, end):
         out['reject'] = 'distance_implausible'
     elif km < min_km:
         out['reject'] = 'too_short'
@@ -253,9 +264,10 @@ def plausibility(rated, capacity_t):
 
 
 def _vs_median(value, med):
-    """SA format: '46,8 vs 33,2 L/100 km for the type'."""
+    """SA format, named as what it is (averages on all km, not the full-load
+    figure): 'average 46,8 L/100 km vs type median 33,2'."""
     from core.services.quote_costing import fmt_num
-    return f'{fmt_num(value, 1)} vs {fmt_num(med, 1)} L/100 km for the type'
+    return f'average {fmt_num(value, 1)} L/100 km vs type median {fmt_num(med, 1)}'
 
 
 def pick_type_members(per_vehicle):
@@ -312,12 +324,11 @@ def fuel_method(sensors):
 
 
 def _measure(client, registration, method, start, end, min_km):
-    from core.integrations.cartrack import CartrackAPIError
     try:
         odo = client.get_odometer(registration, _local(start), _local(end))
         fetch = client.get_fuel_consumed if method == 'can_bus' else client.get_fuel_level
         fuel = fetch(registration, _local(start), _local(end))
-    except CartrackAPIError as exc:
+    except _tracker_errors() as exc:
         return {'start': start, 'end': end, 'km': None, 'litres': None, 'l_per_100km': None,
                 'reject': 'api_error', 'detail': str(exc)[:160]}
     return assess_window(start, end, odo, fuel, method, min_km=min_km)
@@ -426,93 +437,155 @@ def connection_status(company):
     return None, 'No fleet tracker connected.'
 
 
+# Plain words for the settings strip; the raw tracker error stays in
+# FleetFuelSyncRun.summary['error'] for the dev team.
+RUN_FAILED_MESSAGE = "Cartrack didn't answer. Your last measured figures are kept."
+RUN_CRASHED_MESSAGE = "The refresh stopped early. Your last measured figures are kept."
+
+
+def _tracker_errors():
+    """Exceptions that mean "the tracker didn't answer properly": its own
+    error, a timeout / connection failure, or a body that isn't JSON."""
+    import requests
+    from core.integrations.cartrack import CartrackAPIError
+    return (CartrackAPIError, requests.RequestException, ValueError)
+
+
+def _truck_failed(res):
+    """A truck whose period readings didn't all come back: its previous row
+    stays as it was (a partial outage must never wipe a good figure)."""
+    return any(w['reject'] == 'api_error' for w in res['period'])
+
+
 def refresh_company(company, *, client=None, now=None):
     """Re-measure every Cartrack-linked truck of one company and store the
-    vehicle and vehicle-type rows. Returns the FleetFuelSyncRun."""
-    from core.integrations.cartrack import CartrackAPIError, CartrackClient
+    vehicle and vehicle-type rows. Returns the FleetFuelSyncRun, always
+    finished (status set, finished_at set), whatever happens.
+
+    Nothing is written for what failed: a truck whose readings didn't come
+    back keeps its previous row, and a vehicle type with such a truck keeps
+    its previous type row. Each truck's row and each type's row is written in
+    its own transaction."""
+    from core.integrations.cartrack import CartrackClient
     from core.models import FleetFuelMeasurement as M, FleetFuelSyncRun
     from core.services.cartrack_sync import _vehicles_by_cartrack_registration
 
     now = now or timezone.now()
     provider, reason = connection_status(company)
     run = FleetFuelSyncRun.objects.create(company=company, provider=provider or '')
-    if provider is None:
-        run.status, run.message, run.finished_at = 'skipped', reason, timezone.now()
-        run.save()
-        return run
-    start, end = period_bounds(now)
+    summary = {}
     try:
-        client = client or CartrackClient.for_company(company)
-        roster = client.get_vehicles()
-    except (CartrackAPIError, ValueError) as exc:
-        run.status, run.message, run.finished_at = 'failed', str(exc)[:300], timezone.now()
-        run.save()
-        logger.warning('Fleet fuel refresh: Cartrack unavailable for company %s: %s', company.id, exc)
-        return run
+        if provider is None:
+            run.status, run.message = 'skipped', reason
+            return run
+        start, end = period_bounds(now)
+        try:
+            client = client or CartrackClient.for_company(company)
+            roster = client.get_vehicles()
+        except _tracker_errors() as exc:
+            run.status, run.message = 'failed', RUN_FAILED_MESSAGE
+            run.summary = {'error': str(exc)[:300]}
+            logger.warning('Fleet fuel refresh: Cartrack unavailable for company %s: %s', company.id, exc)
+            return run
 
-    sensors = {(r.get('registration') or '').strip().upper(): r.get('sensors') or {} for r in roster}
-    local = _vehicles_by_cartrack_registration(company)
-    results, summary = [], {'vehicles_in_tracker': len(roster), 'matched': 0, 'no_fuel_sensor': [],
-                            'unmatched': sorted(set(sensors) - set(local))[:50], 'api_errors': 0}
-    for reg, vehicle in local.items():
-        if reg not in sensors:
-            continue
-        summary['matched'] += 1
-        registration = (vehicle.cartrack_registration or vehicle.plate).strip()
-        method = fuel_method(sensors[reg])
-        if method is None:
-            summary['no_fuel_sensor'].append(vehicle.plate)
-            _save(company, M.SCOPE_VEHICLE, vehicle=vehicle, values=_row_values(
-                figures(empty_sums()), provider=provider, fuel_source='', start=start, end=end, vehicles_count=1,
-                windows_used=0, windows_rejected=0, rejections=[], capacity_t=capacity_t_of(vehicle), now=now,
-                note='Cartrack reports no fuel sensor on this truck.'))
-            continue
-        res = measure_vehicle(client, vehicle, registration, method, start, end)
-        summary['api_errors'] += sum(1 for w in res['period'] + res['trips'] if w['reject'] == 'api_error')
-        used = sum(1 for w in res['period'] + res['trips'] if not w['reject'])
-        rejected = sum(1 for w in res['period'] + res['trips'] if w['reject'] and w['reject'] != 'too_short')
-        _save(company, M.SCOPE_VEHICLE, vehicle=vehicle, values=_row_values(
-            res['figures'], provider=provider, fuel_source=method, start=start, end=end, vehicles_count=1,
-            windows_used=used, windows_rejected=rejected, rejections=_rejections(res),
-            capacity_t=capacity_t_of(vehicle), now=now, note='; '.join(res['sums']['notes'])))
-        res['used'], res['rejected'] = used, rejected
-        results.append(res)
+        sensors = {(r.get('registration') or '').strip().upper(): r.get('sensors') or {}
+                   for r in roster if isinstance(r, dict)}
+        local = _vehicles_by_cartrack_registration(company)
+        summary = {'vehicles_in_tracker': len(roster), 'matched': 0, 'no_fuel_sensor': [],
+                   'unmatched': sorted(set(sensors) - set(local))[:50], 'api_errors': 0,
+                   'trucks_not_answered': []}
+        results, failed_types = [], set()
+        for reg, vehicle in local.items():
+            if reg not in sensors:
+                continue
+            summary['matched'] += 1
+            registration = (vehicle.cartrack_registration or vehicle.plate).strip()
+            method = fuel_method(sensors[reg])
+            if method is None:
+                summary['no_fuel_sensor'].append(vehicle.plate)
+                with transaction.atomic():
+                    _save(company, M.SCOPE_VEHICLE, vehicle=vehicle, values=_row_values(
+                        figures(empty_sums()), provider=provider, fuel_source='', start=start, end=end,
+                        vehicles_count=1, windows_used=0, windows_rejected=0, rejections=[],
+                        capacity_t=capacity_t_of(vehicle), now=now,
+                        note='Cartrack reports no fuel sensor on this truck.'))
+                continue
+            res = measure_vehicle(client, vehicle, registration, method, start, end)
+            errors = sum(1 for w in res['period'] + res['trips'] if w['reject'] == 'api_error')
+            summary['api_errors'] += errors
+            if _truck_failed(res):
+                # Keep its previous row; its type keeps its previous row too.
+                summary['trucks_not_answered'].append(vehicle.plate)
+                if vehicle.vehicle_type_id is not None:
+                    failed_types.add(vehicle.vehicle_type_id)
+                continue
+            used = sum(1 for w in res['period'] + res['trips'] if not w['reject'])
+            rejected = sum(1 for w in res['period'] + res['trips'] if w['reject'] and w['reject'] != 'too_short')
+            with transaction.atomic():
+                _save(company, M.SCOPE_VEHICLE, vehicle=vehicle, values=_row_values(
+                    res['figures'], provider=provider, fuel_source=method, start=start, end=end, vehicles_count=1,
+                    windows_used=used, windows_rejected=rejected, rejections=_rejections(res),
+                    capacity_t=capacity_t_of(vehicle), now=now, note='; '.join(res['sums']['notes'])))
+            res['used'], res['rejected'] = used, rejected
+            results.append(res)
 
-    # Vehicle types: pool the trucks linked to each type.
-    by_type = {}
-    for res in results:
-        vt = res['vehicle'].vehicle_type
-        if vt is not None:
-            by_type.setdefault(vt.id, (vt, []))[1].append(res)
-    seen = set()
-    with transaction.atomic():
+        # Vehicle types: pool the trucks measured this run. A type with a
+        # truck that didn't answer keeps its previous row (when it has one).
+        by_type = {}
+        for res in results:
+            vt = res['vehicle'].vehicle_type
+            if vt is not None:
+                by_type.setdefault(vt.id, (vt, []))[1].append(res)
+        existing = set(M.objects.filter(company=company, scope=M.SCOPE_VEHICLE_TYPE)
+                       .values_list('vehicle_type_id', flat=True))
+        seen = set()
+        from core.services.quote_costing import capacity_tonnes
         for vt_id, (vt, members) in by_type.items():
             seen.add(vt_id)
+            if vt_id in failed_types and vt_id in existing:
+                continue
             keep, left_out = pick_type_members(members)
             sums = empty_sums()
             for m in keep:
                 sums = add_sums(sums, m['sums'])
             sources = {m['method'] for m in keep}
             source = sources.pop() if len(sources) == 1 else ('mixed' if sources else '')
-            from core.services.quote_costing import capacity_tonnes
-            _save(company, M.SCOPE_VEHICLE_TYPE, vehicle_type=vt, values=_row_values(
-                figures(sums), provider=provider, fuel_source=source, start=start, end=end,
-                vehicles_count=len(keep), windows_used=sum(m['used'] for m in keep),
-                windows_rejected=sum(m['rejected'] for m in keep),
-                rejections=left_out + [dict(r, plate=m['vehicle'].plate) for m in keep
-                                       for r in _rejections(m)][:50],
-                capacity_t=capacity_tonnes(vt.capacity), now=now))
-        # A type measured before but with no tracked trucks now: never keep
-        # pricing on the old figure.
-        (M.objects.filter(company=company, scope=M.SCOPE_VEHICLE_TYPE).exclude(vehicle_type_id__in=seen)
-         .update(sufficient=False, confidence='insufficient', computed_at=now,
-                 note='No tracked trucks of this type in the last refresh.'))
-    summary['types_measured'] = len(seen)
-    run.status = 'partial' if summary['api_errors'] else 'ok'
-    run.summary, run.finished_at = summary, timezone.now()
-    run.message = f'{summary["matched"]} trucks matched, {len(seen)} vehicle types measured.'
-    run.save()
-    return run
+            with transaction.atomic():
+                _save(company, M.SCOPE_VEHICLE_TYPE, vehicle_type=vt, values=_row_values(
+                    figures(sums), provider=provider, fuel_source=source, start=start, end=end,
+                    vehicles_count=len(keep), windows_used=sum(m['used'] for m in keep),
+                    windows_rejected=sum(m['rejected'] for m in keep),
+                    rejections=left_out + [dict(r, plate=m['vehicle'].plate) for m in keep
+                                           for r in _rejections(m)][:50],
+                    capacity_t=capacity_tonnes(vt.capacity), now=now))
+        # A type measured before but with no tracked trucks now (and none that
+        # just failed to answer): never keep pricing on the old figure.
+        with transaction.atomic():
+            (M.objects.filter(company=company, scope=M.SCOPE_VEHICLE_TYPE)
+             .exclude(vehicle_type_id__in=seen | failed_types)
+             .update(sufficient=False, confidence='insufficient', computed_at=now,
+                     note='No tracked trucks of this type in the last refresh.'))
+        summary['types_measured'] = len(seen - failed_types) + len(failed_types - existing)
+        not_answered = len(summary['trucks_not_answered'])
+        run.status = 'partial' if (summary['api_errors'] or not_answered) else 'ok'
+        if not_answered:
+            run.message = (f"Cartrack didn't answer for {not_answered} truck{'s' if not_answered != 1 else ''}; "
+                           'their last measured figures are kept.')
+        else:
+            run.message = f'{summary["matched"]} trucks matched, {summary["types_measured"]} vehicle types measured.'
+        run.summary = summary
+        return run
+    except Exception as exc:
+        logger.exception('Fleet fuel refresh crashed for company %s', company.id)
+        run.status, run.message = 'failed', RUN_CRASHED_MESSAGE
+        run.summary = {**summary, 'error': f'{type(exc).__name__}: {exc}'[:300]}
+        return run
+    finally:
+        run.finished_at = timezone.now()
+        if run.status == 'running':
+            run.status = 'failed'
+            run.message = run.message or RUN_CRASHED_MESSAGE
+        run.save()
 
 
 # ---------------------------------------------------------------------------
