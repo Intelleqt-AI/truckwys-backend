@@ -157,16 +157,21 @@ def _margin(company, a: date):
                      .filter(Q(actual_delivered_at__date__gt=start, actual_delivered_at__date__lte=a)
                              | Q(actual_delivered_at__isnull=True, delivery_date__date__gt=start,
                                  delivery_date__date__lte=a))
-                     .only('id', 'distance', 'total_amount'))
+                     .only('id', 'distance', 'total_amount', 'trip_type', 'return_of', 'costing_snapshot',
+                           'empty_return_assumed', 'costing_source', 'costing_inputs', 'status',
+                           'costs_closed'))
         if not loads:
             return unknown
-        ids = [l.pk for l in loads]
-        revenue = rf.revenue_by_load(company, ids)
-        actual = rf.actual_costs_by_load(company, ids)
-        both = [i for i in ids if i in revenue and i in actual]
+        # The same merged cost as the economics endpoint: a load counts as
+        # ACTUAL only when invoiced and its costs are complete (key costs
+        # recorded, or closed); part-actual loads are modelled.
+        from core.services.trip_economics import economics_rows
+        rows = economics_rows(company, loads)
+        both = [i for i, r in rows.items() if r['revenue_basis'] == 'actual' and r['cost_complete']
+                and r['cost'] is not None]
         if len(both) >= 3:
-            rev = sum((revenue[i] for i in both), ZERO)
-            cost = sum((actual[i] for i in both), ZERO)
+            rev = sum((rows[i]['revenue'] for i in both), ZERO)
+            cost = sum((rows[i]['cost'] for i in both), ZERO)
             if rev > 0:
                 pct = q1((rev - cost) / rev * 100)
                 pts = _margin_band(pct)
@@ -174,10 +179,9 @@ def _margin(company, a: date):
                     (reason('T-MARGIN-THIN', pct=str(pct), basis='actual'), D(15 - pts))
                 return D(pts), [r], {'basis': 'actual', 'pct': pct, 'loads': len(both),
                                      'revenue_excl_vat': rev, 'cost_excl_vat': cost}
-        # Modelled: the reports' true-cost model where no actual expense exists.
-        from core.services.reports import load_economics
-        econ = load_economics(company, loads)
-        costed = [e for e in econ.values() if e['cost'] is not None]
+        # Modelled: the merged estimate (actual where recorded, estimate for
+        # the rest) where costs are not complete.
+        costed = [e for e in rows.values() if e['cost'] is not None]
         rev = sum((D(str(e['revenue'])) for e in costed), ZERO)
         cost = sum((D(str(e['cost'])) for e in costed), ZERO)
         if costed and rev > 0:

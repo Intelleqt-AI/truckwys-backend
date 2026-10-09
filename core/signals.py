@@ -1,6 +1,6 @@
 """Django signals for webhook dispatching, activity tracking, and audit logging."""
 
-from django.db.models.signals import post_save, post_delete, pre_save
+from django.db.models.signals import post_save, post_delete, pre_delete, pre_save
 from django.dispatch import receiver
 from core.formatting import format_zar
 
@@ -150,7 +150,9 @@ def load_saved(sender, instance, created, **kwargs):
                 try:
                     from django.utils import timezone
                     from core.models import Load
-                    Load.objects.filter(pk=instance.pk).update(actual_delivered_at=timezone.now())
+                    now = timezone.now()
+                    Load.objects.filter(pk=instance.pk).update(actual_delivered_at=now)
+                    instance.actual_delivered_at = now
                 except Exception:
                     pass
 
@@ -216,6 +218,18 @@ def _deliver_auto_invoice(load, invoice):
     email = getattr(invoice.customer, 'email', '') or ''
     amount = format_zar(invoice.total_amount, 0)
     emailed = False
+    from core.services.tonnage_jobs import AWAITING_WEIGHBRIDGE, load_billing
+    billing = load_billing(load)
+    if billing and billing['awaiting_weighbridge']:
+        # Per-tonne load without weighbridge tonnes: never emailed on planned
+        # tonnes; the team is told to enter the actual tonnes first.
+        try:
+            notify_company(getattr(load, 'company_id', None), 'ALERT', AWAITING_WEIGHBRIDGE,
+                           f'{invoice.invoice_number} · {amount} on planned tonnes · enter the weighbridge tonnes '
+                           f'before sending', link=f'/bookings/{load.id}', event='invoice.auto_created')
+        except Exception as exc:
+            log.warning('auto-invoice notification failed: %s', exc)
+        return
     if auto_email and email:
         try:
             from core.services.invoicing import email_invoice_to_customer
@@ -915,3 +929,77 @@ def audit_driver_delete(sender, instance, **kwargs):
         'driver_name': getattr(instance, 'driver_name', ''),
         'driver_id': getattr(instance, 'driver_id', ''),
     })
+
+
+# ---------------------------------------------------------------------------
+# Trip economics (2026-10): refresh a load's (and its return pair's) cached
+# estimate and learning actuals when anything that feeds them changes. Runs
+# after commit, idempotent (core.services.trip_economics.recompute).
+# ---------------------------------------------------------------------------
+
+def _recompute_after_commit(load_ids):
+    ids = [i for i in load_ids if i]
+    if not ids:
+        return
+    from django.db import transaction
+
+    def run():
+        from core.services.trip_economics import recompute
+        recompute(ids)
+    transaction.on_commit(run)
+
+
+def _expense_load_ids(expense):
+    ids = [getattr(expense, 'load_id', None)]
+    trip_id = getattr(expense, 'trip_id', None)
+    if trip_id:
+        from core.models import Trip
+        ids.append(Trip.objects.filter(pk=trip_id).values_list('load_id', flat=True).first())
+    return ids
+
+
+@receiver(post_save, sender='core.Expense')
+@receiver(post_delete, sender='core.Expense')
+def trip_economics_expense_changed(sender, instance, **kwargs):
+    _recompute_after_commit(_expense_load_ids(instance))
+
+
+@receiver(post_save, sender='core.Invoice')
+@receiver(post_delete, sender='core.Invoice')
+def trip_economics_invoice_changed(sender, instance, **kwargs):
+    _recompute_after_commit(_expense_load_ids(instance))
+
+
+@receiver(post_save, sender='core.CreditNote')
+def trip_economics_credit_note_changed(sender, instance, **kwargs):
+    from core.models import Invoice
+    inv = Invoice.objects.filter(pk=instance.invoice_id).values('load_id', 'trip__load_id').first() or {}
+    _recompute_after_commit([inv.get('load_id'), inv.get('trip__load_id')])
+
+
+@receiver(post_save, sender='core.Load')
+def trip_economics_load_changed(sender, instance, **kwargs):
+    partner = getattr(instance, 'return_of_id', None)
+    if instance.status == 'CANCELLED':
+        # A cancelled leg no longer brings (or sends) a truck: unlink the
+        # pair (audited) so neither leg drops its empty return for it.
+        from core.models import Load
+        from core.services.return_loads import unlink_return
+        fresh = Load.objects.filter(pk=instance.pk).first()
+        if fresh is not None:
+            res = unlink_return(fresh, source='cancelled')
+            if res:
+                partner = res[1] if res[0] == instance.pk else res[0]
+    _recompute_after_commit([instance.pk, partner])
+
+
+@receiver(pre_delete, sender='core.Load')
+def trip_economics_load_deleted(sender, instance, **kwargs):
+    # The partner leaves the pair (return_of SET NULL): refresh it after.
+    from core.models import Load
+    # Read the link from the database: the instance may be stale (linked or
+    # unlinked since it was loaded).
+    own = Load.objects.filter(pk=instance.pk).values_list('return_of_id', flat=True).first()
+    partners = [own, instance.return_of_id] + list(Load.objects.filter(return_of_id=instance.pk)
+                                                   .values_list('pk', flat=True))
+    _recompute_after_commit(partners)

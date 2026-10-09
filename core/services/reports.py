@@ -6,8 +6,8 @@ new tabs in the Finance reports / Insights surface:
   - margin_by_lane: which routes actually make money: invoiced revenue (excl.
     VAT, net of credit notes) minus the expenses recorded against each load.
     The quoting tool's true-cost engine (fuel + driver + tolls + wear,
-    deadheaded) fills in only where no expense is recorded, flagged as an
-    estimate.
+    with the empty return dropped when a return load is linked) fills in only
+    where no expense is recorded, flagged as an estimate.
   - fastpay_value: reframes the advance programme as VALUE delivered — cash put in
     the operator's hands N days early — and states the true effective cost (APR)
     honestly rather than burying it.
@@ -25,23 +25,6 @@ def _f(v) -> float:
         return 0.0
 
 
-def _modelled_cost(distance, price):
-    """The true-cost model (fuel + driver + tolls + wear, deadheaded) for one
-    load: an ESTIMATE, used only where no actual expense is recorded."""
-    from core.services.margin_calculator import calculate_true_margin
-    if not distance or float(distance) <= 0:
-        return None
-    try:
-        return Decimal(str(calculate_true_margin(
-            {'distance_km': float(distance)},
-            truck_type='articulated', load_type='general',
-            quote_price=Decimal(str(price or 0)),
-        ).true_cost))
-    except Exception as exc:
-        logger.debug('modelled cost skipped: %s', exc)
-        return None
-
-
 def load_economics(company, loads) -> dict:
     """{load_id: per-load revenue and cost, each flagged actual vs estimate}.
 
@@ -50,31 +33,17 @@ def load_economics(company, loads) -> dict:
       count); ESTIMATE = the load price (Load.total_amount, excl. VAT) when
       the load has not been invoiced.
     cost: ACTUAL = non-rejected expenses linked to the load (Expense.load or
-      Expense.trip -> trip.load), net of VAT; ESTIMATE = the true-cost model
-      on the load distance when no expense is linked; None when neither.
+      Expense.trip -> trip.load), net of VAT, always wins; ESTIMATE = the
+      load's own compute() costing (quote snapshot), without the empty return
+      when a return load is linked; the 1,3x standard model only for legacy
+      loads with no costing (estimate_basis says which, see
+      core.services.trip_economics); None when neither.
     """
-    from core.services import report_figures as rf
-    loads = list(loads)
-    ids = [l.pk for l in loads]
-    revenue = rf.revenue_by_load(company, ids)
-    actual = rf.actual_costs_by_load(company, ids)
-    out = {}
-    for l in loads:
-        if l.pk in revenue:
-            rev, rev_basis = revenue[l.pk], 'actual'
-        else:
-            rev, rev_basis = Decimal(str(l.total_amount or 0)), 'estimate'
-        if l.pk in actual:
-            cost, cost_basis = actual[l.pk], 'actual'
-        else:
-            cost = _modelled_cost(l.distance, l.total_amount)
-            cost_basis = 'estimate' if cost is not None else None
-        out[l.pk] = {
-            'load_id': l.pk,
-            'revenue': rev, 'revenue_basis': rev_basis,
-            'cost': cost, 'cost_basis': cost_basis,
-        }
-    return out
+    from core.services.trip_economics import economics_rows
+    rows = economics_rows(company, loads)
+    return {lid: {k: r[k] for k in ('load_id', 'revenue', 'revenue_basis', 'cost', 'cost_basis',
+                                     'estimate_basis', 'paired')}
+            for lid, r in rows.items()}
 
 
 def _basis_of(actual_n, estimate_n):
@@ -100,7 +69,10 @@ def margin_by_lane(company, limit: int = 25, include_loads: bool = False) -> dic
         loads = list(Load.objects
                      .filter(company=company,
                              status__in=['DELIVERED', 'COMPLETED', 'INVOICED', 'IN_TRANSIT'])
-                     .only('id', 'load_number', 'pickup_city', 'delivery_city', 'total_amount', 'distance'))
+                     .only('id', 'load_number', 'pickup_city', 'delivery_city', 'pickup_location',
+                           'delivery_location', 'total_amount', 'distance', 'trip_type', 'return_of',
+                           'costing_snapshot', 'empty_return_assumed', 'costing_source', 'costing_inputs',
+                           'status', 'costs_closed'))
         econ = load_economics(company, loads)
         for l in loads:
             e = econ[l.pk]
@@ -140,6 +112,7 @@ def margin_by_lane(company, limit: int = 25, include_loads: bool = False) -> dic
                     'revenue_excl_vat': rev, 'revenue_basis': e['revenue_basis'],
                     'cost_excl_vat': _f(e['cost']) if e['cost'] is not None else None,
                     'cost_basis': e['cost_basis'],
+                    'estimate_basis': e['estimate_basis'], 'return_pair': e['paired'],
                     'margin': round(rev - _f(e['cost']), 2) if e['cost'] is not None else None,
                 })
     except Exception as exc:

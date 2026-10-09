@@ -1563,9 +1563,62 @@ def _position(price, market):
     return 'within'
 
 
+def analyze_tonnage(payload: dict, *, company) -> dict:
+    """Pricing analysis for a per-tonne quote (QUOTE-RULES "Tonnage quotes"):
+    THE tonnage costing (compute_tonnage), the market range per tonne
+    (core.services.tonnage_market: won, sent, fuel-normalised, privacy rules)
+    and three rates per tonne, each margin on the basis truck. Rates are whole
+    rand per tonne, never below the default rate (target margin / minimum
+    charge). No win model at tonnage level yet (likelihood null)."""
+    from core.services.quote_costing import cents, tonnage_costing_for_payload
+    from core.services.tonnage_market import market_per_tonne
+    costing = tonnage_costing_for_payload(payload, company)
+    t = costing['tonnage']
+    origin, destination = _resolve_lane(payload)
+    market = market_per_tonne(origin, destination, company=company, exclude_quote_id=_i(payload.get('quote_id')))
+    floor_rate = t['default_rate_per_tonne']
+    cpt = t['cost_per_tonne']
+    choices = []
+    if floor_rate is not None and cpt:
+        if market['available']:
+            raw = {'safe': max(floor_rate, market['p25']), 'balanced': max(floor_rate, market['median']),
+                   'stretch': max(floor_rate, market['p75'], market['median'])}
+        else:
+            target = t['target_margin_pct'] or 0.0
+            raw = {k: max(floor_rate, price_for_margin(cpt, (target + pp) / 100.0))
+                   for k, pp in zip(('safe', 'balanced', 'stretch'), NO_MARKET_STEPS_PP)}
+        prev = None
+        for key in ('safe', 'balanced', 'stretch'):
+            rate = float(math.ceil(raw[key] - 1e-9))
+            if prev is not None and rate < prev * (1 + MIN_CHOICE_GAP_PCT / 100.0) - 1e-6:
+                rate = float(math.ceil(prev * (1 + MIN_CHOICE_GAP_PCT / 100.0) - 1e-9))
+            prev = rate
+            billable = t['billable_tonnes'] or 0
+            revenue = cents(rate * billable)
+            choices.append({'key': key, 'label': CHOICE_LABELS[key], 'rate_per_tonne': rate,
+                            'revenue': revenue,
+                            'margin': cents(revenue - t['total_cost']) if t['total_cost'] is not None else None,
+                            'margin_pct': pct_half_up(revenue - t['total_cost'], revenue) if revenue else None,
+                            'recommended': key == 'balanced', 'likelihood': None})
+    rate = t['rate_per_tonne']
+    position = None
+    if rate is not None and market['available'] and market['median']:
+        position = {'rate_per_tonne': rate, 'vs_median_pct': pct_half_up(rate - market['median'], market['median'])}
+    return {
+        'success': True, 'pricing_basis': 'per_tonne', 'costing': costing, 'tonnage': t,
+        'cost_floor': {'total': costing['floor'], 'cost_per_tonne': cpt, 'lines': costing['lines']},
+        'market_per_tonne': market, 'choices': choices, 'position': position,
+        'recommendation': {'key': 'balanced' if choices else None},
+        'warnings': costing['warnings'], 'blocking': costing['blocking'],
+    }
+
+
 def analyze_pricing(payload: dict, *, company, user=None, today: date = None) -> dict:
     started = time.monotonic()
     payload = payload or {}
+    from core.services.quote_costing import is_per_tonne
+    if is_per_tonne(payload):
+        return analyze_tonnage(payload, company=company)
     today = today or timezone.localdate()
     warnings, missing, reasoning = [], [], []
 
@@ -1847,6 +1900,17 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
                 'label': 'With a return load booked',
             }
 
+    # Trip economics: how often this company's trips on the lane found a
+    # return load (context only; the empty-return default never changes).
+    try:
+        from core.services.trip_learning import return_load_share
+        return_history = return_load_share(company, origin, destination)
+    except Exception:
+        logger.warning('return load share failed', exc_info=True)
+        return_history = None
+    if alternative is not None:
+        alternative['return_load_history'] = return_history
+
     return {
         'success': True, 'version': VERSION,
         'computed_ms': int((time.monotonic() - started) * 1000),
@@ -1868,6 +1932,7 @@ def analyze_pricing(payload: dict, *, company, user=None, today: date = None) ->
         'reasoning': [it['text'] for it in reasoning_items],     # old clients
         'reasoning_items': reasoning_items,
         'alternative_with_return_load': alternative,
+        'return_load_history': return_history,
         'warnings': warnings,
         # QUOTE-RULES.md: the authoritative costing behind cost_floor (lines,
         # floor, target price, warnings) and whether the quote may be sent.

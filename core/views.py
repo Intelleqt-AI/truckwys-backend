@@ -2454,7 +2454,10 @@ class VehicleLogViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
         serializer.save(user=self.request.user)
 
 
-class LoadViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
+from core.views_trip_economics import LoadTripEconomicsMixin  # noqa: E402
+
+
+class LoadViewSet(LoadTripEconomicsMixin, CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
     # Actual fuel: approved FUEL expenses on the load's trips (one subquery,
     # not a query per row). Read by LoadSerializer.fuel_cost_actual.
     queryset = Load.objects.all().select_related('company').annotate(
@@ -2621,6 +2624,11 @@ class LoadViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
             elif not vehicle_id and load.status == 'ASSIGNED':
                 load.status = 'PENDING'
             load.save()
+            # Trip economics: a job not costed from a quote is re-costed on
+            # its (new) truck, so "Add the truck to cost this job" clears.
+            if load.costing_source != 'quote':
+                from core.services.trip_costing import cost_load
+                cost_load(load)
             serializer = self.get_serializer(load)
             return Response(serializer.data)
         except Exception as e:
@@ -2779,10 +2787,17 @@ class QuoteFilterSet(django_filters.FilterSet):
     # tagged with a status this app no longer produces), so filtering the
     # Accepted column by status alone must not silently drop them.
     status = django_filters.CharFilter(method='filter_status')
+    # Tonnage quotes: ?pricing_basis=per_tonne; ?contract=true = volume
+    # contracts only (per-tonne quotes with total_tonnes), false = not.
+    contract = django_filters.BooleanFilter(method='filter_contract')
 
     class Meta:
         model = Quote
-        fields = ['status', 'customer']
+        fields = ['status', 'customer', 'pricing_basis']
+
+    def filter_contract(self, queryset, name, value):
+        q = Q(pricing_basis='per_tonne', total_tonnes__isnull=False)
+        return queryset.filter(q) if value else queryset.exclude(q)
 
     def filter_status(self, queryset, name, value):
         # Board columns: ACCEPTED is "won, still to book"; BOOKED is a quote
@@ -2806,6 +2821,32 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
     ordering_fields = ['created_at', 'valid_until']
     pagination_class = QuoteResultsPagination
     billing_blocked_message = 'Update your payment method to continue quoting.'
+
+    def retrieve(self, request, *args, **kwargs):
+        """Quote detail + `actuals`: what the job really earned once delivered
+        (QuoteOutcome, trip economics). Read-only; null until recorded."""
+        response = super().retrieve(request, *args, **kwargs)
+        if isinstance(response.data, dict):
+            from core.models import QuoteOutcome
+            o = (QuoteOutcome.objects.filter(quote_id=response.data.get('id'), outcome='accepted')
+                 .exclude(actuals_recorded_at__isnull=True).first())
+            response.data['actuals'] = None if o is None else {
+                'actual_margin_pct': float(o.actual_margin_pct) if o.actual_margin_pct is not None else None,
+                'backhaul_found': o.backhaul_found,
+                'actual_revenue': float(o.actual_revenue) if o.actual_revenue is not None else None,
+                'actual_cost': float(o.actual_cost) if o.actual_cost is not None else None,
+                'actual_cost_basis': o.actual_cost_basis or None,
+                # Costs not complete yet: the estimate so far (actual where
+                # recorded), labelled by actual_cost_basis; actual_* null.
+                # Costs final (delivered + key costs recorded, or closed);
+                # actual_cost_basis says actual / part_actual like the job card.
+                'complete': o.actual_cost is not None,
+                'estimated_cost': float(o.estimated_cost) if o.estimated_cost is not None else None,
+                'estimated_margin_pct': (float(o.estimated_margin_pct)
+                                         if o.estimated_margin_pct is not None else None),
+                'recorded_at': o.actuals_recorded_at.isoformat(),
+            }
+        return response
 
     def list(self, request, *args, **kwargs):
         # Adds `total_amount` — the sum over every quote matching the
@@ -3038,6 +3079,15 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         serializer = self.get_serializer(quote)
         return Response(serializer.data)
 
+    @action(detail=True, methods=['get'], url_path='booking-preview')
+    def booking_preview(self, request, pk=None):
+        """GET /quotes/{id}/booking-preview/?pickup_date=&delivery_date=
+        &candidate_days=: convert_to_load's `booking` block (return /
+        outbound candidates, invoice preview, costing) WITHOUT creating the
+        job; `can_book` / `blocked` say whether booking would be refused."""
+        from core.services.booking import booking_preview_response
+        return booking_preview_response(request, self.get_object())
+
     @action(detail=True, methods=['post'])
     def convert_to_load(self, request, pk=None):
         """Convert quote to load. Body: { driver_id?, vehicle_id? }
@@ -3051,16 +3101,39 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         action. A driver without a vehicle is rejected as ambiguous.
         """
         import secrets
+        from core.services import booking as bk
         quote = self.get_object()
 
-        # Check if quote already converted — a Load referencing this quote is
-        # the source of truth (not a quote.status value, which no longer
-        # advances past ACCEPTED once converted).
-        if quote.loads.exists():
-            return Response(
-                {'error': 'Quote already converted'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        # Tonnage quotes (QUOTE-RULES "Tonnage quotes"): a VOLUME CONTRACT
+        # (per tonne with a total) books call-off loads (body {tonnes?}) until
+        # its tonnes are used up, so it is never "already booked"; one
+        # consignment books once like any quote.
+        tonnage_fields, contract = {}, None
+        is_contract = quote.pricing_basis == 'per_tonne' and quote.total_tonnes is not None
+        # One-tap booking (trip economics): idempotent. A quote already
+        # converted answers 200 with ITS job (+ the booking block) instead of
+        # creating a second one; a Load referencing the quote is the source of
+        # truth (not quote.status, which stays ACCEPTED once converted).
+        existing = None if is_contract else quote.loads.order_by('pk').first()
+        if existing is not None:
+            return bk.booking_response(request, quote, existing, created=False, view=self)
+        refusal = bk.bookable_or_refusal(quote)
+        if refusal is not None:
+            return refusal
+        outbound, refusal = bk.requested_outbound(request, self)
+        if refusal is not None:
+            return refusal
+        if quote.pricing_basis == 'per_tonne':
+            from core.services.tonnage_jobs import (CallOffError, call_off_tonnes, copy_tonnage_costing,
+                                                    tonnage_load_fields)
+            if quote.rate_per_tonne is None:
+                return Response({'error': 'Set the rate per tonne before booking this quote.'},
+                                status=status.HTTP_400_BAD_REQUEST)
+            try:
+                tonnes, contract = call_off_tonnes(quote, request.data.get('tonnes'))
+            except CallOffError as exc:
+                return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            tonnage_fields = tonnage_load_fields(quote, tonnes)
 
         driver_id = request.data.get('driver_id')
         vehicle_id = request.data.get('vehicle_id')
@@ -3098,6 +3171,7 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
             return timezone.make_aware(datetime.combine(d, datetime.min.time()))
 
         from core.services.lane_benchmark import lane_place
+        from core.services.trip_costing import copy_quote_costing
         pickup_city, pickup_state = lane_place(quote.origin, quote.pickup_location)
         delivery_city, delivery_state = lane_place(quote.destination, quote.delivery_location)
 
@@ -3121,63 +3195,98 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
             return Response({'error': 'The delivery date cannot be before the collection date.'},
                             status=status.HTTP_400_BAD_REQUEST)
 
-        # Create load from quote (stamp the company so it's tenant-scoped/visible)
-        load = Load.objects.create(
-            load_number=load_number,
-            company=getattr(quote, 'company', None) or getattr(request.user, 'company', None),
-            customer=quote.customer,
-            quote=quote,
-            driver=driver,
-            vehicle=vehicle,
-            pickup_location=quote.pickup_location,
-            delivery_location=quote.delivery_location,
-            # City/province from the lane code (blank when unknown) instead of
-            # the old hardcoded 'GP' / '0000', which put Cape Town in Gauteng.
-            pickup_city=pickup_city or 'TBD',
-            pickup_state=pickup_state,
-            pickup_zip='',
-            pickup_lat=quote.pickup_lat,
-            pickup_lng=quote.pickup_lng,
-            # Use the quote's own dates when it has them (now reliably
-            # captured via the AI/voice quote flow) instead of always
-            # discarding them for a generic +2/+4 day placeholder.
-            pickup_date=_date_to_aware_datetime(eff_pickup) or (timezone.now() + timedelta(days=2)),
-            delivery_city=delivery_city or 'TBD',
-            delivery_state=delivery_state,
-            delivery_zip='',
-            delivery_lat=quote.delivery_lat,
-            delivery_lng=quote.delivery_lng,
-            delivery_date=_date_to_aware_datetime(eff_delivery) or (timezone.now() + timedelta(days=4)),
-            # Same list, verbatim — the order's route must show identically
-            # to what the customer actually quoted/accepted.
-            stops=quote.stops,
-            route_geometry=quote.route_geometry,
-            cargo_description=quote.cargo_description,
-            weight=quote.weight,
-            distance=quote.distance,
-            rate=quote.base_rate,
-            fuel_surcharge=quote.fuel_surcharge,
-            toll_charges=quote.toll_charges or 0,
-            driver_allowance=quote.driver_allowance or 0,
-            is_international=quote.is_international,
-            additional_charges=quote.additional_charges,
-            total_amount=quote.total_amount,
-            status='ASSIGNED' if vehicle else 'PENDING',
-            created_by=request.user
-        )
+        from django.db import transaction
+        from core.services.return_loads import LinkError
+        try:
+            with transaction.atomic():
+                # Lock the quote: two taps never make two jobs.
+                locked = Quote.objects.select_for_update().get(pk=quote.pk)
+                raced = None if is_contract else locked.loads.order_by('pk').first()
+                if raced is not None:
+                    raise bk.AlreadyBooked(raced)
+                if is_contract:
+                    # Call-offs never overbook: re-checked under the lock.
+                    from core.services.tonnage_jobs import contract_status
+                    if tonnage_fields['planned_tonnes'] > Decimal(str(contract_status(locked)['remaining_tonnes'])):
+                        return Response({'error': 'Those tonnes are no longer left on this contract.'},
+                                        status=status.HTTP_409_CONFLICT)
+                # Create load from quote (stamp the company so it's tenant-scoped/visible)
+                load = Load.objects.create(**{**dict(
+                    load_number=load_number,
+                    company=getattr(quote, 'company', None) or getattr(request.user, 'company', None),
+                    customer=quote.customer,
+                    quote=quote,
+                    driver=driver,
+                    vehicle=vehicle,
+                    pickup_location=quote.pickup_location,
+                    delivery_location=quote.delivery_location,
+                    # City/province from the lane code (blank when unknown) instead of
+                    # the old hardcoded 'GP' / '0000', which put Cape Town in Gauteng.
+                    pickup_city=pickup_city or 'TBD',
+                    pickup_state=pickup_state,
+                    pickup_zip='',
+                    pickup_lat=quote.pickup_lat,
+                    pickup_lng=quote.pickup_lng,
+                    # Use the quote's own dates when it has them (now reliably
+                    # captured via the AI/voice quote flow) instead of always
+                    # discarding them for a generic +2/+4 day placeholder.
+                    pickup_date=_date_to_aware_datetime(eff_pickup) or (timezone.now() + timedelta(days=2)),
+                    delivery_city=delivery_city or 'TBD',
+                    delivery_state=delivery_state,
+                    delivery_zip='',
+                    delivery_lat=quote.delivery_lat,
+                    delivery_lng=quote.delivery_lng,
+                    delivery_date=_date_to_aware_datetime(eff_delivery) or (timezone.now() + timedelta(days=4)),
+                    # Same list, verbatim — the order's route must show identically
+                    # to what the customer actually quoted/accepted.
+                    stops=quote.stops,
+                    route_geometry=quote.route_geometry,
+                    cargo_description=quote.cargo_description,
+                    weight=quote.weight,
+                    distance=quote.distance,
+                    rate=quote.base_rate,
+                    fuel_surcharge=quote.fuel_surcharge,
+                    toll_charges=quote.toll_charges or 0,
+                    driver_allowance=quote.driver_allowance or 0,
+                    is_international=quote.is_international,
+                    additional_charges=quote.additional_charges,
+                    total_amount=quote.total_amount,
+                    status='ASSIGNED' if vehicle else 'PENDING',
+                    created_by=request.user,
+                    # Trip economics: what the job was priced on (lines incl. the
+                    # empty return, floor, fuel, truck, quoted margin). A
+                    # per-tonne quote's snapshot is the whole plan (a contract's
+                    # many loads), so its job is costed from its own data below.
+                    **(copy_tonnage_costing(quote, tonnage_fields) if quote.pricing_basis == 'per_tonne'
+                       else copy_quote_costing(quote)),
+                ), **tonnage_fields})   # per-tonne: rate x tonnes, planned tonnes
+                if not load.costing_source:
+                    # A legacy quote with no pricing snapshot: cost the job from its
+                    # own data (or mark it unknown) instead of a generic model.
+                    from core.services.trip_costing import cost_load
+                    cost_load(load)
 
-        # Quote stays ACCEPTED — its own lifecycle ends here. The Load created
-        # above (status PENDING/ASSIGNED) now owns delivery progress
-        # (LOADING/IN_TRANSIT/DELIVERED/INVOICED), so nothing on the quote
-        # needs to track that.
+                # Quote stays ACCEPTED — its own lifecycle ends here. The Load created
+                # above (status PENDING/ASSIGNED) now owns delivery progress
+                # (LOADING/IN_TRANSIT/DELIVERED/INVOICED), so nothing on the quote
+                # needs to track that.
 
-        # Converting to a load IS a win — capture the ML label (idempotent:
-        # no-ops when the quote was already recorded as accepted).
-        from core.services.quote_outcome_capture import record_quote_outcome
-        record_quote_outcome(quote, 'accepted')
+                # Converting to a load IS a win — capture the ML label (idempotent:
+                # no-ops when the quote was already recorded as accepted).
+                from core.services.quote_outcome_capture import record_quote_outcome
+                record_quote_outcome(quote, 'accepted')
+                link = bk.link_or_flag(request, load, outbound)
+        except bk.AlreadyBooked as done:
+            return bk.booking_response(request, quote, done.load, created=False, view=self)
+        except LinkError as e:
+            # The requested return link can't exist: nothing was booked.
+            return Response({'code': e.code, 'error': e.message}, status=status.HTTP_400_BAD_REQUEST)
 
-        serializer = LoadSerializer(load)
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
+        response = bk.booking_response(request, quote, load, created=True, view=self, link=link)
+        if contract is not None and isinstance(getattr(response, 'data', None), dict):
+            from core.services.tonnage_jobs import contract_status
+            response.data['volume_contract'] = contract_status(quote)
+        return response
 
     @action(detail=True, methods=['get'])
     def generate_pdf(self, request, pk=None):

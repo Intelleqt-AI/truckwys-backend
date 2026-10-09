@@ -194,6 +194,8 @@ class IntegrationAPIKeyAdmin(admin.ModelAdmin):
     readonly_fields = ['key', 'created_at', 'last_used_at', 'usage_count', 'quota_used', 'quota_period']
 
 
+
+
 @admin.register(AuditLog)
 class AuditLogAdmin(admin.ModelAdmin):
     list_display = ['id', 'user', 'action', 'resource_type', 'resource_id', 'ip_address', 'created_at']
@@ -365,7 +367,8 @@ class WebhookSubscriptionAdmin(admin.ModelAdmin):
     to ONE company. Outbound events go only to the event company's own
     subscriptions; an unbound subscription receives nothing. Non-superuser
     staff only see and assign their own company."""
-    list_display = ['id', 'partner_name', 'company', 'webhook_url', 'is_active', 'last_delivery_at', 'failure_count']
+    list_display = ['id', 'partner_name', 'company', 'webhook_url', 'is_active', 'allow_legacy_signature',
+                    'last_delivery_at', 'failure_count']
     list_filter = ['is_active']
     search_fields = ['partner_name', 'webhook_url', 'company__company_name']
     form = _SafeWebhookURLForm

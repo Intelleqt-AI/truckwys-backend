@@ -413,3 +413,164 @@ Copy the file into each client repo's test fixtures (keep identical).
 - Quote list (`total_amount`, `total_incl_vat`, new `incomplete_count`), board pipeline totals and the
   dashboard pipeline value leave out incomplete quotes (snapshot blocking, or tolls unknown).
 
+
+## Trip economics (8 Oct 2026, branch truckwys/trip-economics)
+Accurate job margins when a return load is added after a quote, and TMS sync that updates instead of skipping.
+
+- **Costing on the job.** `convert_to_load` copies the quote's compute() snapshot onto the Load: `costing_snapshot`
+  (lines incl. the `empty_return` leg), `cost_floor`, `empty_return_assumed`, fuel snapshot (`fuel_price_used`,
+  `fuel_price_source`, `fuel_zone`, `fuel_effective_from`, `fuel_litres`), `priced_vehicle_type`, `trip_type` +
+  `return_*`, `costing_inputs`, and the as-quoted `quoted_price` / `quoted_cost_floor` / `quoted_margin_pct` (never
+  changed afterwards). `costing_source`: `quote` | `computed` (a TMS load costed by compute() from its own data:
+  distance, weight, its truck's vehicle type, the tolls / driving time / driver cost the TMS sent, company diesel)
+  | `unknown` (no truck, or an incomplete floor — never a guessed truck or a partial sum) | `''` legacy. All
+  server-written (read-only through the load API).
+- **Return-load link.** `Load.return_of` (one-to-one, self): the return points at its outbound; one return per
+  outbound; pairs only. Blocks: other company, self, cancelled, round trip, a leg already paired. Warns (links
+  anyway): different truck type / assigned truck, return not starting ≤ 100 km from the drop or not ending ≤ 100 km
+  from home (coordinates, else place names), collected before the drop or > 14 days after. Candidates: collected
+  near the drop from 1 day before to N days after delivery (default 7, max 30), lane reversal first.
+- **Estimate per load** (`core.services.trip_economics.estimate`): the load's own snapshot lines; while linked,
+  the `empty_return` lines are removed on BOTH legs (`snapshot_return_linked`); any unknown remaining line = no
+  estimate (`snapshot_incomplete`). The 1,3× dead-head standard model is used only for legacy loads with no
+  snapshot (`legacy_deadhead`, label "Standard estimate (distance × 1,3 for an empty return)"), × 1,0 when paired
+  (`legacy_paired`). Actual expenses (excl. VAT) always win for cost; issued invoices (excl. VAT, net of credit
+  notes) for revenue. Used by `/loads/{id}/economics/`, TripCostView, `load_economics` (lane reports, transport
+  route report, capital scoring) and the intelligence route-pricing alert (invoiced delivered loads, ≥ 3, 180 days).
+- **Pair P&L**: legs (revenue, actual vs estimated cost, estimate basis / label / lines, removed empty-return
+  lines, margin, quoted margin, margin vs quoted) and combined (revenue, cost, margin, quoted floor and margin of
+  both, `empty_return_removed`). Combined quoted margin = (Σ quoted price − Σ quoted floor) / Σ quoted price.
+- **Recompute**: signals (link / unlink, expense, invoice, credit note, load save / delete) refresh
+  `Load.estimated_cost` / `estimate_basis` after commit, idempotent; `manage.py recompute_trip_economics` back-fills.
+- **TMS**: `Load.external_id` unique per company; trips/sync upserts on it; fleet/sync finds by external_id or
+  load_number. Every change audited (ActivityEvent, old → new); re-costed when distance / weight / trip type /
+  costing inputs (or, for non-quote jobs, the truck) change; a quoted job keeps its quoted_* figures. Invoices are
+  never changed: `invoice_mismatch` {code `invoice_differs_from_rate`, invoice, amounts} flags a difference.
+- **Learning**: on delivery, the QuoteOutcome gets `actual_revenue`, `actual_cost`, `actual_margin_pct`,
+  `actual_cost_basis`, `backhaul_found` (labels only; never features; written without moving created_at /
+  updated_at). Pricing analysis returns `return_load_history` {trips, found, share_pct, enough, window_days 180,
+  min_sample 5, text} — "On this lane 60% of your trips found a return load (12 of 20)." Context only: the
+  empty-return default never changes automatically.
+- **One-tap booking**: `POST /quotes/{id}/convert_to_load/` is idempotent (200 + the existing job), refuses
+  DECLINED / EXPIRED (409 `quote_not_bookable`) and a blocked DRAFT (400 `quote_send_blocked`, same send guard),
+  takes `return_of_load_id` / `expect_return`, and adds `booking` {return_link, return / outbound candidates,
+  invoice_preview, costing, economics}. `invoicing.invoice_lines_for_load` is the single source of the delivery
+  invoice's lines (hook for per-tonne / weighbridge billing); the preview equals what delivery raises.
+- **Follow-ups (8 Oct, coordinator):** pairs only in v1; triangular routes (A→B, B→C, C→A) are future work. A job
+  whose costing is `unknown` / incomplete has NO estimate (no silent 1,3× fallback) and every economics / costing
+  response carries `missing: [{code, prompt}]`, e.g. `{code: "no_vehicle", prompt: "Add the truck to cost this
+  job"}` (codes: no_vehicle, distance_missing, distance_estimated, tolls_unknown, driver_nights_unknown,
+  diesel_missing, truck_burn_missing, border_costs_missing, overload). Quote detail (`GET /quotes/{id}/`) adds
+  read-only `actuals` {actual_margin_pct, backhaul_found, actual_revenue, actual_cost, actual_cost_basis,
+  recorded_at} or null. Fleet vehicle/driver webhooks require the timestamped HMAC (see the deploy doc).
+- **After merging toll-border-coverage (8 Oct):** a job with no quote is costed with the same toll/border engine:
+  tolls by point-to-polyline matching on its own `route_geometry` at the truck's SANRAL class on the pickup-date
+  tariffs (way back on `return_route_geometry` when sent), border costs per leg in travel order (out, and back as
+  its own leg) via `calculate_cross_border_costs`, unknown crossings -> `border_costs_missing`. TMS figures win;
+  `costing_inputs.route_costs` records what the engine filled. Load costing inputs carry the new keys
+  (`toll_cost_return`, `border_cost_empty_return`, `border_estimate`, `border_estimate_empty_return`,
+  `border_costs_unknown`, `border_cost_is_override`, `clearing_agent_fee`, `abnormal_load`) from the quote.
+  Trip-economics migrations are 0166–0176 (after the toll branch's 0160–0165). compute() unchanged by this branch.
+- **UI round 3 (8 Oct):** one cost label rule for the job card and the quote outcome (web `costLabel`, app
+  `costLabelFor`): actual + complete "Actual costs"; actual not complete "Actual so far · not final"; part actual
+  complete "Part actual · running cost estimated" / not complete "Part actual · not final"; estimate "Estimate ·
+  quote costing | job costing (never quoted) | standard …". QuoteOutcome.actual_cost_basis is the job card's
+  basis (part_actual while the running cost is estimated). Trip money shows to the cent. Return candidates never
+  offer DELIVERED / INVOICED jobs. `estimate_label` says "Job costing" for a job costed from its own data.
+
+## Tonnage quotes (8 Oct 2026, owner-approved)
+Quote by the tonne: **rate per tonne × actual (weighbridge) tonnes, never below a minimum per load.** One
+costing engine: every cost below is `compute()` (§4-§7, empty-return rules included) for one load on one truck;
+`quote_costing.compute_tonnage(inputs)` (PURE, golden `tonnage_rules` / `tonnage_cases`) only combines them.
+
+**Inputs.** `pricing_basis`: `per_load` (every existing quote, unchanged) | `per_tonne`. `tonnes_per_load` (one
+consignment, or the planned load size of a contract; null = full payload), `total_tonnes` (volume contract; null =
+one consignment of `tonnes_per_load`), `min_tonnes_per_load` (null = the basis truck's planned load), optional
+`vehicle_type_id` (the chosen truck; null = truck unknown), `rate_per_tonne` (excl. VAT, null = not set yet).
+Pure input shape: `{lane: compute() inputs without vehicle/load/price/operating cost, trucks: [{vehicle,
+operating_cost_per_km, operating_cost_source, diesel?, tolls?}], tonnes_per_load, total_tonnes,
+min_tonnes_per_load, vehicle_type_id, rate_per_tonne}`.
+
+**Trucks (A).** Every truck type in the company's fleet that can carry it: the §3 suggestion rule (own visible
+types with an AVAILABLE vehicle; specialised bodies only when the cargo calls for them) plus capacity and rated
+burn known (else `excluded` with `capacity_missing` / `burn_missing`). With `tonnes_per_load` (one consignment, or a contract's
+planned load): only trucks with payload ≥ it (others `too_small`); none → all of them (one consignment: split into
+loads, `tonnes_exceed_payload`). The chosen
+truck is always priced. Per truck:
+- `load_t = min(tonnes_per_load, payload)`; `loads_needed = ceil(total / load_t)`; `last_load_t = total − (n−1)·load_t`
+  (tonnes `round(x, 6)`).
+- `cost_per_load = compute(load_kg = load_t·1000).floor`; the last load is priced at its own tonnes
+  (`cost_last_load`); `total_cost = cents((n−1)·cost_per_load + cost_last_load)`.
+- `billable_tonnes = (n−1)·max(load_t, min) + max(last_load_t, min)`; `cost_per_tonne = cents(total_cost / billable)`
+  — each truck at its own planned load as minimum unless one was typed.
+- **Basis** = the chosen truck, else the **safest = highest cost per tonne** (tie: smaller payload, then higher id);
+  no known cost → smallest payload (`basis_reason: costs_unknown`). Summary: "Superlink 34 t R 1 118/t · Tautliner
+  30 t R 1 068/t" (highest first).
+- `target_rate_per_tonne = ceil(cost_per_tonne_basis / (1 − target))` whole rand; `default_rate_per_tonne =
+  max(target_rate, ceil(company minimum_charge / min_t))` (`default_price_per_km` does not apply). The quote's
+  minimum = typed, else the basis truck's `load_t`. `minimum_charge_per_load = cents(rate × min)`.
+- At the rate (user's, else default) every truck shows `at_rate {billable_tonnes, revenue = cents(rate × billable at
+  the quote minimum), margin, margin_pct}` — "on a Superlink you'd make 22%".
+- compute()-compatible top level over the whole plan on the basis truck: `floor` = total cost, `lines` = each line
+  `cents((n−1)·full + last)` (+ `per_load_amount`, `loads`), `litres.total`, `price` = revenue at the user's rate,
+  `margin`, `margin_pct`, `target_price`, `default_price` (rate × billable), `diesel`, `trip`, `vehicle`, `warnings`,
+  `blocking`, `can_send`; plus `pricing_basis: "per_tonne"` and `tonnage {…}` (contract in the API notes below).
+
+**Warnings.** Lane/truck warnings from the basis truck's compute() (diesel, tolls, distance, driver, border, suspect
+truck). Added: `tonnage_missing` (block), `no_eligible_trucks` (block), `below_minimum_charge` (block, per load); `rate_below_cost`
+(**warn**, like `below_floor` — rate < cost per tonne on the basis truck; detail names the loss, impact = margin,
+`target_rate_per_tonne`, action `use_target_rate` labelled "Price at target · R x/t"), `tonnes_exceed_payload`
+(warn), `partial_last_load` (warn), `below_minimum_tonnes` (warn), `minimum_above_payload` (warn),
+`chosen_truck_unavailable` (warn).
+
+**Quote fields** (migration 0158, additive, reversible): `pricing_basis`, `rate_per_tonne`, `total_tonnes`,
+`tonnes_per_load`, `min_tonnes_per_load`, `loads_planned` (server-set), `basis_vehicle_type` (= the CHOSEN truck;
+null = unknown → safest; the truck actually priced is `priced_vehicle_type`). `costing_inputs.tolls_by_vehicle_type
+{id: {one_way, empty_return}}` gives each truck its own toll class (else the route's tolls apply to every truck).
+Snapshot on save (§9) works unchanged on the compatible keys and also stores `costing_snapshot.tonnage`;
+`total_amount` is server-set to rate × billed tonnes on the basis truck; `margin_percentage` at the rate. Send guard
+(§11) and reopen notice use the same costing. Per-tonne quotes are **never per-load evidence** (`won_quote_q`,
+`lost_quote_q`, `sent_q` add `pricing_basis = per_load`; win-model training excludes them). Weight-over-capacity
+validation is skipped for per-tonne quotes (they split into loads).
+
+**Market per tonne** (`core.services.tonnage_market`, in the pricing analysis): won + sent per-tonne quotes on the
+lane, one-way, last 180 days, as known at `as_of`; fuel-normalised `adj_rate = rate + litres_per_billed_tonne ×
+(price_today − price_hist)` (snapshot litres / billed tonnes, else left out when the price moved). Platform first
+(other operators only, ≥ 10 quotes from ≥ 3 operators, figures to the nearest R 5/t, no raw/mean/operator count),
+then company (≥ 5, to the rand), else no market. Choices Safe/Balanced/Stretch per tonne = max(default rate,
+p25/median/p75), or default + 0/8/16 pp without a market; whole rand, ≥ 3% apart; no win model per tonne yet.
+
+**PDF.** "R 1 300 per tonne · minimum 30 t per load · est. 20 loads for 600 t" above the (estimated) total, with
+"invoiced per load on the weighbridge tonnes delivered, never below the minimum per load".
+
+**Jobs (C).** `convert_to_load` on a per-tonne quote: one consignment → one Load (once) with `pricing_basis`,
+`rate_per_tonne`, `min_tonnes`, `planned_tonnes`, `total_amount = rate × max(planned, min)` (not itemised per load).
+Volume contract = the Quote itself; each call-off `POST convert_to_load {tonnes?}` (default the planned load size,
+capped at what remains; more than remains → 400) creates a Load referencing it; remaining = total − Σ(actual else
+planned tonnes of non-cancelled loads). Quote API `volume_contract {total_tonnes, booked_tonnes, remaining_tonnes,
+loads_booked, loads_planned, tonnes_per_load}`.
+
+**Invoicing (B).** Load `actual_tonnes` (weighbridge; editable on the load, `actual_tonnes_source` weighbridge |
+manual | tms — **the field a TMS sync writes: trip-economics branch**). Invoice line = quantity max(actual, min) t ×
+rate. No actual tonnes at delivery → planned tonnes, invoice stays DRAFT with the note "Awaiting weighbridge tonnes:
+invoiced on planned tonnes.", never auto-emailed, team notified. Entering the actual tonnes re-prices the load and
+its DRAFT invoice (issued invoices only via credit note). Load API `tonnage {tonnes, tonnes_source, min_tonnes,
+billable_tonnes, rate_per_tonne, amount, awaiting_weighbridge, flag}`.
+
+**Client screens (8 Oct 2026).** Volume contracts list: `GET /quotes/?contract=true` (also `?pricing_basis=per_tonne`).
+Quote fields `contract_start` / `contract_end` (dates, end ≥ start) are the contract period (display and booking aid,
+not priced); one lane per contract in v1 (a client with several lanes has one contract per lane).
+`volume_contract` adds `delivered_tonnes` (weighbridge tonnes on record), the period and `loads [{id, load_number,
+status, pickup_date, planned_tonnes, actual_tonnes, weighbridge_slip, total_amount}]`. Load `weighbridge_slip`
+(ticket number, optional) is saved with the weighbridge tonnes.
+
+**Verifier fixes (8 Oct 2026).** Migration 0177 gives every new NOT NULL column a `db_default` (`quotes.pricing_basis`,
+`loads.pricing_basis`, `loads.actual_tonnes_source`, `loads.weighbridge_slip`): code from before 0177 still inserts.
+Call-off `tonnes` (convert_to_load, booking-preview `?tonnes=`): a finite number above 0 with at most 3 decimals
+(`28,5` or `28.5`), else 400 (`invalid_tonnes` on the preview); at least 0,1 t; one consignment at most its quoted tonnes;
+a contract at most the remaining tonnes and at most the largest eligible truck's payload (`volume_contract.
+max_tonnes_per_load`; clients cap at the same figure). Call-offs are costed at booking from the contract's priced truck
+(one full load, `costing_source: "quote"`). TMS `actual_tonnes` that is not a finite number above 0 and up to 100 t with at
+most 3 decimals is a per-record SyncError; a CANCELLED load ignores it. Weighbridge tonnes that change the amount after the
+invoice is issued set `invoice_mismatch {code: "weighed_after_invoicing", ...}` and never re-price. The invoice line names
+the slip ("Weighbridge slip WB-1042") and says "planned" for planned tonnes.

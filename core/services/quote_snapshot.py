@@ -22,6 +22,9 @@ PRICING_FIELDS = frozenset({
     'distance', 'weight', 'vehicle_type', 'toll_charges', 'driver_allowance', 'fuel_surcharge',
     'total_amount', 'base_rate', 'base_rate_per_km', 'trip_type', 'costing_inputs', 'additional_charges',
     'estimated_duration_minutes', 'return_distance', 'pickup_location', 'delivery_location', 'stops',
+    # Tonnage quotes
+    'pricing_basis', 'rate_per_tonne', 'total_tonnes', 'tonnes_per_load', 'min_tonnes_per_load',
+    'basis_vehicle_type',
 })
 
 SNAPSHOT_KEYS = ('version', 'trip', 'vehicle', 'diesel', 'litres', 'lines', 'floor', 'floor_known',
@@ -52,8 +55,17 @@ def snapshot_fields(costing, now):
         'priced_vehicle_type_id': vehicle.get('id'),
         'empty_return_included': costing['trip']['empty_return_included'],
         'cost_floor': _dec(costing['floor'], '0.01') if costing['floor'] is not None else None,
-        'costing_snapshot': {k: costing.get(k) for k in SNAPSHOT_KEYS},
+        'costing_snapshot': {k: costing.get(k) for k in SNAPSHOT_KEYS
+                             + (('pricing_basis', 'tonnage') if 'tonnage' in costing else ())},
     }
+    if costing.get('pricing_basis') == 'per_tonne':
+        # Tonnage quote: total_amount is the rate x billed tonnes on the basis
+        # truck (server-set, like the margin). The per-load fields (tolls,
+        # driver, distance) stay as entered: they are the lane's inputs.
+        t = costing['tonnage']
+        out['loads_planned'] = t['loads_planned']
+        if costing.get('price') is not None:
+            out['total_amount'] = _dec(costing['price'], '0.01')
     if costing.get('margin_pct') is not None:
         # Server-side margin % on the stored floor and price (margin on price).
         # The true margin on price; null only past what the column holds.
@@ -82,6 +94,11 @@ def itemise_quote(quote, now=None):
     from core.models import Quote
     from core.services.quote_costing import cents, costing_for_quote
     now = now or timezone.now()
+    if getattr(quote, 'pricing_basis', 'per_load') == 'per_tonne':
+        # A tonnage quote is not itemised per load: its tolls / driver /
+        # distance fields are the lane's per-load inputs (the plan's totals
+        # would corrupt them). The snapshot re-prices it and sets the total.
+        return snapshot_quote(quote, now)
     try:
         costing = costing_for_quote(quote, now)
     except Exception:
@@ -134,8 +151,13 @@ def _snapshot(quote, now, Quote, costing_for_quote):
     fields = snapshot_fields(costing, now)
     if fields['priced_vehicle_type_id'] is not None:
         from core.models import VehicleType
-        if not VehicleType.objects.filter(id=fields['priced_vehicle_type_id']).exists():
+        priced_name = VehicleType.objects.filter(id=fields['priced_vehicle_type_id']).values_list('name', flat=True).first()
+        if priced_name is None:
             fields['priced_vehicle_type_id'] = None
+        elif getattr(quote, 'pricing_basis', 'per_load') == 'per_tonne' and quote.basis_vehicle_type_id is None:
+            # Truck unknown: the quote names the truck it was priced on (the
+            # safest), never a different one a client showed.
+            fields['vehicle_type'] = priced_name[:50]
     if quote.fuel_price_at_creation is None and fields['fuel_price_used'] is not None:
         # Legacy field, kept for old readers: the zone price this quote
         # was priced on (never a fallback figure).
