@@ -744,6 +744,37 @@ class SavedQuoteInputsTests(_Base):
                          Decimal(str(round((36000 - float(q.cost_floor)) / 36000 * 100, 2))))
 
 
+class SavedDriverNightsTests(_Base):
+    """costing_inputs.driver_nights: nights the user applied in the builder
+    (a typed driver amount still wins)."""
+
+    def test_applied_nights_saved_and_priced(self):
+        from core.services.quote_costing import costing_for_quote
+        q = self.create(costing_inputs={'driver_nights': 3, 'include_empty_return': False})
+        self.assertEqual(q.costing_inputs['driver_nights'], 3)
+        line = next(ln for ln in costing_for_quote(q)['lines'] if ln['key'] == 'driver')
+        rate = line['rate_per_night']
+        self.assertEqual(line['nights'], 3)
+        self.assertEqual(line['amount'], round(3 * rate, 2))
+        self.assertEqual(line['source'], 'suggested')
+
+    def test_number_forms_accepted_and_bad_values_refused(self):
+        q = self.create(costing_inputs={'driver_nights': '2'})
+        self.assertEqual(q.costing_inputs['driver_nights'], 2)
+        q = self.create(costing_inputs={'driver_nights': 1.0})
+        self.assertEqual(q.costing_inputs['driver_nights'], 1)
+        r = self.api.post('/api/v1/quotes/', self.quote_payload(costing_inputs={'driver_nights': -1}), format='json')
+        self.assertEqual(r.status_code, 400)
+
+    def test_typed_amount_wins_over_applied_nights(self):
+        from core.services.quote_costing import costing_for_quote
+        q = self.create(driver_allowance='1000',
+                        costing_inputs={'driver_nights': 3, 'driver_cost_is_override': True,
+                                        'include_empty_return': False})
+        line = next(ln for ln in costing_for_quote(q)['lines'] if ln['key'] == 'driver')
+        self.assertEqual((line['amount'], line['source']), (1000.0, 'user'))
+
+
 class AiCheckOnComputeTests(_Base):
     PAYLOAD = {'origin': 'JHB', 'destination': 'DBN', 'distance_km': 568.4, 'duration_minutes': 440,
                'weight': 28000, 'vehicle_type': 'Superlink', 'toll_cost': 1043.48, 'fuel_cost': 6000,
