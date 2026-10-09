@@ -376,7 +376,8 @@ FX_LIVE_FETCH = (not _RUNNING_TESTS) and config('FX_LIVE_FETCH', default=True, c
 EMAIL_DELIVERY = 'off' if _RUNNING_TESTS else config(
     'EMAIL_DELIVERY', default='console' if DEBUG else 'resend').strip().lower()
 if EMAIL_DELIVERY not in ('resend', 'console', 'off'):
-    EMAIL_DELIVERY = 'resend'
+    # A typo never sends real email from a DEBUG (dev) server.
+    EMAIL_DELIVERY = 'console' if DEBUG else 'resend'
 if EMAIL_DELIVERY == 'console':
     # Django's own mail (invites, password reset) prints too.
     EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'

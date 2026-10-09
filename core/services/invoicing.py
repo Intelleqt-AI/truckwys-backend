@@ -13,6 +13,10 @@ from django.utils import timezone
 logger = logging.getLogger(__name__)
 
 
+FUEL_ZERO_NOTE = ('Fuel price adjustment: the official price fell so far that it cancels the freight line. '
+                  'Invoiced at R 0,00; check it before sending.')
+
+
 def _unique_invoice_number() -> str:
     """A provisional number for a new draft. The sequential number is
     allocated when the invoice is issued (core.services.numbering)."""
@@ -83,6 +87,13 @@ def create_invoice_for_load(load, *, company=None, mark_sent: bool = False):
             invoice.notes = f'{invoice.notes}\n{AWAITING_WEIGHBRIDGE}: invoiced on planned tonnes.'
             mark_sent = False
         apply_lines(invoice, invoice_lines_for_load(load, company))
+        if invoice.subtotal <= 0:
+            # A fuel price drop took the whole freight line (the discount is
+            # capped at the line): still invoiced, but said so, and never sent
+            # as it stands.
+            invoice.notes = f'{invoice.notes}\n{FUEL_ZERO_NOTE}'
+            Invoice.objects.filter(pk=invoice.pk).update(notes=invoice.notes)
+            mark_sent = False
         if mark_sent:
             invoice.status = 'SENT'
             invoice.sent_at = timezone.now()

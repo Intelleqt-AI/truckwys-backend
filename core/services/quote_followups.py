@@ -198,6 +198,8 @@ REASON_TEXT = {
 
 def reminder_allowed(quote, fu=None, now=None):
     now = now or timezone.now()
+    if getattr(quote.company, 'is_demo', False):
+        return False, 'demo'            # the demo account never emails customers
     if quote.status != 'SENT':
         return False, 'not_sent'
     if quote.valid_until and quote.valid_until < _sast_date(now):

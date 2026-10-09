@@ -200,6 +200,10 @@ def adjustment(quote, load=None, now=None):
            'amount_zar': None, 'direction': None, 'description': None}
     if terms is None:
         return out
+    if not terms['stamped'] and (load is not None or (quote.pk and quote.loads.exists())):
+        # Booked straight from a draft (one-tap booking): the customer never saw
+        # a clause, so the invoice never carries one; don't show one either.
+        return out
     trip, trip_source = trip_date_for(quote, load)
     today = now.astimezone(SAST).date()
     at = min(_trip_moment(trip), now) if trip > today else _trip_moment(trip)

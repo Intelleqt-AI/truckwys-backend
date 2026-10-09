@@ -110,8 +110,12 @@ class QuoteFuelAdjustmentView(APIView):
         # load's adjustment; each call-off's own is on its load.
         is_contract = getattr(quote, 'pricing_basis', 'per_load') == 'per_tonne' and quote.total_tonnes is not None
         load = None if is_contract else quote.loads.order_by('-created_at').first()
-        return Response({'success': True, 'quote_id': quote.id, 'load_id': getattr(load, 'id', None),
-                         **_adjustment_response(adjustment(quote, load=load))})
+        from core.services.quote_pdf import diesel_reference_line
+        out = _adjustment_response(adjustment(quote, load=load))
+        # The PDF's fuel line, so a draft can show "what the PDF will say"
+        # (reference + clause) without rebuilding it on the client.
+        out['reference'] = diesel_reference_line(quote) if out.get('clause') else None
+        return Response({'success': True, 'quote_id': quote.id, 'load_id': getattr(load, 'id', None), **out})
 
 
 class LoadFuelAdjustmentView(APIView):

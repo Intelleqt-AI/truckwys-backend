@@ -606,8 +606,9 @@ API JSON: `FOLLOWUPS-CLIENT-SPEC.md` (tw-wt root). Endpoints in `core/views_quot
   the one before by ≥ R 0,005, per (fuel, zone). Beat 00:10 + 06:20 SAST, plus queued after every successful
   `refresh_fuel_price` and after a staff MANUAL price that is in force. Per company and fuel, once per period:
   open quotes (DRAFT/SENT, valid_until ≥ today SAST, priced before the change, same fuel + zone) with
-  `changes_since_priced` (changed = |Δfloor| ≥ R 1). Copy: "Diesel up R 3,24/L today. 6 open quotes are now under
-  your 10% target. Re-price them?" ("on Wed 7 Oct" when the run is later; down: "… now cost less to run.").
+  `changes_since_priced` (changed = |Δfloor| ≥ R 1). Copy: "Diesel up R 3,24/L on Wed 7 Oct. 6 open quotes are now
+  under your 10% target. Re-price them?" (always the change's own date, never "today": the text is stored; down:
+  "… now cost less to run.").
   Bell for every user; push category `quote_reminders`; own email (lists ≤ 25 quotes) to users with email
   `fuel_alerts` on. A MANUAL then FIASA price in one period alerts once (the first).
 - **Nudges.** Beat 08:00 SAST. SENT quotes only; `expiry_nudge_days` (2) → "Quote Q-123 for Acme expires on Fri."
@@ -619,7 +620,8 @@ API JSON: `FOLLOWUPS-CLIENT-SPEC.md` (tw-wt root). Endpoints in `core/views_quot
 - **Weekly margin email.** Monday 07:00 SAST, active ADMINs with email `margin_report` on, company switch
   `weekly_margin_email_enabled`. One service function `margin_review.weekly_margin_figures` (also
   `GET /reports/weekly-margin/`) on `reports.load_economics`; actual margin uses only `cost_basis == 'actual'`
-  (the modelled estimate is never shown as actual). No email when nothing happened in 4 weeks.
+  (the modelled estimate is never shown as actual). No email when nothing happened in 4 weeks. `quotes.*.created`
+  counts quotes made in the window, so clients can say "quoted, nothing decided yet" rather than "nothing quoted".
 - **Pricing setup.** `GET /company/pricing-setup/`: target margin, operating cost, driver allowance, fuel mode —
   set when a save changed it ("changed"), the user confirmed the shown value ("confirmed") or the migration
   saw a non-default value ("inferred"). Driver default text from `quote_costing.driver_rate()` (the approved

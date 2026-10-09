@@ -164,6 +164,11 @@ def flag_weighed_after_invoicing(load, invoice, billing):
     if adj is not None:
         weighed = max(weighed + adj['amount'], Decimal('0'))
     if abs(invoiced - weighed) < Decimal('0.01'):
+        # Back in line with the invoice: drop an earlier weighed-after-invoicing flag.
+        current = getattr(load, 'invoice_mismatch', None)
+        if isinstance(current, dict) and current.get('code') == 'weighed_after_invoicing':
+            Load.objects.filter(pk=load.pk).update(invoice_mismatch={})
+            load.invoice_mismatch = {}
         return None
     flag = {
         'code': 'weighed_after_invoicing', 'invoice_id': invoice.pk, 'invoice_number': invoice.invoice_number,
@@ -229,7 +234,8 @@ def call_off_tonnes(quote, requested=None):
     the planned load size), never more than what remains nor more than the
     largest eligible truck carries. Always at least 0,1 t. Raises CallOffError."""
     from core.services.quote_costing import fmt_num
-    t = lambda d: f'{fmt_num(float(d), 0 if d == d.to_integral() else 3).rstrip("0").rstrip(",")} t'
+    t = lambda d: (f'{fmt_num(float(d), 0)} t' if d == d.to_integral()
+                   else f'{fmt_num(float(d), 3).rstrip("0").rstrip(",")} t')
     tonnes = parse_tonnes(requested) if requested not in (None, '') else None
     if quote.total_tonnes is None:
         if quote.loads.exists():
