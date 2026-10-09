@@ -13,8 +13,14 @@ were today's. Rates are fetched at most once a day and cached:
 If a fetch fails the last good rate is used (kept 30 days); failing that, the
 fallback table below — and the rate then says "rate as of <date>" with
 ``is_fallback`` set, so a quote can show it is not today's rate.
+
+A failed source is not asked again for FAILURE_BACKOFF_SECONDS: while SARB
+or ExchangeRate-API is down, every lookup goes straight to the last good
+rate instead of waiting out another timeout (a Zimbabwe route needs about a
+dozen lookups, so retrying each one made a quote take minutes and time out).
 """
 import logging
+import time
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -41,6 +47,33 @@ FALLBACK = {
 
 _DAY_KEY = 'fx:zar:{cur}:{day}'
 _LAST_GOOD_KEY = 'fx:zar:{cur}:last'
+_DOWN_KEY = 'fx:source-down:{source}'
+FAILURE_BACKOFF_SECONDS = 300
+# Only used while the cache itself is unavailable, so the backoff still holds:
+# {source: monotonic time it may be asked again}.
+_down_until = {}
+
+
+def _source_for(cur: str) -> str:
+    return 'sarb' if cur == 'USD' else 'erapi'
+
+
+def _source_down(source: str) -> bool:
+    try:
+        return bool(cache.get(_DOWN_KEY.format(source=source)))
+    except Exception:
+        return _down_until.get(source, 0) > time.monotonic()
+
+
+def _mark_down(source: str) -> None:
+    try:
+        cache.set(_DOWN_KEY.format(source=source), 1, FAILURE_BACKOFF_SECONDS)
+    except Exception:
+        _down_until[source] = time.monotonic() + FAILURE_BACKOFF_SECONDS
+
+
+def _mark_up(source: str) -> None:
+    _down_until.pop(source, None)
 
 
 @dataclass(frozen=True)
@@ -110,9 +143,11 @@ def get_rate(currency: str, today: date = None) -> Rate:
         hit = None
     if hit:
         return Rate(cur, Decimal(hit[0]), date.fromisoformat(hit[1]), hit[2])
-    if _live_enabled():
+    feed = _source_for(cur)
+    if _live_enabled() and not _source_down(feed):
         try:
             value, as_of, source = fetch_live(cur)
+            _mark_up(feed)
             payload = (str(value), as_of.isoformat(), source)
             try:
                 cache.set(day_key, payload, 60 * 60 * 26)
@@ -121,7 +156,11 @@ def get_rate(currency: str, today: date = None) -> Rate:
                 pass
             return Rate(cur, value, as_of, source)
         except Exception as exc:
-            logger.warning('FX fetch for %s failed: %s', cur, exc)
+            # Don't ask this source again for a few minutes: use the last
+            # good rate (labelled not today's) instead of waiting again.
+            _mark_down(feed)
+            logger.warning('FX fetch for %s failed (skipping %s for %ss): %s',
+                           cur, feed, FAILURE_BACKOFF_SECONDS, exc)
     try:
         last = cache.get(_LAST_GOOD_KEY.format(cur=cur))
     except Exception:

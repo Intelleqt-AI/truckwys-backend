@@ -232,6 +232,44 @@ class ExchangeRateTests(TestCase):
         self.assertEqual(r.zar_per_unit, Decimal('17.10'))
         self.assertTrue(r.is_fallback)
 
+    @override_settings(FX_LIVE_FETCH=True)
+    def test_a_down_source_is_not_asked_again_for_a_while(self):
+        # While SARB is down, one failed lookup is enough: the next ones go
+        # straight to the last good rate instead of waiting out a timeout.
+        with mock.patch.object(fx, 'fetch_live', side_effect=OSError('down')) as f:
+            rates = [fx.get_rate('USD', date(2026, 10, 9)) for _ in range(12)]
+        self.assertEqual(f.call_count, 1)
+        self.assertTrue(all(r.is_fallback for r in rates))
+        self.assertEqual(rates[-1].zar_per_unit, fx.FALLBACK['USD'][0])
+
+    @override_settings(FX_LIVE_FETCH=True)
+    def test_sources_back_off_separately_and_recover(self):
+        with mock.patch.object(fx, 'fetch_live', side_effect=OSError('down')):
+            fx.get_rate('MZN', date(2026, 10, 9))                      # ExchangeRate-API down
+        with mock.patch.object(fx, 'fetch_live', return_value=(Decimal('17.10'), date(2026, 10, 9), 'SARB EXCX135D')) as f:
+            usd = fx.get_rate('USD', date(2026, 10, 9))               # SARB still asked
+            fx.get_rate('BWP', date(2026, 10, 9))                      # same down source: skipped
+        self.assertEqual(f.call_count, 1)
+        self.assertFalse(usd.is_fallback)
+        cache.delete(fx._DOWN_KEY.format(source='erapi'))              # the backoff ends
+        with mock.patch.object(fx, 'fetch_live', return_value=(Decimal('0.26'), date(2026, 10, 9), 'ExchangeRate-API')) as f:
+            mzn = fx.get_rate('MZN', date(2026, 10, 9))
+        self.assertEqual((f.call_count, mzn.is_fallback), (1, False))
+
+    @override_settings(FX_LIVE_FETCH=True)
+    def test_backoff_holds_when_the_cache_is_down(self):
+        fx._down_until.clear()
+        broken = mock.MagicMock(get=mock.Mock(side_effect=RuntimeError('cache down')),
+                                set=mock.Mock(side_effect=RuntimeError('cache down')))
+        try:
+            with mock.patch.object(fx, 'cache', broken), \
+                    mock.patch.object(fx, 'fetch_live', side_effect=OSError('down')) as f:
+                fx.get_rate('USD', date(2026, 10, 9))
+                fx.get_rate('USD', date(2026, 10, 9))
+            self.assertEqual(f.call_count, 1)
+        finally:
+            fx._down_until.clear()
+
     def test_lines_carry_the_rate_they_used(self):
         r = cb.calculate_cross_border_costs(['SA', 'ZW'], 1120, **INTERLINK)
         rate = line(r, 'zw_border_access_toll')['fx']
