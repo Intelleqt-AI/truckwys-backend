@@ -506,6 +506,9 @@ def refresh_fuel_price(self):
             'Fuel price refreshed: diesel_inland=R%.4f source=%s date=%s',
             fp.diesel_inland, fp.source, fp.date,
         )
+        # A new price may have been stored: tell companies about open quotes
+        # it affects (idempotent per company per period).
+        queue_fuel_change_alerts()
         return {'diesel_inland': float(fp.diesel_inland), 'source': fp.source}
     except Retry:
         raise
@@ -792,6 +795,46 @@ def sweep_maintenance_due():
 @shared_task(name='core.tasks.sweep_expired_quotes')
 def sweep_expired_quotes():
     from core.services.notification_sweeps import sweep_expired_quotes as run
+    return run()
+
+
+# ---------------------------------------------------------------------------
+# Quote follow-ups (Oct 2026): fuel change alert, nudges, weekly margin email.
+# ---------------------------------------------------------------------------
+
+@shared_task(name='core.tasks.send_fuel_change_alerts')
+@track_task_run('send_fuel_change_alerts')
+def send_fuel_change_alerts(refresh=True):
+    """Per company, once per price period per fuel: how the new official
+    price affects open quotes (core.services.fuel_change_alerts). Runs at
+    00:10 and 06:20 SAST daily and after every successful price refresh;
+    a no-op unless the price in force changed this period."""
+    from core.services.fuel_change_alerts import run_fuel_change_alerts
+    return run_fuel_change_alerts(refresh=refresh)
+
+
+def queue_fuel_change_alerts():
+    """Queue the alert run without a refresh (the caller just stored a price).
+    Never raises, never blocks on a down broker."""
+    try:
+        send_fuel_change_alerts.apply_async(kwargs={'refresh': False}, retry=False)
+        return True
+    except Exception as exc:
+        logger.warning('Could not queue the fuel change alerts: %s', exc)
+        return False
+
+
+@shared_task(name='core.tasks.sweep_quote_nudges')
+@track_task_run('sweep_quote_nudges')
+def sweep_quote_nudges():
+    from core.services.quote_followups import sweep_quote_nudges as run
+    return run()
+
+
+@shared_task(name='core.tasks.send_weekly_margin_emails')
+@track_task_run('send_weekly_margin_emails')
+def send_weekly_margin_emails():
+    from core.services.margin_review import send_weekly_margin_emails as run
     return run()
 
 

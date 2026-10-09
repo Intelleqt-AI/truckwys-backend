@@ -39,6 +39,11 @@ from .views_import import (
     VehicleImportValidateView, VehicleImportCommitView,
 )
 from .views_bulk_delete import CustomerBulkDeleteView, VehicleBulkDeleteView
+from .views_quote_followups import (
+    QuoteAutomationSettingsView, PricingSetupView, QuoteFuelAdjustmentView, LoadFuelAdjustmentView,
+    FuelChangeAlertListView, FuelChangeAlertDetailView, QuoteFollowUpView, QuoteReminderView,
+    WeeklyMarginReportView,
+)
 from .views_ai_quote import (
     AIChatQuoteView, AIQuoteAnalyzeView, AIQuotePriceAnalysisView, AIQuoteSuggestionView, AIVoiceQuoteView,
     FuelPriceCurrentView, FuelPriceRefreshView, FuelPriceSurchargeCheckView,
@@ -328,6 +333,16 @@ urlpatterns = [
     path('quotes/guard/', RevenueGuardView.as_view(), name='quotes-guard'),
     path('quotes/<int:quote_id>/outcome/', QuoteOutcomeView.as_view(), name='quote-outcome'),
     path('quotes/<int:quote_id>/fuel-alert/', QuoteFuelAlertView.as_view(), name='quote-fuel-alert'),
+    # Quote follow-ups (core/views_quote_followups.py)
+    path('company/quote-automation/', QuoteAutomationSettingsView.as_view(), name='company-quote-automation'),
+    path('company/pricing-setup/', PricingSetupView.as_view(), name='company-pricing-setup'),
+    path('quotes/<int:quote_id>/fuel-adjustment/', QuoteFuelAdjustmentView.as_view(), name='quote-fuel-adjustment'),
+    path('loads/<int:load_id>/fuel-adjustment/', LoadFuelAdjustmentView.as_view(), name='load-fuel-adjustment'),
+    path('fuel-alerts/', FuelChangeAlertListView.as_view(), name='fuel-change-alerts'),
+    path('fuel-alerts/<int:alert_id>/', FuelChangeAlertDetailView.as_view(), name='fuel-change-alert'),
+    path('quotes/<int:quote_id>/follow-up/', QuoteFollowUpView.as_view(), name='quote-follow-up'),
+    path('quotes/<int:quote_id>/follow-up/reminder/', QuoteReminderView.as_view(), name='quote-follow-up-reminder'),
+    path('reports/weekly-margin/', WeeklyMarginReportView.as_view(), name='report-weekly-margin'),
     path('quotes/model-stats/', QuoteModelStatsView.as_view(), name='quote-model-stats'),
     path('quotes/benchmark/', QuoteBenchmarkView.as_view(), name='quote-benchmark'),
     path('quotes/win-probability/', QuoteWinProbabilityView.as_view(), name='quote-win-probability'),

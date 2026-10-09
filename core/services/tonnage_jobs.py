@@ -137,10 +137,11 @@ def refresh_load_amount(load, save=True):
     load.total_amount = load.rate = amount
     inv = Invoice.objects.filter(load=load, status='DRAFT').first()
     if inv is not None:
-        from core.services.invoice_lines import apply_lines, load_tax_code
-        from core.services.invoicing import _load_line_description
-        line = invoice_line_for_load(load, _load_line_description(load))
-        apply_lines(inv, [{**line, 'tax_code': load_tax_code(load, inv.company), 'load': load.pk}])
+        from core.services.invoice_lines import apply_lines
+        from core.services.invoicing import invoice_lines_for_load
+        # The same lines a fresh invoice gets (incl. a fuel price adjustment,
+        # which follows the billed tonnes).
+        apply_lines(inv, invoice_lines_for_load(load, inv.company))
         note = f'{AWAITING_WEIGHBRIDGE}: invoiced on planned tonnes.'
         notes = (inv.notes or '').replace(note, '').strip()
         if b['awaiting_weighbridge']:
@@ -155,6 +156,13 @@ def flag_weighed_after_invoicing(load, invoice, billing):
     from core.models import ActivityEvent, Load
     invoiced = (invoice.total_amount or Decimal('0')) - (invoice.vat_amount or Decimal('0'))
     weighed = _money(billing['amount'])
+    # The issued invoice may carry a fuel price adjustment (quote follow-ups);
+    # compare like with like: the weighed amount plus the adjustment those
+    # tonnes would carry. Nothing is added to the issued invoice itself.
+    from core.services.fuel_surcharge import invoice_adjustment_for_load
+    adj = invoice_adjustment_for_load(load)
+    if adj is not None:
+        weighed = max(weighed + adj['amount'], Decimal('0'))
     if abs(invoiced - weighed) < Decimal('0.01'):
         # Back in line with the invoice: drop an earlier weighed-after-invoicing flag.
         current = getattr(load, 'invoice_mismatch', None)

@@ -17,6 +17,10 @@ NOTIFICATION_DEFAULTS = {
         "payments": True,
         "fleet_alerts": True,
         "weekly_reports": False,
+        # Quote follow-ups (Oct 2026): the fuel change alert email and the
+        # Monday margin email (admins only). Both opt-out.
+        "fuel_alerts": True,
+        "margin_report": True,
     },
     "push": {
         "new_bookings": True,
@@ -26,6 +30,8 @@ NOTIFICATION_DEFAULTS = {
         # Defaults False: App Store Review 4.5.4 forbids marketing/promotion
         # push without express opt-in. Mirrors core/views.py's NOTIFICATION_DEFAULTS.
         "product_news": False,
+        # Quote follow-ups: expiry / no-answer nudges and the fuel change alert.
+        "quote_reminders": True,
     },
     # SMS is visible-but-disabled in the UI; kept in the schema so stored
     # values round-trip, but no sender consults it yet.
@@ -58,6 +64,12 @@ EVENT_CATEGORY = {
     "payment.received": {"email": "payments", "push": "payment_received"},
     "maintenance.due": {"email": "fleet_alerts", "push": "maintenance_due"},
     "driver.status_changed": {"push": "driver_updates"},
+    # Quote follow-ups. Email for these is sent by their own senders (the
+    # fuel alert lists the quotes; nudges are bell/push only), so no email
+    # category here — notify_company must not send a second, generic email.
+    "quote.fuel_alert": {"push": "quote_reminders"},
+    "quote.expiring": {"push": "quote_reminders"},
+    "quote.no_answer": {"push": "quote_reminders"},
 }
 
 
