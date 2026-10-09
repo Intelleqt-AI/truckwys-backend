@@ -58,6 +58,10 @@ def snapshot_fields(costing, now):
         'costing_snapshot': {k: costing.get(k) for k in SNAPSHOT_KEYS
                              + (('pricing_basis', 'tonnage') if 'tonnage' in costing else ())},
     }
+    # The truck fuel figure it was priced on (measured by the tracker or
+    # typed), compact: a later re-measure then explains a cost change.
+    from core.services.trip_costing import compact_burn
+    compact_burn(out['costing_snapshot'])
     if costing.get('pricing_basis') == 'per_tonne':
         # Tonnage quote: total_amount is the rate x billed tonnes on the basis
         # truck (server-set, like the margin). The per-load fields (tolls,

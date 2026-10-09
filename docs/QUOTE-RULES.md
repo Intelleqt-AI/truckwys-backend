@@ -626,3 +626,53 @@ API JSON: `FOLLOWUPS-CLIENT-SPEC.md` (tw-wt root). Endpoints in `core/views_quot
   set when a save changed it ("changed"), the user confirmed the shown value ("confirmed") or the migration
   saw a non-default value ("inferred"). Driver default text from `quote_costing.driver_rate()` (the approved
   NBCRFLI allowance when on record).
+
+## Measured fuel use from the fleet tracker (8 Oct 2026, fleet-actuals)
+- Source data (audited against Cartrack's OpenAPI spec): distance = `GET /vehicles/:reg/odometer` (`distance`
+  metres; windows with `odometer_reset` / `terminal_has_changed` rejected); litres = CAN fuel-used counter
+  `GET /fuel/consumed/:reg` (preferred) else Cartrack's refuel-adjusted tank estimate `GET /fuel/level/:reg`
+  `estimated_fuel_used` (calibrated sensor, final readings only). `GET /trips` carries no fuel; fuel-card data is not
+  exposed; CtrlFleet's API has no odometer or fuel at all.
+- Weekly Celery job (`refresh_fleet_fuel_actuals`, Mon 02:30 SAST; only companies with a connected Cartrack
+  account) measures the last 90 days (ending 24 h ago) in ≤ 30-day windows per truck and stores
+  `FleetFuelMeasurement` rows per truck and per vehicle type (distance, litres, averages, sample size, period,
+  source, confidence, rejections). Windows outside 12–80 L/100 km, or with an impossible distance (≤ 1 day: average > 110 km/h; longer: > 1 500
+  km/day), are rejected; a truck whose readings don't come back keeps its previous row and its type keeps its type row; with 3+ trucks a
+  truck > 35% off the type median is left out of the type figure.
+- Rated (full-load) burn from measurements, inverting §4: with ≥ 2 000 km on recorded loads (completed TMS trips
+  with times and load weight, ratio = min(load t / truck t, 1)): `rated = 100 × litres_on_loads / Σ km_i × (0,70 +
+  0,30 × r_i)`. Otherwise overall: `rated = 100 × litres_all / (Σ_loads km_i × f(r_i) + other_km × f(0,5))`, i.e.
+  unlinked km assumed half-loaded on average (full out, empty back). Usable for pricing when built on ≥ 2 000 km,
+  plausible (not < 20 L/100 km for ≥ 8 t; ≤ 80), computed ≤ 35 days ago and the tracker still connected.
+- Pricing (DB layer only, compute() and golden unchanged): `quote_costing.resolve_rated_burn` feeds compute()'s
+  `vehicle.rated_burn_l_per_100km` = measured figure, unless the type's `burn_mode` is CONFIGURED or the quote's
+  `costing_inputs.use_configured_burn` is true; then the typed figure. Output `resolution.rated_burn` {value,
+  source measured|configured|standard|missing, label, configured, measured, mode, chosen_by}. Labels:
+  "Measured by Cartrack: 34,2 L/100 km over 18 400 km (90 days)", "Your figure: 42,0 L/100 km (vehicle type
+  settings)", "Standard estimate: 38,0 L/100 km (TruckWys default for this truck type)" (shared default type).
+  Route calculate uses the same figure.
+- DB-side warnings (not in golden): `truck_burn_suspect` (typed figure pricing) gains "; Cartrack measured
+  40,2 L/100 km." and action `use_measured_burn`; `truck_burn_differs_measured` (warn) when the typed figure
+  prices and differs > 15% from a usable measured one: "Your fuel figure differs from measured" / "42,0 set,
+  34,0 L/100 km measured.", actions `use_measured_burn`, `edit_vehicle`.
+- API: `GET /api/v1/fleet/fuel-actuals/`, `POST .../vehicle-types/<id>/burn-mode/ {mode: AUTO|MEASURED|CONFIGURED}`
+  (admin), `POST .../refresh/` (admin, queues the job; one per company per 15 min from the last start, else 429 "You can
+  refresh again at 14:35." with `next_at`; GET adds `refresh_next_at`); vehicle types gain read-only
+  `fuel_use_in_use`. No tracker call ever happens in a request.
+- Snapshot: `costing_snapshot.rated_burn` {value, source, label, configured, measured_at, measured_value} records the
+  truck fuel figure a saved quote was priced on (and `resolution.rated_burn` is stored in the same compact form).
+  Reopen (`cost-breakdown` with `quote_id`): `changes_since_priced.fuel_use_change` {then, now, source_then, source_now,
+  measured_at_then, measured_at_now, text} when the figure differs (≥ 0,05); its text is appended to the notice, e.g.
+  "Costs down R 112 since 7 Oct. Margin 23% → 23%. Fuel use updated from Cartrack (40,2 → 38,9 L/100 km)." Other
+  texts: "Fuel use now measured by Cartrack (42,0 → 40,2 L/100 km).", "Fuel use now from your figure (…).",
+  "Truck fuel use changed (…).". `changes_since_priced()` (pure, golden) is unchanged; `snapshot.rated_burn` echoed.
+- Truck suggestion (§3): eligibility and the burn tie-break use the burn in use (measured when usable).
+- With the stack (8 Oct, after merging tonnage-quotes): tonnage quotes price every compared truck on its own burn
+  in use (cost per tonne, basis truck and rates follow the measured figure); each `tonnage.trucks` row adds
+  `burn_source` / `burn_label`, `resolution.rated_burn` is the basis truck's, and the snapshot keeps it. Jobs keep
+  the burn they were costed on (`Load.costing_snapshot.rated_burn`, copied from the quote or set when a TMS job is
+  costed from its own data); the economics `fuel` cost group carries it as `rated_burn`. Migration
+  `0180_fleet_fuel_measurements` (after `0179_quote_followups_backfill`; NOT NULL columns have `db_default`).
+  Fuel price clause: its litres (`Quote.fuel_litres`) come from the same costing as `costing_snapshot.rated_burn`,
+  so the clause adjusts the litres of the figure the quote was priced on; a re-measure never changes them.
+  Dev notes: `docs/FLEET_ACTUALS.md`.

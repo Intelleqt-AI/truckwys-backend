@@ -81,7 +81,9 @@ class CartrackClient:
         raise CartrackAPIError(f'Cartrack {method} {path} failed after {MAX_RATE_LIMIT_RETRIES} rate-limit retries')
 
     def get_vehicles(self) -> List[Dict[str, Any]]:
-        """GET /vehicles — used to validate credentials when a company connects."""
+        """GET /vehicles — used to validate credentials when a company connects.
+        Each row carries `registration` and `sensors` {fuel_canbus_consumed,
+        fuel_canbus_level, fuel_analog_level, electric_battery, electric_charging}."""
         data = self._request('GET', '/vehicles')
         return data.get('data', data) if isinstance(data, dict) else (data or [])
 
@@ -105,6 +107,46 @@ class CartrackClient:
         }
         data = self._request('GET', '/trips', params=params)
         return data.get('data', data) if isinstance(data, dict) else (data or [])
+
+    # --- Fuel / distance (OpenAPI spec developer.cartrack.com/openapi/openapi.yaml,
+    # read 8 Oct 2026). Every one of these takes start/end 'YYYY-MM-DD HH:MM:SS'
+    # with a maximum 31-day window. Registration goes in the path.
+
+    @staticmethod
+    def _ts(value: datetime) -> str:
+        return value.strftime('%Y-%m-%d %H:%M:%S')
+
+    def _data_object(self, path: str, start: datetime, end: datetime) -> Optional[Dict[str, Any]]:
+        data = self._request('GET', path, params={'start_timestamp': self._ts(start),
+                                                  'end_timestamp': self._ts(end)})
+        if isinstance(data, dict):
+            inner = data.get('data', data)
+            return inner if isinstance(inner, dict) else None
+        return None
+
+    def get_odometer(self, registration: str, start: datetime, end: datetime) -> Optional[Dict[str, Any]]:
+        """GET /vehicles/:registration/odometer -> data {start_odometer_value,
+        end_odometer_value, distance (METRES), odometer_reset, terminal_has_changed,
+        terminal_serial, start_timestamp, end_timestamp, last_event_ts}. CAN
+        odometer when the device reads one, else GPS-derived. Cartrack's own
+        guidance: use this, never summed trip_distance, for period totals."""
+        from urllib.parse import quote
+        return self._data_object(f'/vehicles/{quote(registration, safe="")}/odometer', start, end)
+
+    def get_fuel_consumed(self, registration: str, start: datetime, end: datetime) -> Optional[Dict[str, Any]]:
+        """GET /fuel/consumed/:registration -> data {fuel_consumed_start,
+        fuel_consumed_end, fuel_consumed (whole LITRES)}: the CAN-bus fuel-used
+        counter (sensor flag `fuel_canbus_consumed` on GET /vehicles)."""
+        from urllib.parse import quote
+        return self._data_object(f'/fuel/consumed/{quote(registration, safe="")}', start, end)
+
+    def get_fuel_level(self, registration: str, start: datetime, end: datetime) -> Optional[Dict[str, Any]]:
+        """GET /fuel/level/:registration -> data {start_period {liters, timestamp,
+        accurate}, end_period {...}, estimated_fuel_used (litres, Cartrack's
+        algorithm over all level points, i.e. refuel-adjusted), calibrated}.
+        Needs a calibrated tank sensor (`fuel_canbus_level` or `fuel_analog_level`)."""
+        from urllib.parse import quote
+        return self._data_object(f'/fuel/level/{quote(registration, safe="")}', start, end)
 
     def get_door_events(self, start: datetime, end: datetime) -> List[Dict[str, Any]]:
         """GET /topics/vehicles/door — door open/close events, gated behind the
@@ -152,15 +194,20 @@ class CartrackIntegration(FleetIntegrationBase):
     @staticmethod
     def _parse_trip(trip: Dict[str, Any]) -> Dict[str, Any]:
         # trip_distance is documented in meters, hence the /1000 to km.
+        # start_location / end_location are plain strings in the OpenAPI spec.
+        def _place(v):
+            return (v.get('address', '') if isinstance(v, dict) else (v or ''))
         return {
-            'origin': (trip.get('start_location') or {}).get('address', ''),
-            'destination': (trip.get('end_location') or {}).get('address', ''),
+            'origin': _place(trip.get('start_location')),
+            'destination': _place(trip.get('end_location')),
             'distance_km': Decimal(str(trip.get('trip_distance', 0))) / Decimal('1000'),
             'vehicle_reg': trip.get('registration', ''),
             'driver_name': trip.get('driver_name', ''),
             'start_date': trip.get('start_timestamp'),
             'end_date': trip.get('end_timestamp'),
-            'fuel_litres': Decimal(str(trip.get('fuel_used', 0))),
+            # GET /trips has no fuel field at all (spec, Oct 2026): fuel per
+            # period comes from GET /fuel/consumed or /fuel/level instead.
+            'fuel_litres': None,
             'toll_cost': Decimal('0'),
             'source': 'cartrack_api',
         }

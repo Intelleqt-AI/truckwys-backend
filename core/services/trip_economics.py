@@ -210,6 +210,8 @@ def merge_costs(load, est, actual_groups):
         est_groups.setdefault(g, None)
         if est_groups[g] is not None:
             est_groups[g] = None
+    snap = getattr(load, 'costing_snapshot', None) or {}
+    burn = snap.get('rated_burn') or (snap.get('resolution') or {}).get('rated_burn')
 
     def _rows(used_actual_only=False):
         names = list(dict.fromkeys(list(est_groups) + list(actual_groups)))
@@ -225,6 +227,10 @@ def merge_costs(load, est, actual_groups):
             rows.append({'group': g, 'estimated': _f(e), 'actual': _f(a),
                          'used': _f(used if used is not None else (ZERO if used_actual_only else None)),
                          'basis': 'actual' if a is not None else ('none' if used_actual_only else 'estimate')})
+            if g == 'fuel':
+                # The truck fuel figure the fuel estimate was costed on
+                # (measured by the tracker or typed), as saved on the job.
+                rows[-1]['rated_burn'] = burn
         return rows
 
     if not actual_groups:
