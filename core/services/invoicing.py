@@ -13,6 +13,10 @@ from django.utils import timezone
 logger = logging.getLogger(__name__)
 
 
+FUEL_ZERO_NOTE = ('Fuel price adjustment: the official price fell so far that it cancels the freight line. '
+                  'Invoiced at R 0,00; check it before sending.')
+
+
 def _unique_invoice_number() -> str:
     """A provisional number for a new draft. The sequential number is
     allocated when the invoice is issued (core.services.numbering)."""
@@ -47,13 +51,13 @@ def create_invoice_for_load(load, *, company=None, mark_sent: bool = False):
         return None, False
     if not getattr(load, 'customer', None):
         return None, False
-    from core.services.tonnage_jobs import AWAITING_WEIGHBRIDGE, invoice_line_for_load, load_billing
+    from core.services.tonnage_jobs import AWAITING_WEIGHBRIDGE, load_billing
     billing = load_billing(load)
     subtotal = Decimal(str(billing['amount'])) if billing else (load.total_amount or Decimal('0'))
     if subtotal <= 0:
         return None, False
 
-    from core.services.invoice_lines import apply_lines, customer_terms, due_date_for, load_tax_code
+    from core.services.invoice_lines import apply_lines, customer_terms, due_date_for
     from django.db import transaction
 
     company = company or getattr(load, 'company', None)
@@ -83,6 +87,13 @@ def create_invoice_for_load(load, *, company=None, mark_sent: bool = False):
             invoice.notes = f'{invoice.notes}\n{AWAITING_WEIGHBRIDGE}: invoiced on planned tonnes.'
             mark_sent = False
         apply_lines(invoice, invoice_lines_for_load(load, company))
+        if invoice.subtotal <= 0:
+            # A fuel price drop took the whole freight line (the discount is
+            # capped at the line): still invoiced, but said so, and never sent
+            # as it stands.
+            invoice.notes = f'{invoice.notes}\n{FUEL_ZERO_NOTE}'
+            Invoice.objects.filter(pk=invoice.pk).update(notes=invoice.notes)
+            mark_sent = False
         if mark_sent:
             invoice.status = 'SENT'
             invoice.sent_at = timezone.now()
@@ -106,23 +117,34 @@ def invoice_lines_for_load(load, company=None):
     tonnes while awaiting the weighbridge) and unit_price = rate per tonne;
     everything downstream (VAT, totals, preview) follows."""
     from core.services.invoice_lines import load_tax_code
+    from core.services.fuel_surcharge import apply_to_invoice_lines
     from core.services.tonnage_jobs import invoice_line_for_load, load_billing
     company = company or getattr(load, 'company', None)
     if load_billing(load) is not None:
         # Per tonne: quantity = max(weighbridge tonnes, minimum), else the
         # planned tonnes (flagged "Awaiting weighbridge tonnes").
-        return [{**invoice_line_for_load(load, _load_line_description(load)),
-                 'tax_code': load_tax_code(load, company), 'load': load.pk}]
-    return [{
-        'description': _load_line_description(load),
-        'quantity': 1,
-        'unit_price': Decimal(str(load.total_amount or 0)),
-        # The company's default code (STANDARD for a VAT vendor, NO_VAT
-        # otherwise); an international load is zero-rated (s11(2)(a)),
-        # matching the VAT 0% its quote showed the customer.
-        'tax_code': load_tax_code(load, company),
-        'load': load.pk,
-    }]
+        lines = [{**invoice_line_for_load(load, _load_line_description(load)),
+                  'tax_code': load_tax_code(load, company), 'load': load.pk}]
+    else:
+        lines = [{
+            'description': _load_line_description(load),
+            'quantity': 1,
+            'unit_price': Decimal(str(load.total_amount or 0)),
+            # The company's default code (STANDARD for a VAT vendor, NO_VAT
+            # otherwise); an international load is zero-rated (s11(2)(a)),
+            # matching the VAT 0% its quote showed the customer.
+            'tax_code': load_tax_code(load, company),
+            'load': load.pk,
+        }]
+    # Fuel price clause (core.services.fuel_surcharge): when the load's quote
+    # went out with the clause and the official price on the trip date moved
+    # past the threshold, add "Fuel price adjustment (diesel R 32,80 →
+    # R 34,10/L)" (up) or discount the freight line (down). Per tonne: the
+    # litres follow the load's billed tonnes. Here, so the booking preview,
+    # the manual convert, the delivery auto-invoice and a weighbridge
+    # re-price all carry the same adjustment.
+    apply_to_invoice_lines(load, lines)
+    return lines
 
 
 def invoice_preview(load):
