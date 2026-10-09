@@ -27,6 +27,19 @@ def _lock_key(company):
     return f'fleet-fuel-refresh:{company.id}'
 
 
+def _claim_lock(company, now):
+    key = _lock_key(company)
+    if cache.add(key, now.isoformat(), REFRESH_LOCK_SECONDS):
+        return True
+    stale = cache.get(key)
+    if stale is None or refresh_state(company, now)['next_at'] is not None:
+        return False
+    if not cache.add(f'{key}:takeover:{stale}', 1, 60):
+        return False
+    cache.set(key, now.isoformat(), REFRESH_LOCK_SECONDS)
+    return True
+
+
 def refresh_state(company, now=None):
     """{queued, next_at, next_at_dt}: queued = started and no run has finished
     since; next_at = when "Refresh now" can run again (SAST ISO) or None."""
@@ -165,9 +178,11 @@ class FleetFuelRefreshView(APIView):
         now = timezone.now()
         state = refresh_state(company, now)
         if state['next_at'] is None:
-            # Expired or missing: claim it (add() is atomic between two presses).
-            cache.delete(_lock_key(company))
-            if cache.add(_lock_key(company), now.isoformat(), REFRESH_LOCK_SECONDS):
+            # Missing or expired: claim it. Never delete-then-add (two
+            # simultaneous presses could both queue): add() is atomic, and a
+            # lock the cache still holds past its cooldown is taken over through
+            # a one-off claim key that only one press can add.
+            if _claim_lock(company, now):
                 refresh_fleet_fuel_actuals.delay(company_id=company.id)
                 return Response({'queued': True, 'next_at': timezone.localtime(
                     now + timedelta(seconds=REFRESH_LOCK_SECONDS)).isoformat(),
@@ -178,5 +193,3 @@ class FleetFuelRefreshView(APIView):
         return Response({'error': f'You can refresh again at {at}.' if at else 'A refresh is already on its way.',
                          'code': 'refresh_cooldown', 'queued': state['queued'], 'next_at': state['next_at']},
                         status=status.HTTP_429_TOO_MANY_REQUESTS)
-        return Response({'queued': True, 'message': 'Refreshing from your tracker; this takes a few minutes.'},
-                        status=status.HTTP_202_ACCEPTED)

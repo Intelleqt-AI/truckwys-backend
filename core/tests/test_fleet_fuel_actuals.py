@@ -882,3 +882,109 @@ class RefreshRobustnessTests(_Base):
         self.assertIsNotNone(run.finished_at)
         self.assertNotIn('boom', run.message)
         self.assertEqual(self.type_row().computed_at, before.computed_at)
+
+
+def _http(status=200, body=b''):
+    import requests
+    r = requests.Response()
+    r.status_code = status
+    r._content = body
+    r.headers['Content-Type'] = 'application/json'
+    return r
+
+
+class EmptyAnswerAndRaceTests(_Base):
+    """Re-verifier round: 200s with no reading, load-window-only outages, and
+    two simultaneous "Refresh now" presses (adapted from the verifier's probes)."""
+    jhb_dbn_trips = RefreshRobustnessTests.jhb_dbn_trips
+
+    def snap(self):
+        return sorted(FleetFuelMeasurement.objects.values_list(
+            'scope', 'vehicle_id', 'vehicle_type_id', 'rated_burn_l_per_100km', 'distance_km', 'sufficient',
+            'confidence', 'computed_at'), key=lambda r: (r[0], r[1] or 0, r[2] or 0))
+
+    def good(self):
+        for p in ('PX1GP', 'PX2GP'):
+            self.truck(p)
+            self.fake.add(p, rated=40.0, idle_ratio=0.5)
+        self.assertEqual(self.refresh().status, 'ok')
+        self.assertTrue(ffa.usable(self.type_row(), self.company, NOW)[0])
+        return self.snap()
+
+    def real_client(self, answer, roster_ok=True):
+        """The real CartrackClient: /vehicles answers the fake roster, every
+        other call answers `answer` (a 200 with the given body)."""
+        import json
+        from core.integrations.cartrack import CartrackClient
+        c = CartrackClient('u', 'p', 'https://fleetapi-za.cartrack.test')
+        roster = {'data': self.fake.get_vehicles()}
+
+        def req(method, url, **kw):
+            if roster_ok and url.endswith('/vehicles'):
+                return _http(200, json.dumps(roster).encode())
+            return answer()
+        return c, req
+
+    def test_empty_200_bodies_keep_every_row(self):
+        before = self.good()
+        for body in (b'', b'{"data": null}', b'[]', b'{}'):
+            c, req = self.real_client(lambda b=body: _http(200, b))
+            with patch.object(c._session, 'request', side_effect=req):
+                run = ffa.refresh_company(self.company, client=c, now=NOW)
+            self.assertEqual(run.status, 'partial', body)
+            self.assertEqual(self.snap(), before, body)
+            self.assertNotIn('no_odometer', str(FleetFuelMeasurement.objects.values_list('rejections', flat=True)))
+            self.assertEqual(qc.resolve_rated_burn(self.company, self.vt)['source'], 'measured')
+
+    def test_empty_vehicle_list_is_a_failed_run_and_keeps_everything(self):
+        from core.integrations.cartrack import CartrackClient
+        before = self.good()
+        for body in (b'{"data": []}', b'[]', b'{"data": null}', b''):
+            c = CartrackClient('u', 'p', 'https://fleetapi-za.cartrack.test')
+            with patch.object(c._session, 'request', return_value=_http(200, body)):
+                run = ffa.refresh_company(self.company, client=c, now=NOW)
+            run.refresh_from_db()
+            self.assertEqual((run.status, run.message),
+                             ('failed', 'Cartrack sent no trucks. Your last measured figures are kept.'), body)
+            self.assertIsNotNone(run.finished_at)
+            self.assertEqual(self.snap(), before, body)
+            self.assertNotEqual(self.type_row().note, 'No tracked trucks of this type in the last refresh.')
+            self.assertEqual(qc.resolve_rated_burn(self.company, self.vt)['source'], 'measured')
+
+    def test_load_window_failures_keep_the_loaded_figure(self):
+        import requests
+        v = self.truck('PT1GP')
+        segs = self.jhb_dbn_trips(v, n=6)
+        self.fake.add('PT1GP', rated=42.0, km_per_day=150, segments=segs, idle_ratio=0.0)
+        self.refresh()
+        before = self.snap()
+        self.assertEqual(FleetFuelMeasurement.objects.get(scope='VEHICLE', vehicle=v).rated_method, 'loaded_trips')
+        orig = self.fake.get_odometer
+
+        def odo(reg, a, b):
+            if (b - a) < timedelta(days=1):           # only the load windows fail
+                raise requests.ConnectionError('flap')
+            return orig(reg, a, b)
+        with patch.object(self.fake, 'get_odometer', side_effect=odo):
+            run = self.refresh()
+        self.assertEqual(run.status, 'partial')
+        self.assertEqual(self.snap(), before)
+        self.assertEqual(FleetFuelMeasurement.objects.get(scope='VEHICLE', vehicle=v).rated_method, 'loaded_trips')
+        self.assertEqual(self.type_row().rated_method, 'loaded_trips')
+
+    def test_double_press_race_queues_once(self):
+        """Two presses that both read 'no lock' before either claims it."""
+        from core import views_fleet_fuel as vf
+        url = '/api/v1/fleet/fuel-actuals/refresh/'
+        real = vf.refresh_state
+        calls = {'n': 0}
+
+        def state(company, now=None):
+            calls['n'] += 1
+            return {'queued': False, 'next_at': None, 'next_at_dt': None} if calls['n'] <= 2 else real(company, now)
+        with patch('core.tasks.refresh_fleet_fuel_actuals.delay') as d, \
+                patch.object(vf, 'refresh_state', side_effect=state):
+            a = self.api.post(url).status_code
+            b = self.api.post(url).status_code
+        self.assertEqual(sorted((a, b)), [202, 429])
+        self.assertEqual(d.call_count, 1)

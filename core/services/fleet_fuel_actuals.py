@@ -331,6 +331,12 @@ def _measure(client, registration, method, start, end, min_km):
     except _tracker_errors() as exc:
         return {'start': start, 'end': end, 'km': None, 'litres': None, 'l_per_100km': None,
                 'reject': 'api_error', 'detail': str(exc)[:160]}
+    # A 200 with no reading (empty body, {"data": null}, a list) is the
+    # tracker not answering, not "no odometer": the truck keeps its row.
+    empty = [name for name, body in (('odometer', odo), ('fuel', fuel)) if not (isinstance(body, dict) and body)]
+    if empty:
+        return {'start': start, 'end': end, 'km': None, 'litres': None, 'l_per_100km': None,
+                'reject': 'api_error', 'detail': f'Cartrack sent an empty {" and ".join(empty)} reading'}
     return assess_window(start, end, odo, fuel, method, min_km=min_km)
 
 
@@ -441,6 +447,7 @@ def connection_status(company):
 # FleetFuelSyncRun.summary['error'] for the dev team.
 RUN_FAILED_MESSAGE = "Cartrack didn't answer. Your last measured figures are kept."
 RUN_CRASHED_MESSAGE = "The refresh stopped early. Your last measured figures are kept."
+RUN_NO_TRUCKS_MESSAGE = "Cartrack sent no trucks. Your last measured figures are kept."
 
 
 def _tracker_errors():
@@ -452,9 +459,11 @@ def _tracker_errors():
 
 
 def _truck_failed(res):
-    """A truck whose period readings didn't all come back: its previous row
-    stays as it was (a partial outage must never wipe a good figure)."""
-    return any(w['reject'] == 'api_error' for w in res['period'])
+    """A truck whose readings didn't all come back (its period windows or the
+    windows of its recorded loads): its previous row stays as it was, so a
+    temporary outage can never wipe a good figure or move it from
+    loaded_trips to overall_assumed."""
+    return any(w['reject'] == 'api_error' for w in res['period'] + res['trips'])
 
 
 def refresh_company(company, *, client=None, now=None):
@@ -486,6 +495,12 @@ def refresh_company(company, *, client=None, now=None):
             run.status, run.message = 'failed', RUN_FAILED_MESSAGE
             run.summary = {'error': str(exc)[:300]}
             logger.warning('Fleet fuel refresh: Cartrack unavailable for company %s: %s', company.id, exc)
+            return run
+        if not isinstance(roster, list) or not any(isinstance(r, dict) for r in roster):
+            # An empty vehicle list on a connected account is an outage, not a
+            # fleet with no trucks: never retire every type's figure on it.
+            run.status, run.message = 'failed', RUN_NO_TRUCKS_MESSAGE
+            run.summary = {'error': f'Empty vehicle list from Cartrack: {str(roster)[:200]}'}
             return run
 
         sensors = {(r.get('registration') or '').strip().upper(): r.get('sensors') or {}

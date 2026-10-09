@@ -113,7 +113,8 @@ Vehicle types (`/api/v1/vehicle-types/`) gain read-only `fuel_use_in_use`. No re
   (`CELERY_TIMEZONE = Africa/Johannesburg`). Runs every company with a connected Cartrack account; one company's
   failure never stops the others. With `company_id` it runs one company ("Refresh now").
 - Failures never wipe a figure: a truck whose readings don't come back (Cartrack error, timeout, connection error,
-  a body that isn't JSON) keeps its previous row, and a vehicle type with such a truck keeps its previous type row.
+  a body that isn't JSON, a 200 with no reading such as an empty body or `{"data": null}`), for its period or its
+  recorded loads, keeps its previous row; an empty vehicle list is a failed run that changes nothing, and a vehicle type with such a truck keeps its previous type row.
   Each truck's and each type's write is its own transaction. The run is always finished (`finished_at`, status
   `failed` if anything crashed). `message` is plain words for the settings strip; the raw error is in
   `summary.error`.
