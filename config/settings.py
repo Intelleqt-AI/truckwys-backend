@@ -561,6 +561,10 @@ CELERY_BROKER_TRANSPORT_OPTIONS = {
 }
 CELERY_REDIS_SOCKET_KEEPALIVE = True
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+# Outbound webhooks are delivered by the core.tasks.deliver_webhook Celery
+# task after commit. True = send one attempt inline in the on_commit hook
+# instead (local dev without a worker). Never sleeps either way.
+WEBHOOK_DELIVERY_EAGER = config('WEBHOOK_DELIVERY_EAGER', default=False, cast=bool)
 # The schedule file's mtime is what the beat watchdog reads as a liveness
 # signal (docker-entrypoint.sh). Keep it out of /app so a deploy's rsync can't
 # clobber it mid-tick.

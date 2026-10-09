@@ -962,3 +962,20 @@ from core.accounting.tasks import (  # noqa: E402,F401
     poll_all_payments, poll_connection, process_webhooks, push_link, reconcile_all,
     reconcile_connection, retry_due, run_backfill,
 )
+
+
+# ---------------------------------------------------------------------------
+# Outbound webhooks: one task per (event, target). Tenant scoping is decided
+# when the event is queued AND re-checked here (core/services/webhook_delivery).
+# ---------------------------------------------------------------------------
+
+@shared_task(bind=True, max_retries=3, ignore_result=True, soft_time_limit=30, time_limit=45,
+             name='core.tasks.deliver_webhook')
+def deliver_webhook(self, kind, target_id, event_type, body, company_id):
+    from core.services import webhook_delivery as wd
+    final = self.request.retries >= self.max_retries
+    outcome = wd.attempt(kind, target_id, event_type, body, company_id, final=final)
+    if outcome == wd.RETRY:
+        delay = wd.RETRY_DELAYS[min(self.request.retries, len(wd.RETRY_DELAYS) - 1)]
+        raise self.retry(countdown=delay)
+    return outcome

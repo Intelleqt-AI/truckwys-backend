@@ -1,3 +1,4 @@
+from django import forms
 from django.contrib import admin
 from .models import (
     User, Vehicle, VehicleType, VehicleLog, Load, Quote, Driver,
@@ -168,8 +169,23 @@ class AdvanceRequestAdmin(admin.ModelAdmin):
                        'settlement_reference', 'settlement_payment', 'settled_by']
 
 
+class _SafeWebhookURLForm(forms.ModelForm):
+    """Applies the webhook SSRF rule to whichever URL field the model has."""
+    _url_field = 'webhook_url'
+
+    def clean(self):
+        cleaned = super().clean()
+        url = cleaned.get(self._url_field)
+        if url:
+            from core.services.webhook_url import is_safe_webhook_url, MESSAGE
+            if not is_safe_webhook_url(url):
+                self.add_error(self._url_field, MESSAGE)
+        return cleaned
+
+
 @admin.register(IntegrationAPIKey)
 class IntegrationAPIKeyAdmin(admin.ModelAdmin):
+    form = _SafeWebhookURLForm
     """Where platform staff bind a LENDER key to the transporters it funds."""
     list_display = ['id', 'name', 'key_type', 'operator', 'active', 'last_used_at']
     list_filter = ['key_type', 'active']
@@ -338,3 +354,36 @@ class AccountingWebhookEventAdmin(admin.ModelAdmin):
 @admin.register(ReconciliationRun)
 class ReconciliationRunAdmin(admin.ModelAdmin):
     list_display = ['ran_at', 'company', 'status', 'difference_count']
+
+
+from .models.webhook_subscription import WebhookSubscription as _WebhookSubscription
+
+
+@admin.register(_WebhookSubscription)
+class WebhookSubscriptionAdmin(admin.ModelAdmin):
+    """Where platform staff review partner webhook subscriptions and bind each
+    to ONE company. Outbound events go only to the event company's own
+    subscriptions; an unbound subscription receives nothing. Non-superuser
+    staff only see and assign their own company."""
+    list_display = ['id', 'partner_name', 'company', 'webhook_url', 'is_active', 'last_delivery_at', 'failure_count']
+    list_filter = ['is_active']
+    search_fields = ['partner_name', 'webhook_url', 'company__company_name']
+    form = _SafeWebhookURLForm
+    readonly_fields = ['api_key', 'secret', 'created_at', 'updated_at', 'last_delivery_at', 'failure_count']
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request).select_related('company')
+        if request.user.is_superuser:
+            return qs
+        return qs.filter(company_id=getattr(request.user, 'company_id', None) or -1)
+
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        if db_field.name == 'company' and not request.user.is_superuser:
+            from .models import Company
+            kwargs['queryset'] = Company.objects.filter(pk=getattr(request.user, 'company_id', None) or -1)
+        return super().formfield_for_foreignkey(db_field, request, **kwargs)
+
+    def save_model(self, request, obj, form, change):
+        if not request.user.is_superuser:
+            obj.company_id = getattr(request.user, 'company_id', None)
+        super().save_model(request, obj, form, change)
