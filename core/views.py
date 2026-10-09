@@ -3109,6 +3109,7 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         # its tonnes are used up, so it is never "already booked"; one
         # consignment books once like any quote.
         tonnage_fields, contract = {}, None
+        split_tonnes = []   # one consignment booked as several loads (tonnes of each)
         is_contract = quote.pricing_basis == 'per_tonne' and quote.total_tonnes is not None
         # One-tap booking (trip economics): idempotent. A quote already
         # converted answers 200 with ITS job (+ the booking block) instead of
@@ -3133,6 +3134,18 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
                 tonnes, contract = call_off_tonnes(quote, request.data.get('tonnes'))
             except CallOffError as exc:
                 return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            if not is_contract:
+                # One consignment too heavy for one truck (40 t, largest truck
+                # 34 t): it was quoted, and accepted, as several loads. Book
+                # every one of them, never one overweight load billed short.
+                from core.services.tonnage_jobs import consignment_split, quote_load_size
+                parts = consignment_split(quote)
+                if len(parts) > 1:
+                    if tonnes != quote_load_size(quote):
+                        return Response({'error': f'This job is quoted as {len(parts)} loads; book it whole.'},
+                                        status=status.HTTP_400_BAD_REQUEST)
+                    split_tonnes = parts
+                    tonnes = parts[0]
             tonnage_fields = tonnage_load_fields(quote, tonnes)
 
         driver_id = request.data.get('driver_id')
@@ -3156,9 +3169,12 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
                 return Response({'error': 'Driver not found'}, status=status.HTTP_404_NOT_FOUND)
 
         # Auto-generate unique load_number
-        load_number = f'LOAD-{timezone.now().strftime("%Y%m%d")}-{secrets.randbelow(9000) + 1000}'
-        while Load.objects.filter(load_number=load_number).exists():
-            load_number = f'LOAD-{timezone.now().strftime("%Y%m%d")}-{secrets.randbelow(9000) + 1000}'
+        def _new_load_number():
+            number = f'LOAD-{timezone.now().strftime("%Y%m%d")}-{secrets.randbelow(9000) + 1000}'
+            while Load.objects.filter(load_number=number).exists():
+                number = f'LOAD-{timezone.now().strftime("%Y%m%d")}-{secrets.randbelow(9000) + 1000}'
+            return number
+        load_number = _new_load_number()
 
         # Quote.pickup_date/delivery_date are plain dates; Load's equivalents
         # are DateTimeFields, so a bare date must become a tz-aware datetime
@@ -3211,7 +3227,7 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
                         return Response({'error': 'Those tonnes are no longer left on this contract.'},
                                         status=status.HTTP_409_CONFLICT)
                 # Create load from quote (stamp the company so it's tenant-scoped/visible)
-                load = Load.objects.create(**{**dict(
+                base_fields = dict(
                     load_number=load_number,
                     company=getattr(quote, 'company', None) or getattr(request.user, 'company', None),
                     customer=quote.customer,
@@ -3259,12 +3275,22 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
                     # many loads), so its job is costed from its own data below.
                     **(copy_tonnage_costing(quote, tonnage_fields) if quote.pricing_basis == 'per_tonne'
                        else copy_quote_costing(quote)),
-                ), **tonnage_fields})   # per-tonne: rate x tonnes, planned tonnes
+                )
+                load = Load.objects.create(**{**base_fields, **tonnage_fields})   # per-tonne: rate x tonnes, planned tonnes
                 if not load.costing_source:
                     # A legacy quote with no pricing snapshot: cost the job from its
                     # own data (or mark it unknown) instead of a generic model.
                     from core.services.trip_costing import cost_load
                     cost_load(load)
+                # The consignment's other loads: each its own job (own truck,
+                # weighbridge slip and invoice line), not yet assigned.
+                extra_loads = []
+                for extra_tonnes in split_tonnes[1:]:
+                    extra_fields = tonnage_load_fields(quote, extra_tonnes)
+                    extra_loads.append(Load.objects.create(**{
+                        **base_fields, **copy_tonnage_costing(quote, extra_fields), **extra_fields,
+                        'load_number': _new_load_number(), 'driver': None, 'vehicle': None, 'status': 'PENDING',
+                    }))
 
                 # Quote stays ACCEPTED — its own lifecycle ends here. The Load created
                 # above (status PENDING/ASSIGNED) now owns delivery progress
@@ -3283,6 +3309,10 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
             return Response({'code': e.code, 'error': e.message}, status=status.HTTP_400_BAD_REQUEST)
 
         response = bk.booking_response(request, quote, load, created=True, view=self, link=link)
+        if split_tonnes and isinstance(getattr(response, 'data', None), dict):
+            response.data['loads'] = [{'id': l.id, 'load_number': l.load_number, 'planned_tonnes': float(l.planned_tonnes),
+                                       'total_amount': float(l.total_amount), 'status': l.status}
+                                      for l in [load, *extra_loads]]
         if contract is not None and isinstance(getattr(response, 'data', None), dict):
             from core.services.tonnage_jobs import contract_status
             response.data['volume_contract'] = contract_status(quote)

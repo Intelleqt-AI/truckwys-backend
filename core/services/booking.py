@@ -275,4 +275,11 @@ def booking_preview_response(request, quote):
            'load_id': None, 'booking': body}
     if contract is not None:
         out['volume_contract'] = contract
+    if getattr(quote, 'pricing_basis', 'per_load') == 'per_tonne' and not is_contract:
+        # One consignment too heavy for one truck books as several loads:
+        # say so before the user books (tonnes of each load).
+        from core.services.tonnage_jobs import consignment_split
+        parts = consignment_split(quote)
+        if len(parts) > 1:
+            out['loads_planned'] = [float(t) for t in parts]
     return Response(out)

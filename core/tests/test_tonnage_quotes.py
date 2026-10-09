@@ -14,6 +14,7 @@ from core.services import quote_costing as qc
 from core.tests.quote_golden_cases import (FLEET, MIXED_FLEET, RIGID_KG, SUPERLINK, TONNAGE_CASES, lane, official,
                                            tonnage, truck)
 from core.tests.test_quote_rules_api import NOW, _Base
+from core.models import Load
 
 GOLDEN_PATH = Path(__file__).parent / 'fixtures' / 'quote_golden.json'
 
@@ -208,6 +209,49 @@ class TonnageApiTests(_Base):
         self.assertTrue(line.endswith(' loads for 600 t'), line)
         r = self.api.get(f'/api/v1/quotes/{q.id}/generate_pdf/')
         self.assertEqual(r.status_code, 200)
+
+    def test_consignment_heavier_than_any_truck_books_every_load(self):
+        # 40 t, no truck carries it in one load: quoted and accepted as 2
+        # loads, so booking makes 2 jobs, billed as quoted, never one
+        # overweight 40 t load billed short.
+        q = self.create(**self.tonnage_payload(tonnes_per_load='40', weight='40000', rate_per_tonne='1500'))
+        self.assertEqual(q.loads_planned, 2)
+        from core.services.tonnage_jobs import consignment_split
+        parts = consignment_split(q)
+        self.assertEqual(len(parts), 2)
+        self.assertEqual(sum(parts), Decimal('40'))
+        preview = self.api.get(f'/api/v1/quotes/{q.id}/booking-preview/').json()
+        self.assertEqual(preview['loads_planned'], [float(t) for t in parts])
+        r = self.api.post(f'/api/v1/quotes/{q.id}/convert_to_load/', {}, format='json')
+        self.assertEqual(r.status_code, 201, r.content)
+        loads = list(Load.objects.filter(quote=q).order_by('id'))
+        self.assertEqual(len(loads), 2)
+        self.assertEqual([l.planned_tonnes for l in loads], parts)
+        self.assertEqual(len({l.load_number for l in loads}), 2)
+        self.assertEqual([x['id'] for x in r.json()['loads']], [l.id for l in loads])
+        # Billed as the quote: each load at max(tonnes, minimum).
+        from core.services.tonnage_jobs import quote_min_tonnes
+        minimum = quote_min_tonnes(q) or Decimal('0')
+        expected = sum((Decimal(q.rate_per_tonne) * max(t, minimum)).quantize(Decimal('0.01')) for t in parts)
+        self.assertEqual(sum(l.total_amount for l in loads), expected)
+        # Booking again answers with the job, never makes more.
+        again = self.api.post(f'/api/v1/quotes/{q.id}/convert_to_load/', {}, format='json')
+        self.assertEqual(again.status_code, 200)
+        self.assertEqual(Load.objects.filter(quote=q).count(), 2)
+
+    def test_split_consignment_cannot_be_booked_as_one_odd_load(self):
+        q = self.create(**self.tonnage_payload(tonnes_per_load='40', weight='40000', rate_per_tonne='1500'))
+        r = self.api.post(f'/api/v1/quotes/{q.id}/convert_to_load/', {'tonnes': '38'}, format='json')
+        self.assertEqual(r.status_code, 400)
+        self.assertFalse(Load.objects.filter(quote=q).exists())
+
+    def test_consignment_that_fits_one_truck_still_books_once(self):
+        q = self.create(**self.tonnage_payload(rate_per_tonne='1300'))
+        self.assertNotIn('loads_planned', self.api.get(f'/api/v1/quotes/{q.id}/booking-preview/').json())
+        r = self.api.post(f'/api/v1/quotes/{q.id}/convert_to_load/', {}, format='json')
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertNotIn('loads', r.json())
+        self.assertEqual(Load.objects.filter(quote=q).count(), 1)
 
     def test_single_consignment_converts_once(self):
         q = self.create(**self.tonnage_payload(rate_per_tonne='1300', min_tonnes_per_load='30'))

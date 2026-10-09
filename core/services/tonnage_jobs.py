@@ -41,6 +41,27 @@ def quote_load_size(quote):
     return _d((basis or {}).get('tonnes_per_load'))
 
 
+def consignment_split(quote):
+    """Planned tonnes of each load for ONE consignment (no volume contract):
+    [34, 6] when 40 t is quoted and no truck carries it in one load, as the
+    pricing snapshot's basis truck planned it (and as the customer accepted:
+    each load is billed max(tonnes, minimum)). [quoted] when one load carries
+    it, or when the snapshot doesn't add up to the quote (never guessed)."""
+    quoted = quote_load_size(quote)
+    if quoted is None:
+        return []
+    snap = (quote.costing_snapshot or {}).get('tonnage') or {}
+    basis = next((t for t in snap.get('trucks') or [] if t.get('is_basis')), None) or {}
+    n = int(basis.get('loads_needed') or 1)
+    per, last = _d(basis.get('tonnes_per_load')), _d(basis.get('last_load_t'))
+    if n <= 1 or per is None or last is None:
+        return [quoted]
+    parts = [per] * (n - 1) + [last]
+    if abs(sum(parts) - quoted) > Decimal('0.001'):
+        return [quoted]
+    return parts
+
+
 def contract_status(quote):
     """{total_tonnes, booked_tonnes, remaining_tonnes, loads_booked,
     loads_planned, tonnes_per_load} for a volume contract."""
