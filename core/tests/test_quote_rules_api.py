@@ -225,6 +225,49 @@ class SendGuardTests(_Base):
         q.refresh_from_db()
         self.assertEqual(q.status, 'DRAFT')
 
+    def test_resend_of_a_sent_quote_is_never_blocked(self):
+        # Product decision: a quote the customer already has can always be
+        # resent; its problems come back as warnings, not a refusal.
+        q = self.create(costing_inputs={'tolls_unknown': True})
+        Quote.objects.filter(id=q.id).update(status='SENT')
+        with patch('core.services.quote_share.send_quote_to_customer_email', return_value=(True, 'a@x.test')) as send:
+            r = self.api.post(f'/api/v1/quotes/{q.id}/send_to_customer/', {}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(send.call_count, 1)
+        codes = {w['code']: w['severity'] for w in r.json().get('warnings', [])}
+        self.assertEqual(codes.get('tolls_unknown'), 'warn')
+
+    def test_send_check_warns_not_blocks_for_a_sent_quote(self):
+        from core.services.quote_snapshot import send_check
+        q = self.create(costing_inputs={'tolls_unknown': True})
+        self.assertFalse(send_check(q)['can_send'])          # a draft: blocked as before
+        Quote.objects.filter(id=q.id).update(status='SENT')
+        q.refresh_from_db()
+        check = send_check(q)
+        self.assertTrue(check['can_send'])
+        self.assertEqual(check['blocking'], [])
+
+    def test_quote_priced_before_the_rules_sends_as_before(self):
+        # An old draft (no priced_at: priced before the quote rules) with a
+        # problem the new rules block still sends; the problems are warnings.
+        q = self.create(costing_inputs={'tolls_unknown': True})
+        Quote.objects.filter(id=q.id).update(priced_at=None)
+        with patch('core.services.quote_share.send_quote_to_customer_email', return_value=(True, 'a@x.test')):
+            r = self.api.patch(f'/api/v1/quotes/{q.id}/', {'status': 'SENT'}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        q.refresh_from_db()
+        self.assertEqual(q.status, 'SENT')
+        q2 = self.create(costing_inputs={'tolls_unknown': True})
+        Quote.objects.filter(id=q2.id).update(priced_at=None)
+        self.assertEqual(self.api.get(f'/api/v1/quotes/{q2.id}/generate_pdf/').status_code, 200)
+
+    def test_below_cost_only_warns(self):
+        from core.services.quote_snapshot import send_check
+        q = self.create(total_amount='5000', base_rate='0', fuel_surcharge='3956.52', toll_charges='1043.48')
+        check = send_check(q)
+        self.assertIn('below_floor', {w['code'] for w in check['warnings'] if w['severity'] == 'warn'})
+        self.assertTrue(check['can_send'])
+
     def test_patch_to_sent_with_fix_in_same_request(self):
         q = self.create(costing_inputs={'tolls_unknown': True})
         r = self.api.patch(f'/api/v1/quotes/{q.id}/', {'status': 'SENT',

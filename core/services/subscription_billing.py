@@ -214,17 +214,27 @@ def check_grace_period_expirations() -> dict:
     """Daily sweep (Celery Beat): suspend any company whose grace period has
     expired with no successful charge — spec §4: 'if the window elapses with
     no success, status moves to suspended.'
+
+    Test companies (Company.is_test_company, the team's own) are never
+    suspended: they go back to 'active' with the grace clock cleared.
     """
     from core.models import Company
     from core.services.notify import notify_company, notify_company_billing_email
 
     now = timezone.now()
-    summary = {'checked': 0, 'suspended': 0}
+    summary = {'checked': 0, 'suspended': 0, 'kept_active': 0}
 
     expiring = Company.objects.filter(subscription_status='grace_period', grace_period_expires_at__isnull=False)
     for company in expiring:
         summary['checked'] += 1
         if company.grace_period_expires_at > now:
+            continue
+
+        if company.is_test_company:
+            company.subscription_status = 'active'
+            company.grace_period_expires_at = None
+            company.save(update_fields=['subscription_status', 'grace_period_expires_at', 'updated_at'])
+            summary['kept_active'] += 1
             continue
 
         company.subscription_status = 'suspended'

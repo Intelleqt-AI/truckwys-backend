@@ -409,6 +409,11 @@ class Company(models.Model):
     # counts quotes created by the demo user since the last nightly reset (capped at 1) and
     # is reset back to 0 by a nightly job.
     is_demo = models.BooleanField(default=False)
+    # A team / developer company kept for testing and review (set by a
+    # superuser in the admin). It is never suspended when a grace period
+    # ends: the daily sweep puts it back to 'active' instead
+    # (core.services.subscription_billing.check_grace_period_expirations).
+    is_test_company = models.BooleanField(default=False)
     demo_quota_used = models.IntegerField(default=0)  # quotes created by the demo user since the last reset; cap is 1
     # Idle-timeout reset instead of a fixed schedule: a frequent Celery beat
     # check (core.tasks.reset_demo_company_task) only actually wipes/reseeds

@@ -3226,7 +3226,9 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
             email_sent = getattr(quote, '_share_email_sent', False)
             recipient = getattr(quote, '_share_recipient', None)
         else:
-            check = enforce_send_guard(quote)     # a resend is a send too
+            # A resend of a quote the customer already has is never blocked;
+            # its checks come back as warnings.
+            check = enforce_send_guard(quote, resend=True)
             ensure_quote_token(quote)
             email_sent, recipient = send_quote_to_customer_email(quote)
 

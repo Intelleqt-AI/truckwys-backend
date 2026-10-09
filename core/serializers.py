@@ -120,6 +120,9 @@ class UserSerializer(serializers.ModelSerializer):
     # core.auth.session_auth.UserSessionTokenAuthentication as request.auth)
     # — see QuoteViewSet.create for where it's actually enforced.
     demo_quote_used = serializers.SerializerMethodField()
+    # The team's own test companies (set by a superuser): the web shows
+    # testing tools (e.g. the quote builder's Clear and Export) to them only.
+    is_test_company = serializers.SerializerMethodField()
 
     def get_company_name(self, obj):
         return obj.company.company_name if obj.company_id else None
@@ -132,6 +135,9 @@ class UserSerializer(serializers.ModelSerializer):
 
     def get_is_demo(self, obj):
         return obj.company.is_demo if obj.company_id else False
+
+    def get_is_test_company(self, obj):
+        return obj.company.is_test_company if obj.company_id else False
 
     def get_demo_quote_used(self, obj):
         from core.models import UserSession
@@ -154,7 +160,7 @@ class UserSerializer(serializers.ModelSerializer):
                   'role', 'status', 'phone', 'address', 'timezone', 'language', 'date_format',
                   'notification_settings', 'avatar', 'last_active', 'is_active', 'created_at', 'updated_at',
                   'is_superuser', 'company_id', 'company_name', 'subscription_status', 'cancel_at_period_end',
-                  'is_demo', 'demo_quote_used']
+                  'is_demo', 'demo_quote_used', 'is_test_company']
         # notification_settings is read-only here: the validated
         # NotificationSettingsView is the single write path for preferences.
         read_only_fields = ['id', 'created_at', 'updated_at', 'last_active',

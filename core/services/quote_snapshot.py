@@ -162,12 +162,17 @@ def period_changed_warning(quote, now=None):
                    actions=('reprice', 'keep_price'))
 
 
-def send_check(quote, now=None):
+def send_check(quote, now=None, *, resend=None):
     """{'can_send', 'warnings', 'blocking'} for sending this quote now.
 
     Blocking warnings come from the quote's own inputs priced on the diesel
     it was priced on (the snapshot), so a send is never blocked or allowed by
-    a price change alone; an earlier diesel period only warns."""
+    a price change alone; an earlier diesel period only warns.
+
+    Never blocked, only warned (product decision, 2026-10): a RESEND of a
+    quote the customer already has (`resend`; default: the quote is SENT),
+    and a quote priced before the quote rules (no priced_at), which keeps
+    sending as it always did. Their checks still come back as warnings."""
     from core.services.quote_costing import costing_for_quote
     now = now or timezone.now()
     try:
@@ -182,6 +187,10 @@ def send_check(quote, now=None):
     changed = period_changed_warning(quote, now)
     if changed:
         warnings.append(changed)
+    if resend is None:
+        resend = getattr(quote, 'status', None) == 'SENT'
+    if resend or getattr(quote, 'priced_at', None) is None:
+        warnings = [dict(w, severity='warn') if w['severity'] == 'block' else w for w in warnings]
     blocking = [w for w in warnings if w['severity'] == 'block']
     return {'can_send': not blocking, 'warnings': warnings, 'blocking': [w['code'] for w in blocking]}
 
@@ -270,13 +279,15 @@ class QuoteSendBlocked(APIException):
         self.detail = blocked_response_body(check)
 
 
-def enforce_send_guard(quote, now=None):
+def enforce_send_guard(quote, now=None, *, resend=False):
     """THE send guard: raise QuoteSendBlocked when the quote has a blocking
     warning, else return the check (its warn-level warnings). Called from the
     Quote pre_save signal on every transition to SENT (any path: API, board,
     update_status, send_to_customer, copilot), from QuoteSerializer.create
     for a quote created as SENT, and by send_to_customer's resend."""
-    check = send_check(quote, now)
+    # resend is explicit here: the pre_save and create callers see the NEW
+    # status (SENT) on the instance, which is a first send, not a resend.
+    check = send_check(quote, now, resend=resend)
     if not check['can_send']:
         raise QuoteSendBlocked(check)
     return check
