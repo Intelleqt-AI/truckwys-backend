@@ -487,12 +487,15 @@ class PartnerWebhookSubscriptionViewSet(viewsets.ViewSet):
                 {'error': 'Subscription not found'},
                 status=status.HTTP_404_NOT_FOUND
             )
-        # Ownership: the caller's own subscription, or one of its company's.
+        # Ownership: the caller's own subscription, or one this same partner
+        # made for the same company. Another partner's subscription on that
+        # company (a lender vs the fleet system) is never theirs to delete.
         caller = getattr(request, 'auth', None)
         company_id = _caller_company_id(request)
         own = caller is not None and getattr(caller, 'id', None) == subscription.id
-        same_company = bool(company_id) and subscription.company_id == company_id
-        if not (own or same_company):
+        same_partner = (bool(company_id) and subscription.company_id == company_id
+                        and subscription.partner_name == getattr(caller, 'partner_name', None))
+        if not (own or same_partner):
             return Response(
                 {'error': 'Subscription not found'},
                 status=status.HTTP_404_NOT_FOUND
@@ -531,7 +534,9 @@ class PartnerWebhookSubscriptionViewSet(viewsets.ViewSet):
         caller = getattr(request, 'auth', None)
         company_id = _caller_company_id(request)
         if company_id:
-            subscriptions = WebhookSubscription.objects.filter(company_id=company_id)
+            # This partner's own subscriptions on its company, not other partners'.
+            subscriptions = WebhookSubscription.objects.filter(company_id=company_id,
+                                                               partner_name=caller.partner_name)
         elif isinstance(caller, WebhookSubscription):
             subscriptions = WebhookSubscription.objects.filter(pk=caller.pk)
         else:

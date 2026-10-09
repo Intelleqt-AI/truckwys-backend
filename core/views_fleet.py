@@ -31,10 +31,14 @@ def _user_company(request):
 
 
 def _subscription_company(request):
-    """The transporter a fleet webhook subscription acts for. A subscription
-    with no company (e.g. a lender partner) can't touch any company's loads,
-    vehicles or drivers: fail closed."""
+    """The transporter a fleet webhook subscription may WRITE for: its
+    company, and only when fleet write access is switched on for it. A
+    subscription with no company, or one bound only to receive a company's
+    events (e.g. a lender), can't touch any company's loads, vehicles or
+    drivers: fail closed."""
     sub = getattr(request, 'auth', None)
+    if not getattr(sub, 'fleet_write_enabled', False):
+        return None
     return getattr(sub, 'company', None)
 
 
@@ -177,7 +181,8 @@ STORE_UNAVAILABLE = 'signature_store_unavailable'
 
 
 def _no_company_response():
-    return Response({'error': 'This API key is not linked to a company.'},
+    return Response({'error': "This API key can't write fleet data: it isn't linked to a company "
+                              'with fleet access. Ask TruckWys support to enable it.'},
                     status=status.HTTP_403_FORBIDDEN)
 
 

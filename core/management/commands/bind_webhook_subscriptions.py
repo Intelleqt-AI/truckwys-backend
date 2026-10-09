@@ -43,6 +43,9 @@ class Command(BaseCommand):
         parser.add_argument('--apply', action='store_true', help='Write the bindings (default: dry run).')
         parser.add_argument('--bind', action='append', default=[], metavar='SUB_ID=COMPANY_ID',
                             help='Bind a subscription explicitly (repeatable).')
+        parser.add_argument('--fleet-write', action='store_true',
+                            help="Also give the bound subscriptions fleet write access (only for real fleet "
+                                 "partners; binding alone only lets a subscription receive the company's events).")
 
     def handle(self, *args, **opts):
         from core.models import Company, WebhookSubscription
@@ -71,6 +74,9 @@ class Command(BaseCommand):
             verb = 'BOUND' if apply else 'WOULD BIND'
             self.stdout.write(f'{verb} {label} -> company #{company.pk} "{company.company_name}" ({how})')
             if apply:
-                WebhookSubscription.objects.filter(pk=sub.pk, company__isnull=True).update(company=company)
+                fields = {'company': company}
+                if opts['fleet_write']:
+                    fields['fleet_write_enabled'] = True
+                WebhookSubscription.objects.filter(pk=sub.pk, company__isnull=True).update(**fields)
         mode = 'applied' if apply else 'dry run, nothing written (use --apply)'
         self.stdout.write(f'{bound} to bind, {unresolved} unresolved; {mode}')

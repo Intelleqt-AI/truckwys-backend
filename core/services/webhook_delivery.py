@@ -142,9 +142,43 @@ def _load_target(kind: str, target_id: int):
     return None, None, False
 
 
-def _post(url: str, body: str, headers: Dict[str, str]):
+def _pinned_adapter(hostname: str):
+    """A requests adapter whose TLS uses ``hostname`` for SNI and certificate
+    checks while the TCP connection goes to the address in the URL."""
+    from requests.adapters import HTTPAdapter
+
+    class PinnedHostAdapter(HTTPAdapter):
+        def init_poolmanager(self, *args, **kwargs):
+            kwargs['server_hostname'] = hostname
+            kwargs['assert_hostname'] = hostname
+            super().init_poolmanager(*args, **kwargs)
+
+    return PinnedHostAdapter()
+
+
+def _post(url: str, body: str, headers: Dict[str, str], pinned_ip: Optional[str] = None):
+    """One POST. With ``pinned_ip`` (the address the SSRF check approved), the
+    connection goes to that IP, never to a fresh DNS answer, while the Host
+    header, SNI and certificate check still use the URL's hostname. No proxy
+    from the environment, no redirects."""
     import requests
-    return requests.post(url, data=body, headers=headers, timeout=HTTP_TIMEOUT, allow_redirects=False)
+    if not pinned_ip:
+        return requests.post(url, data=body, headers=headers, timeout=HTTP_TIMEOUT, allow_redirects=False)
+    from urllib.parse import urlparse, urlunparse
+    parsed = urlparse(url)
+    host = parsed.hostname
+    ip_host = f'[{pinned_ip}]' if ':' in pinned_ip else pinned_ip
+    netloc = f'{ip_host}:{parsed.port}' if parsed.port else ip_host
+    target = urlunparse(parsed._replace(netloc=netloc))
+    pinned_headers = dict(headers)
+    pinned_headers['Host'] = f'{host}:{parsed.port}' if parsed.port else host
+    session = requests.Session()
+    session.trust_env = False
+    session.mount('https://', _pinned_adapter(host))
+    try:
+        return session.post(target, data=body, headers=pinned_headers, timeout=HTTP_TIMEOUT, allow_redirects=False)
+    finally:
+        session.close()
 
 
 def attempt(kind: str, target_id: int, event_type: str, body: str, company_id: Optional[int],
@@ -176,9 +210,10 @@ def attempt(kind: str, target_id: int, event_type: str, body: str, company_id: O
             'User-Agent': 'Truckwys-Webhook/1.0',
         }
 
-    # SSRF, re-checked at send time: DNS may now point somewhere private.
-    from core.services.webhook_url import BLOCKED, check_webhook_url
-    problem = check_webhook_url(url)
+    # SSRF, re-checked at send time: DNS may now point somewhere private. The
+    # POST then connects to an address this check approved (no second lookup).
+    from core.services.webhook_url import BLOCKED, resolve_webhook_target
+    problem, addrs = resolve_webhook_target(url)
     if problem == BLOCKED:
         logger.warning('webhook %s to %s %s blocked: unsafe URL', event_type, kind, target_id)
         _record(kind, target, success=False)
@@ -187,7 +222,7 @@ def attempt(kind: str, target_id: int, event_type: str, body: str, company_id: O
     code = None
     try:
         if problem is None:
-            response = _post(url, body, headers)
+            response = _post(url, body, headers, pinned_ip=addrs[0])
             code = response.status_code
     except Exception as exc:
         logger.warning('webhook %s to %s %s failed: %s', event_type, kind, target_id, exc)

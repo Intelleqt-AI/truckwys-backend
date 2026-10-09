@@ -95,3 +95,29 @@ The `truckwys/trip-economics` branch adds the same field in its own
 `0166_webhooksubscription_company` and registers the same admin. When it
 rebases onto this change, drop its `0166` (re-point `0167` at the newest
 migration on development) and keep a single `WebhookSubscriptionAdmin`.
+
+## Follow-up fixes (October 2026 review)
+
+1. **DNS rebinding closed.** The send-time check (`resolve_webhook_target`)
+   returns the public addresses it approved, and `_post` connects to one of
+   THOSE addresses (`pinned_ip`); it never does a second DNS lookup. The Host
+   header, TLS SNI and certificate check still use the URL's hostname
+   (`_pinned_adapter`), so certificates are verified as before. Environment
+   proxies are ignored for webhooks. NAT64 (`64:ff9b::/96`, `64:ff9b:1::/48`)
+   and 6to4 (`2002::/16`) addresses are now blocked as well.
+2. **Receiving events and writing fleet data are separate.**
+   `WebhookSubscription.company` now only decides whose events a subscription
+   receives. Writing a company's loads, vehicles and drivers through
+   `/fleet/webhooks/*` also needs `fleet_write_enabled` (migration
+   `0179_webhooksubscription_fleet_write`, default off). Only superusers can
+   switch it on in Django admin; `bind_webhook_subscriptions --fleet-write`
+   sets it when binding real fleet partners. Subscriptions created through the
+   partner API never get it.
+3. **Partners only manage their own subscriptions.** The partner API lists and
+   deletes a caller's own subscriptions (same partner name on the same
+   company), not other partners' on that company.
+
+**Extra deploy step:** after binding, switch on fleet write access for the real
+fleet partners only (Django admin, or `bind_webhook_subscriptions --bind
+SUB=COMPANY --fleet-write --apply`). Until then their fleet webhooks get 403.
+Lenders and other event-only partners stay off.

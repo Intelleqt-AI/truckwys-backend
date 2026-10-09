@@ -49,6 +49,16 @@ class WebhookSubscription(models.Model):
     # replayed; it is accepted only for subscriptions opted in here (Django
     # admin), and each such signature only once (replay cache).
     allow_legacy_signature = models.BooleanField(default=False, db_default=False)
+    # Write access to the company's loads, vehicles and drivers through the
+    # fleet webhooks (/fleet/webhooks/*). Separate from `company`, which only
+    # decides whose events the subscription RECEIVES: binding a lender to a
+    # transporter for its events must never let it write that transporter's
+    # fleet data. Off by default; platform staff switch it on (Django admin,
+    # or bind_webhook_subscriptions --fleet-write) for real fleet partners.
+    fleet_write_enabled = models.BooleanField(
+        default=False, db_default=False,
+        help_text="May create and update this company's loads, vehicles and drivers through fleet webhooks.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     last_delivery_at = models.DateTimeField(

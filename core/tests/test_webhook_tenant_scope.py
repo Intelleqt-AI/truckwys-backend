@@ -225,10 +225,33 @@ class DeliveryTests(_Base):
         self.assertEqual(headers['X-Webhook-Signature'], expected)
 
     def test_http_call_has_timeout_and_no_redirects(self):
-        with mock.patch('requests.post', return_value=self._ok()) as rp:
+        with mock.patch('requests.Session.post', return_value=self._ok()) as rp:
             self.assertEqual(wd.attempt(wd.SUBSCRIPTION, self.sub_a.id, 'load.created', '{}', self.a.id), wd.OK)
         self.assertEqual(rp.call_args.kwargs['timeout'], wd.HTTP_TIMEOUT)
         self.assertIs(rp.call_args.kwargs['allow_redirects'], False)
+
+    def test_post_connects_to_the_checked_address_not_a_new_lookup(self):
+        # DNS rebinding: the check sees a public IP; a second lookup at send
+        # time would get a private one. The POST must go to the checked IP.
+        self.resolve.side_effect = [['93.184.216.34'], ['169.254.169.254']]
+        with mock.patch('requests.Session.post', return_value=self._ok()) as rp:
+            self.assertEqual(wd.attempt(wd.SUBSCRIPTION, self.sub_a.id, 'load.created', '{}', self.a.id), wd.OK)
+        sent_to = rp.call_args.args[0]
+        self.assertTrue(sent_to.startswith('https://93.184.216.34'), sent_to)
+        from urllib.parse import urlparse
+        self.assertEqual(rp.call_args.kwargs['headers']['Host'], urlparse(self.sub_a.webhook_url).hostname)
+        self.assertEqual(self.resolve.call_count, 1)   # one lookup, no re-resolution
+
+    def test_pinned_adapter_keeps_the_hostname_for_tls(self):
+        adapter = wd._pinned_adapter('hooks.example.com')
+        kw = adapter.poolmanager.connection_pool_kw
+        self.assertEqual((kw['server_hostname'], kw['assert_hostname']), ('hooks.example.com', 'hooks.example.com'))
+
+    def test_ipv6_tunnels_to_private_addresses_are_blocked(self):
+        from core.services.webhook_url import BLOCKED, check_webhook_url
+        for ip in ('64:ff9b::a00:1', '2002:a00:1::1'):
+            self.resolve.return_value = [ip]
+            self.assertEqual(check_webhook_url('https://tunnel.example.com/h'), BLOCKED, ip)
 
     def test_ownership_rechecked_at_send_time(self):
         WebhookSubscription.objects.filter(pk=self.sub_a.pk).update(company=self.b)
@@ -286,6 +309,40 @@ class PartnerApiScopeTests(_Base):
         self.assertTrue(WebhookSubscription.objects.filter(pk=self.sub_b.pk).exists())
         r = self.client_for(self.sub_none).get(self.url)
         self.assertEqual([s['subscription_id'] for s in r.data['subscriptions']], [self.sub_none.id])
+
+    def test_other_partners_on_the_same_company_are_not_listed_or_deletable(self, _safe):
+        # A lender and the fleet system both bound to company A: neither may
+        # see or delete the other's subscription.
+        fleet = WebhookSubscription.objects.create(partner_name='Fleet System', webhook_url='https://fleet.example.com/h',
+                                                   events=ALL_EVENTS, company=self.a, fleet_write_enabled=True)
+        r = self.client_for(self.sub_a).get(self.url)
+        self.assertEqual([s['subscription_id'] for s in r.data['subscriptions']], [self.sub_a.id])
+        r = self.client_for(self.sub_a).delete(f'{self.url}{fleet.id}/')
+        self.assertEqual(r.status_code, 404)
+        self.assertTrue(WebhookSubscription.objects.filter(pk=fleet.pk).exists())
+        # Its own extra subscription is still its to see and delete.
+        r = self.client_for(self.sub_a).post(self.url, {'webhook_url': 'https://second.example.com/h',
+                                                        'events': ['load.created']}, format='json')
+        self.assertEqual(r.status_code, 201, r.content)
+        new_id = r.data['subscription_id']
+        self.assertFalse(WebhookSubscription.objects.get(pk=new_id).fleet_write_enabled)   # never inherited
+        listed = [s['subscription_id'] for s in self.client_for(self.sub_a).get(self.url).data['subscriptions']]
+        self.assertCountEqual(listed, [self.sub_a.id, new_id])
+        self.assertEqual(self.client_for(self.sub_a).delete(f'{self.url}{new_id}/').status_code, 204)
+
+    def test_only_superusers_change_fleet_access_in_admin(self, _safe):
+        from django.contrib.admin.sites import site
+        from django.test import RequestFactory
+        ma = site._registry[WebhookSubscription]
+        staff = User.objects.create_user(username='wh_staff', email='st@wh.test', password='x', is_staff=True)
+        staff.company = self.a
+        staff.save()
+        req = RequestFactory().get('/')
+        req.user = staff
+        self.assertIn('fleet_write_enabled', ma.get_readonly_fields(req, self.sub_a))
+        boss = User.objects.create_superuser(username='wh_boss', email='b@wh.test', password='x')
+        req.user = boss
+        self.assertNotIn('fleet_write_enabled', ma.get_readonly_fields(req, self.sub_a))
 
 
 @mock.patch('core.tasks.deliver_webhook.apply_async')

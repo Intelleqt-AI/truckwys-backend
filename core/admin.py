@@ -367,9 +367,17 @@ class WebhookSubscriptionAdmin(admin.ModelAdmin):
     to ONE company. Outbound events go only to the event company's own
     subscriptions; an unbound subscription receives nothing. Non-superuser
     staff only see and assign their own company."""
-    list_display = ['id', 'partner_name', 'company', 'webhook_url', 'is_active', 'allow_legacy_signature',
-                    'last_delivery_at', 'failure_count']
-    list_filter = ['is_active']
+    list_display = ['id', 'partner_name', 'company', 'webhook_url', 'is_active', 'fleet_write_enabled',
+                    'allow_legacy_signature', 'last_delivery_at', 'failure_count']
+    list_filter = ['is_active', 'fleet_write_enabled']
+
+    def get_readonly_fields(self, request, obj=None):
+        # Fleet write access and legacy signatures are platform decisions:
+        # only superusers change them.
+        ro = list(super().get_readonly_fields(request, obj))
+        if not request.user.is_superuser:
+            ro += ['fleet_write_enabled', 'allow_legacy_signature']
+        return ro
     search_fields = ['partner_name', 'webhook_url', 'company__company_name']
     form = _SafeWebhookURLForm
     readonly_fields = ['api_key', 'secret', 'created_at', 'updated_at', 'last_delivery_at', 'failure_count']

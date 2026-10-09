@@ -195,7 +195,7 @@ class FleetWebhookTenancyTests(_Tenants):
 
     def test_trip_update_webhook_scoped_to_subscription_company(self):
         sub = WebhookSubscription.objects.create(partner_name='Fleet A', webhook_url='https://a.example',
-                                                 company=self.co_a)
+                                                 company=self.co_a, fleet_write_enabled=True)
         body = {'load_number': 'TEN-B-1', 'event_type': 'delivery_confirmed'}
         self.assertEqual(signed_post('/api/v1/fleet/webhooks/trip-update/', body, sub).status_code, 404)
         self.load_b.refresh_from_db()
@@ -215,9 +215,28 @@ class FleetWebhookTenancyTests(_Tenants):
                         'status': 'BROKEN'}, sub)
         self.assertEqual(r.status_code, 403)
 
+    def test_bound_for_events_only_cannot_write_fleet_data(self):
+        # A lender bound to transporter A to RECEIVE its events gets no fleet
+        # write access: binding a company is not the same as fleet access.
+        sub = WebhookSubscription.objects.create(partner_name='Lender', webhook_url='https://l.example',
+                                                 company=self.co_a)
+        for url, body in (('/api/v1/fleet/webhooks/trip-update/', {'load_number': 'TEN-A-1', 'event_type': 'gps_update'}),
+                          ('/api/v1/fleet/webhooks/vehicle-event/', {'vehicle_id': self.vehicle_a.id, 'status': 'MAINTENANCE'}),
+                          ('/api/v1/fleet/webhooks/driver-event/', {'driver_id': 999999, 'violation_count': 1})):
+            r = signed_post(url, body, sub)
+            self.assertEqual(r.status_code, 403, (url, r.content))
+            self.assertIn('fleet access', r.json()['error'])
+        self.vehicle_a.refresh_from_db()
+        self.assertNotEqual(self.vehicle_a.status, 'MAINTENANCE')
+        # Switching fleet access on is what lets it write.
+        WebhookSubscription.objects.filter(pk=sub.pk).update(fleet_write_enabled=True)
+        ok = signed_post('/api/v1/fleet/webhooks/trip-update/', {'load_number': 'TEN-A-1', 'event_type': 'gps_update',
+                                                                 'note': 'after enabling'}, sub)
+        self.assertEqual(ok.status_code, 200, ok.content)
+
     def test_vehicle_and_driver_webhooks_scoped(self):
         sub = WebhookSubscription.objects.create(partner_name='Fleet A', webhook_url='https://a.example',
-                                                 company=self.co_a)
+                                                 company=self.co_a, fleet_write_enabled=True)
         r = signed_post('/api/v1/fleet/webhooks/vehicle-event/', {'vehicle_id': self.vehicle_b.id,
                         'status': 'MAINTENANCE', 'event_type': 'breakdown'}, sub)
         self.assertEqual(r.status_code, 404)
@@ -279,7 +298,7 @@ class FleetWebhookSignatureTests(_Tenants):
 
     def setUp(self):
         self.sub = WebhookSubscription.objects.create(partner_name='Fleet A', webhook_url='https://a.example',
-                                                      company=self.co_a)
+                                                      company=self.co_a, fleet_write_enabled=True)
 
     def test_unsigned_wrong_secret_and_stale_are_refused(self):
         import time
@@ -332,6 +351,14 @@ class BindWebhookSubscriptionsCommandTests(_Tenants):
         self._run('--bind', f'{lost.pk}={self.co_a.pk}', '--apply')
         lost.refresh_from_db()
         self.assertEqual(lost.company_id, self.co_a.id)
+        # Binding alone never grants fleet write access.
+        self.assertFalse(WebhookSubscription.objects.filter(fleet_write_enabled=True).exists())
+
+    def test_fleet_write_flag_only_when_asked(self):
+        sub = WebhookSubscription.objects.create(partner_name='Nobody', webhook_url='https://n.example')
+        self._run('--bind', f'{sub.pk}={self.co_a.pk}', '--apply', '--fleet-write')
+        sub.refresh_from_db()
+        self.assertEqual((sub.company_id, sub.fleet_write_enabled), (self.co_a.id, True))
 
 
 @override_settings(CTRLFLEET_WEBHOOK_KEY='')
@@ -346,7 +373,7 @@ class LegacySignatureTests(_Tenants):
 
     def test_body_only_signature_refused_unless_opted_in_and_never_replayed(self):
         sub = WebhookSubscription.objects.create(partner_name='Fleet A', webhook_url='https://a.example',
-                                                 company=self.co_a)
+                                                 company=self.co_a, fleet_write_enabled=True)
         body = {'load_number': 'TEN-A-1', 'event_type': 'gps_update'}
         self.assertEqual(self._legacy(sub, body).status_code, 401)
         sub.allow_legacy_signature = True
@@ -358,7 +385,7 @@ class LegacySignatureTests(_Tenants):
 
     def test_bad_ids_and_dates_are_400_not_500(self):
         sub = WebhookSubscription.objects.create(partner_name='Fleet A', webhook_url='https://a.example',
-                                                 company=self.co_a)
+                                                 company=self.co_a, fleet_write_enabled=True)
         self.assertEqual(signed_post(self.URL, {'load_id': 'abc', 'event_type': 'gps_update'}, sub).status_code, 400)
         r = signed_post('/api/v1/fleet/webhooks/vehicle-event/', {'vehicle_id': self.vehicle_a.id,
                         'maintenance_due': 'soon'}, sub)
@@ -377,7 +404,7 @@ class RoundThreeWebhookTests(_Tenants):
 
     def setUp(self):
         self.sub = WebhookSubscription.objects.create(partner_name='Fleet A', webhook_url='https://a.example',
-                                                      company=self.co_a)
+                                                      company=self.co_a, fleet_write_enabled=True)
 
     def test_delivery_confirmed_never_revives_a_cancelled_job(self):
         from core.models import Invoice
@@ -433,7 +460,7 @@ class RoundThreeWebhookTests(_Tenants):
 class FinalCheckWebhookTests(_Tenants):
     def test_mileage_bounded(self):
         sub = WebhookSubscription.objects.create(partner_name='Fleet A', webhook_url='https://a.example',
-                                                 company=self.co_a)
+                                                 company=self.co_a, fleet_write_enabled=True)
         url = '/api/v1/fleet/webhooks/vehicle-event/'
         for bad in ('1e12', -5, 100_000_000):
             self.assertEqual(signed_post(url, {'vehicle_id': self.vehicle_a.id, 'mileage': bad}, sub).status_code,
