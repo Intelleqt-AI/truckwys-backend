@@ -1543,6 +1543,24 @@ def border_costs_unknown_input(payload):
         return None
     countries = [COUNTRY_NAMES.get(str(c).upper(), str(c)) for c in (raw.get('countries') or []) if c][:10]
     crossings = [c if '→' in str(c) else _crossing_name(c) for c in (raw.get('crossings') or []) if c][:10]
+    if not payload.get('border_costs_unknown'):
+        # Read from the route: the way home's unknown crossings count too
+        # when the quote costs that leg (a round trip, or a one-way trip
+        # coming back empty), so a crossing missing only on the way home
+        # blocks the quote instead of being left out of the price.
+        back = route.get('return_leg') if isinstance(route.get('return_leg'), dict) else {}
+        back_raw = back.get('border_costs_unknown') if isinstance(back.get('border_costs_unknown'), dict) else {}
+        round_trip = str(payload.get('trip_type') or '').upper() == 'ROUND_TRIP'
+        if back_raw and (round_trip or payload.get('include_empty_return') is not False):
+            for c in back_raw.get('countries') or []:
+                name = COUNTRY_NAMES.get(str(c).upper(), str(c))
+                if c and name not in countries:
+                    countries.append(name)
+            for c in back_raw.get('crossings') or []:
+                name = c if '→' in str(c) else _crossing_name(c)
+                if c and name not in crossings:
+                    crossings.append(f'{name} (way home)')
+            countries, crossings = countries[:10], crossings[:10]
     if not countries and not crossings:
         return None
     known = raw.get('known')
