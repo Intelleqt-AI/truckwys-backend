@@ -701,6 +701,34 @@ def poll_ctrlfleet_positions():
     return {'companies_polled': companies_polled, 'vehicles_updated': total_updated}
 
 
+@shared_task(name='core.tasks.refresh_fleet_fuel_actuals')
+def refresh_fleet_fuel_actuals(company_id=None):
+    """Weekly: re-measure fuel use per truck / vehicle type from the fleet
+    tracker for every company with a CONNECTED Cartrack account (or just
+    `company_id`, from "Refresh now"). Disconnected or CtrlFleet-only
+    companies get a 'skipped' run. One company's failure never blocks the
+    others. Pricing only ever reads the stored rows."""
+    from core.models import Company
+    from core.services.fleet_fuel_actuals import refresh_company
+
+    qs = Company.objects.all()
+    if company_id is not None:
+        qs = qs.filter(id=company_id)
+    else:
+        qs = (qs.exclude(cartrack_username__isnull=True).exclude(cartrack_username='')
+              .exclude(cartrack_connected_at__isnull=True))
+    done = {}
+    for company in qs:
+        try:
+            done[company.id] = refresh_company(company).status
+        except Exception:
+            logger.exception('Fleet fuel refresh failed for company %s', company.id)
+            done[company.id] = 'failed'
+        # The manual-refresh lock is NOT released here: it holds the start
+        # time for the 15-minute cooldown (core.views_fleet_fuel).
+    return done
+
+
 @shared_task(name='core.tasks.poll_cartrack_door_events')
 def poll_cartrack_door_events():
     """Poll GET /topics/vehicles/door from Cartrack for every company that has

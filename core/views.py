@@ -3956,7 +3956,8 @@ class RouteCalculatorView(APIView):
         if vt_obj is None:
             fuel_unknown_reason = 'no_vehicle'
         else:
-            veh = qc.vehicle_input(vt_obj)
+            # Same rated burn as the quote (measured by the fleet tracker when usable).
+            veh = qc.vehicle_input(vt_obj, qc.resolve_rated_burn(company, vt_obj))
             rated = qc._pos(veh['rated_burn_l_per_100km'])
             cap_t = qc.capacity_tonnes(veh['capacity'])
             ratio = min((load_kg / 1000) / cap_t, 1) if (cap_t and load_kg is not None) else 1

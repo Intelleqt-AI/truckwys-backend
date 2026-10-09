@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 SNAPSHOT_KEYS = ('version', 'trip', 'vehicle', 'diesel', 'litres', 'lines', 'floor', 'floor_known',
                  'floor_complete', 'target_margin_pct', 'target_price', 'minimum_charge', 'price', 'margin',
-                 'margin_pct', 'warnings', 'blocking', 'resolution')
+                 'margin_pct', 'warnings', 'blocking', 'resolution', 'rated_burn')
 
 # Load.costing_inputs keys (a superset of Quote.costing_inputs' useful ones).
 LOAD_COSTING_INPUT_KEYS = {
@@ -237,6 +237,19 @@ def missing_inputs(load):
     return out
 
 
+def compact_burn(snapshot):
+    """The truck fuel figure the job was costed on (measured by the tracker
+    or typed), stored compact as `rated_burn` (and in resolution), like a
+    quote's snapshot."""
+    from core.services.quote_costing import burn_snapshot
+    res = dict(snapshot.get('resolution') or {})
+    if 'rated_burn' in res:
+        res['rated_burn'] = burn_snapshot(res['rated_burn'])
+        snapshot['resolution'] = res
+    snapshot['rated_burn'] = res.get('rated_burn')
+    return snapshot
+
+
 def computed_fields(costing, now):
     if costing is None:
         return {'costing_source': 'unknown', 'costing_snapshot': {'missing': ['no_vehicle'], 'lines': []},
@@ -247,7 +260,7 @@ def computed_fields(costing, now):
     floor = costing.get('floor')
     return {
         'costing_source': 'computed' if floor is not None else 'unknown',
-        'costing_snapshot': {k: costing.get(k) for k in SNAPSHOT_KEYS},
+        'costing_snapshot': compact_burn({k: costing.get(k) for k in SNAPSHOT_KEYS}),
         'cost_floor': _d(floor),
         'empty_return_assumed': (costing.get('trip') or {}).get('empty_return_included'),
         'fuel_price_used': _d(d.get('price'), '0.0001'),

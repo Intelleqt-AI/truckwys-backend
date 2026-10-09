@@ -701,6 +701,12 @@ CELERY_BEAT_SCHEDULE = {
         'schedule': 20.0,
     },
     # Door events don't need sub-minute cadence like position does.
+    # Weekly (Mon 02:30 SAST): measured fuel use per truck / vehicle type from
+    # Cartrack (90 days) for pricing. core.services.fleet_fuel_actuals.
+    'refresh-fleet-fuel-actuals': {
+        'task': 'core.tasks.refresh_fleet_fuel_actuals',
+        'schedule': crontab(hour='2', minute='30', day_of_week='1'),
+    },
     'poll-cartrack-door-events': {
         'task': 'core.tasks.poll_cartrack_door_events',
         'schedule': crontab(minute='*/2'),
