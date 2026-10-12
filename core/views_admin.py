@@ -116,6 +116,7 @@ class AdminCompaniesView(APIView):
 
     def get(self, request):
         from django.db.models import Case, When, Value, IntegerField, OuterRef, Subquery
+        from django.db.models.functions import Coalesce
 
         owner_subquery = User.objects.filter(company=OuterRef('pk')).annotate(
             _deleted_rank=Case(
@@ -124,10 +125,26 @@ class AdminCompaniesView(APIView):
             )
         ).order_by('_deleted_rank', '-date_joined').values('email')[:1]
 
+        # Each count as its own correlated subquery, not Count(..., distinct=True)
+        # on a joined queryset: annotating Count() across three different
+        # relations (users, quotes, loads) in one query makes Django LEFT JOIN
+        # all three simultaneously before the GROUP BY, so a company with U
+        # users, Q quotes and L loads briefly materialises U*Q*L intermediate
+        # rows. With real production volume (1000+ quotes/loads) that blew
+        # Postgres's GROUP BY past its temp-file space (DiskFull, even with
+        # 10GB free) — this view never scaled past toy data. A subquery per
+        # count never joins the other two relations, so there's no explosion.
+        def _count_subquery(relation):
+            return Coalesce(Subquery(
+                relation.filter(company=OuterRef('pk')).order_by()
+                .values('company').annotate(c=Count('pk')).values('c'),
+                output_field=IntegerField(),
+            ), 0)
+
         qs = Company.objects.annotate(
-            user_count=Count('users', distinct=True),
-            quote_count=Count('quotes', distinct=True),
-            load_count=Count('loads', distinct=True),
+            user_count=_count_subquery(User.objects),
+            quote_count=_count_subquery(Quote.objects),
+            load_count=_count_subquery(Load.objects),
             owner_email=Subquery(owner_subquery),
         ).order_by('-created_at')
 
