@@ -48,7 +48,9 @@ REASONS: dict[str, tuple[str, str, str | None]] = {
     'E-NO-FUNDER': ('!', 'Line is not attached to a funder', 'You do not have an active Fast Pay line yet'),
     'E-FUNDER-PAUSED': ('!', 'Funder is not accepting new advances', 'Fast Pay is paused for new requests'),
     'E-DEMO': ('!', 'Demo company: no money moves', 'This is a demo account, so no money is advanced. The offer shows what you would see.'),
-    'E-DUPLICATE': ('!', 'Possible duplicate: {detail}', 'This invoice looks like one already submitted. Contact support.'),
+    # {why} is built by the engine (duplicate_why) so the transporter is told
+    # what matched and how to fix it, without naming another company's records.
+    'E-DUPLICATE': ('!', 'Possible duplicate: {detail}', '{why}'),
 
     # ---- Debtor score ----
     'D-CIPC-HARD': ('!', 'CIPC status: {status} (hard stop)', None),
@@ -96,7 +98,8 @@ REASONS: dict[str, tuple[str, str, str | None]] = {
     'V2-FAR': ('-', 'Delivery photo taken {km} km from the delivery address', 'The delivery photo location is far from the delivery address'),
     'F-ROUND': ('-', 'Round-number invoice amount', None),
     'F-SAME-AMOUNT': ('-', '{n} invoice(s) of the same amount to this debtor within 7 days', None),
-    'F-POD-REUSE': ('!', 'The same POD file is attached to load {other}', 'This delivery photo is already used on another load'),
+    # Transporter wording lives in E-DUPLICATE's {why}, so it isn't shown twice.
+    'F-POD-REUSE': ('!', 'The same POD file is attached to load {other}', None),
     'F-NIGHT-POD': ('-', 'POD captured at {hour}:00', None),
     'F-ROUTE': ('-', 'Telematics position does not match the route', None),
     'F-CAPACITY': ('-', 'Invoicing is above the fleet\'s physical capacity', None),
@@ -128,6 +131,20 @@ class UnknownReason(KeyError):
 class _SafeDict(dict):
     def __missing__(self, key):  # leave unknown placeholders visible rather than crash
         return '{' + key + '}'
+
+
+def duplicate_why(*, pod_reused=False, pod_reuse_own_load=None, invoice_duplicate=False) -> str:
+    """Plain transporter wording for E-DUPLICATE: what matched and the fix."""
+    parts = []
+    if pod_reused:
+        where = f'load {pod_reuse_own_load}' if pod_reuse_own_load else 'another load'
+        parts.append(f'The proof of delivery (POD) on this load is the same file as the one on {where}. '
+                     'Upload the correct POD for this load.')
+    if invoice_duplicate:
+        parts.append('Another invoice already bills this same delivery. Check it has not been invoiced twice.')
+    if not parts:
+        parts.append('This invoice looks like one already submitted.')
+    return ' '.join(parts) + ' Contact support if this is wrong.'
 
 
 def reason(code: str, **params: Any) -> dict:
