@@ -670,18 +670,8 @@ class LoadSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
         return None
 
     def validate(self, attrs):
-        # 'vehicle' is absent from attrs on a partial update that doesn't
-        # touch it — fall back to the existing instance so a PATCH that only
-        # sends {status: 'ASSIGNED'} is checked against what's actually
-        # assigned, not treated as if it were blank. Driver is optional — a
-        # vehicle alone is enough to mark an order Assigned.
-        has_key = lambda k: k in attrs
-        vehicle = attrs['vehicle'] if has_key('vehicle') else getattr(self.instance, 'vehicle', None)
-        new_status = attrs.get('status', getattr(self.instance, 'status', None))
-        if new_status == 'ASSIGNED' and not vehicle:
-            raise serializers.ValidationError({
-                'status': 'Assign a vehicle before this order can be marked Assigned.'
-            })
+        # Vehicle and driver are both optional: an order can be marked
+        # Assigned with either, both or neither.
         return attrs
 
 
