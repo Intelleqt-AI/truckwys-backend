@@ -242,7 +242,11 @@ def _eligibility(ev: Evaluation, *, ignore_advance=None):
     ev.checks['fraud'] = {'score': str(ev.fraud_score), 'flags': [f['code'] for f in fc.get('flags', [])],
                           'duplicate': fc.get('duplicate', False), 'detail': fc.get('duplicate_detail', '')}
     if fc.get('duplicate'):
-        ev.fail('duplicate', 'E-DUPLICATE', detail=fc.get('duplicate_detail', ''))
+        from core.capital.reasons import duplicate_why
+        ev.fail('duplicate', 'E-DUPLICATE', detail=fc.get('duplicate_detail', ''),
+                why=duplicate_why(pod_reused=fc.get('pod_reused', False),
+                                  pod_reuse_own_load=fc.get('pod_reuse_own_load'),
+                                  invoice_duplicate=fc.get('invoice_duplicate', False)))
     ev.reasons.extend(f for f in fc.get('flags', []) if f['code'] != 'E-DUPLICATE')
 
     # Debtor

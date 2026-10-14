@@ -2549,11 +2549,6 @@ class LoadViewSet(LoadTripEconomicsMixin, CompanyFilterMixin, BillingGateMixin, 
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        if new_status == 'ASSIGNED' and not load.vehicle_id:
-            return Response(
-                {'error': 'Assign a vehicle before this order can be marked Assigned.'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
 
         load.status = new_status
         # Read by the Load post_save signal so the acting user isn't notified
@@ -2585,10 +2580,8 @@ class LoadViewSet(LoadTripEconomicsMixin, CompanyFilterMixin, BillingGateMixin, 
     def assign_driver(self, request, pk=None):
         """Assign (or clear) driver and vehicle on a load. Body: { driver_id?, vehicle_id? }
 
-        Vehicle is required to assign; driver is optional. A driver without a
-        vehicle is rejected as ambiguous (a driver needs a truck) — same rule
-        as converting a quote to a booking. Clearing the vehicle also clears
-        the driver.
+        A vehicle, a driver or both assigns the load (vehicle is optional).
+        Clearing both moves an Assigned load back to Pending.
         """
         if self._billing_blocked(request):
             return self._billing_blocked_response()
@@ -2596,12 +2589,6 @@ class LoadViewSet(LoadTripEconomicsMixin, CompanyFilterMixin, BillingGateMixin, 
         load = self.get_object()
         driver_id = request.data.get('driver_id')
         vehicle_id = request.data.get('vehicle_id')
-
-        if driver_id and not vehicle_id:
-            return Response(
-                {'error': 'A driver needs a vehicle — assign a vehicle too, or clear the driver'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
 
         # Verify driver and vehicle belong to the requesting user's company
         if driver_id:
@@ -2621,11 +2608,10 @@ class LoadViewSet(LoadTripEconomicsMixin, CompanyFilterMixin, BillingGateMixin, 
             # Only move status at the two ends of the assignment lifecycle —
             # don't downgrade a load that's already further along (loading,
             # in transit, ...) just because its driver/vehicle got corrected.
-            # Vehicle alone is enough to assign; driver is optional.
-            if vehicle_id and load.status == 'PENDING':
+            # Picking a vehicle or a driver promotes a pending order. Both are
+            # optional, so clearing them leaves the status as it is.
+            if (vehicle_id or driver_id) and load.status == 'PENDING':
                 load.status = 'ASSIGNED'
-            elif not vehicle_id and load.status == 'ASSIGNED':
-                load.status = 'PENDING'
             load.save()
             # Trip economics: a job not costed from a quote is re-costed on
             # its (new) truck, so "Add the truck to cost this job" clears.
@@ -3101,7 +3087,7 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
         commit a specific driver + vehicle, but it's optional — the caller
         can supply a vehicle (with or without a driver) to assign now, or
         omit both to skip and assign later via the existing assign_driver
-        action. A driver without a vehicle is rejected as ambiguous.
+        action. A driver alone is fine (the vehicle is optional).
         """
         import secrets
         from core.services import booking as bk
@@ -3153,11 +3139,6 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
 
         driver_id = request.data.get('driver_id')
         vehicle_id = request.data.get('vehicle_id')
-        if driver_id and not vehicle_id:
-            return Response(
-                {'error': 'A driver needs a vehicle — select a vehicle too, or leave both blank to assign later'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
         driver = None
         vehicle = None
         if vehicle_id:
@@ -3270,7 +3251,7 @@ class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
                     is_international=quote.is_international,
                     additional_charges=quote.additional_charges,
                     total_amount=quote.total_amount,
-                    status='ASSIGNED' if vehicle else 'PENDING',
+                    status='ASSIGNED' if (vehicle or driver) else 'PENDING',
                     created_by=request.user,
                     # Trip economics: what the job was priced on (lines incl. the
                     # empty return, floor, fuel, truck, quoted margin). A

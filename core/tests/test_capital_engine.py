@@ -340,6 +340,13 @@ class DecisionTableTests(TestCase):
         ev = self.decide(inv2)
         self.assertEqual(ev.decision, 'DECLINE')
         self.assertIn('E-DUPLICATE', self.codes(ev))
+        # The transporter is told which of their own loads has the same POD.
+        from core.capital.reasons import for_transporter
+        blocking = [r['text'] for r in for_transporter(ev.reasons) if r['direction'] == '!']
+        dup = next(t for t in blocking if 'proof of delivery' in t)
+        self.assertIn(f'load {inv1.load.load_number}', dup)
+        self.assertIn('Upload the correct POD', dup)
+        self.assertEqual(sum('proof of delivery' in t for t in blocking), 1)
 
     def test_application_and_insurance_required(self):
         from core.models import CapitalApplication

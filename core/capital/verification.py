@@ -28,7 +28,7 @@ from zoneinfo import ZoneInfo
 from django.db.models import Q
 from django.utils import timezone
 
-from core.capital.reasons import reason
+from core.capital.reasons import duplicate_why, reason
 
 D = Decimal
 ZERO = D('0')
@@ -174,11 +174,17 @@ def fraud_checks(invoice, policy=None, *, as_of=None) -> dict:
     total = D(invoice.total_amount or 0)
 
     # POD file reused on another load (any tenant)
+    pod_reused = False
+    pod_reuse_own_load = None   # the other load's number, only when it is the same transporter's
     if load is not None and (load.pod_file_sha256 or '').strip():
-        other = (Load.objects.filter(pod_file_sha256=load.pod_file_sha256).exclude(pk=load.pk)
-                 .order_by('id').values_list('load_number', flat=True).first())
+        match = (Load.objects.filter(pod_file_sha256=load.pod_file_sha256).exclude(pk=load.pk)
+                 .order_by('id').values_list('load_number', 'company_id').first())
+        other = match[0] if match else None
         if other:
             duplicate = True
+            pod_reused = True
+            if match[1] == load.company_id:
+                pod_reuse_own_load = other
             flags.append(reason('F-POD-REUSE', other=other))
             details.append(f'POD file also attached to load {other}')
 
@@ -215,7 +221,7 @@ def fraud_checks(invoice, policy=None, *, as_of=None) -> dict:
         seen = list(dict.fromkeys(dup_numbers))
         detail = 'invoice ' + ', '.join(seen) + ' for the same delivery'
         details.append(detail)
-        flags.append(reason('E-DUPLICATE', detail=detail))
+        flags.append(reason('E-DUPLICATE', detail=detail, why=duplicate_why(invoice_duplicate=True)))
 
     # Same amount (+-1%) to the same debtor within 7 days, not already a duplicate
     same_amount = [o for o in same_debtor if o.pk not in dup_ids and (o.pk in soft_same_day or (
@@ -261,4 +267,5 @@ def fraud_checks(invoice, policy=None, *, as_of=None) -> dict:
     if duplicate:
         score = max(score, DUPLICATE_FLOOR)
     return {'score': score.quantize(D('0.001')), 'flags': flags, 'duplicate': duplicate,
-            'duplicate_detail': '; '.join(details)}
+            'duplicate_detail': '; '.join(details), 'pod_reused': pod_reused,
+            'pod_reuse_own_load': pod_reuse_own_load, 'invoice_duplicate': bool(dup_numbers)}

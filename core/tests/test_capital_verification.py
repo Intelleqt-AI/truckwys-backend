@@ -122,6 +122,13 @@ class FraudCheckTests(TestCase):
         self.assertIn('F-POD-REUSE', flag_codes(res))
         self.assertIn('L-B-1', res['duplicate_detail'])
         self.assertGreaterEqual(res['score'], D('0.9'))
+        # Another company's load number is never named to the transporter.
+        self.assertTrue(res['pod_reused'])
+        self.assertIsNone(res['pod_reuse_own_load'])
+        from core.capital.reasons import duplicate_why
+        why = duplicate_why(pod_reused=True, pod_reuse_own_load=res['pod_reuse_own_load'])
+        self.assertNotIn('L-B-1', why)
+        self.assertIn('another load', why)
 
     def test_network_duplicate_across_two_tenants(self):
         when = timezone.now() - timedelta(days=2)
