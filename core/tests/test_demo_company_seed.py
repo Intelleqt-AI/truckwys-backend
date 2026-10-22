@@ -21,7 +21,7 @@ from django.utils import timezone
 
 from core.models import (
     ActivityEvent, Company, CopilotConversation, CopilotMessage, Customer, Driver, Expense, Invoice, Load,
-    Notification, Payment, Quote, Settlement, Trip, User, Vehicle, VehicleLog, VehicleType,
+    Notification, Payment, Quote, Settlement, Supplier, Trip, User, Vehicle, VehicleLog, VehicleType,
 )
 
 _MEDIA = tempfile.mkdtemp(prefix='demo-seed-media-')
@@ -482,3 +482,18 @@ class DemoCompanySeedTests(TestCase):
         self.assertEqual(self._snapshot(self.other), self.other_snapshot)
         self.assertTrue(Load.objects.filter(pk=self.other_load.pk).exists())
         self.assertGreater(Invoice.objects.filter(company=self.company).count(), 500)
+
+    def test_expense_vendors_are_suppliers_and_a_reset_rebuilds_them_once(self):
+        def books():
+            sups = Supplier.objects.filter(company=self.company)
+            vendors = set(Expense.objects.filter(company=self.company).exclude(vendor__in=demo_seed.NOT_A_SUPPLIER)
+                          .values_list('vendor', flat=True))
+            return sups.count(), set(sups.values_list('name', flat=True)), vendors
+        count, names, vendors = books()
+        self.assertGreater(count, 5)
+        self.assertEqual(names, vendors)
+        self.assertFalse(Expense.objects.filter(company=self.company, supplier__isnull=True)
+                         .exclude(vendor__in=demo_seed.NOT_A_SUPPLIER).exists())
+        self.assertFalse(Supplier.objects.filter(company=self.company, name__in=demo_seed.NOT_A_SUPPLIER).exists())
+        call_command('seed_demo_company', '--reset', stdout=StringIO())
+        self.assertEqual(books()[:2], (count, names))

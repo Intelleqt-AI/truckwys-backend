@@ -13,11 +13,12 @@ from core.formatting import format_zar
 def load_pre_save(sender, instance, **kwargs):
     if instance.pk:
         try:
-            instance._old_status = sender.objects.values_list('status', flat=True).get(pk=instance.pk)
+            instance._old_status, instance._old_vehicle_id = (
+                sender.objects.values_list('status', 'vehicle_id').get(pk=instance.pk))
         except sender.DoesNotExist:
-            instance._old_status = None
+            instance._old_status = instance._old_vehicle_id = None
     else:
-        instance._old_status = None
+        instance._old_status = instance._old_vehicle_id = None
 
 
 @receiver(pre_save, sender='core.Quote')
@@ -83,6 +84,17 @@ def load_saved(sender, instance, created, **kwargs):
     # lazily: nothing is built when the company has no subscribers.
     company_id = getattr(instance, 'company_id', None)
     old_status = getattr(instance, '_old_status', None)
+
+    # The truck on this load (and the one it left) is In use while it has an
+    # active load, Available once it has none.
+    old_vehicle_id = getattr(instance, '_old_vehicle_id', None)
+    if created or old_status != instance.status or old_vehicle_id != instance.vehicle_id:
+        try:
+            from core.services.vehicle_status import sync_vehicle_status
+            for vid in {instance.vehicle_id, old_vehicle_id}:
+                sync_vehicle_status(vid)
+        except Exception:
+            pass  # never block the load save
 
     def data():
         return LoadSerializer(instance).data
@@ -762,6 +774,12 @@ def audit_load_delete(sender, instance, **kwargs):
     AuditLog.log_delete(instance, user=user, details={
         'load_number': instance.load_number,
     })
+    # A deleted active load frees its truck.
+    try:
+        from core.services.vehicle_status import sync_vehicle_status
+        sync_vehicle_status(instance.vehicle_id)
+    except Exception:
+        pass
 
 
 @receiver(post_save, sender='core.Invoice')

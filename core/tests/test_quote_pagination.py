@@ -9,9 +9,10 @@ from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework.test import APIClient
 
-from core.models import Company, Customer, Quote
+from core.models import Company, Customer, Load, Quote
 
 User = get_user_model()
 
@@ -82,6 +83,26 @@ class QuotePaginationTests(TestCase):
         booked = self.client.get('/api/v1/quotes/?status=BOOKED&page_size=10')
         self.assertEqual({r['quote_number'] for r in booked.data['results']}, {'Q-IT', 'Q-DONE'})
         self.assertEqual(booked.data['count'], 2)
+
+    def test_draft_or_sent_quote_with_a_load_is_listed_once_under_booked(self):
+        # A load booked against a quote that never moved past Draft/Sent (an
+        # import, a TMS sync) is booked work: one column, never two.
+        now = timezone.now()
+        for number, st in (('Q-D-BOOKED', 'DRAFT'), ('Q-S-BOOKED', 'SENT')):
+            q = make_quote(self.company, self.customer, number=number, status=st)
+            Load.objects.create(
+                company=self.company, quote=q, load_number=f'LD-{number}', customer=self.customer,
+                pickup_location='JHB', pickup_city='JHB', pickup_state='GP', pickup_zip='2000', pickup_date=now,
+                delivery_location='CPT', delivery_city='CPT', delivery_state='WC', delivery_zip='8000',
+                delivery_date=now + timedelta(days=1), cargo_description='x', weight=1, distance=1, rate=1,
+                total_amount=1, status='PENDING')
+        make_quote(self.company, self.customer, number='Q-D-OPEN', status='DRAFT')
+        draft = self.client.get('/api/v1/quotes/?status=DRAFT&page_size=10')
+        self.assertEqual({r['quote_number'] for r in draft.data['results']}, {'Q-D-OPEN'})
+        sent = self.client.get('/api/v1/quotes/?status=SENT&page_size=10')
+        self.assertEqual(sent.data['count'], 0)
+        booked = self.client.get('/api/v1/quotes/?status=BOOKED&page_size=10')
+        self.assertEqual({r['quote_number'] for r in booked.data['results']}, {'Q-D-BOOKED', 'Q-S-BOOKED'})
 
     def test_declined_filter_does_not_pick_up_legacy_statuses(self):
         make_quote(self.company, self.customer, number='Q-IT', status='IT')

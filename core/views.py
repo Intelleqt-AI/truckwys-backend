@@ -2791,12 +2791,14 @@ class QuoteFilterSet(django_filters.FilterSet):
     def filter_status(self, queryset, name, value):
         # Board columns: ACCEPTED is "won, still to book"; BOOKED is a quote
         # converted into a load (the load is the source of truth; legacy
-        # IT/COMPLETED quotes count as booked too). Not a stored status.
+        # IT/COMPLETED quotes count as booked too). Not a stored status. A
+        # Draft or Sent quote with a load is booked too, so it is listed once,
+        # under BOOKED, never also under its stored status.
         booked = Q(loads__isnull=False) | Q(status__in=['IT', 'COMPLETED'])
         if value == 'BOOKED':
             return queryset.filter(booked).distinct()
-        if value == 'ACCEPTED':
-            return queryset.filter(status='ACCEPTED').exclude(booked)
+        if value in ('DRAFT', 'SENT', 'ACCEPTED'):
+            return queryset.filter(status=value).exclude(booked)
         return queryset.filter(status=value)
 
 

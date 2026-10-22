@@ -51,7 +51,7 @@ from django.utils import timezone
 from core.models import (
     ActivityEvent, AdvanceRequest, Company, CopilotConversation, CopilotMessage, Customer, Driver, Expense, Invoice,
     Load, Notification, Payment, PaymentOutcome, Quote, QuoteOutcome, RiskScore,
-    Settlement, Trip, User, UserSession, Vehicle, VehicleLog, VehicleType,
+    Settlement, Supplier, Trip, User, UserSession, Vehicle, VehicleLog, VehicleType,
 )
 from core.services import demo_seed_data as data
 
@@ -1852,10 +1852,36 @@ def _wipe_history(company):
 
 
 def _wipe_fixed(company):
+    # After _wipe_history: an expense PROTECTs its supplier.
+    Supplier.objects.filter(company=company).delete()
     Vehicle.objects.filter(company=company).delete()
     Driver.objects.filter(company=company).delete()
     Customer.objects.filter(company=company).delete()
     VehicleType.objects.filter(company=company).delete()
+
+
+# Expense vendors that are not businesses the company buys from.
+NOT_A_SUPPLIER = ('Driver claim',)
+
+
+def _seed_suppliers(company):
+    """One Supplier per expense vendor, linked to its expenses, so Finance >
+    Suppliers lists who the demo fleet pays. The same rule as migration 0137's
+    backfill (matched on the normalised name); written with update() so no
+    expense signal fires. Idempotent: existing suppliers are reused."""
+    from core.services.identity import legal_name_key
+    by_key = {s.name_key: s.pk for s in Supplier.objects.filter(company=company)}
+    pairs = (Expense.objects.filter(company=company, supplier__isnull=True).exclude(vendor='')
+             .exclude(vendor__in=NOT_A_SUPPLIER).values_list('vendor', 'category').distinct())
+    for vendor, category in pairs:
+        key = legal_name_key(vendor)
+        if not key:
+            continue
+        if key not in by_key:
+            by_key[key] = Supplier.objects.create(company=company, name=vendor.strip()[:200],
+                                                  category=category or '', source='DEMO').pk
+        Expense.objects.filter(company=company, supplier__isnull=True, vendor=vendor).update(supplier_id=by_key[key])
+    return len(by_key)
 
 
 def _has_history(company):
@@ -1902,6 +1928,7 @@ def seed_demo_company():
         company.annual_turnover = _q(revenue)
         company.fuel_price_per_litre = builder._diesel_on(builder.today)
         company.save(update_fields=['annual_turnover', 'fuel_price_per_litre'])
+    suppliers = _seed_suppliers(company)
 
     # Baseline for the idle-reset check below — anything that touches a
     # Quote/Load after this moment counts as new activity.
@@ -1918,6 +1945,7 @@ def seed_demo_company():
         'vehicles': len(vehicles),
         'drivers': len(drivers),
         'customers': len(customers),
+        'suppliers': suppliers,
         'quotes': Quote.objects.filter(company=company).count(),
         'loads': Load.objects.filter(company=company).count(),
         'invoices': Invoice.objects.filter(company=company).count(),
