@@ -234,7 +234,8 @@ class EmailGatingTests(NotifQABase):
         self.assertEqual(off["user_emails"], 0)
         on = self.observe(ALL_ON, trigger)
         self.assertGreater(on["user_emails"], 0)
-        self.assertIn("Invoice overdue", [t for _, t in on["rows"]])
+        # Notification titles carry an emoji prefix (signals.py, services/payments.py).
+        self.assertIn("⚠️ Invoice overdue", [t for _, t in on["rows"]])
 
     def test_full_payment_gated_via_invoice_paid(self):
         def trigger():
@@ -252,7 +253,7 @@ class EmailGatingTests(NotifQABase):
         self.assertEqual(off["user_emails"], 0)
         on = self.observe(ALL_ON, trigger)
         self.assertGreater(on["user_emails"], 0)
-        self.assertIn("Invoice paid", [t for _, t in on["rows"]])
+        self.assertIn("💰 Invoice paid", [t for _, t in on["rows"]])
 
     def test_partial_payment_now_notifies(self):
         """Fixed: partial payments previously produced nothing at all."""
@@ -269,13 +270,13 @@ class EmailGatingTests(NotifQABase):
             assert r.status_code in (200, 201), r.content
         on = self.observe(ALL_ON, trigger)
         titles = [t for _, t in on["rows"]]
-        self.assertIn("Payment received", titles)
+        self.assertIn("💰 Payment received", titles)
         # Actor excluded; colleague notified.
-        self.assertIn(("qa_colleague", "Payment received"), on["rows"])
-        self.assertNotIn(("qa_actor", "Payment received"), on["rows"])
+        self.assertIn(("qa_colleague", "💰 Payment received"), on["rows"])
+        self.assertNotIn(("qa_actor", "💰 Payment received"), on["rows"])
         off = self.observe(ALL_OFF, trigger)
         self.assertEqual(off["user_emails"], 0)
-        self.assertIn("Payment received", [t for _, t in off["rows"]])  # bell always
+        self.assertIn("💰 Payment received", [t for _, t in off["rows"]])  # bell always
 
 
 class PushGatingTests(NotifQABase):
@@ -303,7 +304,8 @@ class PushGatingTests(NotifQABase):
         off = self.observe(ALL_OFF, trigger)
         self.assertEqual(off["web_pushes"], 0)           # push toggles honored
         self.assertEqual(off["broadcasts"], 1)           # company broadcast always
-        users = [u for u, t in off["rows"] if t == "New booking created"]
+        # Title carries the emoji prefix from signals.py.
+        users = [u for u, t in off["rows"] if t == "📦 New booking created"]
         self.assertIn("qa_colleague", users)             # bell always
         on = self.observe(ALL_ON, trigger)
         self.assertGreater(on["web_pushes"], 0)
@@ -372,7 +374,7 @@ class PushSubscriptionApiTests(NotifQABase):
         self.assertEqual(PushSubscription.objects.filter(user=self.actor).count(), 1)
         r = c.delete("/api/v1/push/subscriptions/",
                      {"endpoint": self.SUB["endpoint"]}, format="json")
-        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.status_code, 204)  # No Content
         self.assertEqual(PushSubscription.objects.count(), 0)
 
     def test_subscribe_validates_payload(self):
@@ -432,7 +434,7 @@ class NewEventsAndSweepsTests(NotifQABase):
         self.assertGreaterEqual(result["flipped"], 1)
         inv = Invoice.objects.get(invoice_number="INV-SWP-1")
         self.assertEqual(inv.status, "OVERDUE")
-        self.assertTrue(Notification.objects.filter(title="Invoice overdue").exists())
+        self.assertTrue(Notification.objects.filter(title="⚠️ Invoice overdue").exists())
 
     def test_driver_status_change_notifies(self):
         """Fixed: driver.status_changed event now exists."""

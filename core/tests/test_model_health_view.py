@@ -52,13 +52,15 @@ class AdminModelHealthViewTests(TestCase):
 
     def test_single_class_is_reported_as_a_blocker(self):
         # The exact production state: plenty of rows, none of them negative.
+        # Each class has its own floor, so the missing class gets its own line.
+        from core.services.quote_training import _min_class_counts
+        min_rejected = _min_class_counts('global')[1]
         for _ in range(3):
             self._row('accepted')
         data = self._get()
 
         self.assertFalse(data['can_train'])
-        self.assertIn('only one outcome class present — a classifier cannot train',
-                       data['blockers'])
+        self.assertIn(f'only 0 of {min_rejected} rejected outcomes needed', data['blockers'])
         self.assertEqual(data['training_data']['rejected'], 0)
         self.assertEqual(data['training_data']['class_balance'], 0)
 

@@ -2,10 +2,9 @@
 Seed ~N (default 20) demo rows per business table, scoped to a real user's COMPANY
 so the data is visible in the app when that user logs in.
 
-Why this exists (vs. seed_demo_data): the app is multi-tenant. seed_demo_data attaches
-everything to a hard-coded "TruckWys (Pty) Ltd" company and leaves Driver.company null,
-so a normal logged-in user never sees it. This command resolves the target company from
---user (default: arif@intelleqt.ai) and stamps company on every company-scoped row,
+Why: the app is multi-tenant, so rows without the right company are invisible to a
+normal logged-in user. This command resolves the target company from --user
+(default: arif@intelleqt.ai) and stamps company on every company-scoped row,
 including drivers.
 
 Idempotent: every row is created via get_or_create on a deterministic key (mostly a

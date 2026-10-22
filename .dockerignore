@@ -16,3 +16,5 @@ ml_models/
 .DS_Store
 .pytest_cache/
 .ruff_cache/
+# The test suite runs in CI from git; the production image doesn't need it.
+core/tests/

@@ -584,6 +584,12 @@ class ModelProgressBlockerTests(IsolatedModelStorageMixin, TestCase):
 
     def setUp(self):
         super().setUp()
+        # The win model needs WIN_MODEL_MIN_ACCEPTED accepted AND
+        # WIN_MODEL_MIN_REJECTED rejected outcomes, checked independently, and
+        # model_progress applies the 'user' bar to every tier. Build to that bar
+        # (as test_win_model_tiers.py does) so these stay correct if it changes.
+        from core.services.quote_training import _min_class_counts
+        self.min_accepted, self.min_rejected = _min_class_counts('user')
         self.company = Company.objects.create(company_name='Blocker Co', pool_pricing_data=True)
         self.customer = Customer.objects.create(
             company=self.company, name='B Ltd', email='blocker@x.test',
@@ -607,18 +613,20 @@ class ModelProgressBlockerTests(IsolatedModelStorageMixin, TestCase):
         return model_progress(self.user, self.company)
 
     def test_all_accepted_past_the_floor_reports_needs_lost_quotes(self):
-        # Exactly the production state, and the one the old payload could not
-        # express: qualifies is True and the model still cannot train.
-        self._outcomes('accepted', 41)
+        # Exactly the production state: every outcome 'accepted', past its own
+        # floor, and the model still cannot train. qualifies needs both classes,
+        # so it agrees with the blocker, and the progress bar reads 0, not full.
+        self._outcomes('accepted', self.min_accepted + 1)
         tier = self._progress()['global']
 
-        self.assertTrue(tier['qualifies'])
+        self.assertFalse(tier['qualifies'])
         self.assertEqual(tier['blocker'], 'needs_lost_quotes')
-        self.assertEqual((tier['accepted'], tier['rejected']), (41, 0))
+        self.assertEqual((tier['accepted'], tier['rejected']), (self.min_accepted + 1, 0))
+        self.assertEqual(tier['progress_pct'], 0)
         self.assertFalse(tier['ready'])
 
     def test_all_rejected_past_the_floor_reports_needs_won_quotes(self):
-        self._outcomes('rejected', 41)
+        self._outcomes('rejected', self.min_rejected + 1)
         self.assertEqual(self._progress()['global']['blocker'], 'needs_won_quotes')
 
     def test_below_the_floor_reports_insufficient_data(self):
@@ -631,17 +639,18 @@ class ModelProgressBlockerTests(IsolatedModelStorageMixin, TestCase):
         self.assertEqual(tier['outcomes_collected'], 5)
 
     def test_both_classes_past_the_floor_but_no_artifact_awaits_retrain(self):
-        self._outcomes('accepted', 25)
-        self._outcomes('rejected', 20)
+        self._outcomes('accepted', self.min_accepted)
+        self._outcomes('rejected', self.min_rejected)
         tier = self._progress()['global']
 
+        self.assertTrue(tier['qualifies'])
         self.assertEqual(tier['blocker'], 'awaiting_retrain')
         self.assertFalse(tier['ready'])
 
     def test_awaiting_retrain_surfaces_the_last_rejection_reason(self):
         from core.models import MLModelVersion
-        self._outcomes('accepted', 25)
-        self._outcomes('rejected', 20)
+        self._outcomes('accepted', self.min_accepted)
+        self._outcomes('rejected', self.min_rejected)
         MLModelVersion.objects.create(
             scope='global', status='rejected',
             rejection_reason='roc_auc regressed 0.780 -> 0.700 vs active model',
@@ -652,10 +661,10 @@ class ModelProgressBlockerTests(IsolatedModelStorageMixin, TestCase):
         self.assertIn('roc_auc regressed', tier['blocker_detail'])
 
     def test_user_tier_is_scoped_and_never_touches_a_none_model_dir(self):
-        self._outcomes('accepted', 41)
+        self._outcomes('accepted', self.min_accepted + 1)
         progress = self._progress()
 
-        self.assertEqual(progress['user']['accepted'], 41)
+        self.assertEqual(progress['user']['accepted'], self.min_accepted + 1)
         self.assertEqual(progress['user']['blocker'], 'needs_lost_quotes')
         # Anonymous callers get an empty user tier, not a users/None lookup.
         from core.services.win_prediction import model_progress
