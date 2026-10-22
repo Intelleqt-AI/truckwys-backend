@@ -53,6 +53,6 @@ class Command(BaseCommand):
                 ))
         else:
             self.stdout.write(f'  Login: {user.email} (existing account, password unchanged)')
-        for key in ('vehicle_types', 'vehicles', 'drivers', 'customers', 'quotes', 'loads',
+        for key in ('vehicle_types', 'vehicles', 'drivers', 'customers', 'suppliers', 'quotes', 'loads',
                     'invoices', 'payments', 'expenses'):
             self.stdout.write(f'  {key.replace("_", " ").capitalize():<14} {summary[key]}')
