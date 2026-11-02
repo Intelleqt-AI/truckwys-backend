@@ -99,6 +99,7 @@ from .views_ai_insights import DashboardBriefingView, RiskScoreExplainView, Agen
 from .views_quote_optimize import AIPriceOptimizeView
 from .views_pricing_analysis import QuoteCostBreakdownView, QuotePricingAnalysisView
 from .views_risk_score_api import RiskUnderwriteView
+from .views_demo_snapshot import DemoSnapshotView
 
 router = DefaultRouter()
 router.register(r'users', UserViewSet, basename='user')
@@ -407,6 +408,7 @@ urlpatterns = [
 
     # Capital eligible invoices for operators (Sprint A4)
     path('capital/eligible/', CapitalEligibleInvoicesView.as_view(), name='capital-eligible'),
+    path('demo/snapshot/', DemoSnapshotView.as_view(), name='demo-snapshot'),
     path('customers/<int:pk>/risk-profile/', CustomerRiskProfileView.as_view(), name='customer-risk-profile'),
 
     # Fleet Management API endpoints (outbound + inbound webhooks)
