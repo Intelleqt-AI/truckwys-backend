@@ -240,6 +240,10 @@ class Invoice(models.Model):
     def is_financed(self) -> bool:
         if not self.pk:
             return False
+        # A list query may have answered this already (financed_flag, the
+        # same rule as capital_guard, annotated by InvoiceFinanceViewSet).
+        if 'financed_flag' in self.__dict__:
+            return bool(self.__dict__['financed_flag'])
         from core.services.capital_guard import is_invoice_financed
         return is_invoice_financed(self)
 

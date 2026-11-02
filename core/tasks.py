@@ -916,6 +916,10 @@ def reset_demo_company_task():
         from core.services.demo_seed import reset_demo_company_if_idle
         summary = reset_demo_company_if_idle()
         if summary is None:
+            # No reset: put back a demo snapshot the cache dropped (a reset
+            # builds its own).
+            from core.services.demo_snapshot import ensure_demo_snapshot
+            ensure_demo_snapshot()
             return {'reset': False}
         logger.info(
             'Demo company reset: company_id=%s vehicles=%s drivers=%s customers=%s quotes=%s loads=%s',

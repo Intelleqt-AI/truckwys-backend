@@ -1935,6 +1935,11 @@ def seed_demo_company():
     company.demo_last_reset_at = timezone.now()
     company.save(update_fields=['demo_last_reset_at'])
 
+    # The demo's pages in one pre-built response (core.services.demo_snapshot),
+    # built once this seed or reset has committed.
+    from core.services.demo_snapshot import build_demo_snapshot_quietly
+    transaction.on_commit(build_demo_snapshot_quietly)
+
     return {
         'company': company,
         'user': user,

@@ -22,6 +22,10 @@ class UserReadRateThrottle(UserRateThrottle):
     def allow_request(self, request, view):
         if request.method not in SAFE_METHODS:
             return True
+        # The demo snapshot builder's own in-process reads (never an HTTP
+        # request: see core.services.demo_snapshot.BUILD_FLAG).
+        if getattr(request, 'demo_snapshot_build', False):
+            return True
         return super().allow_request(request, view)
 
 
