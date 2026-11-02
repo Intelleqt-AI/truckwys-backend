@@ -160,7 +160,7 @@ def _demo_settings_locked(user):
     return bool(company and company.is_demo)
 
 
-from django.db.models import Sum, Count, Q, Avg, F, ExpressionWrapper, DecimalField, OuterRef, Subquery
+from django.db.models import Sum, Count, Q, Avg, F, ExpressionWrapper, DecimalField, OuterRef, Prefetch, Subquery
 from django.db.models.functions import TruncMonth
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -2265,7 +2265,8 @@ class DriverViewSet(DemoFixedDataMixin, CompanyFilterMixin, viewsets.ModelViewSe
 
 
 class VehicleViewSet(DemoFixedDataMixin, CompanyFilterMixin, viewsets.ModelViewSet):
-    queryset = Vehicle.objects.all()
+    # Driver name and vehicle type per row, joined (a query each per row before).
+    queryset = Vehicle.objects.all().select_related('driver__user', 'vehicle_type')
     serializer_class = VehicleSerializer
     permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
@@ -2463,7 +2464,9 @@ from core.views_trip_economics import LoadTripEconomicsMixin  # noqa: E402
 class LoadViewSet(LoadTripEconomicsMixin, CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
     # Actual fuel: approved FUEL expenses on the load's trips (one subquery,
     # not a query per row). Read by LoadSerializer.fuel_cost_actual.
-    queryset = Load.objects.all().select_related('company').annotate(
+    # Related rows the serializer reads per load, joined up front (they were a
+    # query each per row).
+    queryset = Load.objects.all().select_related('company', 'customer', 'driver__user', 'vehicle', 'quote').annotate(
         fuel_actual_total=Subquery(
             Expense.objects.filter(trip__load=OuterRef('pk'), category='FUEL', status='APPROVED')
             .values('trip__load').annotate(t=Sum('amount')).values('t')[:1]
@@ -2803,7 +2806,9 @@ class QuoteFilterSet(django_filters.FilterSet):
 
 
 class QuoteViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.ModelViewSet):
-    queryset = Quote.objects.all().select_related('company', 'pricing_decision').prefetch_related('loads')
+    queryset = Quote.objects.all().select_related(
+        'company', 'pricing_decision', 'customer', 'created_by', 'vehicle', 'driver__user',
+    ).prefetch_related(Prefetch('loads', queryset=Load.objects.select_related('vehicle', 'driver__user')))
     serializer_class = QuoteSerializer
     permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]

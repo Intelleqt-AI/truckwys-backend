@@ -127,9 +127,19 @@ class InvoiceFinanceViewSet(CompanyFilterMixin, BillingGateMixin, viewsets.Model
 
     def get_queryset(self):
         qs = super().get_queryset().select_related('customer', 'load').prefetch_related('lines', 'credit_notes')
+        if self.action != 'list':
+            return qs
+        # The list reads each invoice's fee charge and "financed?" (twice) per
+        # row: joined and answered in this one query instead (Invoice.is_financed
+        # reads financed_flag when present).
+        from django.db.models import Exists, OuterRef
+        from core.models import AdvanceRequest
+        from core.services.capital_guard import FINANCED_ADVANCE_STATUSES
+        qs = qs.select_related('delivery_fee_charge').annotate(financed_flag=Exists(
+            AdvanceRequest.objects.filter(invoice_id=OuterRef('pk'), status__in=FINANCED_ADVANCE_STATUSES)))
         # The list is newest first by issue date (what the table shows), then
         # number, so server pages are stable.
-        return qs.order_by('-issue_date', '-id') if self.action == 'list' else qs
+        return qs.order_by('-issue_date', '-id')
 
     @action(detail=False, methods=['get'])
     def summary(self, request):
@@ -586,7 +596,8 @@ class PaymentFinanceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     (core.services.payments) so the invoice's paid/balance/status are always
     re-derived from the payment rows.
     """
-    queryset = Payment.objects.all()
+    # The customer and invoice each row names, joined (a query each per row before).
+    queryset = Payment.objects.all().select_related('customer', 'invoice')
     serializer_class = PaymentSerializer
     permission_classes = [IsAuthenticated]
     filterset_class = PaymentFilterSet
@@ -833,7 +844,10 @@ class ExpenseFinanceViewSet(CompanyFilterMixin, viewsets.ModelViewSet):
     Enhanced Expense ViewSet with approval workflow.
     """
     # Newest first by expense date, then id, so server pages are stable.
-    queryset = Expense.objects.all().order_by('-expense_date', '-id')
+    # The truck, driver, creator and supplier each row names, joined (a query
+    # each per row before).
+    queryset = Expense.objects.all().select_related(
+        'vehicle', 'driver__user', 'created_by', 'supplier').order_by('-expense_date', '-id')
     serializer_class = ExpenseSerializer
     permission_classes = [IsAuthenticated]
     filterset_class = ExpenseFilterSet

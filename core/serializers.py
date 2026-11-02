@@ -1074,7 +1074,10 @@ class QuoteSerializer(CompanyScopedRelationsMixin, serializers.ModelSerializer):
         # self — this serializer instance is reused across every item when
         # DRF serializes a list, so instance-level caching would leak the
         # first quote's load onto every other quote in the list.
-        return obj.loads.select_related('vehicle', 'driver__user').order_by('-id').first()
+        # .all() so the viewset's prefetch (loads with vehicle + driver)
+        # serves it instead of two queries per quote; newest by id as before.
+        loads = list(obj.loads.all())
+        return max(loads, key=lambda l: l.pk) if loads else None
 
     def get_vehicle_display(self, obj):
         load = self._converted_load(obj)
